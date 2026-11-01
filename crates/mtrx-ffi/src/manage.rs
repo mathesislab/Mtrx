@@ -190,6 +190,50 @@ pub struct Manage {
     pub up_to: Option<i64>,
     /// A plain member's level in the room.
     pub default_level: i64,
+    /// Ourselves, and nobody else joined has our level or more: stepping
+    /// down leaves nobody able to do all we can.
+    pub alone: bool,
+}
+
+impl From<Manage> for core::Manage {
+    fn from(m: Manage) -> Self {
+        Self {
+            remove: m.remove,
+            ban: m.ban,
+            up_to: m.up_to,
+            default_level: m.default_level,
+            alone: m.alone,
+        }
+    }
+}
+
+/// A level in a member's menu.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LevelChoice {
+    pub title: String,
+    pub level: i64,
+    /// Theirs: ticked.
+    pub current: bool,
+    /// What to ask before giving it, if it can't be undone.
+    pub confirmation: Option<LevelConfirmation>,
+}
+
+/// A question before a change of level that can't be undone.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct LevelConfirmation {
+    pub title: String,
+    pub message: String,
+    pub button: String,
+}
+
+impl From<core::Confirmation> for LevelConfirmation {
+    fn from(c: core::Confirmation) -> Self {
+        Self {
+            title: c.title,
+            message: c.message,
+            button: c.button,
+        }
+    }
 }
 
 /// Someone in a room.
@@ -205,26 +249,63 @@ pub struct Member {
     pub level: Option<i64>,
     /// Invited, not joined yet.
     pub invited: bool,
+    /// Ourselves.
+    pub own: bool,
     pub manage: Manage,
+    /// "Owner", "Admin", "Mod", "Level 20", or nothing for a plain member.
+    pub label: Option<String>,
+    /// The levels we may give them, theirs ticked; empty if we may not
+    /// change theirs.
+    pub choices: Vec<LevelChoice>,
+    /// We may do something to them: change their level, remove or ban them.
+    pub manageable: bool,
 }
 
 impl From<core::Member> for Member {
     fn from(m: core::Member) -> Self {
         Self {
+            label: m.label(),
+            choices: m
+                .level_choices()
+                .into_iter()
+                .map(|c| LevelChoice {
+                    title: c.title,
+                    level: c.level,
+                    current: c.current,
+                    confirmation: c.confirmation.map(Into::into),
+                })
+                .collect(),
+            manageable: m.manageable(),
             user_id: m.id.to_string(),
             name: m.name,
             avatar_url: m.avatar.map(|a| a.to_string()),
             role: m.role.into(),
             level: m.level,
             invited: m.invited,
+            own: m.own,
             manage: Manage {
                 remove: m.manage.remove,
                 ban: m.manage.ban,
                 up_to: m.manage.up_to,
                 default_level: m.manage.default_level,
+                alone: m.manage.alone,
             },
         }
     }
+}
+
+/// What to ask before giving `member` a `level` typed in, or nothing to
+/// just give it: any change to our own, or a level as high as ours.
+#[uniffi::export]
+pub fn level_confirmation(member: Member, level: i64) -> Option<LevelConfirmation> {
+    let name = core::shown_name(member.name.as_deref(), &member.user_id);
+    core::level_confirmation(&name, member.own, &member.manage.into(), level).map(Into::into)
+}
+
+/// A level typed for a custom level: a number, at most `up_to`.
+#[uniffi::export]
+pub fn typed_level(text: String, up_to: i64) -> Option<i64> {
+    core::typed_level(&text, up_to)
 }
 
 /// The level `role` stands for, `default_level` for a member.

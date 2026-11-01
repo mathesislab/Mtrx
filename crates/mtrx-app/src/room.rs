@@ -2487,6 +2487,7 @@ mod tests {
             role: mtrx_core::Role::Member,
             level: Some(0),
             invited: false,
+            own: false,
             manage: Default::default(),
         };
         let card = |members: Option<&[Member]>, entries: &[TimelineEntry]| match mentioned(
