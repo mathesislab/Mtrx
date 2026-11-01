@@ -1,15 +1,15 @@
 //! A message's menu (right-click, or "⋯" in its toolbar): copying the
-//! selection or the message, math as a picture, and a file or image; or,
-//! right-clicking a link in it, the link's.
+//! selection or the message, pinning it, math as a picture, and a file or
+//! image; or, right-clicking a link in it, the link's.
 
 use iced::Element;
-use mtrx_core::{Media, MediaKind, Message, MessageKind, OwnedRoomId};
+use mtrx_core::{EventContent, Media, MediaKind, MessageAction, MessageRow, OwnedRoomId};
 
 use crate::{
     actions::{self, act},
     app, context_menu,
     media::Origin,
-    message,
+    message, pins,
     selection::Pos,
 };
 
@@ -24,30 +24,41 @@ pub enum MenuAt {
     Link(String),
 }
 
-/// What the menu offers for a message in `room`: label and action, in
-/// order. `in_selection`: the message is (partly) in the timeline's
-/// selection, which Copy then copies; else Copy copies the message, as a
-/// selection of all of it would.
+/// What the menu offers for the message of `row` in `room`: label and
+/// action, in order. First its actions not in the toolbar (Copy, Pin or
+/// Unpin; its text is selected in place), then its file's and its math's.
+/// `in_selection`: the message is (partly) in the timeline's selection,
+/// which Copy then copies; else Copy copies the message, as a selection of
+/// all of it would.
 pub fn items(
     room: &OwnedRoomId,
-    message: &Message,
+    row: &MessageRow,
     math_shown: bool,
     in_selection: bool,
 ) -> Vec<(String, app::Message)> {
+    let EventContent::Message(message) = &row.event.content else {
+        return Vec::new();
+    };
     let document = &message.document;
-    let is_text = matches!(
-        message.kind,
-        MessageKind::Text | MessageKind::Notice | MessageKind::Emote
-    );
     let mut items = Vec::new();
-    if in_selection {
-        items.push((
-            "Copy".to_owned(),
-            act(room, actions::Message::CopySelection),
-        ));
-    } else if is_text {
-        let all = message::copied(document, Pos::default(), Pos::END);
-        items.push(("Copy".to_owned(), act(room, actions::Message::Copy(all))));
+    for action in &row.actions {
+        match action {
+            MessageAction::Copy if in_selection => items.push((
+                "Copy".to_owned(),
+                act(room, actions::Message::CopySelection),
+            )),
+            MessageAction::Copy => {
+                let all = message::copied(document, Pos::default(), Pos::END);
+                items.push(("Copy".to_owned(), act(room, actions::Message::Copy(all))));
+            }
+            MessageAction::Pin | MessageAction::Unpin => {
+                let pinned = *action == MessageAction::Unpin;
+                items.extend(
+                    (row.event.event_id.as_ref()).map(|id| pins::menu_item(room, id, pinned)),
+                );
+            }
+            _ => {}
+        }
     }
     if let Some(media) = &message.media {
         items.extend(media_items(media, Origin::Room(room.clone())));
@@ -112,6 +123,7 @@ pub fn view<'a>(items: Vec<(String, app::Message)>) -> Element<'a, app::Message>
 
 #[cfg(test)]
 mod tests {
+    use mtrx_core::{Event, Message, MessageKind, Row, RowContext, TimelineEntry};
     use mtrx_format::Document;
 
     use super::*;
@@ -125,6 +137,23 @@ mod tests {
             in_reply_to: None,
             reactions: Vec::new(),
             media: None,
+        }
+    }
+
+    /// The row of `message`, sent by someone else, where we may pin.
+    fn row(message: Message) -> MessageRow {
+        let event = Event {
+            event_id: Some("$a:example.org".try_into().unwrap()),
+            content: EventContent::Message(message),
+            ..Event::test_message("a", "@bob:example.org".try_into().unwrap(), "")
+        };
+        let context = RowContext {
+            can_pin: true,
+            ..RowContext::default()
+        };
+        match mtrx_core::rows(&[TimelineEntry::Event(event)], &context).remove(0) {
+            Row::Message(row) => row,
+            row => panic!("not a message: {row:?}"),
         }
     }
 
@@ -159,9 +188,9 @@ mod tests {
     #[test]
     fn offers_copy_and_the_picture() {
         let html = r#"Flux <span data-mx-maths="q=-k\nabla T"><code>q</code></span>, see <a href="https://example.org/a">data</a>"#;
-        let text = message(MessageKind::Text, html);
+        let text = row(message(MessageKind::Text, html));
         let items = items(&room(), &text, true, false);
-        assert_eq!(labels(&items), ["Copy", "Copy image", "Save image…"]);
+        assert_eq!(labels(&items), ["Copy", "Pin", "Copy image", "Save image…"]);
         assert!(
             matches!(act_of(&items[0].1), Some(actions::Message::Copy(all)) if all.text == r"Flux $q=-k\nabla T$, see data"),
             "as shown, math as LaTeX"
@@ -173,24 +202,25 @@ mod tests {
         // Until the math is typeset, there is no picture.
         assert_eq!(
             labels(&super::items(&room(), &text, false, false)),
-            ["Copy"]
+            ["Copy", "Pin"]
         );
         // In the selection, Copy copies the selection.
         assert!(matches!(
             act_of(&super::items(&room(), &text, false, true)[0].1),
             Some(actions::Message::CopySelection)
         ));
-        // A file can be saved; an image also copied.
+        // A file can be saved; an image also copied. Their names are their
+        // text.
         let mut file = message(MessageKind::File, "report.pdf");
         file.media = Some(media("report.pdf", MediaKind::File));
         assert_eq!(
-            labels(&super::items(&room(), &file, false, false)),
-            ["Save…"]
+            labels(&super::items(&room(), &row(file.clone()), false, false)),
+            ["Copy", "Pin", "Save…"]
         );
         file.media = Some(media("ice.png", MediaKind::Image));
         assert_eq!(
-            labels(&super::items(&room(), &file, false, false)),
-            ["Copy image", "Save image…"]
+            labels(&super::items(&room(), &row(file), false, false)),
+            ["Copy", "Pin", "Copy image", "Save image…"]
         );
     }
 

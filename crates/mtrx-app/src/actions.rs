@@ -13,7 +13,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Event, EventKey, MxcUri, OwnedEventId, OwnedRoomId, Reaction, Reader, Reply, SendState,
+    Event, EventKey, MessageAction, MessageRow, MxcUri, OwnedEventId, OwnedRoomId, Reaction,
+    Reader, Reply, SendState,
 };
 use mtrx_format::Document;
 
@@ -352,16 +353,32 @@ fn tool_color(theme: &Theme) -> iced::Color {
 /// The toolbar's "⋯" for a message with a menu: the menu while open there.
 pub struct Menu<'a>(pub Option<Element<'a, app::Message>>);
 
-/// Symbols floating over a hovered message, each named on hover; the
-/// reaction window floats from the smiley while `picker` is given.
+/// The actions of a message that its toolbar offers.
+const TOOLS: [MessageAction; 4] = [
+    MessageAction::React,
+    MessageAction::Reply,
+    MessageAction::Edit,
+    MessageAction::Delete,
+];
+
+/// Some of `actions` are in a message's toolbar.
+pub fn has_tools(actions: &[MessageAction]) -> bool {
+    actions.iter().any(|action| TOOLS.contains(action))
+}
+
+/// Symbols floating over a hovered message for its actions (see
+/// [`TOOLS`]), each named on hover; the reaction window floats from the
+/// smiley while `picker` is given.
 pub fn toolbar<'a>(
     room: &OwnedRoomId,
-    event: &Event,
+    row: &MessageRow,
     target: Option<Target>,
     edit_text: Option<String>,
     picker: Option<Element<'a, app::Message>>,
     menu: Option<Menu<'a>>,
 ) -> Element<'a, app::Message> {
+    let event = &row.event;
+    let offers = |action| row.actions.contains(&action);
     let tool = |icon: Element<'a, app::Message>, tip: &'static str, message: Option<Message>| {
         hint(
             button(icon)
@@ -372,33 +389,36 @@ pub fn toolbar<'a>(
             Position::Top,
         )
     };
-    // While open, a click on it closes the window as any outside click.
-    let react = tool(
-        icons::smiley(style::TOOL_ICON, tool_color),
-        "React",
-        picker
-            .is_none()
-            .then(|| Message::TogglePicker(event.id.clone(), PickerAt::Toolbar)),
-    );
-    let react = popover(react, picker, Side::Below, Edge::Right)
-        .on_dismiss(act(room, Message::ClosePicker));
-    let mut bar = row![
-        react,
-        tool(
+    let mut bar = row![].spacing(2);
+    if offers(MessageAction::React) {
+        // While open, a click on it closes the window as any outside click.
+        let react = tool(
+            icons::smiley(style::TOOL_ICON, tool_color),
+            "React",
+            picker
+                .is_none()
+                .then(|| Message::TogglePicker(event.id.clone(), PickerAt::Toolbar)),
+        );
+        bar = bar.push(
+            popover(react, picker, Side::Below, Edge::Right)
+                .on_dismiss(act(room, Message::ClosePicker)),
+        );
+    }
+    if offers(MessageAction::Reply) {
+        bar = bar.push(tool(
             icons::reply(style::TOOL_ICON, tool_color),
             "Reply",
-            target.clone().map(Message::Reply)
-        ),
-    ]
-    .spacing(2);
-    if event.editable {
+            target.map(Message::Reply),
+        ));
+    }
+    if offers(MessageAction::Edit) {
         bar = bar.push(tool(
             icons::pencil(style::TOOL_ICON, tool_color),
             "Edit",
             edit_text.map(|text| Message::Edit(event.key.clone(), text)),
         ));
     }
-    if event.own && event.event_id.is_some() {
+    if offers(MessageAction::Delete) {
         bar = bar.push(tool(
             icons::trash(style::TOOL_ICON, tool_color),
             "Delete",

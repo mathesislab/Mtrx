@@ -19,10 +19,9 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Draft, Event, EventContent, EventKey, Media, Member, MembershipChange,
-    MessageKind, MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary,
-    RoomTimeline, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, UserId,
-    describe_change,
+    CallService, Draft, Event, EventContent, EventKey, Media, Member, MessageKind, MessageRow,
+    MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary, RoomTimeline, Row,
+    ScheduledMessage, SendState, Topic, Upload, UserId,
 };
 
 use crate::{
@@ -50,7 +49,7 @@ use crate::{
     pins,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
-    rows::{self, Part, Row, display_name, time},
+    rows::{self, Part, display_name, time},
     selectable::{self, selectable},
     selectable_image::selectable_image,
     selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
@@ -66,13 +65,13 @@ use crate::{
 /// The topic panel's share of the room header's width.
 pub const TOPIC_SHARE: f32 = 2.0 / 3.0;
 
-/// Entries rendered when a room opens; laying out every loaded entry gets
-/// slow in big rooms, so only a window at the bottom is drawn.
+/// Rows rendered when a room opens; laying out every loaded row gets slow
+/// in big rooms, so only a window at the bottom is drawn.
 const WINDOW: usize = 80;
-/// Entries added to the window when scrolling up.
+/// Rows added to the window when scrolling up.
 const WINDOW_STEP: usize = 50;
-/// Older events are loaded until there are this many entries (or the room
-/// has no more): fewer may not fill the view, and then there is nothing to
+/// Older events are loaded until there are this many rows (or the room has
+/// no more): fewer may not fill the view, and then there is nothing to
 /// scroll up for more.
 const FILL: usize = 40;
 
@@ -97,7 +96,7 @@ const TEXT_INDENT: f32 = MESSAGE_PADDING + SENDER_AVATAR + GUTTER_SPACING;
 /// shown, [`app::Message::Shown`].
 #[derive(Debug, Clone)]
 pub enum Message {
-    Timeline(Vec<TimelineEntry>),
+    Timeline(Arc<Vec<Row>>),
     /// The draft kept for the room just opened.
     DraftLoaded(Option<Draft>),
     /// Keep the draft, if it did not change since the pause (its
@@ -178,7 +177,8 @@ impl Message {
 pub struct Room {
     pub id: OwnedRoomId,
     pub timeline: Arc<RoomTimeline>,
-    pub entries: Vec<TimelineEntry>,
+    /// The timeline's rows, oldest first.
+    pub rows: Arc<Vec<Row>>,
     pub composer: text_editor::Content,
     /// Files sent after the composer's text.
     pub attachments: Vec<Attached>,
@@ -217,7 +217,7 @@ pub struct Room {
     pub can_mention_room: bool,
     /// Completing a mention in the composer.
     pub completion: Option<Completion>,
-    /// How many of the newest entries are rendered.
+    /// How many of the newest rows are rendered.
     shown: usize,
     pub paginating: bool,
     /// A new timeline is being loaded (⌘R).
@@ -239,7 +239,7 @@ pub struct Room {
 /// What scrolling to the top should do.
 pub enum Older {
     None,
-    /// Render more of the already loaded entries.
+    /// Render more of the already loaded rows.
     ShowMore,
     /// Load older events from the server.
     Paginate,
@@ -248,14 +248,14 @@ pub enum Older {
 impl Room {
     pub fn new(id: OwnedRoomId, timeline: Arc<RoomTimeline>) -> Self {
         // Messages being sent already when the room opens show their clock.
-        let entries = timeline.current();
+        let rows = Arc::new(timeline.current_rows());
         Self {
             calls: RoomCalls::new(id.clone()),
             topic: topic::Panel::default(),
             pins: pins::Pins::default(),
             compose: Compose::New,
             editing: None,
-            sending: Sending::already(&entries),
+            sending: Sending::already(&rows),
             selection: None,
             find: None,
             typing: Vec::new(),
@@ -265,7 +265,7 @@ impl Room {
             can_mention_room: false,
             completion: None,
             id,
-            entries,
+            rows,
             timeline,
             composer: text_editor::Content::new(),
             kept_draft: None,
@@ -295,11 +295,11 @@ impl Room {
     }
 
     /// Reaction to a scroll: near the top (the view is anchored to the
-    /// bottom, so the top is relative offset 1) we want older entries.
+    /// bottom, so the top is relative offset 1) we want older rows.
     pub fn older(&self, viewport: &Viewport) -> Older {
         if viewport.relative_offset().y < 0.9 {
             Older::None
-        } else if self.shown < self.entries.len() {
+        } else if self.shown < self.rows.len() {
             Older::ShowMore
         } else if !self.paginating && !self.at_start() {
             Older::Paginate
@@ -372,7 +372,7 @@ impl Room {
     /// The card of `user`, mentioned here: see [`mentioned`].
     pub fn mentioned(&self, user: OwnedUserId) -> info::Target {
         let members = self.member_list.as_ref().and_then(|m| m.as_deref().ok());
-        mentioned(user, members, &self.entries)
+        mentioned(user, members, &self.rows)
     }
 
     /// Complete the mention being written with `mention`.
@@ -427,17 +427,12 @@ impl Room {
         let Some(event_id) = &self.pending_reply else {
             return;
         };
-        let target = self.entries.iter().find_map(|entry| match entry {
-            TimelineEntry::Event(event) if event.event_id.as_ref() == Some(event_id) => {
-                match &event.content {
-                    EventContent::Message(m) => Target::of(
-                        event,
-                        display_name(event),
-                        first_line(&m.document.to_plain_text()),
-                    ),
-                    _ => None,
-                }
-            }
+        let target = self.events().find_map(|event| match &event.content {
+            EventContent::Message(m) if event.event_id.as_ref() == Some(event_id) => Target::of(
+                event,
+                display_name(event),
+                first_line(&m.document.to_plain_text()),
+            ),
             _ => None,
         });
         if let Some(target) = target {
@@ -448,8 +443,8 @@ impl Room {
 
     /// Show a freshly loaded timeline, keeping what is being written.
     pub fn reload(&mut self, timeline: Arc<RoomTimeline>) {
-        self.entries = timeline.current();
-        self.sending = Sending::already(&self.entries);
+        self.rows = Arc::new(timeline.current_rows());
+        self.sending = Sending::already(&self.rows);
         self.timeline = timeline;
         self.shown = WINDOW;
         self.paginating = false;
@@ -458,10 +453,10 @@ impl Room {
         self.find_again();
     }
 
-    /// Search the entries again for the find bar's text, as they changed.
+    /// Search the rows again for the find bar's text, as they changed.
     pub fn find_again(&mut self) {
         if let Some(find) = &mut self.find {
-            find.search(&self.entries);
+            find.search(&self.rows);
         }
     }
 
@@ -476,19 +471,19 @@ impl Room {
         else {
             return Task::none();
         };
-        if let Some(index) = (self.entries.iter())
-            .position(|e| matches!(e, TimelineEntry::Event(e) if e.id == event))
+        if let Some(index) =
+            (self.rows.iter()).position(|row| row.event().is_some_and(|e| e.id == event))
         {
-            self.shown = self.shown.max(self.entries.len() - index);
+            self.shown = self.shown.max(self.rows.len() - index);
         }
         scroll_to_found(&event)
     }
 
-    /// Follow which of our messages are being sent, once the entries
+    /// Follow which of our messages are being sent, once the rows
     /// changed. Returns the rows of those that started: their clock shows
     /// once [`Room::sending_slow`] after [`SENDING_CLOCK`].
     pub fn sending_changed(&mut self) -> Vec<String> {
-        self.sending.changed(&self.entries)
+        self.sending.changed(&self.rows)
     }
 
     /// Our message in row `id` started sending [`SENDING_CLOCK`] ago: its
@@ -497,59 +492,56 @@ impl Room {
         self.sending.slow(id);
     }
 
-    /// Our newest message (any row but a state change): sent, it implies
-    /// the older ones were, and read markers sit on the last message each
-    /// reader read, so only it says it was sent.
+    /// Our newest message: sent, it implies the older ones were, and read
+    /// markers sit on the last message each reader read, so only it says it
+    /// was sent.
     fn newest_own(&self) -> Option<&str> {
-        self.entries.iter().rev().find_map(|entry| match entry {
-            TimelineEntry::Event(event) if event.own && !event.is_state() => {
-                Some(event.id.as_str())
-            }
-            _ => None,
-        })
+        (self.events().rev())
+            .find(|event| event.own)
+            .map(|event| event.id.as_str())
+    }
+
+    /// The events of the message rows, oldest first.
+    fn events(&self) -> impl DoubleEndedIterator<Item = &Event> {
+        self.rows.iter().filter_map(Row::event)
     }
 
     /// Back-pagination reached the room's creation.
     pub fn at_start(&self) -> bool {
-        matches!(self.entries.first(), Some(TimelineEntry::Start))
+        matches!(self.rows.first(), Some(Row::Start))
     }
 
-    /// Too few entries are loaded to fill the view.
+    /// Too few rows are loaded to fill the view.
     pub fn wants_older(&self) -> bool {
-        !self.paginating && !self.at_start() && self.entries.len() < FILL
+        !self.paginating && !self.at_start() && self.rows.len() < FILL
     }
 
     pub fn show_more(&mut self) {
         self.shown += WINDOW_STEP;
     }
 
-    /// Render every loaded entry, to go to the oldest.
+    /// Render every loaded row, to go to the oldest.
     pub fn show_all(&mut self) {
-        self.shown = self.shown.max(self.entries.len());
+        self.shown = self.shown.max(self.rows.len());
     }
 
     /// Render the message `event` if it is loaded; its [`Event::id`].
     pub fn reveal(&mut self, event: &OwnedEventId) -> Option<String> {
-        let index = self.entries.iter().position(
-            |entry| matches!(entry, TimelineEntry::Event(e) if e.event_id.as_ref() == Some(event)),
-        )?;
-        self.shown = self.shown.max(self.entries.len() - index);
-        match &self.entries[index] {
-            TimelineEntry::Event(e) => Some(e.id.clone()),
-            _ => None,
-        }
+        let index = (self.rows.iter()).position(|row| {
+            row.event()
+                .is_some_and(|e| e.event_id.as_ref() == Some(event))
+        })?;
+        self.shown = self.shown.max(self.rows.len() - index);
+        self.rows[index].event().map(|e| e.id.clone())
     }
 
     /// Our newest message that we may edit, rendered to be edited in place:
     /// its [`Event::id`], key and text.
     pub fn newest_editable(&mut self) -> Option<(String, EventKey, String)> {
-        let (event_id, key, text) = self.entries.iter().rev().find_map(|entry| match entry {
-            TimelineEntry::Event(event) if event.editable => match &event.content {
-                EventContent::Message(m) => {
-                    Some((event.event_id.clone(), event.key.clone(), m.body.clone()))
-                }
-                _ => None,
-            },
+        let (event_id, key, text) = self.events().rev().find_map(|event| match &event.content {
+            EventContent::Message(m) if event.editable => {
+                Some((event.event_id.clone(), event.key.clone(), m.body.clone()))
+            }
             _ => None,
         })?;
         // Not while it is being sent.
@@ -557,17 +549,19 @@ impl Room {
         Some((row, key, text))
     }
 
-    fn visible(&self) -> &[TimelineEntry] {
-        &self.entries[self.entries.len().saturating_sub(self.shown)..]
+    fn visible(&self) -> &[Row] {
+        &self.rows[self.rows.len().saturating_sub(self.shown)..]
+    }
+
+    /// The events of the rendered message rows.
+    fn visible_events(&self) -> impl Iterator<Item = &Event> {
+        self.visible().iter().filter_map(Row::event)
     }
 
     /// Rendered messages with math, for typesetting.
     pub fn math_documents(&self) -> impl Iterator<Item = &mtrx_format::Document> {
-        self.visible().iter().filter_map(|e| match e {
-            TimelineEntry::Event(Event {
-                content: EventContent::Message(m),
-                ..
-            }) if m.document.has_math() => Some(&m.document),
+        self.visible_events().filter_map(|e| match &e.content {
+            EventContent::Message(m) if m.document.has_math() => Some(&m.document),
             _ => None,
         })
     }
@@ -583,25 +577,18 @@ impl Room {
         popup: Option<&'a Popup>,
     ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
         let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
-        let senders = self
-            .visible()
-            .iter()
-            .filter_map(|e| match e {
-                TimelineEntry::Event(event) => Some(event),
+        let senders = self.visible_events().flat_map(move |event| {
+            let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
+            let listed = matches!(popup, Some(Popup::Readers(row)) if *row == event.id);
+            let reactors = match popup {
+                Some(Popup::Reactors { row, key }) if *row == event.id => Some(key.as_str()),
                 _ => None,
-            })
-            .flat_map(move |event| {
-                let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
-                let listed = matches!(popup, Some(Popup::Readers(row)) if *row == event.id);
-                let reactors = match popup {
-                    Some(Popup::Reactors { row, key }) if *row == event.id => Some(key.as_str()),
-                    _ => None,
-                };
-                sender
-                    .into_iter()
-                    .chain(actions::reader_avatars(event, listed))
-                    .chain(actions::reactor_avatars(event, reactors))
-            });
+            };
+            sender
+                .into_iter()
+                .chain(actions::reader_avatars(event, listed))
+                .chain(actions::reactor_avatars(event, reactors))
+        });
         let listed = match &self.member_list {
             Some(Ok(list)) if members_shown => list.as_slice(),
             _ => &[],
@@ -624,11 +611,8 @@ impl Room {
     /// Images of the rendered messages, for loading their previews.
     /// Files with previews: images and PDFs.
     pub fn previewed(&self) -> impl Iterator<Item = &Media> {
-        self.visible().iter().filter_map(|e| match e {
-            TimelineEntry::Event(Event {
-                content: EventContent::Message(m),
-                ..
-            }) => m.media.as_ref().filter(|media| media::previewed(media)),
+        self.visible_events().filter_map(|e| match &e.content {
+            EventContent::Message(m) => m.media.as_ref().filter(|media| media::previewed(media)),
             _ => None,
         })
     }
@@ -648,8 +632,7 @@ impl Room {
     /// past the first or last. A reply's preview is stepped through as a
     /// whole, not as cut to fit.
     fn stepped(&self, focus: &Point, step: Step) -> Option<Point> {
-        let rows = rows::rows(self.visible());
-        let parts = rows::parts(&rows);
+        let parts = rows::parts(self.visible());
         let parts = rows::in_order(&parts);
         let units = |part: &Part<'_>| part.units(&Shown::default());
         let at = parts.iter().position(|(_, part)| part.key == focus.event)?;
@@ -711,8 +694,7 @@ impl Room {
     /// Move the end of the selection to the start (`start`) or end of the
     /// part `key`.
     pub fn extend_to_part(&mut self, key: String, start: bool) {
-        let rows = rows::rows(self.visible());
-        let parts = rows::parts(&rows);
+        let parts = rows::parts(self.visible());
         let Some(part) = parts.iter().flatten().find(|part| part.key == key) else {
             return;
         };
@@ -763,12 +745,10 @@ impl Room {
     /// The first part of the first row with text on screen (partly, or
     /// wholly) and the last part of the last, for ⌘A.
     pub fn on_screen(&self) -> Task<Option<(String, String)>> {
-        let rows = rows::rows(self.visible());
         // Each row with text: its container, and its first and last part.
-        let (ids, ends): (Vec<Id>, Vec<(String, String)>) = rows
-            .iter()
+        let (ids, ends): (Vec<Id>, Vec<(String, String)>) = (self.visible().iter())
             .filter_map(|row| {
-                let parts = row.parts();
+                let parts = rows::row_parts(row);
                 let ends = (parts.first()?.key.clone(), parts.last()?.key.clone());
                 Some((row_container(row, &parts)?, ends))
             })
@@ -787,18 +767,16 @@ impl Room {
     /// selected.
     pub fn selected(&self, shown: &Shown) -> Option<Copied> {
         let selection = self.selection.as_ref()?;
-        let rows = rows::rows(self.visible());
-        let parts = rows::parts(&rows);
+        let parts = rows::parts(self.visible());
         let bounds = selection.ordered(&rows::order(&parts))?;
-        rows::copied(&rows, &parts, bounds, shown)
+        rows::copied(self.visible(), &parts, bounds, shown)
     }
 
     /// What the reply previews on screen show, cut to fit, read from the
     /// view for copying them as shown.
     pub fn read_shown(&self) -> Task<Shown> {
-        let ids = rows::rows(self.visible())
-            .iter()
-            .flat_map(Row::parts)
+        let ids = (self.visible().iter())
+            .flat_map(rows::row_parts)
             .filter(|part| matches!(part.text, rows::Text::Reply(_)))
             .map(|part| (rows::shown_id(&part.key), part.key))
             .collect();
@@ -825,10 +803,7 @@ impl Room {
             return Some(Status::Problem(error.clone()));
         }
         if self.seeking.is_some() {
-            let back_to = self.entries.iter().find_map(|entry| match entry {
-                TimelineEntry::Event(event) => Some(event.timestamp),
-                _ => None,
-            });
+            let back_to = self.events().next().map(|event| event.timestamp);
             return Some(Status::Seeking { back_to });
         }
         let since = self.uploading_since?;
@@ -836,12 +811,12 @@ impl Room {
             return None;
         }
         let first = self.uploads.first()?;
-        let name = (self.entries.iter())
-            .find_map(|entry| match entry {
-                TimelineEntry::Event(event) if event.key == first.message => match &event.content {
-                    EventContent::Message(m) => m.media.as_ref().map(|f| f.filename.clone()),
-                    _ => None,
-                },
+        let name = self
+            .events()
+            .find_map(|event| match &event.content {
+                EventContent::Message(m) if event.key == first.message => {
+                    m.media.as_ref().map(|f| f.filename.clone())
+                }
                 _ => None,
             })
             .unwrap_or_else(|| "a file".to_owned());
@@ -865,8 +840,8 @@ impl Room {
         scheduled: &send_later::Pending<'a>,
     ) -> Element<'a, app::Message> {
         let header = self.header(summary, look);
-        let rows = rows::rows(self.visible());
-        let parts = rows::parts(&rows);
+        let rows = self.visible();
+        let parts = rows::parts(rows);
         let order = self.selection.as_ref().map(|_| rows::order(&parts));
         let selected = self
             .selection
@@ -924,12 +899,10 @@ impl Room {
             },
             editing: self.editing.as_ref(),
             popup,
-            pinned: summary.map_or(&[], |s| &s.pinned),
-            can_pin: self.pins.can_pin == Some(true),
         };
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
-        let all_shown = self.shown >= self.entries.len();
+        let all_shown = self.shown >= self.rows.len();
         if self.reloading {
             timeline = timeline.push(notice("Reloading…"));
         } else if !(self.at_start() && all_shown) && (self.paginating || !all_shown) {
@@ -937,9 +910,10 @@ impl Room {
         }
         for (row, parts) in rows.iter().zip(&parts) {
             let view = match row {
-                Row::Event { event, .. } => event_view(event, parts, &context),
+                Row::Message(message) => event_view(message, parts, &context),
                 Row::Day(_) => day_divider(parts, &context),
-                Row::State(_) | Row::Start => line(parts, &context),
+                Row::ReadMarker => read_marker(),
+                Row::Summary { .. } | Row::Start => line(parts, &context),
             };
             timeline = timeline.push(view);
         }
@@ -1428,9 +1402,6 @@ struct Context<'a, 'b> {
     editing: Option<&'a InlineEdit>,
     /// The menu or picker open in the window, for the message edited.
     popup: Option<&'a Popup>,
-    /// The room's pinned messages, and whether we may pin.
-    pinned: &'b [OwnedEventId],
-    can_pin: bool,
 }
 
 impl<'a> Context<'a, '_> {
@@ -1452,10 +1423,11 @@ impl<'a> Context<'a, '_> {
 }
 
 fn event_view<'a>(
-    event: &'a Event,
+    shown: &'a MessageRow,
     texts: &[Part<'a>],
     context: &Context<'a, '_>,
 ) -> Element<'a, app::Message> {
+    let event = &shown.event;
     let Context {
         theme,
         math,
@@ -1608,7 +1580,7 @@ fn event_view<'a>(
                 None => space().into(),
             }
         }
-        // Rendered as summaries in a row of their own (`rows::Row::State`).
+        // Rendered as summaries in a row of their own (`Row::Summary`).
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
         | EventContent::CallLink { .. }
@@ -1640,16 +1612,13 @@ fn event_view<'a>(
             .get(event.id.as_str())
             .is_some_and(|&i| bounds.in_message(i).is_some())
     });
-    let pin = (event.event_id.as_ref())
-        .filter(|_| context.can_pin)
-        .map(|id| pins::menu_item(context.room, id, context.pinned.contains(id)));
-    let menu_items = message
-        .map(|m| {
-            let mut items = message_menu::items(context.room, m, math_shown, in_selection);
-            items.extend(pin);
-            items
-        })
-        .filter(|items| !items.is_empty());
+    let menu_items = Some(message_menu::items(
+        context.room,
+        shown,
+        math_shown,
+        in_selection,
+    ))
+    .filter(|items| !items.is_empty());
     let menu_view = |at| match menu_at {
         Some(MenuAt::Link(url)) if at == MenuAt::Cursor => Some(message_menu::view(
             message_menu::link_items(context.room, url),
@@ -1724,19 +1693,20 @@ fn event_view<'a>(
     });
     // Actions float over the top right of a hovered message, above the
     // markers of a short one.
-    let toolbar: Option<Element<'a, app::Message>> = match message {
-        // Also while its reaction window is open.
-        Some(m)
-            if (hovered
-                || picking == Some(PickerAt::Toolbar)
-                || menu_at == Some(&MenuAt::Toolbar))
-                && event.event_id.is_some()
-                && edit.is_none() =>
-        {
+    // Also while its reaction window or menu is open.
+    let toolbar_shown =
+        (hovered || picking == Some(PickerAt::Toolbar) || menu_at == Some(&MenuAt::Toolbar))
+            && (actions::has_tools(&shown.actions) || menu_items.is_some())
+            && edit.is_none();
+    let toolbar = toolbar_shown.then(|| {
+        let target = message.and_then(|m| {
             let preview = first_line(&m.document.to_plain_text());
-            let target = Target::of(event, display_name(event), preview);
-            let edit_text = Some(m.body.clone());
-            let picker = (picking == Some(PickerAt::Toolbar)).then(|| {
+            Target::of(event, display_name(event), preview)
+        });
+        let edit_text = message.map(|m| m.body.clone());
+        let picker = message
+            .filter(|_| picking == Some(PickerAt::Toolbar))
+            .map(|m| {
                 actions::picker(
                     context.room,
                     event,
@@ -1745,25 +1715,21 @@ fn event_view<'a>(
                     context.emoji,
                 )
             });
-            let menu = menu_items
-                .is_some()
-                .then(|| actions::Menu(menu_view(MenuAt::Toolbar)));
-            Some(
-                container(actions::toolbar(
-                    context.room,
-                    event,
-                    target,
-                    edit_text,
-                    picker,
-                    menu,
-                ))
-                .align_right(Length::Fill)
-                .padding(Padding::ZERO.top(1.0).right(8.0))
-                .into(),
-            )
-        }
-        _ => None,
-    };
+        let menu = menu_items
+            .is_some()
+            .then(|| actions::Menu(menu_view(MenuAt::Toolbar)));
+        container(actions::toolbar(
+            context.room,
+            shown,
+            target,
+            edit_text,
+            picker,
+            menu,
+        ))
+        .align_right(Length::Fill)
+        .padding(Padding::ZERO.top(1.0).right(8.0))
+        .into()
+    });
     let row: Element<'a, app::Message> = if markers.is_none() && toolbar.is_none() {
         row.into()
     } else {
@@ -1817,19 +1783,15 @@ pub fn in_field(
 struct Sending(HashMap<String, bool>);
 
 impl Sending {
-    /// Those being sent in `entries` when a room opens: they show their
+    /// Those being sent in `rows` when a room opens: they show their
     /// clock at once.
-    fn already(entries: &[TimelineEntry]) -> Self {
-        Self(
-            Self::rows(entries)
-                .map(|id| (id.to_owned(), true))
-                .collect(),
-        )
+    fn already(rows: &[Row]) -> Self {
+        Self(Self::rows(rows).map(|id| (id.to_owned(), true)).collect())
     }
 
-    /// Follow the `entries`. Returns the rows that started sending.
-    fn changed(&mut self, entries: &[TimelineEntry]) -> Vec<String> {
-        let now: Vec<&str> = Self::rows(entries).collect();
+    /// Follow the `rows`. Returns the rows that started sending.
+    fn changed(&mut self, rows: &[Row]) -> Vec<String> {
+        let now: Vec<&str> = Self::rows(rows).collect();
         self.0.retain(|id, _| now.contains(&id.as_str()));
         let started: Vec<String> = now
             .into_iter()
@@ -1853,13 +1815,10 @@ impl Sending {
         self.0.get(id) == Some(&true)
     }
 
-    fn rows(entries: &[TimelineEntry]) -> impl Iterator<Item = &str> {
-        entries.iter().filter_map(|entry| match entry {
-            TimelineEntry::Event(event) if event.own && event.send_state == SendState::Sending => {
-                Some(event.id.as_str())
-            }
-            _ => None,
-        })
+    fn rows(rows: &[Row]) -> impl Iterator<Item = &str> {
+        (rows.iter().filter_map(Row::event))
+            .filter(|event| event.own && event.send_state == SendState::Sending)
+            .map(|event| event.id.as_str())
     }
 }
 
@@ -2190,20 +2149,13 @@ fn sender_line<'a>(
     .into()
 }
 
-/// The card of `user`, mentioned in `entries`: their name and picture
+/// The card of `user`, mentioned in `rows`: their name and picture
 /// among `members` if loaded, else the name the newest mention shows.
-fn mentioned(
-    user: OwnedUserId,
-    members: Option<&[Member]>,
-    entries: &[TimelineEntry],
-) -> info::Target {
+fn mentioned(user: OwnedUserId, members: Option<&[Member]>, rows: &[Row]) -> info::Target {
     let member = members.and_then(|members| members.iter().find(|m| m.id == user));
     let name = member.and_then(|m| m.name.clone()).or_else(|| {
-        entries.iter().rev().find_map(|entry| match entry {
-            TimelineEntry::Event(Event {
-                content: EventContent::Message(m),
-                ..
-            }) => m.document.mention_name(user.as_str()).map(str::to_owned),
+        (rows.iter().rev().filter_map(Row::event)).find_map(|event| match &event.content {
+            EventContent::Message(m) => m.document.mention_name(user.as_str()).map(str::to_owned),
             _ => None,
         })
     });
@@ -2268,11 +2220,24 @@ fn day_divider<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a,
     container(divider).id(row_id(&part.key)).into()
 }
 
+/// The unread messages below: "New" on a line, as a day between days.
+fn read_marker<'a>() -> Element<'a, app::Message> {
+    row![
+        rule::horizontal(1).style(style::separator),
+        text("New").size(12).style(text::secondary),
+        rule::horizontal(1).style(style::separator),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .padding([10.0, MESSAGE_PADDING])
+    .into()
+}
+
 /// The container of `row`, with `parts`, found by [`Room::on_screen`]: a
 /// message's by its event, other rows' by their part.
-fn row_container(row: &Row<'_>, parts: &[Part<'_>]) -> Option<Id> {
+fn row_container(row: &Row, parts: &[Part<'_>]) -> Option<Id> {
     match row {
-        Row::Event { event, .. } => Some(row_id(&event.id)),
+        Row::Message(message) => Some(row_id(&message.event.id)),
         _ => parts.first().map(|part| row_id(&part.key)),
     }
 }
@@ -2285,141 +2250,12 @@ fn first_line(body: &str) -> String {
         .to_owned()
 }
 
-/// One line for a run of state events, e.g. "alice created and configured
-/// the room · alice invited bob · bob joined".
-pub fn state_summary(events: &[&Event]) -> String {
-    let creators: Vec<_> = events
-        .iter()
-        .filter(|e| matches!(&e.content, EventContent::OtherState { event_type } if event_type == "m.room.create"))
-        .map(|e| e.sender.clone())
-        .collect();
-    let mut parts: Vec<String> = Vec::new();
-    let mut joined: Vec<String> = Vec::new();
-    let mut left: Vec<String> = Vec::new();
-    for event in events {
-        let name = display_name(event);
-        let part = match &event.content {
-            EventContent::OtherState { event_type } if event_type == "m.room.create" => {
-                format!("{name} created and configured the room")
-            }
-            // Initial settings belong to "created and configured".
-            EventContent::OtherState { .. } | EventContent::Topic { .. }
-                if creators.contains(&event.sender) =>
-            {
-                continue;
-            }
-            EventContent::Topic { old, new } => {
-                match describe_change(old.as_deref().unwrap_or_default(), new) {
-                    Some(change) => format!("{name} {change}"),
-                    // Set again as it was.
-                    None if old.is_some() => continue,
-                    None => format!("{name} changed the topic"),
-                }
-            }
-            EventContent::Pins(change) => format!("{name} {}", change.describe()),
-            EventContent::OtherState { event_type } => match event_type.as_str() {
-                "m.room.name" => format!("{name} renamed the room"),
-                "m.room.topic" => format!("{name} changed the topic"),
-                "m.room.avatar" => format!("{name} changed the room picture"),
-                "m.room.pinned_events" => format!("{name} changed the pinned messages"),
-                _ => format!("{name} changed the room settings"),
-            },
-            EventContent::Membership {
-                user,
-                name: target,
-                change,
-            } => {
-                let target = target
-                    .clone()
-                    .unwrap_or_else(|| user.localpart().to_owned());
-                match change {
-                    MembershipChange::Joined | MembershipChange::InvitationAccepted => {
-                        if !creators.contains(user) && !joined.contains(&target) {
-                            joined.push(target);
-                        }
-                        continue;
-                    }
-                    MembershipChange::Left => {
-                        left.push(target);
-                        continue;
-                    }
-                    MembershipChange::Invited => format!("{name} invited {target}"),
-                    MembershipChange::InvitationRejected => format!("{target} declined the invite"),
-                    MembershipChange::InvitationRevoked => {
-                        format!("{name} withdrew the invite for {target}")
-                    }
-                    MembershipChange::Kicked => format!("{name} removed {target}"),
-                    MembershipChange::Banned => format!("{name} banned {target}"),
-                    MembershipChange::Unbanned => format!("{name} unbanned {target}"),
-                    MembershipChange::Knocked => format!("{target} asked to join"),
-                    MembershipChange::Other => continue,
-                }
-            }
-            EventContent::DisplayNameChange { user, new_name } => match new_name {
-                Some(new) => format!("{} is now {new}", user.localpart()),
-                None => format!("{} removed their display name", user.localpart()),
-            },
-            EventContent::CallLink { url: Some(url) } => {
-                format!("{name} changed the call link to {url}")
-            }
-            EventContent::CallLink { url: None } => format!("{name} removed the call link"),
-            _ => continue,
-        };
-        if parts.last() != Some(&part) {
-            parts.push(part);
-        }
-    }
-    if !joined.is_empty() {
-        parts.push(format!("{} joined", joined.join(", ")));
-    }
-    if !left.is_empty() {
-        parts.push(format!("{} left", left.join(", ")));
-    }
-    parts.join(" · ")
-}
-
 #[cfg(test)]
 mod tests {
     use iced::{Point, Size};
+    use mtrx_core::TimelineEntry;
 
     use super::*;
-
-    #[test]
-    fn summarises_call_link_changes() {
-        let alice: mtrx_core::OwnedUserId = "@alice:x".try_into().unwrap();
-        let change = |id: &str, url: Option<&str>| Event {
-            content: EventContent::CallLink {
-                url: url.map(Into::into),
-            },
-            ..Event::test_message(id, alice.clone(), "")
-        };
-        let set = change("$a", Some("https://meet.jit.si/ice"));
-        let removed = change("$b", None);
-        assert_eq!(
-            state_summary(&[&set, &removed]),
-            "alice changed the call link to https://meet.jit.si/ice · alice removed the call link"
-        );
-    }
-
-    #[test]
-    fn summarises_topic_changes() {
-        let alice: mtrx_core::OwnedUserId = "@alice:x".try_into().unwrap();
-        let change = |id: &str, old: Option<&str>, new: &str| Event {
-            content: EventContent::Topic {
-                old: old.map(Into::into),
-                new: new.into(),
-            },
-            ..Event::test_message(id, alice.clone(), "")
-        };
-        let call = "[call] https://zoom.us/j/1";
-        let text = change("$a", None, "Weekly");
-        let added = change("$b", Some("Weekly"), &format!("Weekly\n{call}"));
-        let same = change("$c", Some(call), call);
-        assert_eq!(
-            state_summary(&[&text, &added, &same]),
-            "alice changed the topic · alice added the call Zoom"
-        );
-    }
 
     #[test]
     fn finds_the_messages_on_screen() {
@@ -2477,9 +2313,9 @@ mod tests {
                     r#"Ask <a href="https://matrix.to/#/@nils:x">{name}</a>"#
                 ));
             }
-            TimelineEntry::Event(event)
+            event
         };
-        let entries = [mention("$a", "Nils"), mention("$b", "Nils W")];
+        let entries = rows([mention("$a", "Nils"), mention("$b", "Nils W")]);
         let member = Member {
             id: nils.clone(),
             name: Some("Nils Wolf".into()),
@@ -2489,7 +2325,7 @@ mod tests {
             invited: false,
             manage: Default::default(),
         };
-        let card = |members: Option<&[Member]>, entries: &[TimelineEntry]| match mentioned(
+        let card = |members: Option<&[Member]>, entries: &[Row]| match mentioned(
             nils.clone(),
             members,
             entries,
@@ -2505,20 +2341,26 @@ mod tests {
         assert_eq!(card(Some(&[]), &[]), (None, None));
     }
 
-    fn own_message(id: &str, send_state: SendState) -> TimelineEntry {
+    /// The rows of `events`.
+    fn rows(events: impl IntoIterator<Item = Event>) -> Vec<Row> {
+        let entries: Vec<_> = events.into_iter().map(TimelineEntry::Event).collect();
+        mtrx_core::rows(&entries, &Default::default())
+    }
+
+    fn own_message(id: &str, send_state: SendState) -> Vec<Row> {
         let sender = "@alice:example.org".try_into().unwrap();
-        TimelineEntry::Event(Event {
+        rows([Event {
             own: true,
             send_state,
             ..Event::test_message(id, sender, "hi")
-        })
+        }])
     }
 
     #[test]
     fn the_sending_clock_shows_after_a_while() {
         let mut sending = Sending::default();
         // A send starts: no clock until it took a while.
-        let entries = [own_message("a", SendState::Sending)];
+        let entries = own_message("a", SendState::Sending);
         assert_eq!(sending.changed(&entries), ["a"]);
         assert!(!sending.shows_clock("a"));
         assert!(sending.changed(&entries).is_empty(), "started once");
@@ -2527,7 +2369,7 @@ mod tests {
         // Sent: gone; a late timer changes nothing.
         assert!(
             sending
-                .changed(&[own_message("a", SendState::Sent)])
+                .changed(&own_message("a", SendState::Sent))
                 .is_empty()
         );
         sending.slow("a");

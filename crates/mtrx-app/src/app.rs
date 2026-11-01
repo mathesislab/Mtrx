@@ -2272,15 +2272,15 @@ impl App {
             return self.room_left(id, message);
         }
         match message {
-            room::Message::Timeline(entries) => {
+            room::Message::Timeline(rows) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
                 let Some(room) = main.pane.open_mut(&id) else {
                     return Task::none();
                 };
-                let grew = entries.len() != room.entries.len();
-                room.entries = entries;
+                let grew = rows.len() != room.rows.len();
+                room.rows = rows;
                 room.find_again();
                 room.resolve_reply();
                 let read = if grew { mark_read(room) } else { Task::none() };
@@ -3760,11 +3760,11 @@ impl App {
                 match (&mut room.find, selected) {
                     (Some(find), Some(text)) => {
                         find.query = text;
-                        find.search(&room.entries);
+                        find.search(&room.rows);
                     }
                     (Some(_), None) => {}
                     (None, selected) => {
-                        room.find = Some(Find::new(selected.unwrap_or_default(), &room.entries));
+                        room.find = Some(Find::new(selected.unwrap_or_default(), &room.rows));
                     }
                 }
                 focus = Task::batch([
@@ -3775,7 +3775,7 @@ impl App {
             find::Message::Query(query) => {
                 if let Some(find) = &mut room.find {
                     find.query = query;
-                    find.search(&room.entries);
+                    find.search(&room.rows);
                 }
             }
             find::Message::Next | find::Message::Previous => {
@@ -4384,8 +4384,8 @@ impl App {
                 ));
                 subscriptions.push(Subscription::run_with(Shared(room.timeline.clone()), |t| {
                     let id = t.0.room_id().clone();
-                    t.0.updates()
-                        .map(move |entries| room::Message::Timeline(entries).to(&id))
+                    t.0.rows()
+                        .map(move |rows| room::Message::Timeline(rows).to(&id))
                 }));
                 subscriptions.push(Subscription::run_with(
                     (Shared(room.timeline.clone()), "uploads"),
@@ -5398,7 +5398,7 @@ async fn new_call_link(service: &CallService, google: &Google) -> Result<Url, St
 }
 
 /// Load older events. Whether the start was reached shows as
-/// [`TimelineEntry::Start`] in the entries.
+/// [`mtrx_core::Row::Start`] in the rows.
 fn paginate(room: &mut Room) -> Task<Message> {
     if room.paginating || room.at_start() {
         return Task::none();
