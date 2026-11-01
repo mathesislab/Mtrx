@@ -46,11 +46,6 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var compose: Compose? {
         didSet { draftChanged() }
     }
-    /// We may pin and unpin messages here.
-    @Published private(set) var canPin = false
-    /// Event IDs of the pinned messages: the room list's, and our changes
-    /// at once.
-    @Published private(set) var pinned: Set<String>
     /// The names of the others typing.
     @Published private(set) var typing: [String] = []
     /// Looking for a quoted message in older events.
@@ -67,12 +62,8 @@ final class TimelineModel: ObservableObject {
 
     private let session: Session
     private let room: RoomSummary
-    private let showSenders: Bool
-    /// The library's items, as last given.
-    private var items: [TimelineItem] = []
-    /// Message keys are arriving: undecryptable messages say so.
-    private var keysArriving = false
-    private var keysArrivingSubscription: AnyCancellable?
+    /// The library's rows, as last given.
+    private var delivered: [TimelineRow] = []
     private var timeline: Timeline?
     private let subscriptions = Subscriptions()
     /// Who types, while the room is on screen.
@@ -106,23 +97,13 @@ final class TimelineModel: ObservableObject {
     /// show them: whether we want each one, shown so at once.
     private var reacting: [ReactionKey: Bool] = [:]
 
-    /// `keysArriving`: whether message keys are arriving from the backup,
-    /// now and on every change (`SessionModel.keysArriving`).
-    init(
-        session: Session, room: RoomSummary, keysArriving: AnyPublisher<Bool, Never>,
-        draftDelay: TimeInterval = TimelineModel.draftDelay
-    ) {
+    init(session: Session, room: RoomSummary, draftDelay: TimeInterval = TimelineModel.draftDelay) {
         self.session = session
         self.room = room
         self.draftDelay = draftDelay
         roomId = room.id
-        showSenders = room.kind != .direct
-        pinned = Set(room.pinned)
         let ours = session.userId()
         person = room.kind == .direct ? room.directUserId.flatMap { $0 == ours ? nil : $0 } : nil
-        keysArrivingSubscription = keysArriving.sink { [weak self] arriving in
-            MainActor.assumeIsolated { self?.setKeysArriving(arriving) }
-        }
     }
 
     /// Open the timeline, with the draft left in the room.
@@ -133,9 +114,9 @@ final class TimelineModel: ObservableObject {
         do {
             let timeline = try await session.timeline(roomId: roomId)
             self.timeline = timeline
-            let feed = Feed<[TimelineItem]>()
-            subscriptions.add(timeline.subscribe(listener: feed), feed) { [weak self] items in
-                self?.apply(items)
+            let feed = Feed<[TimelineRow]>()
+            subscriptions.add(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
+                self?.apply(rows)
             }
             opening = false
             watchTyping()
@@ -146,20 +127,18 @@ final class TimelineModel: ObservableObject {
             opening = false
             self.error = errorMessage(error)
         }
-        canPin = (try? await session.canPin(roomId: roomId)) ?? false
     }
 
-    func apply(_ items: [TimelineItem]) {
-        self.items = items
-        let built = build()
+    func apply(_ rows: [TimelineRow]) {
+        delivered = rows
         // Reactions the library shows as wanted (or whose message went)
         // are no longer ours to show.
         reacting = reacting.filter { key, wanted in
-            guard let row = Self.messageRow(key.itemId, in: built) else { return false }
+            guard let row = Self.messageRow(key.itemId, in: rows) else { return false }
             return row.reactions.contains { $0.key == key.key && $0.byUs } != wanted
         }
-        rows = withOurReactions(built)
-        if items.contains(where: { $0.content == .start }) {
+        self.rows = withOurReactions(rows)
+        if rows.contains(where: { $0.content == .start }) {
             reachedStart = true
         }
         restoreReply()
@@ -167,37 +146,20 @@ final class TimelineModel: ObservableObject {
         markRead()
     }
 
-    /// The rows for the library's items, as it gives them.
-    private func build() -> [TimelineRow] {
-        TimelineRows.build(items, showSenders: showSenders, keysArriving: keysArriving)
-    }
-
     /// `rows` with the reactions we changed and the library does not show
     /// yet.
     private func withOurReactions(_ rows: [TimelineRow]) -> [TimelineRow] {
         guard !reacting.isEmpty else { return rows }
         return rows.map { row in
-            guard case .message(let message) = row.content else { return row }
+            guard let message = row.messageRow else { return row }
             let changes = reacting.filter { $0.key.itemId == row.id }
             guard !changes.isEmpty else { return row }
             var reactions = message.reactions
             for (key, wanted) in changes {
                 reactions = Reactions.setting(key.key, ours: wanted, in: reactions)
             }
-            return TimelineRow(id: row.id, content: .message(message.with(reactions: reactions)))
+            return TimelineRow(id: row.id, content: message.with(reactions: reactions).content)
         }
-    }
-
-    /// Undecryptable rows already shown change their text too.
-    private func setKeysArriving(_ arriving: Bool) {
-        guard arriving != keysArriving else { return }
-        keysArriving = arriving
-        rows = withOurReactions(build())
-    }
-
-    /// The room list's pinned messages changed (`RoomSummary.pinned`).
-    func setPinned(_ ids: [String]) {
-        pinned = Set(ids)
     }
 
     /// The timeline is on screen (or not): mark it read and show who types
@@ -376,7 +338,7 @@ final class TimelineModel: ObservableObject {
     /// Reply to the restored draft's message, once it is among the rows.
     private func restoreReply() {
         guard let eventId = restoringReply, compose == nil, let row = eventRow(eventId),
-            case .message(let message) = row.content
+            let message = row.messageRow
         else { return }
         restoringReply = nil
         compose = .reply(ComposeTarget(itemId: row.id, row: message))
@@ -468,48 +430,25 @@ final class TimelineModel: ObservableObject {
         guard timeline != nil, let row = messageRow(itemId) else { return act { try await $0.react(itemId: itemId, key: key) } }
         let change = ReactionKey(itemId: itemId, key: key)
         reacting[change] = !row.reactions.contains { $0.key == key && $0.byUs }
-        rows = withOurReactions(build())
+        rows = withOurReactions(delivered)
         return act {
             try await $0.react(itemId: itemId, key: key)
         } failed: { [weak self] in
             guard let self else { return }
             reacting[change] = nil
-            rows = withOurReactions(build())
+            rows = withOurReactions(delivered)
         }
     }
 
-    /// What holding row `itemId`'s message offers: its own actions, and
-    /// pinning it where we may.
-    func actions(for row: MessageRow) -> [MessageAction] {
-        var actions = row.actions
-        if canPin, let eventId = row.event.eventId, row.message != nil {
-            let pin: MessageAction = pinned.contains(eventId) ? .unpin : .pin
-            if let delete = actions.firstIndex(of: .delete) {
-                actions.insert(pin, at: delete)
-            } else {
-                actions.append(pin)
-            }
-        }
-        return actions
-    }
-
-    /// Pin row `itemId`'s message, or unpin it: shown so at once.
+    /// Pin row `itemId`'s message (`pin`), or unpin it.
     @discardableResult
-    func togglePin(_ itemId: String) -> Task<Void, Never> {
+    func setPinned(_ itemId: String, pin: Bool) -> Task<Void, Never> {
         guard let eventId = messageRow(itemId)?.event.eventId else { return Task {} }
-        let pin = !pinned.contains(eventId)
-        let before = pinned
-        if pin {
-            pinned.insert(eventId)
-        } else {
-            pinned.remove(eventId)
-        }
         let (session, roomId) = (self.session, self.roomId)
         return Task {
             do {
                 try await session.setPinned(roomId: roomId, eventId: eventId, pin: pin)
             } catch {
-                pinned = before
                 self.error = errorMessage(error)
             }
         }
@@ -555,17 +494,11 @@ final class TimelineModel: ObservableObject {
 
     /// The row of the message with `eventId`, if loaded.
     private func eventRow(_ eventId: String) -> TimelineRow? {
-        rows.first { row in
-            if case .message(let message) = row.content { return message.event.eventId == eventId }
-            return false
-        }
+        rows.first { row in row.messageRow?.event.eventId == eventId }
     }
 
     private static func messageRow(_ itemId: String, in rows: [TimelineRow]) -> MessageRow? {
-        for row in rows where row.id == itemId {
-            if case .message(let message) = row.content { return message }
-        }
-        return nil
+        rows.first { $0.id == itemId }?.messageRow
     }
 
     // MARK: Going to a quoted message
@@ -733,7 +666,7 @@ extension MessageRow {
         }
         return MessageRow(
             event: event, firstInGroup: firstInGroup, showSender: showSender, avatarColumn: avatarColumn,
-            decrypting: decrypting)
+            decrypting: decrypting, actions: actions)
     }
 }
 

@@ -86,7 +86,6 @@ struct RoomView: View {
                 model.leftForeground()
             }
         }
-        .onChange(of: room.pinned) { model.setPinned($0) }
         .onChange(of: room.topic) { info.topicListed($0) }
         .sheet(item: $sheet, onDismiss: performChosen) { sheet in
             RoomSheetView(sheet: sheet, room: room, model: model, info: info, topic: topic) { action, id in
@@ -136,7 +135,7 @@ struct RoomView: View {
 
     /// A held message's menu, if anything applies to it.
     private func openMenu(_ id: String) {
-        guard let row = model.messageRow(id), !model.actions(for: row).isEmpty else { return }
+        guard let row = model.messageRow(id), !row.actions.isEmpty else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         sheet = .menu(itemId: id)
     }
@@ -159,7 +158,8 @@ struct RoomView: View {
                 sheet = .text(body)
             }
         case .edit: model.startEdit(id)
-        case .pin, .unpin: model.togglePin(id)
+        case .pin: model.setPinned(id, pin: true)
+        case .unpin: model.setPinned(id, pin: false)
         case .delete: deleting = id
         case .retry: model.retry(id)
         case .discard: model.discard(id)
@@ -361,7 +361,7 @@ private struct RoomSheetView: View {
         switch sheet {
         case .menu(let itemId):
             if let row = model.messageRow(itemId) {
-                MessageMenu(row: row, entries: model.actions(for: row)) { key in
+                MessageMenu(row: row, entries: row.actions) { key in
                     model.react(itemId, key: key)
                 } choose: { action in
                     choose(action, itemId)

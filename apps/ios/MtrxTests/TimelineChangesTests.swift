@@ -20,7 +20,7 @@ final class TimelineChangesTests: XCTestCase {
 
     /// Saved a minute after typing stops, unless said otherwise.
     private func open(_ room: RoomSummary, draftDelay: TimeInterval = 60) -> TimelineModel {
-        TimelineModel(session: session, room: room, keysArriving: Make.noKeysArriving, draftDelay: draftDelay)
+        TimelineModel(session: session, room: room, draftDelay: draftDelay)
     }
 
     /// The room opened again, with its draft.
@@ -30,13 +30,13 @@ final class TimelineChangesTests: XCTestCase {
         return model
     }
 
-    private func show(_ items: [TimelineItem]) async {
-        timeline.listener?.onUpdate(items: items)
-        await eventually { self.model.rows.count == TimelineRows.build(items, showSenders: true).count }
+    private func show(_ rows: [TimelineRow]) async {
+        timeline.listener?.onUpdate(rows: rows)
+        await eventually { self.model.rows.count == rows.count }
     }
 
-    private func bobsMessage(reactions: [Reaction] = []) -> TimelineItem {
-        Make.item("b", Make.event("bob", Make.text("Lunch?", reactions: reactions), eventId: "$b"))
+    private func bobsMessage(reactions: [Reaction] = [], actions: [MessageAction]? = nil) -> TimelineRow {
+        Make.row("b", Make.event("bob", Make.text("Lunch?", reactions: reactions), eventId: "$b"), actions: actions)
     }
 
     private func reactions(_ itemId: String = "b") -> [Reaction] {
@@ -111,7 +111,7 @@ final class TimelineChangesTests: XCTestCase {
         model.draft = "Sure"
         model.setVisible(false)
         await eventually { self.session.drafts[self.roomId] == Draft(text: "Sure", replyTo: "$b") }
-        timeline.initialItems = [bobsMessage()]
+        timeline.initialRows = [bobsMessage()]
         let back = await reopen()
         await eventually { back.compose != nil }
         XCTAssertEqual(back.compose, .reply(ComposeTarget(itemId: "b", eventId: "$b", sender: "Bob", preview: "Lunch?")))
@@ -123,7 +123,7 @@ final class TimelineChangesTests: XCTestCase {
         let back = await reopen()
         XCTAssertEqual(back.draft, "Sure")
         XCTAssertNil(back.compose)
-        timeline.listener?.onUpdate(items: [bobsMessage()])
+        timeline.listener?.onUpdate(rows: [bobsMessage()])
         await eventually { back.compose?.target.eventId == "$b" }
     }
 
@@ -148,7 +148,7 @@ final class TimelineChangesTests: XCTestCase {
     }
 
     func testWhileEditingTheDraftFromBeforeIsKept() async {
-        await show([Make.item("o", Make.event("me", Make.text("Mine"), own: true, eventId: "$o", editable: true))])
+        await show([Make.row("o", Make.event("me", Make.text("Mine"), own: true, eventId: "$o", editable: true))])
         model.draft = "Half written"
         model.startEdit("o")
         model.draft = "Mine, changed"
@@ -216,42 +216,19 @@ final class TimelineChangesTests: XCTestCase {
 
     // MARK: Pins
 
-    func testPinningWhereWeMay() async {
-        await show([bobsMessage()])
-        guard let row = model.messageRow("b") else { return XCTFail("no row") }
-        XCTAssertTrue(model.canPin)
-        XCTAssertEqual(model.actions(for: row), [.react, .reply, .copy, .selectText, .pin])
-        await model.togglePin("b").value
+    func testPinsAndUnpinsByEventId() async {
+        await show([bobsMessage(actions: [.react, .reply, .copy, .selectText, .pin])])
+        XCTAssertEqual(model.messageRow("b")?.actions.last, .pin)
+        await model.setPinned("b", pin: true).value
         XCTAssertEqual(session.changes, ["pin $b true"])
-        XCTAssertEqual(model.actions(for: row).last, .unpin)
-        await model.togglePin("b").value
+        await model.setPinned("b", pin: false).value
         XCTAssertEqual(session.changes, ["pin $b true", "pin $b false"])
     }
 
-    func testPinnedAsTheRoomListSays() async {
-        let pinned = open(Make.room("!room:example.org", pinned: ["$b"]))
-        await pinned.open()
-        timeline.listener?.onUpdate(items: [bobsMessage()])
-        await eventually { pinned.messageRow("b") != nil }
-        XCTAssertEqual(pinned.actions(for: pinned.messageRow("b")!).last, .unpin)
-        pinned.setPinned([])
-        XCTAssertEqual(pinned.actions(for: pinned.messageRow("b")!).last, .pin)
-    }
-
-    func testNoPinsWhereWeMayNot() async {
-        session.canPinResult = false
-        let model = open(Make.room("!room:example.org"))
-        await model.open()
-        timeline.listener?.onUpdate(items: [bobsMessage()])
-        await eventually { model.messageRow("b") != nil }
-        XCTAssertFalse(model.actions(for: model.messageRow("b")!).contains(.pin))
-    }
-
-    func testAFailedPinIsTakenBack() async {
-        await show([bobsMessage()])
+    func testAFailedPinSaysWhy() async {
+        await show([bobsMessage(actions: [.react, .reply, .copy, .selectText, .pin])])
         session.changeError = MtrxError.Other(reason: "Not allowed")
-        await model.togglePin("b").value
-        XCTAssertEqual(model.actions(for: model.messageRow("b")!).last, .pin)
+        await model.setPinned("b", pin: true).value
         XCTAssertEqual(model.error, "Not allowed")
     }
 }
