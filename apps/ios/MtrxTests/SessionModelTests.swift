@@ -56,7 +56,7 @@ final class SessionModelTests: XCTestCase {
     func testSyncAndTheRoomListDoNotAskForTheEncryptionState() async {
         model.setForeground(true)
         await eventually { self.session.syncStarts == 1 }
-        session.roomListListener?.onUpdate(state: RoomListState(rooms: [Make.room("!a")], loaded: true))
+        session.roomListListener?.onUpdate(lists: Make.lists([Make.room("!a")]))
         await eventually { self.model.rooms.count == 1 }
         model.setForeground(false)
         model.setForeground(true)

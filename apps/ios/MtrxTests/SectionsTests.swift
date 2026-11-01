@@ -3,42 +3,20 @@ import XCTest
 @testable import Mtrx
 
 /// Which of a space's sections show on this phone, folded or not, in which
-/// order; sections new to the phone.
+/// order. The library arranges them by it.
 final class SectionLayoutTests: XCTestCase {
-    private let account = ["invites", "direct_messages", "favourites", "category:a", "rooms", "low_priority"]
-
-    func testTheAccountsOrderUntilReordered() {
-        XCTAssertEqual(SectionLayout().arranged(account), account)
-    }
+    private let arranged = ["invites", "direct_messages", "favourites", "category:a", "rooms", "low_priority"]
 
     func testReordering() {
         var layout = SectionLayout()
+        XCTAssertNil(layout.order)
         // Rooms (4) before Direct messages (1).
-        layout.move(account, from: [4], to: 1)
+        layout.move(arranged, from: [4], to: 1)
         XCTAssertEqual(
-            layout.arranged(account),
-            ["invites", "rooms", "direct_messages", "favourites", "category:a", "low_priority"])
+            layout.order, ["invites", "rooms", "direct_messages", "favourites", "category:a", "low_priority"])
         // Invites (0) last.
-        layout.move(account, from: [0], to: 6)
+        layout.move(layout.order!, from: [0], to: 6)
         XCTAssertEqual(layout.order?.last, "invites")
-    }
-
-    func testANewSectionTakesItsPlaceInTheAccountsOrderShownAndUnfolded() {
-        var layout = SectionLayout()
-        layout.move(account, from: [4], to: 0)
-        layout.setShown("favourites", false)
-        layout.toggleFold("direct_messages")
-        let withB = ["invites", "direct_messages", "favourites", "category:a", "category:b", "rooms", "low_priority"]
-        let arranged = layout.arranged(withB)
-        XCTAssertEqual(
-            arranged,
-            ["rooms", "invites", "direct_messages", "favourites", "category:a", "category:b", "low_priority"])
-        XCTAssertTrue(layout.shows("category:b"))
-        XCTAssertFalse(layout.folds("category:b"))
-        // A section first in the account's order, new: first.
-        XCTAssertEqual(layout.arranged(["new"] + account).first, "new")
-        // Gone sections leave.
-        XCTAssertFalse(layout.arranged(["rooms", "invites"]).contains("favourites"))
     }
 
     func testFoldingAndShowing() {
@@ -47,91 +25,69 @@ final class SectionLayoutTests: XCTestCase {
         XCTAssertTrue(layout.folds("rooms"))
         layout.toggleFold("rooms")
         XCTAssertFalse(layout.folds("rooms"))
-        layout.setAllShown(account, false)
-        XCTAssertFalse(account.contains(where: layout.shows))
+        layout.setAllShown(arranged, false)
+        XCTAssertFalse(arranged.contains(where: layout.shows))
         layout.setShown("rooms", true)
         XCTAssertTrue(layout.shows("rooms"))
-        layout.setAllShown(account, true)
-        XCTAssertTrue(account.allSatisfy(layout.shows))
+        layout.setAllShown(arranged, true)
+        XCTAssertTrue(arranged.allSatisfy(layout.shows))
+    }
+
+    func testAsTheLibraryTakesIt() {
+        var layout = SectionLayout()
+        XCTAssertEqual(layout.library, MtrxFFI.SectionLayout(order: [], hidden: [], folded: []))
+        layout.move(arranged, from: [4], to: 0)
+        layout.setShown("low_priority", false)
+        layout.toggleFold("rooms")
+        layout.toggleFold("invites")
+        XCTAssertEqual(
+            layout.library,
+            MtrxFFI.SectionLayout(
+                order: ["rooms", "invites", "direct_messages", "favourites", "category:a", "low_priority"],
+                hidden: ["low_priority"], folded: ["invites", "rooms"]))
     }
 }
 
-/// A space's list in its sections, and the Notes to self at the top.
+/// A space's list as this phone shows it, and the Notes to self at the top.
 @MainActor
 final class SpaceSectionsTests: XCTestCase {
-    private func state(notesAtTop: Bool = true) -> RoomListState {
-        RoomListState(
-            rooms: [
+    /// Team with Ann's chat, Lab and Paper; the Notes to self.
+    private func lists(notesAtTop: Bool = true) -> RoomLists {
+        Make.lists(
+            [
                 Make.room("!notes", kind: .direct, name: "Notes to self", directUser: "@me:example.org"),
                 Make.room("!ann", kind: .direct, name: "Ann", unread: 2, directUser: "@ann:example.org"),
-                Make.room("!lab", name: "Lab", unread: 3),
-                Make.room("!paper", name: "Paper", unread: 1),
-                Make.room("!old", name: "Old"),
+                Make.room("!lab", name: "Lab", unread: 3, parents: ["!team"]),
+                Make.room("!paper", name: "Paper", unread: 1, parents: ["!team"]),
                 Make.room("!team", kind: .space, name: "Team"),
             ],
-            loaded: true,
-            spaces: [
-                SpaceRooms(
-                    spaceId: "!team", roomIds: ["!notes", "!ann", "!lab", "!paper", "!old"],
-                    sections: [
-                        Make.section(.invites, []),
-                        Make.section(.directMessages, ["!notes", "!ann"]),
-                        Make.section(.favourites, []),
-                        Make.section(.category, ["!paper"], name: "Papers"),
-                        Make.section(.rooms, ["!lab"]),
-                        Make.section(.lowPriority, ["!old"]),
-                    ])
-            ],
-            notesAtTop: notesAtTop, notesRoomId: "!notes")
+            notesAtTop: notesAtTop, members: ["!team": ["@ann:example.org", "@me:example.org"]])
     }
 
-    private func titles(_ sections: [ListSection]) -> [String?] { sections.map(\.title) }
-
-    func testSectionsInOrderNamedWithoutEmptyOnes() {
-        let lists = RoomLists(state())
-        let sections = lists.sections(
-            of: lists.space(.space("!team"))!, layout: SectionLayout(), sort: .listOrder, search: "")
-        XCTAssertEqual(titles(sections), ["Direct messages", "Papers", "Rooms", "Low priority"])
-        XCTAssertEqual(sections.first?.rooms.map(\.id), ["!ann"])
-    }
-
-    func testFoldedHiddenAndReordered() {
-        let lists = RoomLists(state())
+    /// The phone's layout, as the library takes it: hidden and folded.
+    func testTheLayoutArrangesTheList() {
+        let lists = lists()
         var layout = SectionLayout()
         layout.toggleFold("rooms")
-        layout.setShown("low_priority", false)
-        layout.move(lists.space(.space("!team"))!.sections.map(\.key), from: [4], to: 0)
-        let sections = lists.sections(of: lists.space(.space("!team"))!, layout: layout, sort: .listOrder, search: "")
-        XCTAssertEqual(titles(sections), ["Rooms", "Direct messages", "Papers"])
+        layout.setShown("direct_messages", false)
+        let sections = lists.spaceList(
+            key: .space(id: "!team"), layout: layout.library, sort: .aToZ, filter: "")
+        XCTAssertEqual(sections.map(\.title), ["Rooms"])
         XCTAssertTrue(sections[0].folded)
-        XCTAssertEqual(sections[0].unread.count, 3)
-        // Searching unfolds all.
-        let found = lists.sections(of: lists.space(.space("!team"))!, layout: layout, sort: .listOrder, search: "la")
-        XCTAssertEqual(found.map(\.folded), [false])
-    }
-
-    func testNotesAtTopLeaveTheChatsAndSections() {
-        let lists = RoomLists(state())
-        XCTAssertEqual(lists.notes?.id, "!notes")
-        XCTAssertEqual(lists.chats.map(\.id), ["!ann"])
-        let off = RoomLists(state(notesAtTop: false))
-        XCTAssertNil(off.notes)
-        XCTAssertEqual(off.chats.map(\.id), ["!notes", "!ann"])
-        let sections = off.sections(
-            of: off.space(.space("!team"))!, layout: SectionLayout(), sort: .listOrder, search: "")
-        XCTAssertEqual(sections.first?.rooms.map(\.id), ["!notes", "!ann"])
+        XCTAssertEqual(sections[0].rooms.map(\.id), ["!lab", "!paper"])
+        XCTAssertEqual(sections[0].unread, 4)
     }
 
     func testTheLayoutIsKeptPerSpaceOnThisPhone() {
         let defaults = UserDefaults(suiteName: "SpaceSectionsTests")!
         defaults.removePersistentDomain(forName: "SpaceSectionsTests")
         defer { defaults.removePersistentDomain(forName: "SpaceSectionsTests") }
-        SectionLayouts(defaults: defaults).change(.space("!team")) { $0.toggleFold("rooms") }
+        SectionLayouts(defaults: defaults).change(.space(id: "!team")) { $0.toggleFold("rooms") }
         let again = SectionLayouts(defaults: defaults)
-        XCTAssertTrue(again[.space("!team")].folds("rooms"))
-        XCTAssertFalse(again[.space("!other")].folds("rooms"))
+        XCTAssertTrue(again[.space(id: "!team")].folds("rooms"))
+        XCTAssertFalse(again[.space(id: "!other")].folds("rooms"))
         again.forget()
-        XCTAssertFalse(SectionLayouts(defaults: defaults)[.space("!team")].folds("rooms"))
+        XCTAssertFalse(SectionLayouts(defaults: defaults)[.space(id: "!team")].folds("rooms"))
     }
 
     func testNotesAtTopIsChangedForTheAccount() async {
@@ -139,18 +95,20 @@ final class SpaceSectionsTests: XCTestCase {
         let model = SessionModel(session: session)
         model.start()
         await eventually { session.roomListListener != nil }
-        session.roomListListener?.onUpdate(state: state())
-        await eventually { model.lists.notes != nil }
+        let on = lists()
+        session.roomListListener?.onUpdate(lists: on)
+        await eventually { model.lists === on }
+        XCTAssertTrue(model.notesAtTop)
+        XCTAssertEqual(model.lists.notes()?.id, "!notes")
         await model.setNotesAtTop(false).value
         XCTAssertEqual(session.changes, ["notes at top false"])
-        // As chosen until the list has it.
-        XCTAssertFalse(model.notesAtTop)
-        XCTAssertNil(model.lists.notes)
-        session.roomListListener?.onUpdate(state: state(notesAtTop: false))
+        // As the library lists it.
+        let off = lists(notesAtTop: false)
+        session.roomListListener?.onUpdate(lists: off)
         await eventually { !model.notesAtTop }
+        XCTAssertNil(model.lists.notes())
         session.changeError = MtrxError.Other(reason: "No connection")
         await model.setNotesAtTop(true).value
-        XCTAssertFalse(model.notesAtTop)
         XCTAssertEqual(model.error, "No connection")
     }
 }

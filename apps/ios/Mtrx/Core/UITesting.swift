@@ -59,7 +59,7 @@ private final class UITestSession: Session, @unchecked Sendable {
     private let lock = NSLock()
     private var drafts: [String: Draft] = [:]
     private var timelines: [String: UITestTimeline] = [:]
-    private var listener: RoomListListener?
+    private var listener: RoomListsListener?
     /// The rooms, in any order.
     private var rooms = [
         UITestSession.room(UITesting.lab, "Lab"),
@@ -91,12 +91,12 @@ private final class UITestSession: Session, @unchecked Sendable {
         UITestHandle(noHandle: .init())
     }
 
-    override func subscribeRoomList(listener: RoomListListener) async throws -> TaskHandle {
-        let state = lock.withLock {
+    override func subscribeRoomLists(listener: RoomListsListener) async throws -> TaskHandle {
+        let lists = lock.withLock {
             self.listener = listener
-            return listState()
+            return roomLists()
         }
-        listener.onUpdate(state: state)
+        listener.onUpdate(lists: lists)
         if UITesting.arrivalsInPapers {
             let papers = timeline(UITesting.papers)
             Task {
@@ -109,26 +109,24 @@ private final class UITestSession: Session, @unchecked Sendable {
         return UITestHandle(noHandle: .init())
     }
 
-    /// The list as the library gives it: most recently active first, each
-    /// space's rooms and the rooms in no space in that order.
-    private func listState() -> RoomListState {
+    /// The lists as the library makes them from the rooms, most recently
+    /// active first.
+    private func roomLists() -> RoomLists {
         let ordered = rooms.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
-        let ids = { (keep: (RoomSummary) -> Bool) in ordered.filter(keep).map(\.id) }
-        return RoomListState(
-            rooms: ordered, loaded: true,
-            spaces: [SpaceRooms(spaceId: UITesting.team, roomIds: ids { $0.parents.contains(UITesting.team) })],
-            roomsOutsideSpaces: ids { $0.parents.isEmpty && $0.kind == .room })
+        // The rooms are made up valid.
+        return try! RoomLists(
+            rooms: ordered, loaded: true, ownUserId: userId(), notesAtTop: true, spaceMembers: [:], drafts: [])
     }
 
     /// A message was sent or arrived in room `id`: it moves up the list.
     fileprivate func active(_ id: String) {
-        let (state, listener) = lock.withLock {
+        let (lists, listener) = lock.withLock {
             if let at = rooms.firstIndex(where: { $0.id == id }) {
                 rooms[at].lastActivity = Date()
             }
-            return (listState(), self.listener)
+            return (roomLists(), self.listener)
         }
-        listener?.onUpdate(state: state)
+        listener?.onUpdate(lists: lists)
     }
 
     private static func room(
