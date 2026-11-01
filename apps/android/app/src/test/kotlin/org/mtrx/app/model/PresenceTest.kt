@@ -355,13 +355,13 @@ class PresenceTest {
         val account = signedIn(session)
         session.rooms(SpacesFixture.state())
         settle()
-        session.presenceError = MtrxException.Other(PRESENCE_UNAVAILABLE)
+        session.presenceError = MtrxException.PresenceUnavailable()
         account.sessionPresence.refresh("@bob:x")
         assertFalse(account.sessionPresence.available.value)
         assertTrue(session.presenceSubscriptions.single().second.cancelled)
 
         // Setting ours failing the same way hides it as well.
-        val other = FakeSession().apply { setPresenceError = MtrxException.Other(PRESENCE_UNAVAILABLE) }
+        val other = FakeSession().apply { setPresenceError = MtrxException.PresenceUnavailable() }
         val otherAccount = signedIn(other)
         assertFalse(otherAccount.sessionPresence.available.value)
         otherAccount.setForeground(false)

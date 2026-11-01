@@ -8,15 +8,16 @@
 //! forgets a presence that no client refreshes (Synapse after 30 s, and
 //! its sliding sync does not count as a refresh), so the session sends it
 //! again every [`KEEP_ALIVE`] until it is set offline or the session ends.
+//! [`OwnPresence`] sets ours from what the app is doing.
 
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, SystemTime},
 };
 
-use futures_util::Stream;
+use futures_util::{Stream, future::BoxFuture};
 use matrix_sdk::{
     Client, HttpError,
     ruma::{
@@ -36,6 +37,8 @@ use crate::{Error, Result, Session, session::AbortOnDrop};
 /// How often our presence is sent again while it is not offline. Synapse
 /// sets a device offline 30 s after its last refresh.
 const KEEP_ALIVE: Duration = Duration::from_secs(20);
+/// Without input for this long in the foreground, we are idle.
+pub const IDLE_AFTER: Duration = Duration::from_secs(5 * 60);
 /// How often [`PresenceWatcher`] reads each user's presence.
 const POLL_EVERY: Duration = Duration::from_secs(60);
 /// The shortest time between two reads of [`PresenceWatcher`]: with many
@@ -114,15 +117,66 @@ impl From<PresenceState> for RumaPresenceState {
     }
 }
 
-/// How long ago `at` was, e.g. "just now", "5 min ago", "2 h ago",
-/// "3 d ago".
+/// The dot on someone's picture: green online, amber idle (unavailable).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresenceDot {
+    Online,
+    Idle,
+}
+
+impl PresenceDot {
+    /// What the dot says, for accessibility.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Online => "Online",
+            Self::Idle => "Idle",
+        }
+    }
+}
+
+impl Presence {
+    /// The dot on their picture; none offline.
+    pub fn dot(&self) -> Option<PresenceDot> {
+        match self.state {
+            PresenceState::Online => Some(PresenceDot::Online),
+            PresenceState::Unavailable => Some(PresenceDot::Idle),
+            PresenceState::Offline => None,
+        }
+    }
+
+    /// The line under their name: their status message, else "Active
+    /// now", "Idle" or when they were last active ("Last active 2 hr
+    /// ago"); nothing if offline with nothing more known.
+    pub fn line(&self, now: SystemTime) -> Option<String> {
+        let status = self.status_message.as_deref();
+        if let Some(message) = status.filter(|m| !m.trim().is_empty()) {
+            return Some(message.into());
+        }
+        match self.state {
+            PresenceState::Online => Some("Active now".into()),
+            PresenceState::Unavailable => Some("Idle".into()),
+            PresenceState::Offline => self
+                .last_active
+                .map(|at| format!("Last active {}", describe_last_active(at, now))),
+        }
+    }
+}
+
+/// How long ago `at` was, as iOS says it in English: "just now" under a
+/// minute, then "5 min ago", "2 hr ago", "1 day ago", "3 days ago", "2 wk
+/// ago", "4 mo ago" (months of 30 days), "1 yr ago".
 pub fn describe_last_active(at: SystemTime, now: SystemTime) -> String {
     let minutes = now.duration_since(at).unwrap_or_default().as_secs() / 60;
-    match minutes {
-        0 => "just now".into(),
-        1..60 => format!("{minutes} min ago"),
-        60..2880 => format!("{} h ago", minutes / 60),
-        _ => format!("{} d ago", minutes / 1440),
+    let (hours, days) = (minutes / 60, minutes / 1440);
+    match days {
+        0 if minutes == 0 => "just now".into(),
+        0 if hours == 0 => format!("{minutes} min ago"),
+        0 => format!("{hours} hr ago"),
+        1 => "1 day ago".into(),
+        2..7 => format!("{days} days ago"),
+        7..30 => format!("{} wk ago", days / 7),
+        30..365 => format!("{} mo ago", (days / 30).min(11)),
+        _ => format!("{} yr ago", days / 365),
     }
 }
 
@@ -207,6 +261,50 @@ async fn keep_alive<F: Future<Output = Result<()>>>(mut send: impl FnMut() -> F)
     }
 }
 
+/// Sets our presence on the server, and keeps it there.
+#[derive(Clone)]
+pub(crate) struct Keeper {
+    client: Client,
+    /// Refreshes our presence while it is not offline.
+    kept: Arc<tokio::sync::Mutex<Option<AbortOnDrop>>>,
+}
+
+impl Keeper {
+    pub(crate) fn new(client: Client) -> Self {
+        Self {
+            client,
+            kept: Default::default(),
+        }
+    }
+
+    /// Set our presence, and keep it until it is set again, set offline or
+    /// the keeper is dropped. A send that fails (the server unreachable,
+    /// say) is tried again with the refreshes, unless the server refuses
+    /// ([`Error::PresenceUnavailable`]).
+    async fn set(&self, state: PresenceState, status_message: Option<String>) -> Result<()> {
+        let mut kept = self.kept.lock().await;
+        *kept = None;
+        let sent = send(&self.client, state, status_message.clone()).await;
+        let refused = matches!(sent, Err(Error::PresenceUnavailable(_)));
+        if state != PresenceState::Offline && !refused {
+            let client = self.client.clone();
+            *kept = Some(AbortOnDrop(tokio::spawn(keep_alive(move || {
+                let (client, status_message) = (client.clone(), status_message.clone());
+                async move { send(&client, state, status_message).await }
+            }))));
+        }
+        sent
+    }
+}
+
+/// Our presence from the app's activity, set through `keeper`.
+pub(crate) fn own_presence(keeper: Keeper) -> OwnPresence {
+    OwnPresence::new(Box::new(move |state| {
+        let keeper = keeper.clone();
+        Box::pin(async move { keeper.set(state, None).await })
+    }))
+}
+
 impl Session {
     /// `user`'s presence. [`Error::PresenceUnavailable`]: the server does
     /// not share presence. Note that Synapse with presence off answers
@@ -216,24 +314,21 @@ impl Session {
     }
 
     /// Set our presence, and keep it until it is set again, set offline or
-    /// the session ends. `status_message` `None` clears it.
+    /// the session ends; a failed send is tried again every [`KEEP_ALIVE`].
+    /// `status_message` `None` clears it. The apps set ours through
+    /// [`Session::own_presence`] instead.
     pub async fn set_presence(
         &self,
         state: PresenceState,
         status_message: Option<&str>,
     ) -> Result<()> {
-        let mut kept = self.kept_presence.lock().await;
-        *kept = None;
         let status_message = status_message.map(ToOwned::to_owned);
-        send(&self.client, state, status_message.clone()).await?;
-        if state != PresenceState::Offline {
-            let client = self.client.clone();
-            *kept = Some(AbortOnDrop(tokio::spawn(keep_alive(move || {
-                let (client, status_message) = (client.clone(), status_message.clone());
-                async move { send(&client, state, status_message).await }
-            }))));
-        }
-        Ok(())
+        self.presence_keeper.set(state, status_message).await
+    }
+
+    /// Our presence, from the app's activity.
+    pub fn own_presence(&self) -> &OwnPresence {
+        &self.own_presence
     }
 
     /// Follow the presence of `users`; see [`PresenceWatcher`].
@@ -246,6 +341,186 @@ impl Session {
             client: self.client.clone(),
             own: self.user_id(),
         }
+    }
+}
+
+/// What the app is doing, which sets our presence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity {
+    /// The app comes to the foreground; also at start and sign-in.
+    Foreground,
+    /// The app goes to the background, or its window closes.
+    Background,
+    /// A touch, key press or click.
+    Input,
+    /// Signing out: offline, as in the background (until the next
+    /// foreground, should signing out fail).
+    SignOut,
+}
+
+/// How [`OwnPresence`] sets our presence: the server, or a fake.
+type Sender = Box<dyn Fn(PresenceState) -> BoxFuture<'static, Result<()>> + Send + Sync>;
+
+/// Our presence as the app's activity says, while "Share my presence" is
+/// on: online in the foreground, idle after [`IDLE_AFTER`] there without
+/// input, and offline in the background, when signing out, or not
+/// sharing. Each change is set once, in order, and kept (see
+/// [`Session::set_presence`]).
+pub struct OwnPresence {
+    own: Arc<Own>,
+}
+
+struct Own {
+    send: Sender,
+    state: Mutex<OwnState>,
+    /// Sets run one at a time, in order.
+    queue: tokio::sync::Mutex<()>,
+}
+
+struct OwnState {
+    /// "Share my presence", a device setting each app keeps; on until the
+    /// app says otherwise.
+    sharing: bool,
+    foreground: bool,
+    last_input: Instant,
+    /// What we set last, if anything.
+    set: Option<PresenceState>,
+    /// The server does not share presence (its answer).
+    unavailable: Option<String>,
+    /// Sets us idle; runs while we are online.
+    idle_timer: Option<AbortOnDrop>,
+}
+
+impl OwnState {
+    /// Our presence as of `now`.
+    fn wanted(&self, now: Instant) -> PresenceState {
+        if !self.sharing || !self.foreground {
+            PresenceState::Offline
+        } else if now >= self.last_input + IDLE_AFTER {
+            PresenceState::Unavailable
+        } else {
+            PresenceState::Online
+        }
+    }
+}
+
+impl OwnPresence {
+    pub(crate) fn new(send: Sender) -> Self {
+        Self {
+            own: Arc::new(Own {
+                send,
+                state: Mutex::new(OwnState {
+                    sharing: true,
+                    foreground: false,
+                    last_input: Instant::now(),
+                    set: None,
+                    unavailable: None,
+                    idle_timer: None,
+                }),
+                queue: Default::default(),
+            }),
+        }
+    }
+
+    /// The app's `activity`, as of this call; the future sets our presence
+    /// if it changes, after the sets before. [`Error::PresenceUnavailable`]:
+    /// the server does not share presence; other failures are tried again
+    /// with the refreshes. Foreground: online if sharing, else offline (wait
+    /// for it before sync starts, so that sync says the same); input: online
+    /// again if idle; background and signing out: offline.
+    pub fn activity(&self, activity: Activity) -> impl Future<Output = Result<()>> + use<> {
+        let changes = {
+            let mut own = self.own.state.lock().unwrap();
+            match activity {
+                Activity::Foreground => {
+                    own.foreground = true;
+                    own.last_input = Instant::now();
+                    true
+                }
+                Activity::Background | Activity::SignOut => {
+                    own.foreground = false;
+                    true
+                }
+                Activity::Input => {
+                    own.last_input = Instant::now();
+                    own.set == Some(PresenceState::Unavailable)
+                }
+            }
+        };
+        let own = self.own.clone();
+        async move { if changes { own.update().await } else { Ok(()) } }
+    }
+
+    /// Share our presence or stop, as of this call (on at first): pass the
+    /// app's setting before the first [`Activity::Foreground`]. The future
+    /// sets us offline, or online if in the foreground.
+    pub fn set_sharing(&self, on: bool) -> impl Future<Output = Result<()>> + use<> {
+        let changes = {
+            let mut own = self.own.state.lock().unwrap();
+            let changes = own.sharing != on;
+            own.sharing = on;
+            if on {
+                own.last_input = Instant::now();
+            }
+            changes
+        };
+        let own = self.own.clone();
+        async move { if changes { own.update().await } else { Ok(()) } }
+    }
+}
+
+impl Own {
+    /// Set our presence as it should be now, if that changed; and keep the
+    /// idle timer running while we are online. Boxed, as the timer calls it
+    /// in turn.
+    fn update(self: Arc<Self>) -> BoxFuture<'static, Result<()>> {
+        Box::pin(async move {
+            let _turn = self.queue.lock().await;
+            let state = {
+                let mut own = self.state.lock().unwrap();
+                if let Some(answer) = &own.unavailable {
+                    return Err(Error::PresenceUnavailable(answer.clone()));
+                }
+                let wanted = own.wanted(Instant::now());
+                if wanted != PresenceState::Online {
+                    own.idle_timer = None;
+                } else if own.idle_timer.as_ref().is_none_or(|t| t.0.is_finished()) {
+                    let timer = tokio::spawn(idle_timer(Arc::downgrade(&self)));
+                    own.idle_timer = Some(AbortOnDrop(timer));
+                }
+                if own.set == Some(wanted) {
+                    return Ok(());
+                }
+                own.set = Some(wanted);
+                wanted
+            };
+            let sent = (self.send)(state).await;
+            if let Err(Error::PresenceUnavailable(answer)) = &sent {
+                let mut own = self.state.lock().unwrap();
+                own.unavailable = Some(answer.clone());
+                own.idle_timer = None;
+            }
+            sent
+        })
+    }
+}
+
+/// Wait for [`IDLE_AFTER`] without input, then set us idle.
+async fn idle_timer(own: Weak<Own>) {
+    loop {
+        let Some(own) = own.upgrade() else { return };
+        let idle_at = own.state.lock().unwrap().last_input + IDLE_AFTER;
+        if Instant::now() >= idle_at {
+            // Apart from this task, which the update stops.
+            tokio::spawn(async move {
+                if let Err(e) = own.update().await {
+                    debug!("could not set us idle: {e}");
+                }
+            });
+            return;
+        }
+        drop(own);
+        tokio::time::sleep_until(idle_at).await;
     }
 }
 
@@ -582,26 +857,253 @@ mod tests {
 
     #[test]
     fn last_activity_reads_as_time_ago() {
-        let now = at(1_000_000);
-        assert_eq!(describe_last_active(at(1_000_000 - 59), now), "just now");
-        assert_eq!(
-            describe_last_active(at(1_000_000 - 5 * 60), now),
-            "5 min ago"
-        );
-        assert_eq!(
-            describe_last_active(at(1_000_000 - 2 * 3600 - 59), now),
-            "2 h ago"
-        );
-        assert_eq!(
-            describe_last_active(at(1_000_000 - 47 * 3600), now),
-            "47 h ago"
-        );
-        assert_eq!(
-            describe_last_active(at(1_000_000 - 3 * 86400), now),
-            "3 d ago"
-        );
+        let now = at(100_000_000);
+        let ago = |seconds: u64| describe_last_active(at(100_000_000 - seconds), now);
+        assert_eq!(ago(59), "just now");
+        assert_eq!(ago(5 * 60), "5 min ago");
+        assert_eq!(ago(3599), "59 min ago");
+        assert_eq!(ago(2 * 3600 + 59), "2 hr ago");
+        assert_eq!(ago(23 * 3600 + 3599), "23 hr ago");
+        assert_eq!(ago(47 * 3600), "1 day ago");
+        assert_eq!(ago(3 * 86400), "3 days ago");
+        assert_eq!(ago(13 * 86400), "1 wk ago");
+        assert_eq!(ago(29 * 86400), "4 wk ago");
+        assert_eq!(ago(45 * 86400), "1 mo ago");
+        assert_eq!(ago(364 * 86400), "11 mo ago");
+        assert_eq!(ago(800 * 86400), "2 yr ago");
         // A clock behind the server's.
-        assert_eq!(describe_last_active(at(1_000_010), now), "just now");
+        assert_eq!(describe_last_active(at(100_000_010), now), "just now");
+    }
+
+    fn bare(state: PresenceState) -> Presence {
+        Presence {
+            state,
+            last_active: None,
+            currently_active: false,
+            status_message: None,
+        }
+    }
+
+    #[test]
+    fn dot_per_state() {
+        assert_eq!(bare(PresenceState::Online).dot(), Some(PresenceDot::Online));
+        assert_eq!(
+            bare(PresenceState::Unavailable).dot(),
+            Some(PresenceDot::Idle)
+        );
+        assert_eq!(bare(PresenceState::Offline).dot(), None);
+        assert_eq!(PresenceDot::Online.label(), "Online");
+        assert_eq!(PresenceDot::Idle.label(), "Idle");
+    }
+
+    #[test]
+    fn line_per_state_and_age() {
+        let now = at(1_000_000);
+        let ago = |seconds| Some(now - Duration::from_secs(seconds));
+        let line = |presence: Presence| presence.line(now);
+        assert_eq!(
+            line(bare(PresenceState::Online)).as_deref(),
+            Some("Active now")
+        );
+        assert_eq!(
+            line(bare(PresenceState::Unavailable)).as_deref(),
+            Some("Idle")
+        );
+        // Synapse with presence off: offline, nothing else.
+        assert_eq!(line(bare(PresenceState::Offline)), None);
+        let offline = |last_active| Presence {
+            last_active,
+            ..bare(PresenceState::Offline)
+        };
+        assert_eq!(
+            line(offline(ago(20))).as_deref(),
+            Some("Last active just now")
+        );
+        assert_eq!(
+            line(offline(Some(now + Duration::from_secs(5)))).as_deref(),
+            Some("Last active just now")
+        );
+        assert_eq!(
+            line(offline(ago(2 * 3600 + 59))).as_deref(),
+            Some("Last active 2 hr ago")
+        );
+        // A status message comes first, whatever the state; a blank one
+        // says nothing.
+        for state in [
+            PresenceState::Online,
+            PresenceState::Unavailable,
+            PresenceState::Offline,
+        ] {
+            let busy = Presence {
+                status_message: Some("In a meeting".into()),
+                last_active: ago(600),
+                ..bare(state)
+            };
+            assert_eq!(line(busy).as_deref(), Some("In a meeting"));
+        }
+        let blank = Presence {
+            status_message: Some(" ".into()),
+            ..bare(PresenceState::Unavailable)
+        };
+        assert_eq!(line(blank).as_deref(), Some("Idle"));
+    }
+
+    /// Our presence set through a fake server, which records what was set
+    /// when, and refuses once `refuse` is set.
+    #[derive(Clone)]
+    struct FakeServer {
+        start: Instant,
+        sets: Arc<Mutex<Vec<(u64, PresenceState)>>>,
+        refuse: Arc<Mutex<bool>>,
+    }
+
+    impl FakeServer {
+        fn new() -> Self {
+            Self {
+                start: Instant::now(),
+                sets: Default::default(),
+                refuse: Default::default(),
+            }
+        }
+
+        fn own(&self) -> OwnPresence {
+            let server = self.clone();
+            OwnPresence::new(Box::new(move |state| {
+                let server = server.clone();
+                Box::pin(async move {
+                    if *server.refuse.lock().unwrap() {
+                        return Err(Error::PresenceUnavailable("M_FORBIDDEN".into()));
+                    }
+                    let at = server.start.elapsed().as_secs();
+                    server.sets.lock().unwrap().push((at, state));
+                    Ok(())
+                })
+            }))
+        }
+
+        /// What was set, at which second.
+        fn sets(&self) -> Vec<(u64, PresenceState)> {
+            self.sets.lock().unwrap().clone()
+        }
+    }
+
+    async fn sleep_secs(seconds: u64) {
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        settle().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_after_five_minutes_without_input_online_again_with_input() {
+        use PresenceState::*;
+        let server = FakeServer::new();
+        let own = server.own();
+        own.activity(Activity::Foreground).await.unwrap();
+        // Input while online sets nothing; it starts the 5 minutes anew.
+        sleep_secs(60).await;
+        own.activity(Activity::Input).await.unwrap();
+        sleep_secs(299).await;
+        assert_eq!(server.sets(), [(0, Online)]);
+        sleep_secs(1).await;
+        assert_eq!(server.sets(), [(0, Online), (360, Unavailable)]);
+        // Set once, not again while idle.
+        sleep_secs(600).await;
+        own.activity(Activity::Input).await.unwrap();
+        own.activity(Activity::Input).await.unwrap();
+        assert_eq!(server.sets()[2..], [(960, Online)]);
+        sleep_secs(300).await;
+        assert_eq!(server.sets()[3..], [(1260, Unavailable)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn offline_in_the_background_and_online_again_in_the_foreground() {
+        use PresenceState::*;
+        let server = FakeServer::new();
+        let own = server.own();
+        own.activity(Activity::Foreground).await.unwrap();
+        sleep_secs(10).await;
+        own.activity(Activity::Background).await.unwrap();
+        // Neither input nor time changes it in the background.
+        own.activity(Activity::Input).await.unwrap();
+        sleep_secs(600).await;
+        own.activity(Activity::Foreground).await.unwrap();
+        assert_eq!(server.sets(), [(0, Online), (10, Offline), (610, Online)]);
+
+        // What counts is the order of the calls, not of the sets.
+        let away = own.activity(Activity::Background);
+        let back = own.activity(Activity::Foreground);
+        back.await.unwrap();
+        away.await.unwrap();
+        assert_eq!(server.sets().len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn not_sharing_is_offline_until_shared_again() {
+        use PresenceState::*;
+        let server = FakeServer::new();
+        let own = server.own();
+        // Sharing is on at first: saying so sets nothing.
+        own.set_sharing(true).await.unwrap();
+        assert_eq!(server.sets(), []);
+        // Off at start: offline once, before sync starts.
+        own.set_sharing(false).await.unwrap();
+        own.activity(Activity::Foreground).await.unwrap();
+        sleep_secs(600).await;
+        own.activity(Activity::Input).await.unwrap();
+        assert_eq!(server.sets(), [(0, Offline)]);
+
+        // On in the foreground: online, idle 5 minutes later.
+        own.set_sharing(true).await.unwrap();
+        sleep_secs(300).await;
+        own.set_sharing(false).await.unwrap();
+        assert_eq!(
+            server.sets(),
+            [
+                (0, Offline),
+                (600, Online),
+                (900, Unavailable),
+                (900, Offline)
+            ]
+        );
+        // On in the background: still offline.
+        own.activity(Activity::Background).await.unwrap();
+        own.set_sharing(true).await.unwrap();
+        assert_eq!(server.sets().len(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn signing_out_is_offline_until_the_next_foreground() {
+        use PresenceState::*;
+        let server = FakeServer::new();
+        let own = server.own();
+        own.activity(Activity::Foreground).await.unwrap();
+        own.activity(Activity::SignOut).await.unwrap();
+        own.activity(Activity::Input).await.unwrap();
+        sleep_secs(600).await;
+        assert_eq!(server.sets(), [(0, Online), (0, Offline)]);
+        // Signing out failed: the app is still in the foreground.
+        own.activity(Activity::Foreground).await.unwrap();
+        assert_eq!(server.sets()[2..], [(600, Online)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refusal_ends_setting_ours() {
+        let server = FakeServer::new();
+        let own = server.own();
+        *server.refuse.lock().unwrap() = true;
+        let refused = own.activity(Activity::Foreground).await;
+        assert!(
+            matches!(refused, Err(Error::PresenceUnavailable(_))),
+            "{refused:?}"
+        );
+        // Not tried again: each change says so at once.
+        *server.refuse.lock().unwrap() = false;
+        let again = own.activity(Activity::Background).await;
+        assert!(
+            matches!(again, Err(Error::PresenceUnavailable(_))),
+            "{again:?}"
+        );
+        sleep_secs(600).await;
+        assert_eq!(server.sets(), []);
     }
 
     /// `fetch` with a server that answers `own` and others as given.

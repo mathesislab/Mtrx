@@ -81,6 +81,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   appId, appName, deviceName, lang)`, `deletePusher(pushkey)`,
   `pushers() -> [PusherInfo]`. Presence (section 11):
   `presence(userId) -> Presence`, `setPresence(state, statusMessage?)`,
+  `presenceActivity(activity)`, `setPresenceSharing(on)`,
   `subscribePresence(userIds, listener) -> TaskHandle`.
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
   `confirm()`, `mismatch()`, `cancel()`.
@@ -132,15 +133,17 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `NotificationContent { roomId, eventId, roomName, roomAvatarUrl,
   isDirect, senderId, senderName, senderAvatarUrl, body, isMention,
   isNoisy, timestamp, shouldNotify }`. Presence: `Presence { state,
-  lastActive, currentlyActive, statusMessage }`, `PresenceState`
-  (`online`, `unavailable`, `offline`).
+  lastActive, currentlyActive, statusMessage, dot, line }`, `PresenceState`
+  (`online`, `unavailable`, `offline`), `PresenceDot` (`online`, `idle`),
+  `PresenceActivity` (`foreground`, `background`, `input`, `signOut`).
 - Errors: `MtrxError` (`NotLoggedIn`, `AlreadyLoggedIn`, `LoginCancelled`,
-  `RoomNotFound`, `InvalidInput`, `SecretStorage`, `Other(message)`).
+  `RoomNotFound`, `InvalidInput`, `SecretStorage`, `PresenceUnavailable`,
+  `Other(message)`).
   `InvalidInput(reason)`: a malformed ID or URL, or a recovery key that is
   not one or not the account's ("The recovery key is not valid").
-  A server that does not share presence: `Other("This server does not
-  share presence")` (section 11).
-- `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console).
+  `PresenceUnavailable`: the server does not share presence (section 11).
+- `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console),
+  `presenceLine(presence, now)`, `presenceDotLabel(dot)`.
 
 Full snapshots instead of diffs: simpler for the apps, and cheap at our
 sizes. Diffs (the SDK's `VectorDiff`s) can come later for big timelines.
@@ -1421,8 +1424,8 @@ library's threads: hop to the main thread.
 
 **When the server does not share presence**, everything is hidden for the
 rest of the session (until sign-out or the next launch): at the first
-`onUnavailable()`, or the first `presence()` failing with `Other` whose
-reason is exactly "This server does not share presence", drop the map,
+`onUnavailable()`, or the first call failing with `PresenceUnavailable`,
+drop the map,
 cancel the subscription and show no dots or lines. Other failures concern
 one user (Synapse refuses the presence of someone we share no room with)
 or the network: that user shows nothing, nothing else changes. Synapse
@@ -1458,9 +1461,10 @@ before `startSync()` (so that sync does not report us online either); on:
 the server does not share presence, the footnote reads "This server does
 not share presence." and the switch is disabled.
 
-**Errors, fakes and tests.** No new `MtrxError` cases: `presence` and
-`subscribePresence` fail with `InvalidInput` for a malformed ID;
-`presence` and `setPresence` with `Other` (above). Fakes of `Session`
+**Errors, fakes and tests.** `presence` and `subscribePresence` fail
+with `InvalidInput` for a malformed ID; `presence`, `setPresence`,
+`presenceActivity` and `setPresenceSharing` with `PresenceUnavailable`
+(above) or `Other`. Fakes of `Session`
 implement `presence`, `setPresence` and `subscribePresence` (keep the
 listener, call it). Worth testing in the models: the lifecycle's calls
 (foreground online; 5 minutes idle unavailable, input online again;

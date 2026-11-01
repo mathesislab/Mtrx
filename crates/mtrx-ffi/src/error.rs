@@ -20,6 +20,9 @@ pub enum MtrxError {
     /// The app's [`crate::SecretBackend`] failed.
     #[error("secret storage: {reason}")]
     SecretStorage { reason: String },
+    /// The server does not share presence: hide it for the session.
+    #[error("This server does not share presence")]
+    PresenceUnavailable,
     /// Anything else, e.g. the server is unreachable or refused the password.
     #[error("{reason}")]
     Other { reason: String },
@@ -43,10 +46,7 @@ impl From<mtrx_core::Error> for MtrxError {
             Error::RoomNotFound(room_id) => Self::RoomNotFound { room_id },
             Error::SecretStorage(reason) => Self::SecretStorage { reason },
             error @ Error::InvalidRecoveryKey => Self::invalid(error),
-            // The server's answer is for logs; the apps match the reason.
-            error @ Error::PresenceUnavailable(_) => Self::Other {
-                reason: error.to_string(),
-            },
+            Error::PresenceUnavailable(_) => Self::PresenceUnavailable,
             error => Self::Other {
                 reason: error.to_string(),
             },
@@ -96,8 +96,10 @@ mod tests {
             MtrxError::InvalidInput { reason } if reason == "The recovery key is not valid"
         ));
         assert!(matches!(
-            convert(mtrx_core::Error::PresenceUnavailable("[403 / M_FORBIDDEN] off".into())),
-            MtrxError::Other { reason } if reason == "This server does not share presence"
+            convert(mtrx_core::Error::PresenceUnavailable(
+                "[403 / M_FORBIDDEN] off".into()
+            )),
+            MtrxError::PresenceUnavailable
         ));
         assert!(matches!(
             convert(mtrx_core::Error::Timeline("nothing to send".into())),

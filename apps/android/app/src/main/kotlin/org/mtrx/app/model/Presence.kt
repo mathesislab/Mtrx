@@ -30,9 +30,6 @@ import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 
-/** The reason of the `Other` error from a server that does not share presence. */
-const val PRESENCE_UNAVAILABLE = "This server does not share presence"
-
 /** The dot on an avatar: green online, amber idle (unavailable). */
 enum class PresenceDot(val label: String) {
     Online("Online"),
@@ -304,7 +301,7 @@ class PresenceModel(
     }
 
     private fun failed(error: MtrxException, doing: String) {
-        if (error is MtrxException.Other && error.reason == PRESENCE_UNAVAILABLE) {
+        if (error is MtrxException.PresenceUnavailable) {
             hide()
         } else {
             log.warn(TAG, "$doing failed: ${describe(error)}")

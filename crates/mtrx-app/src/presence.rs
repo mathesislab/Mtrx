@@ -363,11 +363,11 @@ mod tests {
         );
         assert_eq!(
             line(&offline(ago(2 * 3600 + 59)), now).as_deref(),
-            Some("Last active 2 h ago")
+            Some("Last active 2 hr ago")
         );
         assert_eq!(
             line(&offline(ago(3 * 86400)), now).as_deref(),
-            Some("Last active 3 d ago")
+            Some("Last active 3 days ago")
         );
         // A status message comes first, whatever the state.
         for state in [

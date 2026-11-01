@@ -69,9 +69,9 @@ pub struct Session {
     /// Kept for the session: it follows push rule changes, so it knows a
     /// room's mode right after setting it (sync echoes it later).
     pub(crate) notification_settings: matrix_sdk::notification_settings::NotificationSettings,
-    /// Refreshes our presence while it is not offline, see
-    /// [`Session::set_presence`].
-    pub(crate) kept_presence: Mutex<Option<AbortOnDrop>>,
+    /// Sets our presence and keeps it, see [`Session::set_presence`].
+    pub(crate) presence_keeper: crate::presence::Keeper,
+    pub(crate) own_presence: crate::OwnPresence,
     profile: Profile,
     _connection: AbortOnDrop,
 }
@@ -198,6 +198,7 @@ impl Session {
         let colours = crate::account_data::Synced::load(client.clone()).await;
         let directory_servers = crate::account_data::Synced::load(client.clone()).await;
         let drafts = crate::drafts::Drafts::load(&client).await;
+        let presence_keeper = crate::presence::Keeper::new(client.clone());
         Ok(Self {
             client,
             sync,
@@ -214,7 +215,8 @@ impl Session {
             drafts,
             connection,
             notification_settings,
-            kept_presence: Default::default(),
+            presence_keeper: presence_keeper.clone(),
+            own_presence: crate::presence::own_presence(presence_keeper),
             profile,
             _connection: watch_connection,
         })

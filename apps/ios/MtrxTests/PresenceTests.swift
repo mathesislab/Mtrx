@@ -192,7 +192,7 @@ final class PresenceModelTests: XCTestCase {
         session.presenceSubscriptions[0].listener.onUpdate(presences: [Self.bob: Make.presence(.online)])
         await eventually { self.presence.presence(of: Self.bob) != nil }
 
-        session.presenceResult = .failure(MtrxError.Other(reason: PresenceModel.unavailableReason))
+        session.presenceResult = .failure(MtrxError.PresenceUnavailable)
         await presence.refresh(Self.bob)
         await assertHidden()
     }

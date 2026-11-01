@@ -10,9 +10,6 @@ import os
 final class PresenceModel: ObservableObject {
     /// Without input for this long in the foreground, we are idle.
     nonisolated static let idleTime: TimeInterval = 5 * 60
-    /// The reason of the `Other` error from a server that does not share
-    /// presence.
-    nonisolated static let unavailableReason = "This server does not share presence"
     private static let sharingKey = "sharePresence"
     private static let log = Logger(subsystem: "org.mtrx.Mtrx", category: "presence")
 
@@ -133,7 +130,7 @@ final class PresenceModel: ObservableObject {
     }
 
     private func failed(_ error: Error, _ doing: String) {
-        if case MtrxError.Other(let reason) = error, reason == Self.unavailableReason {
+        if case MtrxError.PresenceUnavailable = error {
             hide()
         } else if !(error is CancellationError) {
             Self.log.error("\(doing, privacy: .public) failed: \(String(describing: error), privacy: .public)")

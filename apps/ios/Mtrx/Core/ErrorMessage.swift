@@ -22,6 +22,8 @@ func errorMessage(_ error: Error) -> String? {
             return "The room is not in the room list (any more)."
         case .InvalidInput(let reason), .Other(let reason):
             return reason
+        case .PresenceUnavailable:
+            return "This server does not share presence."
         case .SecretStorage(let reason):
             return "The Keychain failed: \(reason)"
         }
