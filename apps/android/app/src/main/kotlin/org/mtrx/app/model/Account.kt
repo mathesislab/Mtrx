@@ -1,6 +1,7 @@
 package org.mtrx.app.model
 
 import java.util.concurrent.atomic.AtomicReference
+import org.mtrx.app.rooms.NoRooms
 import org.mtrx.app.rooms.SectionLayouts
 import org.mtrx.app.rooms.SectionStore
 import kotlinx.coroutines.CoroutineScope
@@ -26,8 +27,9 @@ import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.OAuthLogin
 import uniffi.mtrx.RecoveryListener
 import uniffi.mtrx.RecoveryStep
-import uniffi.mtrx.RoomListListener
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomLists
+import uniffi.mtrx.RoomListsInterface
+import uniffi.mtrx.RoomListsListener
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Verification
@@ -86,8 +88,8 @@ class Account(
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
     val state: StateFlow<AccountState> = _state.asStateFlow()
 
-    private val _rooms = MutableStateFlow(NO_ROOMS)
-    val rooms: StateFlow<RoomListState> = _rooms.asStateFlow()
+    private val _rooms = MutableStateFlow<RoomListsInterface>(NoRooms)
+    val rooms: StateFlow<RoomListsInterface> = _rooms.asStateFlow()
 
     /** The space selected on the Spaces tab. */
     val spaceSelection = SpaceSelection(selectedSpace, rooms, scope)
@@ -475,11 +477,11 @@ class Account(
             }
         })
         try {
-            handles += signedIn.subscribeRoomList(object : RoomListListener {
-                override fun onUpdate(state: RoomListState) {
+            handles += signedIn.subscribeRoomLists(object : RoomListsListener {
+                override fun onUpdate(lists: RoomLists) {
                     val previous = _rooms.value
-                    _rooms.value = state
-                    roomsRead(previous, state).forEach(notifications::clearRoom)
+                    _rooms.value = lists
+                    roomsRead(previous, lists).forEach(notifications::clearRoom)
                 }
             })
         } catch (e: MtrxException) {
@@ -542,15 +544,11 @@ class Account(
         _devices.value = null
         session?.close()
         session = null
-        _rooms.value = NO_ROOMS
+        _rooms.value = NoRooms
         _connection.value = ConnectionState.ONLINE
         spaceSelection.clear()
         spaceChildren.clear()
         _roomRequest.value = null
         notifications.clearAll()
-    }
-
-    private companion object {
-        val NO_ROOMS = RoomListState(rooms = emptyList(), loaded = false)
     }
 }

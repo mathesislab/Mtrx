@@ -14,23 +14,24 @@ import org.json.JSONException
 import org.json.JSONObject
 import org.mtrx.app.rooms.SectionPrefs
 import org.mtrx.app.rooms.SectionStore
+import uniffi.mtrx.SpaceKey
 
 /** What the app shows, kept across launches (as the desktop's `view.json`). */
 val Context.viewPreferences: DataStore<Preferences> by preferencesDataStore(name = "view")
 
 /** The selected space in [preferences]. */
 class DataStoreSelectedSpace(private val preferences: DataStore<Preferences>) : SelectedSpaceStore {
-    override suspend fun load(): SpaceEntry? = try {
-        preferences.data.first()[SELECTED_SPACE]?.let { SpaceEntry.fromKey(it) }
+    override suspend fun load(): SpaceKey? = try {
+        preferences.data.first()[SELECTED_SPACE]?.let { spaceKeyOf(it) }
     } catch (e: IOException) {
         null
     }
 
-    override suspend fun save(entry: SpaceEntry?) {
+    override suspend fun save(entry: SpaceKey?) {
         try {
             preferences.edit {
                 it.remove(SELECTED_SPACE)
-                if (entry != null) it[SELECTED_SPACE] = entry.key
+                if (entry != null) it[SELECTED_SPACE] = entry.saved
             }
         } catch (e: IOException) {
             // Not remembered; the app works without it.

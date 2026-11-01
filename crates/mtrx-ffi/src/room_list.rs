@@ -10,10 +10,7 @@ use std::{
 use futures_util::StreamExt;
 use mtrx_core::{self as core, OwnedRoomId, OwnedUserId};
 
-use crate::{
-    MtrxError, RoomKind, RoomListListener, RoomListState, RoomSummary, Session, TaskHandle,
-    runtime::run,
-};
+use crate::{MtrxError, RoomKind, RoomSummary, Session, TaskHandle, runtime::run};
 
 /// What a room list lists.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -484,24 +481,5 @@ impl Session {
             }))
         })
         .await
-    }
-}
-
-/// Call `listener` with the room list as a `RoomListState`, now and on
-/// every change, until cancelled.
-pub(crate) async fn follow(
-    session: Arc<core::Session>,
-    list: core::RoomList,
-    listener: Arc<dyn RoomListListener>,
-) {
-    let mut lists = Box::pin(session.room_lists(&list));
-    let mut sent: Option<RoomListState> = None;
-    while let Some(lists) = lists.next().await {
-        let notes = session.notes_room();
-        let new = RoomListState::new(&lists, notes.as_ref());
-        if sent.as_ref() != Some(&new) {
-            listener.on_update(new.clone());
-            sent = Some(new);
-        }
     }
 }

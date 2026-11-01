@@ -11,7 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import uniffi.mtrx.MtrxException
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.Session
 
 /** Clears the message notifications. Callable from any thread. */
@@ -25,9 +25,9 @@ interface RoomNotifications {
  * The rooms whose unread notifications dropped to 0 from [previous] to
  * [current] (read here or on another device): their notifications go.
  */
-fun roomsRead(previous: RoomListState, current: RoomListState): List<String> {
-    val before = previous.rooms.associate { it.id to it.unreadNotifications }
-    return current.rooms
+fun roomsRead(previous: RoomListsInterface, current: RoomListsInterface): List<String> {
+    val before = previous.rooms().associate { it.id to it.unreadNotifications }
+    return current.rooms()
         .filter { it.unreadNotifications == 0uL && (before[it.id] ?: 0uL) > 0uL }
         .map { it.id }
 }

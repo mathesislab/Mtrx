@@ -61,27 +61,19 @@ import org.mtrx.app.model.Images
 import org.mtrx.app.model.PresenceModel
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.RoomSort
-import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.directPerson
+import org.mtrx.app.model.saved
 import org.mtrx.app.model.showsEncryptionBanner
-import org.mtrx.app.rooms.SectionedList
-import org.mtrx.app.rooms.accountSections
-import org.mtrx.app.rooms.chatList
-import org.mtrx.app.rooms.sectionChoices
-import org.mtrx.app.rooms.spaceList
-import org.mtrx.app.rooms.chatsUnread
+import org.mtrx.app.rooms.SectionPrefs
 import org.mtrx.app.rooms.foldedGroups
+import org.mtrx.app.rooms.name
 import org.mtrx.app.rooms.roomGroups
-import org.mtrx.app.rooms.sharedSpaces
-import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.shownRoom
-import org.mtrx.app.rooms.spaceRows
-import org.mtrx.app.rooms.spacesUnread
-import org.mtrx.app.rooms.unreadElsewhere
 import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.SettingsContent
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.RoomSummary
+import uniffi.mtrx.SpaceKey
 
 /** What the home's other screens open: from the Spaces tab's + menu and a space's name. */
 class HomeRoutes(
@@ -126,20 +118,27 @@ fun HomeScreen(
     LaunchedEffect(account) { account.messages.collect { snackbar.showSnackbar(it) } }
     val today = remember(list) { LocalDate.now() }
     val sectionPrefs by account.sections.prefs.collectAsStateWithLifecycle()
-    val (notes, chatRooms) = remember(list) { chatList(list) }
-    val chatSpaces = remember(list) { sharedSpaces(list) }
-    val spaceEntries = remember(list) { spaceRows(list) }
+    val notes = remember(list) { list.notes() }
+    val chatRooms = remember(list) { list.chats() }
+    val chatSpaces = remember(list) { (chatRooms + listOfNotNull(notes)).associate { it.id to list.chatSpaces(it.id) } }
+    val spaceEntries = remember(list) { list.spaces() }
     val sections = remember(list, selected, sort, sectionPrefs) {
-        selected?.let { spaceList(list, it, sectionPrefs[it.key], sort) } ?: SectionedList(null, emptyList())
+        selected?.let { key ->
+            val prefs = sectionPrefs[key.saved] ?: SectionPrefs()
+            list.spaceList(key, prefs.library, sort.library, "")
+        }.orEmpty()
     }
     var showing by rememberSaveable { mutableStateOf(false) }
     val groups = remember(list, sectionPrefs) { roomGroups(list, folded = foldedGroups(sectionPrefs)) }
-    val drafts = remember(list) { list.drafts.toSet() }
-    val badges = mapOf(
-        HomeTab.Chats to chatsUnread(list),
-        HomeTab.Rooms to roomsUnread(list),
-        HomeTab.Spaces to spacesUnread(list),
-    )
+    val drafts = remember(list) { list.drafts().toSet() }
+    val badges = remember(list) {
+        val counts = list.badges()
+        mapOf(
+            HomeTab.Chats to counts.chats.toLong(),
+            HomeTab.Rooms to counts.rooms.toLong(),
+            HomeTab.Spaces to counts.spaces.toLong(),
+        )
+    }
     val open: (RoomSummary) -> Unit = { room -> nav.open(room.id, room) }
 
     val scope = rememberCoroutineScope()
@@ -148,11 +147,11 @@ fun HomeScreen(
     val chatsList = rememberLazyListState()
     val spacesList = rememberLazyListState()
     val roomsList = rememberLazyListState()
-    val spaceRoomsList = rememberSaveable(selected?.key, saver = LazyListState.Saver) { LazyListState() }
+    val spaceRoomsList = rememberSaveable(selected?.saved, saver = LazyListState.Saver) { LazyListState() }
     val showSpaces: () -> Unit = { scope.launch { pager.animateScrollToPage(0) } }
     // A space's heading on Rooms (or in a room): the space's rooms on Spaces.
     val openSpace: (String) -> Unit = { id ->
-        val entry = SpaceEntry.Space(id)
+        val entry = SpaceKey.Space(id)
         nav.tab = HomeTab.Spaces
         if (entry == selected) scope.launch { pager.animateScrollToPage(1) } else account.spaceSelection.select(entry)
     }
@@ -163,8 +162,8 @@ fun HomeScreen(
     var pagedTo by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(selected) {
         val entry = selected
-        if (entry?.key == pagedTo) return@LaunchedEffect
-        pagedTo = entry?.key
+        if (entry?.saved == pagedTo) return@LaunchedEffect
+        pagedTo = entry?.saved
         when {
             entry == null -> pager.scrollToPage(0)
             nav.tab == HomeTab.Spaces -> pager.animateScrollToPage(1)
@@ -179,8 +178,8 @@ fun HomeScreen(
     BackHandler(enabled = chat != null) { nav.chat = null }
     BackHandler(enabled = room != null) { nav.room = null }
 
-    val selectedSpace = spaceEntries.firstOrNull { it.entry == selected }
-    val selectedSpaceId = (selected as? SpaceEntry.Space)?.id
+    val selectedSpace = spaceEntries.firstOrNull { it.key == selected }
+    val selectedSpaceId = (selected as? SpaceKey.Space)?.id
     val title: @Composable () -> Unit = {
         when {
             onSpaceRooms -> SpaceTitle(
@@ -193,9 +192,9 @@ fun HomeScreen(
     // Which of the space's sections show, on this phone.
     val showingEntry = selected
     if (showing && onSpaceRooms && showingEntry != null) {
-        val space = showingEntry.key
-        val choices = sectionChoices(list, showingEntry, sectionPrefs[space])
-        val keys = accountSections(list, showingEntry).map { it.key }
+        val space = showingEntry.saved
+        val choices = list.sectionChoices(showingEntry, (sectionPrefs[space] ?: SectionPrefs()).library)
+        val keys = choices.map { it.key }
         ShowSheet(
             selectedSpace?.name.orEmpty(),
             choices,
@@ -231,7 +230,7 @@ fun HomeScreen(
                     }
                     SortMenu(sort, onSort = account.roomSort::choose)
                 }
-                val space = (selected as? SpaceEntry.Space)?.id?.takeIf { onSpaceRooms }
+                val space = (selected as? SpaceKey.Space)?.id?.takeIf { onSpaceRooms }
                 AddMenu(
                     spaceName = selectedSpace?.name.takeIf { space != null },
                     onNewSpace = routes.newSpace,
@@ -249,12 +248,12 @@ fun HomeScreen(
         }
         when (nav.tab) {
             HomeTab.Chats -> if (chat != null) {
-                roomPane(chat, unreadElsewhere(list, except = chat), { nav.chat = null }, openSpace)
+                roomPane(chat, list.unreadBesides(chat).toLong(), { nav.chat = null }, openSpace)
             } else {
                 ChatList(
                     notes,
                     chatRooms,
-                    list.loaded,
+                    list.loaded(),
                     images,
                     today,
                     onOpenRoom = open,
@@ -266,7 +265,7 @@ fun HomeScreen(
             }
             HomeTab.Spaces -> HorizontalPager(pager, Modifier.fillMaxSize()) { page ->
                 if (page == 0) {
-                    SpaceList(spaceEntries, selected, list.loaded, images, state = spacesList, onSelect = { entry ->
+                    SpaceList(spaceEntries, selected, list.loaded(), images, state = spacesList, onSelect = { entry ->
                         if (entry == selected) {
                             scope.launch { pager.animateScrollToPage(1) }
                         } else {
@@ -275,23 +274,24 @@ fun HomeScreen(
                     })
                 } else {
                     SpaceRoomsList(
+                        notes,
                         sections,
-                        list.loaded,
+                        list.loaded(),
                         images,
                         today,
                         onOpenRoom = open,
-                        onFold = { key -> selected?.let { account.sections.toggleFold(it.key, key) } },
+                        onFold = { key -> selected?.let { account.sections.toggleFold(it.saved, key) } },
                         drafts = drafts,
                         state = spaceRoomsList,
                     )
                 }
             }
             HomeTab.Rooms -> if (room != null) {
-                roomPane(room, unreadElsewhere(list, except = room), { nav.room = null }, openSpace)
+                roomPane(room, list.unreadBesides(room).toLong(), { nav.room = null }, openSpace)
             } else {
                 RoomGroupsList(
                     groups,
-                    list.loaded,
+                    list.loaded(),
                     images,
                     today,
                     onOpenRoom = open,

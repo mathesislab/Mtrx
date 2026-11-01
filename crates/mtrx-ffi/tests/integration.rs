@@ -24,9 +24,9 @@ use mtrx_ffi::{
     ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
     MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, Presence,
     PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction, Reader, RecoveryListener,
-    RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomListListener, RoomListState,
-    SecretBackend, SecretError, SendState, Session, TimelineEvent, TimelineItem,
-    TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
+    RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists, RoomListsListener, RoomSort,
+    SecretBackend, SecretError, SectionLayout, SendState, Session, SpaceKey, TimelineEvent,
+    TimelineItem, TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
     VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
@@ -66,10 +66,17 @@ impl<T> Forward<T> {
     }
 }
 
-impl RoomListListener for Forward<RoomListState> {
-    fn on_update(&self, state: RoomListState) {
-        self.send(state);
+impl RoomListsListener for Forward<Arc<RoomLists>> {
+    fn on_update(&self, lists: Arc<RoomLists>) {
+        self.send(lists);
     }
+}
+
+/// IDs of the rooms `key` lists, in the list's order.
+fn listed(lists: &RoomLists, key: SpaceKey) -> Vec<String> {
+    (lists.search(Some(key), String::new()).into_iter())
+        .map(|r| r.id)
+        .collect()
 }
 
 impl TimelineListener for Forward<Vec<TimelineItem>> {
@@ -216,14 +223,14 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
     let (connection, connections) = forward();
     let _connection = session.subscribe_connection(connection);
     let (rooms, room_updates) = forward();
-    let rooms_handle = block_on(session.subscribe_room_list(rooms)).unwrap();
+    let rooms_handle = block_on(session.subscribe_room_lists(rooms)).unwrap();
     block_on(session.start_sync());
     wait_for("online", &connections, |c| *c == ConnectionState::Online);
     let state = wait_for("room list with the room", &room_updates, |s| {
-        s.loaded && s.rooms.iter().any(|r| r.id == room_id)
+        s.loaded() && s.rooms().iter().any(|r| r.id == room_id)
     });
     assert_eq!(
-        state.rooms.iter().find(|r| r.id == room_id).unwrap().name,
+        state.rooms().iter().find(|r| r.id == room_id).unwrap().name,
         "FFI"
     );
     rooms_handle.cancel();
@@ -344,11 +351,11 @@ fn encrypted_room(core_runtime: &tokio::runtime::Runtime, name: &str) -> String 
 /// state one event at a time); what is sent until then goes out unencrypted.
 fn wait_for_encrypted_room(session: &Session, room_id: &str) {
     let (rooms, updates) = forward();
-    let _handle = block_on(session.subscribe_room_list(rooms)).unwrap();
+    let _handle = block_on(session.subscribe_room_lists(rooms)).unwrap();
     wait_for(
         "the encrypted room in the room list",
         &updates,
-        |s: &RoomListState| s.loaded && s.rooms.iter().any(|r| r.id == room_id && r.encrypted),
+        |s: &Arc<RoomLists>| s.loaded() && s.rooms().iter().any(|r| r.id == room_id && r.encrypted),
     );
 }
 
@@ -602,11 +609,12 @@ fn emoji_verification_between_two_devices() {
     });
 }
 
-/// `ids` are in the order of `state.rooms`.
-fn in_list_order(state: &RoomListState, ids: &[String]) -> bool {
+/// `ids` are in the order of `lists.rooms()`.
+fn in_list_order(lists: &RoomLists, ids: &[String]) -> bool {
+    let rooms = lists.rooms();
     let positions: Vec<_> = ids
         .iter()
-        .map(|id| state.rooms.iter().position(|r| &r.id == id).unwrap())
+        .map(|id| rooms.iter().position(|r| &r.id == id).unwrap())
         .collect();
     positions.is_sorted()
 }
@@ -705,19 +713,21 @@ fn rooms_by_space_with_direct_chats_and_invites() {
 
     let device = sign_in(&alice);
     let (rooms, updates) = forward();
-    let _handle = block_on(device.session.subscribe_room_list(rooms)).unwrap();
-    let state = wait_for("the rooms by space", &updates, |s: &RoomListState| {
-        let team_rooms = s.spaces.iter().find(|space| space.space_id == team);
-        s.loaded
-            && team_rooms.is_some_and(|t| t.room_ids.contains(&with_bob))
+    let _handle = block_on(device.session.subscribe_room_lists(rooms)).unwrap();
+    let team_key = || SpaceKey::Space { id: team.clone() };
+    let state = wait_for("the rooms by space", &updates, |s: &Arc<RoomLists>| {
+        s.loaded()
+            && listed(s, team_key()).contains(&with_bob)
             && [&loose, &party]
                 .iter()
-                .all(|id| s.rooms_outside_spaces.contains(id))
-            && s.rooms.iter().any(|r| r.id == with_carol)
+                .all(|id| listed(s, SpaceKey::Outside).contains(id))
+            && s.rooms().iter().any(|r| r.id == with_carol)
     });
 
-    // The space column: the two top-level spaces, in list order.
-    let spaces: Vec<_> = state.spaces.iter().map(|s| s.space_id.clone()).collect();
+    // The spaces page: the two top-level spaces, in list order, then Home.
+    let spaces: Vec<_> = (state.top_level_spaces().into_iter())
+        .map(|s| s.id)
+        .collect();
     assert_eq!(
         spaces.iter().collect::<std::collections::HashSet<_>>(),
         [&team, &other]
@@ -725,36 +735,28 @@ fn rooms_by_space_with_direct_chats_and_invites() {
             .collect::<std::collections::HashSet<_>>()
     );
     assert!(in_list_order(&state, &spaces));
+    assert_eq!(state.spaces().last().unwrap().key, SpaceKey::Outside);
 
     // Team lists its rooms through the nested space (not the nested space
     // itself), the invite, and the direct chat with its member Bob.
-    let team_rooms = &state
-        .spaces
-        .iter()
-        .find(|s| s.space_id == team)
-        .unwrap()
-        .room_ids;
+    let team_rooms = listed(&state, team_key());
     let mut expected = vec![lab, deep, offer.clone(), with_bob.clone()];
     expected.sort();
-    let mut listed = team_rooms.clone();
-    listed.sort();
-    assert_eq!(listed, expected, "{state:#?}");
-    assert!(in_list_order(&state, team_rooms));
+    let mut sorted = team_rooms.clone();
+    sorted.sort();
+    assert_eq!(sorted, expected, "{:#?}", state.rooms());
+    assert!(in_list_order(&state, &team_rooms));
     assert!(!team_rooms.contains(&sub));
-    let other_rooms = &state
-        .spaces
-        .iter()
-        .find(|s| s.space_id == other)
-        .unwrap()
-        .room_ids;
-    assert!(other_rooms.is_empty());
+    assert!(listed(&state, SpaceKey::Space { id: other }).is_empty());
 
     // Outside any space: the room and the invite to a room, in list order.
-    assert_eq!(state.rooms_outside_spaces.len(), 2, "{state:#?}");
-    assert!(in_list_order(&state, &state.rooms_outside_spaces));
+    let outside = listed(&state, SpaceKey::Outside);
+    assert_eq!(outside.len(), 2, "{:#?}", state.rooms());
+    assert!(in_list_order(&state, &outside));
 
     // The Chats tab: both direct chats; Carol's still an invite.
-    let summary = |id: &str| state.rooms.iter().find(|r| r.id == id).unwrap();
+    let rooms = state.rooms();
+    let summary = |id: &str| rooms.iter().find(|r| r.id == id).unwrap();
     assert_eq!(summary(&with_bob).kind, RoomKind::Direct);
     assert_eq!(
         (summary(&with_carol).kind, summary(&with_carol).invited),
@@ -778,9 +780,9 @@ fn rooms_made_set_up_joined_and_left() {
     });
     let (a, b) = (sign_in(&alice), sign_in(&bob));
     let (a_rooms, a_updates) = forward();
-    let _a_list = block_on(a.session.subscribe_room_list(a_rooms)).unwrap();
+    let _a_list = block_on(a.session.subscribe_room_lists(a_rooms)).unwrap();
     let (b_rooms, b_updates) = forward();
-    let _b_list = block_on(b.session.subscribe_room_list(b_rooms)).unwrap();
+    let _b_list = block_on(b.session.subscribe_room_lists(b_rooms)).unwrap();
 
     assert!(block_on(a.session.offers_owners()));
     let space = block_on(a.session.create_room(mtrx_ffi::NewRoom {
@@ -797,19 +799,13 @@ fn rooms_made_set_up_joined_and_left() {
         ..Default::default()
     }))
     .unwrap();
-    let state = wait_for("the room in its space", &a_updates, |s: &RoomListState| {
-        s.spaces
-            .iter()
-            .any(|sp| sp.space_id == space && sp.room_ids.contains(&room))
+    let space_key = || SpaceKey::Space { id: space.clone() };
+    let state = wait_for("the room in its space", &a_updates, |s: &Arc<RoomLists>| {
+        listed(s, space_key()).contains(&room)
     });
     // In the space's Rooms section, among all the desktop's sections.
-    let sections = &state
-        .spaces
-        .iter()
-        .find(|sp| sp.space_id == space)
-        .unwrap()
-        .sections;
-    let keys: Vec<_> = sections.iter().map(|s| s.key.as_str()).collect();
+    let choices = state.section_choices(space_key(), SectionLayout::default());
+    let keys: Vec<_> = choices.iter().map(|s| s.key.as_str()).collect();
     assert_eq!(
         keys,
         [
@@ -820,12 +816,26 @@ fn rooms_made_set_up_joined_and_left() {
             "low_priority"
         ]
     );
-    assert_eq!(sections[3].room_ids, std::slice::from_ref(&room));
+    let sections = state.space_list(
+        space_key(),
+        SectionLayout::default(),
+        RoomSort::ListOrder,
+        String::new(),
+    );
+    let shown: Vec<_> = (sections.iter())
+        .map(|s| {
+            (
+                s.key.as_str(),
+                s.rooms.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(shown, [("rooms", vec![&room])]);
     // Notes at the top: on until turned off, for all devices.
-    assert!(state.notes_at_top);
+    assert!(state.notes_at_top());
     block_on(a.session.set_notes_at_top(false)).unwrap();
-    wait_for("Notes not at the top", &a_updates, |s: &RoomListState| {
-        !s.notes_at_top
+    wait_for("Notes not at the top", &a_updates, |s: &Arc<RoomLists>| {
+        !s.notes_at_top()
     });
     // A draft is kept for the room, which the list marks, until sent.
     let draft = mtrx_ffi::Draft {
@@ -837,13 +847,13 @@ fn rooms_made_set_up_joined_and_left() {
         block_on(a.session.draft(room.clone())).unwrap(),
         Some(draft)
     );
-    wait_for("the room's draft", &a_updates, |s: &RoomListState| {
-        s.drafts == [room.clone()]
+    wait_for("the room's draft", &a_updates, |s: &Arc<RoomLists>| {
+        s.drafts() == [room.clone()]
     });
     block_on(a.session.save_draft(room.clone(), Default::default())).unwrap();
     assert_eq!(block_on(a.session.draft(room.clone())).unwrap(), None);
-    wait_for("no drafts", &a_updates, |s: &RoomListState| {
-        s.drafts.is_empty()
+    wait_for("no drafts", &a_updates, |s: &Arc<RoomLists>| {
+        s.drafts().is_empty()
     });
 
     // Its settings: ours to change; the topic with a call link.
@@ -880,12 +890,13 @@ fn rooms_made_set_up_joined_and_left() {
             mtrx_ffi::Access::SpaceMembers
         )
     );
-    let state = wait_for("the topic", &a_updates, |s: &RoomListState| {
-        s.rooms
+    let state = wait_for("the topic", &a_updates, |s: &Arc<RoomLists>| {
+        s.rooms()
             .iter()
             .any(|r| r.id == room && r.topic.as_deref().is_some_and(|t| t.contains("[call")))
     });
-    let summary = state.rooms.iter().find(|r| r.id == room).unwrap();
+    let rooms = state.rooms();
+    let summary = rooms.iter().find(|r| r.id == room).unwrap();
     let parsed = mtrx_ffi::parse_topic(summary.topic.clone().unwrap());
     assert_eq!(
         (parsed.text.as_str(), parsed.links[0].name.as_str()),
@@ -896,8 +907,8 @@ fn rooms_made_set_up_joined_and_left() {
     let children = block_on(a.session.space_children(space.clone())).unwrap();
     let listed = children.iter().find(|r| r.id == room).unwrap();
     assert_eq!(listed.access, mtrx_ffi::JoinAccess::SpaceMembers);
-    wait_for("Bob's invite", &b_updates, |s: &RoomListState| {
-        s.rooms.iter().any(|r| r.id == room && r.invited)
+    wait_for("Bob's invite", &b_updates, |s: &Arc<RoomLists>| {
+        s.rooms().iter().any(|r| r.id == room && r.invited)
     });
     assert_eq!(
         block_on(b.session.join(room.clone(), vec![])).unwrap(),
@@ -933,8 +944,8 @@ fn rooms_made_set_up_joined_and_left() {
     assert!(members.iter().all(|m| !m.manage.remove));
 
     block_on(b.session.leave(room.clone())).unwrap();
-    wait_for("Bob left", &b_updates, |s: &RoomListState| {
-        !s.rooms.iter().any(|r| r.id == room)
+    wait_for("Bob left", &b_updates, |s: &Arc<RoomLists>| {
+        !s.rooms().iter().any(|r| r.id == room)
     });
 }
 
@@ -1000,11 +1011,11 @@ fn sent<'a>(items: &'a [TimelineItem], body: &str) -> Option<(&'a str, &'a Timel
 /// Wait until the room list has `room_id`.
 fn wait_for_room(session: &Session, room_id: &str) {
     let (rooms, updates) = forward();
-    let _handle = block_on(session.subscribe_room_list(rooms)).unwrap();
+    let _handle = block_on(session.subscribe_room_lists(rooms)).unwrap();
     wait_for(
         "the room in the room list",
         &updates,
-        |s: &RoomListState| s.rooms.iter().any(|r| r.id == room_id && !r.invited),
+        |s: &Arc<RoomLists>| s.rooms().iter().any(|r| r.id == room_id && !r.invited),
     );
 }
 
@@ -1309,7 +1320,7 @@ fn profiles_and_inviting_to_a_space() {
 
     // She invites him to the space; his room list shows the invite.
     let (rooms, updates) = forward();
-    let _handle = block_on(bob.session.subscribe_room_list(rooms)).unwrap();
+    let _handle = block_on(bob.session.subscribe_room_lists(rooms)).unwrap();
     block_on(alice.session.invite(space_id.clone(), bob_id.clone())).unwrap();
     // The invite can show before its state (the space's type and name)
     // has been read: wait for that too.
@@ -1321,7 +1332,7 @@ fn profiles_and_inviting_to_a_space() {
             panic!("the space invite, named and a space; last seen: {seen:?}");
         };
         seen = state
-            .rooms
+            .rooms()
             .iter()
             .find(|r| r.id == space_id && r.invited)
             .cloned();
@@ -1332,7 +1343,7 @@ fn profiles_and_inviting_to_a_space() {
             break state;
         }
     };
-    assert!(state.rooms_outside_spaces.contains(&space_id));
+    assert!(listed(&state, SpaceKey::Outside).contains(&space_id));
 }
 
 #[test]

@@ -10,6 +10,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.FakeDistributors
 import org.mtrx.app.FakeDistributors.Companion.NTFY
 import org.mtrx.app.FakeDistributors.Companion.OTHER
@@ -19,7 +20,6 @@ import org.mtrx.app.pushRegistration
 import org.mtrx.app.summary
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.PusherInfo
-import uniffi.mtrx.RoomListState
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PushRegistrationTest {
@@ -252,13 +252,9 @@ class PushRegistrationTest {
 
     @Test
     fun roomsReadAreThoseWhoseCountDroppedToZero() {
-        val before = RoomListState(
-            rooms = listOf(summary("!a:x", unread = 2), summary("!b:x", unread = 1), summary("!c:x")),
-            loaded = true,
-        )
-        val after = RoomListState(
+        val before = FakeRoomLists(rooms = listOf(summary("!a:x", unread = 2), summary("!b:x", unread = 1), summary("!c:x")))
+        val after = FakeRoomLists(
             rooms = listOf(summary("!a:x"), summary("!b:x", unread = 3), summary("!c:x"), summary("!new:x")),
-            loaded = true,
         )
         assertEquals(listOf("!a:x"), roomsRead(before, after))
     }

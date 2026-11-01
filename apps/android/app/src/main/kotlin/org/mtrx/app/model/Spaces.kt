@@ -7,45 +7,29 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomListsInterface
+import uniffi.mtrx.SpaceKey
 
-/** An entry of the Spaces tab's spaces page: a top-level space, or Home, the rooms outside spaces. */
-sealed interface SpaceEntry {
-    data class Space(val id: String) : SpaceEntry
+/** The key of Home (the rooms outside spaces) as saved since it was "Other rooms"; room IDs start with "!". */
+const val HOME_SAVED = "other-rooms"
 
-    data object Home : SpaceEntry
-
-    /** As saved in the preferences. */
-    val key: String
-        get() = when (this) {
-            is Space -> id
-            Home -> HOME
-        }
-
-    companion object {
-        /** The key of [Home], as saved since it was "Other rooms"; room IDs start with "!". */
-        const val HOME = "other-rooms"
-
-        fun fromKey(key: String): SpaceEntry = if (key == HOME) Home else Space(key)
+/** An entry of the spaces page as saved in the preferences. */
+val SpaceKey.saved: String
+    get() = when (this) {
+        is SpaceKey.Space -> id
+        SpaceKey.Home, SpaceKey.Outside -> HOME_SAVED
     }
-}
 
-/**
- * The IDs of the rooms [entry] lists, in the order of `rooms`; null while it
- * is not on the spaces page (Home is left out while empty).
- */
-fun RoomListState.roomIdsOf(entry: SpaceEntry): List<String>? = when (entry) {
-    is SpaceEntry.Space -> spaces.firstOrNull { it.spaceId == entry.id }?.roomIds
-    SpaceEntry.Home -> roomsOutsideSpaces.ifEmpty { null }
-}
+/** The entry of the spaces page saved as [saved]. */
+fun spaceKeyOf(saved: String): SpaceKey = if (saved == HOME_SAVED) SpaceKey.Outside else SpaceKey.Space(saved)
 
 /** Where the selected space is kept across launches. */
 interface SelectedSpaceStore {
     /** The saved entry; null if none, or it cannot be read. */
-    suspend fun load(): SpaceEntry?
+    suspend fun load(): SpaceKey?
 
     /** Save [entry], or delete the saved one (null). */
-    suspend fun save(entry: SpaceEntry?)
+    suspend fun save(entry: SpaceKey?)
 }
 
 /**
@@ -58,14 +42,14 @@ interface SelectedSpaceStore {
  */
 class SpaceSelection(
     private val store: SelectedSpaceStore,
-    private val rooms: StateFlow<RoomListState>,
+    private val rooms: StateFlow<RoomListsInterface>,
     private val scope: CoroutineScope,
 ) {
-    private val _selected = MutableStateFlow<SpaceEntry?>(null)
-    val selected: StateFlow<SpaceEntry?> = _selected.asStateFlow()
+    private val _selected = MutableStateFlow<SpaceKey?>(null)
+    val selected: StateFlow<SpaceKey?> = _selected.asStateFlow()
 
     /** The selection, also while the room list does not show it (yet). */
-    private var chosen: SpaceEntry? = null
+    private var chosen: SpaceKey? = null
 
     /** Selected or cleared before the saved entry was read: that one is stale. */
     private var changed = false
@@ -82,7 +66,7 @@ class SpaceSelection(
     }
 
     /** Select [entry] (tapped on the spaces page) and save it. */
-    fun select(entry: SpaceEntry) {
+    fun select(entry: SpaceKey) {
         chosen = entry
         changed = true
         update(rooms.value)
@@ -97,12 +81,12 @@ class SpaceSelection(
         save()
     }
 
-    private fun update(state: RoomListState) {
+    private fun update(lists: RoomListsInterface) {
         val entry = chosen
         _selected.value = when {
             entry == null -> null
-            state.roomIdsOf(entry) != null -> entry
-            state.loaded -> {
+            lists.space(entry) != null -> entry
+            lists.loaded() -> {
                 chosen = null
                 scope.launch { save() }
                 null
@@ -125,6 +109,16 @@ enum class RoomSort(val label: String) {
 
     /** By last activity, rooms without any last. */
     RECENT("Most recent"),
+    ;
+
+    /** As the library takes it. */
+    val library: uniffi.mtrx.RoomSort
+        get() = when (this) {
+            DEFAULT -> uniffi.mtrx.RoomSort.LIST_ORDER
+            A_TO_Z -> uniffi.mtrx.RoomSort.A_TO_Z
+            Z_TO_A -> uniffi.mtrx.RoomSort.Z_TO_A
+            RECENT -> uniffi.mtrx.RoomSort.MOST_RECENT
+        }
 }
 
 /** Where the order of the spaces' rooms is kept across launches. */

@@ -151,7 +151,7 @@ import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.Presence
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.SendState
 import uniffi.mtrx.TimelineEvent
@@ -216,7 +216,7 @@ fun TimelineScreen(
     images: Images,
     keysArriving: Boolean,
     spaces: List<RoomSummary>,
-    rooms: RoomListState,
+    rooms: RoomListsInterface,
     presences: Map<String, Presence>,
     refreshPresence: suspend (String) -> Unit,
     backCount: Long,
@@ -239,7 +239,7 @@ fun TimelineScreen(
     val canPin by viewModel.canPin.collectAsStateWithLifecycle()
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
     val sharedIds by viewModel.sharedRooms.collectAsStateWithLifecycle()
-    val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, only = it.toSet()) } }
+    val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, among = it) } }
     // The app may be ended in the background: the draft is kept first.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(

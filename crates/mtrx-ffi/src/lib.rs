@@ -51,7 +51,7 @@ pub use rooms::{
 };
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
-pub use session::{ConnectionListener, RoomListListener, Session};
+pub use session::{ConnectionListener, Session};
 pub use timeline::{Timeline, TimelineListener, TypingListener};
 pub use types::*;
 
