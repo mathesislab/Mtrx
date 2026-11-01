@@ -12,9 +12,12 @@ use iced::{
     widget::{button, container, row, text},
 };
 
+use mtrx_core::OwnedRoomId;
+
 use crate::{
-    app::Message,
+    app,
     hint::{Position, hint},
+    room::Message,
     style,
 };
 
@@ -73,7 +76,8 @@ fn day(time: SystemTime) -> String {
     }
 }
 
-pub fn view<'a>(status: &Status) -> Element<'a, Message> {
+/// The pill of `room`.
+pub fn view<'a>(room: &OwnedRoomId, status: &Status) -> Element<'a, app::Message> {
     let mut line = row![text(status.line()).size(12)]
         .spacing(8)
         .align_y(Alignment::Center);
@@ -82,7 +86,7 @@ pub fn view<'a>(status: &Status) -> Element<'a, Message> {
             button(text("×").size(14))
                 .padding([0, 4])
                 .style(style::text_button)
-                .on_press(message),
+                .on_press(message.to(room)),
             label,
             Position::Top,
         ));

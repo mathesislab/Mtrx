@@ -177,7 +177,7 @@ impl Panel {
         &'a self,
         frequent: &[String],
         pick: impl Fn(String) -> app::Message,
-        wrap: fn(Message) -> app::Message,
+        wrap: impl Fn(Message) -> app::Message + Clone + 'a,
     ) -> Element<'a, app::Message> {
         let cell = |emoji: &str| -> Element<'a, app::Message> {
             button(
@@ -196,7 +196,10 @@ impl Panel {
         };
         let search = text_input("Search emoji", &self.query)
             .id(Id::new(SEARCH))
-            .on_input(move |query| wrap(Message::Search(query)))
+            .on_input({
+                let wrap = wrap.clone();
+                move |query| wrap(Message::Search(query))
+            })
             .style(style::input)
             .padding([4, 8])
             .size(13);

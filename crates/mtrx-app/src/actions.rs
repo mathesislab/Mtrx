@@ -12,7 +12,9 @@ use iced::{
         text_editor,
     },
 };
-use mtrx_core::{Event, EventKey, Media, MxcUri, OwnedEventId, Reaction, Reader, Reply, SendState};
+use mtrx_core::{
+    Event, EventKey, MxcUri, OwnedEventId, OwnedRoomId, Reaction, Reader, Reply, SendState,
+};
 use mtrx_format::Document;
 
 use crate::{
@@ -27,6 +29,7 @@ use crate::{
     icons, info, message,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
+    room,
     selectable::selectable,
     selection::{self, Unit},
     style,
@@ -106,10 +109,6 @@ pub enum Message {
     CopyImage(Document),
     /// Save a message with math as a picture.
     SaveImage(Document),
-    /// Put a message's image on the clipboard.
-    CopyMediaImage(Media),
-    /// Save a message's file.
-    SaveMedia(Media),
     /// Show a timeline row's text in place of it, to select from.
     /// Stop replying.
     CancelCompose,
@@ -156,7 +155,7 @@ impl Compose {
     }
 
     /// The bar above the composer saying what is being written.
-    pub fn bar<'a>(&self) -> Option<Element<'a, app::Message>> {
+    pub fn bar<'a>(&self, room: &OwnedRoomId) -> Option<Element<'a, app::Message>> {
         let (label, preview) = match self {
             Self::New => return None,
             Self::Reply(target) => (
@@ -177,7 +176,7 @@ impl Compose {
                         button(text("×").size(14))
                             .padding([0, 6])
                             .style(style::text_button)
-                            .on_press(act(Message::CancelCompose)),
+                            .on_press(act(room, Message::CancelCompose)),
                         "Stop replying (Esc)",
                         Position::Left,
                     ),
@@ -215,10 +214,6 @@ pub struct InlineEdit {
     content: text_editor::Content,
     /// The text before editing.
     original: String,
-    /// Its emoji panel, while shown.
-    pub emoji: Option<emoji::Panel>,
-    /// Its menu (right-click), while open.
-    pub menu: Option<edit_menu::Menu>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -236,8 +231,6 @@ impl InlineEdit {
             target,
             content,
             original: text.to_owned(),
-            emoji: None,
-            menu: None,
         }
     }
 
@@ -263,14 +256,22 @@ impl InlineEdit {
         self.content.text().trim_end().to_owned()
     }
 
-    /// Its editor and menu, for the menu's actions.
-    pub fn with_menu(&mut self) -> (&mut text_editor::Content, &mut Option<edit_menu::Menu>) {
-        (&mut self.content, &mut self.menu)
+    /// Its editor, for its menu's actions.
+    pub fn content_mut(&mut self) -> &mut text_editor::Content {
+        &mut self.content
     }
 
     /// The editor, with emoji, Save and Cancel; Enter saves, Esc cancels.
-    pub fn view<'a>(&'a self, frequent: &[String]) -> Element<'a, app::Message> {
+    /// `popup`: the window's, which may be its menu or emoji panel.
+    pub fn view<'a>(
+        &'a self,
+        room: &OwnedRoomId,
+        frequent: &[String],
+        popup: Option<&'a app::Popup>,
+    ) -> Element<'a, app::Message> {
+        let (menu, emoji) = room::in_field(popup, Field::Edit);
         let selected = self.content.selection().is_some();
+        let (on_action, on_key) = (room.clone(), room.clone());
         let editor = text_editor(&self.content)
             .id(EDITOR)
             .highlight_with::<highlight::Highlighter>(
@@ -278,38 +279,41 @@ impl InlineEdit {
                 highlight::format,
             )
             .style(style::editor)
-            .on_action(|action| act(Message::EditAction(action)))
+            .on_action(move |action| act(&on_action, Message::EditAction(action)))
             .key_binding(move |press| {
                 let custom = |message| Some(text_editor::Binding::Custom(message));
                 // Rich text as Markdown, as in the composer.
                 if let Some(how) = clipboard::paste(&press) {
-                    return custom(app::Message::Paste(Field::Edit, how));
+                    return custom(room::Message::Paste(Field::Edit, how).to(&on_key));
                 }
                 match press.key {
                     Key::Named(Named::Enter) if !press.modifiers.shift() => {
-                        custom(act(Message::SaveEdit))
+                        custom(act(&on_key, Message::SaveEdit))
                     }
                     _ => selection::editor_key(press, selected),
                 }
             })
             .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
             .max_height(240);
-        let editor = edit_menu::with_menu(Field::Edit, editor, self.menu.as_ref(), selected);
+        let editor = edit_menu::with_menu(room, Field::Edit, editor, menu, selected);
         let editor = emoji::in_field(
             editor,
-            self.emoji.is_some(),
+            emoji.is_some(),
             true,
-            act(Message::EditEmoji(emoji::Message::Open)),
+            act(room, Message::EditEmoji(emoji::Message::Open)),
         );
-        let panel = self.emoji.as_ref().map(|panel| {
+        let panel = emoji.map(|panel| {
             panel.view(
                 frequent,
-                |emoji| act(Message::EditInsertEmoji(emoji)),
-                |message| act(Message::EditEmoji(message)),
+                |emoji| act(room, Message::EditInsertEmoji(emoji)),
+                {
+                    let room = room.clone();
+                    move |message| act(&room, Message::EditEmoji(message))
+                },
             )
         });
         let editor = popover(editor, panel, Side::Below, Edge::Right)
-            .on_dismiss(act(Message::EditEmoji(emoji::Message::Close)))
+            .on_dismiss(act(room, Message::EditEmoji(emoji::Message::Close)))
             .click_through();
         let empty = self.content.text().trim().is_empty();
         let view = column![
@@ -322,11 +326,11 @@ impl InlineEdit {
                 button(text("Cancel").size(12))
                     .padding([2, 8])
                     .style(style::text_button)
-                    .on_press(act(Message::CancelEdit)),
+                    .on_press(act(room, Message::CancelEdit)),
                 button(text("Save").size(12))
                     .padding([2, 10])
                     .style(style::primary_button)
-                    .on_press_maybe((!empty).then(|| act(Message::SaveEdit))),
+                    .on_press_maybe((!empty).then(|| act(room, Message::SaveEdit))),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -351,6 +355,7 @@ pub struct Menu<'a>(pub Option<Element<'a, app::Message>>);
 /// Symbols floating over a hovered message, each named on hover; the
 /// reaction window floats from the smiley while `picker` is given.
 pub fn toolbar<'a>(
+    room: &OwnedRoomId,
     event: &Event,
     target: Option<Target>,
     edit_text: Option<String>,
@@ -362,7 +367,7 @@ pub fn toolbar<'a>(
             button(icon)
                 .padding([style::TOOL_PADDING, 6.0])
                 .style(style::text_button)
-                .on_press_maybe(message.map(act)),
+                .on_press_maybe(message.map(|message| act(room, message))),
             tip,
             Position::Top,
         )
@@ -375,8 +380,8 @@ pub fn toolbar<'a>(
             .is_none()
             .then(|| Message::TogglePicker(event.id.clone(), PickerAt::Toolbar)),
     );
-    let react =
-        popover(react, picker, Side::Below, Edge::Right).on_dismiss(act(Message::ClosePicker));
+    let react = popover(react, picker, Side::Below, Edge::Right)
+        .on_dismiss(act(room, Message::ClosePicker));
     let mut bar = row![
         react,
         tool(
@@ -415,7 +420,7 @@ pub fn toolbar<'a>(
                 .then(|| Message::OpenMenu(event.id.clone(), MenuAt::Toolbar)),
         );
         bar = bar.push(
-            popover(more, open, Side::Below, Edge::Right).on_dismiss(act(Message::CloseMenu)),
+            popover(more, open, Side::Below, Edge::Right).on_dismiss(act(room, Message::CloseMenu)),
         );
     }
     container(bar)
@@ -427,6 +432,7 @@ pub fn toolbar<'a>(
 /// The reaction window: the most used emoji, and below them all emoji
 /// once "+" is clicked.
 pub fn picker<'a>(
+    room: &OwnedRoomId,
     event: &Event,
     reactions: &[Reaction],
     frequent: &[String],
@@ -440,7 +446,7 @@ pub fn picker<'a>(
             button(text(emoji.to_owned()).size(18).font(fonts::EMOJI))
                 .padding([2, 6])
                 .style(style::list_item(own))
-                .on_press(act(Message::React(key.clone(), emoji.to_owned())))
+                .on_press(act(room, Message::React(key.clone(), emoji.to_owned())))
                 .into()
         })
         .collect();
@@ -448,11 +454,14 @@ pub fn picker<'a>(
         button(text(if all.is_some() { "−" } else { "+" }).size(18))
             .padding([2, 8])
             .style(style::list_item(all.is_some()))
-            .on_press(act(Message::Emoji(if all.is_some() {
-                emoji::Message::Close
-            } else {
-                emoji::Message::Open
-            }))),
+            .on_press(act(
+                room,
+                Message::Emoji(if all.is_some() {
+                    emoji::Message::Close
+                } else {
+                    emoji::Message::Open
+                }),
+            )),
         if all.is_some() {
             "Fewer emoji"
         } else {
@@ -465,8 +474,11 @@ pub fn picker<'a>(
     if let Some(panel) = all {
         window = window.push(panel.view(
             &[],
-            move |emoji| act(Message::React(key.clone(), emoji)),
-            |message| act(Message::Emoji(message)),
+            move |emoji| act(room, Message::React(key.clone(), emoji)),
+            {
+                let room = room.clone();
+                move |message| act(&room, Message::Emoji(message))
+            },
         ));
     }
     container(window).padding(4).style(style::toolbar).into()
@@ -477,6 +489,7 @@ pub fn picker<'a>(
 /// is open). A smiley after them opens the reaction window there
 /// (`picker`, while given).
 pub fn reactions<'a>(
+    room: &OwnedRoomId,
     event: &Event,
     reactions: &[Reaction],
     listed: Option<&str>,
@@ -485,6 +498,7 @@ pub fn reactions<'a>(
 ) -> Element<'a, app::Message> {
     let pills = reactions.iter().map(|reaction| {
         pill(
+            room,
             event,
             reaction,
             listed == Some(reaction.key.as_str()),
@@ -497,14 +511,17 @@ pub fn reactions<'a>(
         button(icons::smiley(14.0, tool_color))
             .padding([2, 6])
             .style(style::reaction(false))
-            .on_press_maybe(
-                open.then(|| act(Message::TogglePicker(event.id.clone(), PickerAt::Reactions))),
-            ),
+            .on_press_maybe(open.then(|| {
+                act(
+                    room,
+                    Message::TogglePicker(event.id.clone(), PickerAt::Reactions),
+                )
+            })),
         "React",
         Position::Top,
     );
     let react =
-        popover(react, picker, Side::Below, Edge::Left).on_dismiss(act(Message::ClosePicker));
+        popover(react, picker, Side::Below, Edge::Left).on_dismiss(act(room, Message::ClosePicker));
     row(pills)
         .push(react)
         .spacing(4)
@@ -517,6 +534,7 @@ pub fn reactions<'a>(
 /// (`open`, while listed). The halves together are as tall as a pill of
 /// one button: the padding moved to inside the border.
 fn pill<'a>(
+    room: &OwnedRoomId,
     event: &Event,
     reaction: &Reaction,
     open: bool,
@@ -525,7 +543,10 @@ fn pill<'a>(
     let toggle = button(text(reaction.key.clone()).size(12).font(fonts::EMOJI))
         .padding(Padding::ZERO.left(6).right(5))
         .style(style::reaction_half(true))
-        .on_press(act(Message::React(event.key.clone(), reaction.key.clone())));
+        .on_press(act(
+            room,
+            Message::React(event.key.clone(), reaction.key.clone()),
+        ));
     // As tall as the text: a filling height would make the message row
     // fill the timeline.
     let divider = container(space())
@@ -537,10 +558,10 @@ fn pill<'a>(
         .padding(Padding::ZERO.left(5).right(6))
         .style(style::reaction_half(false))
         .on_press_maybe((!open).then(|| {
-            act(Message::OpenReactors(
-                event.id.clone(),
-                reaction.key.clone(),
-            ))
+            act(
+                room,
+                Message::OpenReactors(event.id.clone(), reaction.key.clone()),
+            )
         }));
     let pill = container(row![toggle, divider, count])
         .padding(1)
@@ -552,7 +573,7 @@ fn pill<'a>(
             Side::Below,
             Edge::Left,
         )
-        .on_dismiss(act(Message::CloseReactors))
+        .on_dismiss(act(room, Message::CloseReactors))
         .into();
     }
     let names: Vec<_> = reaction.by.iter().map(reader_name).collect();
@@ -569,12 +590,13 @@ fn pill<'a>(
 /// `select` says. The start is cut to fit, and reports what it shows under
 /// `shown`. A click goes to the message; a drag selects.
 pub fn quote<'a>(
+    room: &OwnedRoomId,
     reply: &'a Reply,
     units: &[Unit],
     select: message::Select<'a, app::Message>,
     shown: Id,
 ) -> Element<'a, app::Message> {
-    let go = (!reply.failed).then(|| app::Message::GoTo(reply.event_id.clone()));
+    let go = (!reply.failed).then(|| room::Message::GoTo(reply.event_id.clone()).to(room));
     let unit = |index: usize, spans| {
         let unit = selectable(spans, index).size(12);
         let unit = select.apply(unit, index, units[index].text.len());
@@ -612,17 +634,17 @@ pub fn quote<'a>(
 }
 
 /// Asks before deleting.
-pub fn confirm_delete<'a>(event: &Event) -> Element<'a, app::Message> {
+pub fn confirm_delete<'a>(room: &OwnedRoomId, event: &Event) -> Element<'a, app::Message> {
     row![
         text("Delete this message for everyone?").size(12),
         button(text("Delete").size(12))
             .padding([2, 8])
             .style(style::danger_button)
-            .on_press(act(Message::Delete(event.key.clone()))),
+            .on_press(act(room, Message::Delete(event.key.clone()))),
         button(text("Cancel").size(12))
             .padding([2, 8])
             .style(style::text_button)
-            .on_press(act(Message::CancelDelete)),
+            .on_press(act(room, Message::CancelDelete)),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
@@ -632,6 +654,7 @@ pub fn confirm_delete<'a>(event: &Event) -> Element<'a, app::Message> {
 /// Small pictures of who read up to this message; a click lists them all
 /// (`open`, while listed).
 pub fn read_markers<'a>(
+    room: &OwnedRoomId,
     event: &Event,
     avatars: &Avatars,
     open: bool,
@@ -660,12 +683,12 @@ pub fn read_markers<'a>(
     let markers = button(markers)
         .padding(0)
         .style(style::text_button)
-        .on_press_maybe((!open).then(|| act(Message::OpenReaders(event.id.clone()))));
+        .on_press_maybe((!open).then(|| act(room, Message::OpenReaders(event.id.clone()))));
     if open {
         let list = people(&event.read_by, avatars);
         return Some(
             popover(markers, Some(list), Side::Above, Edge::Right)
-                .on_dismiss(act(Message::CloseReaders))
+                .on_dismiss(act(room, Message::CloseReaders))
                 .into(),
         );
     }
@@ -691,7 +714,11 @@ pub struct Status {
 /// message: the older ones were sent too), a red cross if it could not be.
 /// The same size as a read marker. A click on the cross offers to retry or
 /// delete.
-pub fn send_status<'a>(event: &Event, status: Status) -> Option<Element<'a, app::Message>> {
+pub fn send_status<'a>(
+    room: &OwnedRoomId,
+    event: &Event,
+    status: Status,
+) -> Option<Element<'a, app::Message>> {
     if !event.own || !event.read_by.is_empty() {
         return None;
     }
@@ -716,12 +743,19 @@ pub fn send_status<'a>(event: &Event, status: Status) -> Option<Element<'a, app:
             }))
             .padding(0)
             .style(style::text_button)
-            .on_press_maybe((!status.open).then(|| act(Message::OpenUnsent(event.id.clone()))));
+            .on_press_maybe(
+                (!status.open).then(|| act(room, Message::OpenUnsent(event.id.clone()))),
+            );
             if status.open {
                 return Some(
-                    popover(cross, Some(unsent_menu(event)), Side::Above, Edge::Right)
-                        .on_dismiss(act(Message::CloseUnsent))
-                        .into(),
+                    popover(
+                        cross,
+                        Some(unsent_menu(room, event)),
+                        Side::Above,
+                        Edge::Right,
+                    )
+                    .on_dismiss(act(room, Message::CloseUnsent))
+                    .into(),
                 );
             }
             (cross.into(), format!("Not sent: {e}"))
@@ -731,16 +765,16 @@ pub fn send_status<'a>(event: &Event, status: Status) -> Option<Element<'a, app:
 }
 
 /// Retry or delete a message that was not sent.
-fn unsent_menu<'a>(event: &Event) -> Element<'a, app::Message> {
+fn unsent_menu<'a>(room: &OwnedRoomId, event: &Event) -> Element<'a, app::Message> {
     let choices = row![
         button(text("Retry").size(12))
             .padding([2, 8])
             .style(style::text_button)
-            .on_press(act(Message::Retry(event.key.clone()))),
+            .on_press(act(room, Message::Retry(event.key.clone()))),
         button(text("Delete").size(12))
             .padding([2, 8])
             .style(style::danger_button)
-            .on_press(act(Message::Discard(event.key.clone()))),
+            .on_press(act(room, Message::Discard(event.key.clone()))),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
@@ -861,8 +895,9 @@ pub fn typing<'a>(names: &[String]) -> Element<'a, app::Message> {
     container(line).height(TYPING_HEIGHT).into()
 }
 
-pub fn act(message: Message) -> app::Message {
-    app::Message::Act(message)
+/// `message` for `room`, as the app gets it.
+pub fn act(room: &OwnedRoomId, message: Message) -> app::Message {
+    room::Message::Act(message).to(room)
 }
 
 #[cfg(test)]
@@ -883,7 +918,7 @@ mod tests {
 
         use crate::{
             app::Message,
-            fonts, message,
+            fonts, message, room,
             selection::{self, Gesture, Unit},
         };
 
@@ -901,6 +936,7 @@ mod tests {
             gap: "",
         };
         let units = [unit("carol"), unit("Where is the data from?")];
+        let room_id: mtrx_core::OwnedRoomId = "!room:x".try_into().unwrap();
         // Pressed on the start of the quote, released at `to`.
         let messages = |to: f32| -> Vec<Message> {
             let select = message::Select {
@@ -908,11 +944,18 @@ mod tests {
                 focus: None,
                 dragging: true,
                 on_gesture: Rc::new(|gesture| {
-                    Message::Select(selection::Message::Gesture("$r/reply".into(), gesture))
+                    room::Message::Select(selection::Message::Gesture("$r/reply".into(), gesture))
+                        .to(&"!room:x".try_into().unwrap())
                 }),
                 found: Vec::new(),
             };
-            let quote = super::quote(&reply, &units, select, crate::rows::shown_id("$r/reply"));
+            let quote = super::quote(
+                &room_id,
+                &reply,
+                &units,
+                select,
+                crate::rows::shown_id("$r/reply"),
+            );
             let mut ui = Simulator::with_size(fonts::settings(), Size::new(400.0, 100.0), quote);
             ui.point_at((60.0, 8.0));
             let _ = ui.simulate([Event::Mouse(mouse::Event::ButtonPressed(
@@ -928,16 +971,21 @@ mod tests {
             ui.into_messages().collect()
         };
         let went = |messages: &[Message]| {
-            (messages.iter()).any(|m| matches!(m, Message::GoTo(id) if id == "$original:x"))
+            (messages.iter()).any(
+                |m| matches!(m, Message::Room(_, room::Message::GoTo(id)) if id == "$original:x"),
+            )
         };
         let dragged = |messages: &[Message]| {
             (messages.iter()).any(|m| {
                 matches!(
                     m,
-                    Message::Select(selection::Message::Gesture(
+                    Message::Room(
                         _,
-                        Gesture::Drag { unit: 1, .. }
-                    ))
+                        room::Message::Select(selection::Message::Gesture(
+                            _,
+                            Gesture::Drag { unit: 1, .. }
+                        ))
+                    )
                 )
             })
         };

@@ -21,7 +21,7 @@ use crate::{
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint, shortcut},
-    media::save_button,
+    media::{Origin, save_button},
     pdf::Document,
     style,
 };
@@ -393,7 +393,7 @@ impl Viewer {
                 .push(fit);
         }
         container(
-            bar.push(save_button(&self.media))
+            bar.push(save_button(&self.media, Origin::Viewer))
                 .push(frame::close_button(app::Message::CloseImage)),
         )
         .padding(Padding::from([0, 12]))

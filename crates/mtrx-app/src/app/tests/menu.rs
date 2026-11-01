@@ -215,11 +215,26 @@ fn the_menus_actions_no_field_takes_go_to_the_app() {
         |action, status| format!("{:?}", shortcuts(Event::StandardAction(action), status, id));
     let expected = |message: Message| format!("{:?}", Some(message));
     let cases = [
-        (Copy, Message::Select(selection::Message::Copy)),
-        (SelectAll, Message::Select(selection::Message::SelectAll)),
-        (Find, Message::Find(find::Message::Open)),
-        (FindNext, Message::Find(find::Message::Next)),
-        (FindPrevious, Message::Find(find::Message::Previous)),
+        (
+            Copy,
+            Message::Shown(room::Message::Select(selection::Message::Copy)),
+        ),
+        (
+            SelectAll,
+            Message::Shown(room::Message::Select(selection::Message::SelectAll)),
+        ),
+        (
+            Find,
+            Message::Shown(room::Message::Find(find::Message::Open)),
+        ),
+        (
+            FindNext,
+            Message::Shown(room::Message::Find(find::Message::Next)),
+        ),
+        (
+            FindPrevious,
+            Message::Shown(room::Message::Find(find::Message::Previous)),
+        ),
     ];
     for (action, message) in cases {
         assert_eq!(shortcut(action, Status::Ignored), expected(message));

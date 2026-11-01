@@ -52,8 +52,8 @@ async fn user(prefix: &str, dir: &TempDir) -> (String, Session) {
 }
 
 /// A member of a room, for mentions.
-fn person(id: &str, name: &str, role: mtrx_core::Role) -> Member {
-    Member {
+fn person(id: &str, name: &str, role: mtrx_core::Role) -> mtrx_core::Member {
+    mtrx_core::Member {
         id: OwnedUserId::try_from(id).unwrap(),
         name: Some(name.into()),
         avatar: None,
@@ -133,7 +133,6 @@ fn app(screen: Screen, mode: Mode) -> App {
         placement: Placement::default(),
         placement_file: None,
         resizing: false,
-        settings_panel: None,
         screen,
         system_mode: mode,
         window: Size::new(1200.0, 800.0),
@@ -280,15 +279,15 @@ fn find_keys() {
     let command = keyboard::Modifiers::COMMAND;
     assert!(matches!(
         key("f", command),
-        Some(Message::Find(find::Message::Open))
+        Some(Message::Shown(room::Message::Find(find::Message::Open)))
     ));
     assert!(matches!(
         key("g", command),
-        Some(Message::Find(find::Message::Next))
+        Some(Message::Shown(room::Message::Find(find::Message::Next)))
     ));
     assert!(matches!(
         key("g", command | keyboard::Modifiers::SHIFT),
-        Some(Message::Find(find::Message::Previous))
+        Some(Message::Shown(room::Message::Find(find::Message::Previous)))
     ));
     assert!(key("f", keyboard::Modifiers::empty()).is_none());
 }
@@ -817,15 +816,21 @@ async fn main_screen_with_math() {
         open.pins.update(pins::Message::Updated(entries.clone()));
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
-        // The call menu and reaction picker in one shot, the topic's editor
-        // and a reply in the other.
-        open.calls.menu = mode == Mode::Dark;
+        // The call menu in one shot (the reaction picker after it), the
+        // topic's editor and a reply in the other.
+        let mut reaction_picker = None;
+        if mode == Mode::Dark {
+            main.popup = Some(Popup::Calls(Default::default()));
+        }
         if mode == Mode::Light {
             open.topic.open = true;
             open.topic.can_edit = Some(true);
             open.topic.editor = Some(topic::Editor::new(TOPIC));
             // The hovered message's menu, from its toolbar.
-            open.menu = Some((hovered.clone(), MenuAt::Toolbar));
+            main.popup = Some(Popup::MessageMenu {
+                row: hovered.clone(),
+                at: MenuAt::Toolbar,
+            });
             // Text selected from the first message into bob's reply.
             let id_of = |start: &str| {
                 entries
@@ -880,7 +885,11 @@ async fn main_screen_with_math() {
                     _ => None,
                 })
                 .unwrap();
-            open.picker = Some((reacted, actions::PickerAt::Reactions));
+            reaction_picker = Some(Popup::Reactions {
+                row: reacted,
+                at: actions::PickerAt::Reactions,
+                all: None,
+            });
         } else {
             let carol_message = entries.iter().rev().find_map(|e| match e {
                 TimelineEntry::Event(ev) if ev.sender == carol.user_id() => Some(ev),
@@ -895,7 +904,7 @@ async fn main_screen_with_math() {
                 .unwrap(),
             );
         }
-        main.room = Some(open);
+        main.pane = Pane::Open(open);
         for (mxc, size) in main.avatars_on_screen(&Default::default()) {
             main.avatars.load_now(&alice, &mxc, size).await;
         }
@@ -905,7 +914,7 @@ async fn main_screen_with_math() {
         app.settings.colored_names = mode == Mode::Dark;
         let params = app.math_params();
         if let Screen::Main(main) = &app.screen {
-            for document in main.room.as_ref().unwrap().math_documents() {
+            for document in main.pane.room().unwrap().math_documents() {
                 app.math.render_now(document, &params);
             }
         }
@@ -914,7 +923,7 @@ async fn main_screen_with_math() {
         {
             // A quote of a long message wraps onto a few lines; the message
             // it quotes is marked, as just gone to.
-            let room = main.room.as_mut().unwrap();
+            let room = main.pane.room_mut().unwrap();
             let quoted = room.entries.iter_mut().find_map(|entry| match entry {
                 TimelineEntry::Event(ev) => match &mut ev.content {
                     EventContent::Message(m) => m.in_reply_to.as_mut(),
@@ -926,11 +935,11 @@ async fn main_screen_with_math() {
             reply.preview = Some("Morning! Draft of the ice flux section is up. ".repeat(12));
             let original = reply.event_id.clone();
             let row = room_row(&room.entries, &original);
-            let _ = app.update(Message::GoTo(original));
+            let _ = app.update(Message::Shown(room::Message::GoTo(original)));
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
-            assert_eq!(main.room.as_ref().unwrap().marked, row);
+            assert_eq!(main.pane.room().unwrap().marked, row);
         }
         let name = if mode == Mode::Dark {
             "main-dark"
@@ -944,7 +953,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
+            let open = main.pane.room_mut().unwrap();
             let read = (open.entries.iter())
                 .find_map(|e| match e {
                     TimelineEntry::Event(ev)
@@ -955,8 +964,7 @@ async fn main_screen_with_math() {
                     _ => None,
                 })
                 .unwrap();
-            open.menu = None;
-            open.readers = Some(read);
+            main.popup = Some(Popup::Readers(read));
             for (mxc, size) in main.avatars_on_screen(&Default::default()) {
                 main.avatars.load_now(&alice, &mxc, size).await;
             }
@@ -966,7 +974,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
+            let open = main.pane.room_mut().unwrap();
             let reacted = (open.entries.iter())
                 .find_map(|e| match e {
                     TimelineEntry::Event(ev) => match &ev.content {
@@ -980,8 +988,11 @@ async fn main_screen_with_math() {
                     _ => None,
                 })
                 .unwrap();
-            let readers = open.readers.take();
-            open.reactors = Some(reacted);
+            let readers = main.popup.take();
+            main.popup = Some(Popup::Reactors {
+                row: reacted.0,
+                key: reacted.1,
+            });
             for (mxc, size) in main.avatars_on_screen(&Default::default()) {
                 main.avatars.load_now(&alice, &mxc, size).await;
             }
@@ -989,16 +1000,14 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
-            open.reactors = None;
-            open.readers = readers;
+            main.popup = readers;
             // Alice's first message not sent, offered to retry or delete,
             // instead of the list of readers.
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
-            let readers = open.readers.take();
+            let readers = main.popup.take();
+            let open = main.pane.room_mut().unwrap();
             let unsent = (open.entries.iter_mut())
                 .find_map(|e| match e {
                     TimelineEntry::Event(ev)
@@ -1013,14 +1022,13 @@ async fn main_screen_with_math() {
                 &mut unsent.send_state,
                 mtrx_core::SendState::Failed("event too large".into()),
             );
-            open.unsent = Some(unsent.id.clone());
+            main.popup = Some(Popup::Unsent(unsent.id.clone()));
             snapshot(&app, "unsent-light");
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
-            open.unsent = None;
-            open.readers = readers;
+            main.popup = readers;
+            let open = main.pane.room_mut().unwrap();
             for entry in &mut open.entries {
                 if let TimelineEntry::Event(ev) = entry
                     && matches!(ev.send_state, mtrx_core::SendState::Failed(_))
@@ -1040,29 +1048,38 @@ async fn main_screen_with_math() {
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(
             mode == Mode::Light
-                || messages
-                    .iter()
-                    .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
+                || messages.iter().any(|m| matches!(
+                    m,
+                    Message::Room(_, room::Message::Calls(calls::Message::Close))
+                )),
             "{messages:?}"
         );
         assert!(
             messages.iter().all(|m| matches!(
                 m,
-                Message::Calls(_, calls::Message::Close)
-                    | Message::Topic(_, topic::Message::Dismiss)
-                    | Message::Act(actions::Message::CloseReaders | actions::Message::ClosePicker)
+                Message::Room(
+                    _,
+                    room::Message::Calls(calls::Message::Close)
+                        | room::Message::Topic(topic::Message::Dismiss)
+                        | room::Message::Act(
+                            actions::Message::CloseReaders | actions::Message::ClosePicker
+                        )
+                )
             )),
             "{messages:?}"
         );
         if mode == Mode::Light {
             assert!(
-                messages
-                    .iter()
-                    .any(|m| matches!(m, Message::Act(actions::Message::CloseReaders))),
+                messages.iter().any(|m| {
+                    matches!(
+                        m,
+                        Message::Room(_, room::Message::Act(actions::Message::CloseReaders))
+                    )
+                }),
                 "{messages:?}"
             );
             if let Screen::Main(main) = &mut app.screen {
-                main.room.as_mut().unwrap().readers = None;
+                main.popup = None;
             }
             composer_keeps_focus(&mut app);
             // The topic panel, not editing: Edit in its corner.
@@ -1075,21 +1092,31 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
-            assert!(!main.room.as_ref().unwrap().calls.is_open());
+            assert!(main.popup.is_none());
+            // The reaction window, from the smiley after alice's reactions.
+            if let Screen::Main(main) = &mut app.screen {
+                main.popup = reaction_picker.take();
+            }
+            snapshot(&app, "reactions-dark");
+            if let Screen::Main(main) = &mut app.screen {
+                main.popup = None;
+            }
         }
         // ⌘F: every match highlighted, in text and typeset math, the
         // newest one current; Esc closes the bar.
         if let Screen::Main(main) = &mut app.screen {
-            main.room.as_mut().unwrap().selection = None;
+            main.pane.room_mut().unwrap().selection = None;
         }
-        let _ = app.update(Message::Find(find::Message::Open));
-        let _ = app.update(Message::Find(find::Message::Query("FLUX".into())));
+        let _ = app.update(Message::Shown(room::Message::Find(find::Message::Open)));
+        let _ = app.update(Message::Shown(room::Message::Find(find::Message::Query(
+            "FLUX".into(),
+        ))));
         let found = |app: &App| {
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
-            main.room
-                .as_ref()
+            main.pane
+                .room()
                 .unwrap()
                 .find
                 .as_ref()
@@ -1121,10 +1148,10 @@ fn composer_keeps_focus(app: &mut App) {
         main
     }
     fn room(app: &mut App) -> &mut Room {
-        main(app).room.as_mut().unwrap()
+        main(app).pane.room_mut().unwrap()
     }
     // Nothing else open that could take the focus.
-    room(app).menu = None;
+    main(app).popup = None;
     room(app).topic.editor = None;
     room(app).typing.clear();
 
@@ -1162,13 +1189,13 @@ fn composer_keeps_focus(app: &mut App) {
         ("offline", |app| main(app).connection = Connection::Offline),
         ("online", |app| main(app).connection = Connection::Online),
         ("a banner", |app| {
-            main(app).error = Some("Something failed".into())
+            main(app).report("Something failed".into(), None)
         }),
-        ("it goes", |app| main(app).error = None),
+        ("it goes", |app| main(app).notice = None),
         ("settings open", |app| {
-            app.settings_panel = Some(settings::Panel::default());
+            main(app).modal = Some(Modal::Settings(settings::Panel::default()));
         }),
-        ("settings close", |app| app.settings_panel = None),
+        ("settings close", |app| main(app).modal = None),
         ("a message is queued", |app| {
             let room_id = room(app).id.clone();
             main(app).scheduled = vec![ScheduledMessage {
@@ -1319,20 +1346,20 @@ async fn send_later_bar() {
     open.entries = timeline.current();
     with_start(&mut open.entries);
     open.composer = text_editor::Content::with_text("Who can take the Monday slot? ❤");
-    open.later.picker = Some(send_later::Picker::new(
-        now,
-        mtrx_core::parse_send_time("tomorrow 8:00", now),
-    ));
-    main.room = Some(open);
+    main.popup = Some(Popup::SendLater(send_later::SendLater {
+        picker: send_later::Picker::new(now, mtrx_core::parse_send_time("tomorrow 8:00", now)),
+        rescheduling: None,
+    }));
+    main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
 
     // Editing in place: a sent message, then a scheduled one, while the
     // composer keeps its draft.
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
-        open.later = Default::default();
+        main.popup = None;
         let sent = open
             .entries
             .iter()
@@ -1350,7 +1377,7 @@ async fn send_later_bar() {
     }
     snapshot(&app, "edit-sent");
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = Some(actions::InlineEdit::new(
             actions::Editing::Scheduled("b".into()),
@@ -1359,10 +1386,9 @@ async fn send_later_bar() {
     }
     snapshot(&app, "edit-scheduled");
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = None;
-        open.later = Default::default();
         let message = open
             .entries
             .iter()
@@ -1371,21 +1397,16 @@ async fn send_later_bar() {
                 _ => None,
             })
             .unwrap();
-        open.picker = Some((message, actions::PickerAt::Toolbar));
-        open.emoji = Some(emoji::Panel::default());
+        main.popup = Some(Popup::Reactions {
+            row: message,
+            at: actions::PickerAt::Toolbar,
+            all: Some(emoji::Panel::default()),
+        });
         main.frequent_emoji = vec!["🦀".into(), "🧊".into()];
     }
     snapshot(&app, "emoji");
-    if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
-    {
-        open.picker = None;
-        open.emoji = None;
-    }
-    if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
-    {
-        open.composer_emoji = Some(emoji::Panel::default());
+    if let Screen::Main(main) = &mut app.screen {
+        main.popup = Some(Popup::FieldEmoji(Field::Composer, emoji::Panel::default()));
     }
     snapshot(&app, "composer-emoji");
     // A click outside the panel closes it; one on an emoji inserts it.
@@ -1397,22 +1418,25 @@ async fn send_later_bar() {
     };
     let outside = messages(iced::Point::new(700.0, 150.0));
     assert!(
-        outside
-            .iter()
-            .any(|m| matches!(m, Message::ComposerEmoji(emoji::Message::Close))),
+        outside.iter().any(|m| {
+            matches!(
+                m,
+                Message::Room(_, room::Message::ComposerEmoji(emoji::Message::Close))
+            )
+        }),
         "{outside:?}"
     );
     let on_crab = messages(iced::Point::new(782.0, 447.0));
     assert!(
         on_crab
             .iter()
-            .any(|m| matches!(m, Message::InsertEmoji(e) if e == "🦀")),
+            .any(|m| matches!(m, Message::Room(_, room::Message::InsertEmoji(e)) if e == "🦀")),
         "{on_crab:?}"
     );
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
-        open.composer_emoji = None;
+        main.popup = None;
         let sent = open
             .entries
             .iter()
@@ -1421,28 +1445,28 @@ async fn send_later_bar() {
                 _ => None,
             })
             .unwrap();
-        let mut edit =
+        let edit =
             actions::InlineEdit::new(actions::Editing::Sent(sent), "Reviews are due Monday 🎉");
         let mut panel = emoji::Panel::default();
         panel.update(emoji::Message::Search("ice".into()));
-        edit.emoji = Some(panel);
+        main.popup = Some(Popup::FieldEmoji(Field::Edit, panel));
         open.editing = Some(edit);
     }
     snapshot(&app, "edit-emoji");
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = None;
     }
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = None;
     }
     // Completing a mention: names starting with "an" first, then those
     // with it inside; the two people named Ana complete as their IDs.
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         use mtrx_core::Role::{Admin, Member};
         open.members_loaded(Ok((
@@ -1460,10 +1484,14 @@ async fn send_later_bar() {
         ));
     }
     snapshot(&app, "composer-mention");
-    let _ = app.update(Message::Mention(mention::Message::Down));
-    let _ = app.update(Message::Mention(mention::Message::Choose));
+    let _ = app.update(Message::Shown(room::Message::Mention(
+        mention::Message::Down,
+    )));
+    let _ = app.update(Message::Shown(room::Message::Mention(
+        mention::Message::Choose,
+    )));
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         assert_eq!(
             open.composer.text(),
@@ -1482,7 +1510,9 @@ async fn send_later_bar() {
         &mut app.settings,
         settings::Message::AccessLoaded(room.clone(), Some(Permissions::Moderators), Some(true)),
     );
-    app.settings_panel = Some(panel);
+    if let Screen::Main(main) = &mut app.screen {
+        main.modal = Some(Modal::Settings(panel));
+    }
     // A newer version, also the dot on the gear behind the panel.
     app.updater.available = Some(update::Update {
         version: semver::Version::new(0, 4, 0),
@@ -1597,7 +1627,7 @@ async fn big_room_benchmark() {
     let mut main = Main::new(session);
     let mut open = Room::new(room.clone(), timeline.clone());
     with_start(&mut open.entries);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     let start = std::time::Instant::now();
     for _ in 0..5 {
@@ -1675,28 +1705,28 @@ async fn room_management_screens() {
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = timeline.current();
         with_start(&mut open.entries);
-        main.room = Some(open);
+        main.pane = Pane::Open(open);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
     };
 
     snapshot(
         &main_with(&|main| {
-            main.add_menu = true;
+            main.popup = Some(Popup::AddMenu);
         }),
         "menus",
     );
     // The status pill: looking for a message gone to, and a problem.
     snapshot(
         &main_with(&|main| {
-            let room = main.room.as_mut().unwrap();
+            let room = main.pane.room_mut().unwrap();
             room.seeking = Some(("$gone:localhost".try_into().unwrap(), 3));
         }),
         "status-seeking",
     );
     snapshot(
         &main_with(&|main| {
-            main.room.as_mut().unwrap().error =
+            main.pane.room_mut().unwrap().error =
                 Some("The original message was not found in the room's history".into());
         }),
         "status-problem",
@@ -1730,7 +1760,7 @@ async fn room_management_screens() {
                 avatar: None,
             }));
             dialog.update(dialog::Message::CoOwner(nils, true));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "new-room-owners",
     );
@@ -1742,14 +1772,16 @@ async fn room_management_screens() {
             dialog.update(dialog::Message::Name("model runs".into()));
             dialog.update(dialog::Message::Submit);
             dialog.tick(Instant::now() + Duration::from_secs(20));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "dialog-slow",
     );
     snapshot(
         &main_with(&|main| {
-            main.room = None;
-            main.invite = Some((room.clone(), false));
+            main.pane = Pane::Invite {
+                id: room.clone(),
+                answering: false,
+            };
             main.notice = Some(Notice {
                 text: "The room “model runs” is ready.".into(),
                 room: Some(room.clone()),
@@ -1762,7 +1794,7 @@ async fn room_management_screens() {
         &main_with(&|main| {
             main.filter = "ice".into();
             main.show_members = true;
-            let room = main.room.as_mut().unwrap();
+            let room = main.pane.room_mut().unwrap();
             room.members_loaded(Ok((members.clone(), true)));
         }),
         "members-search",
@@ -1771,7 +1803,7 @@ async fn room_management_screens() {
     // and its members load.
     let mut app = main_with(&|main| {
         main.show_members = true;
-        let room = main.room.as_mut().unwrap();
+        let room = main.pane.room_mut().unwrap();
         room.members_loaded(Ok((members.clone(), true)));
     });
     let _ = app.update(Message::OpenRoom(other.clone()));
@@ -1781,7 +1813,7 @@ async fn room_management_screens() {
     let Screen::Main(main) = &app.screen else {
         unreachable!()
     };
-    let open = main.room.as_ref().unwrap();
+    let open = main.pane.room().unwrap();
     assert_eq!(open.id, other);
     assert!(main.show_members);
     assert!(open.loading_members && open.member_list.is_none());
@@ -1801,7 +1833,7 @@ async fn room_management_screens() {
                 Ok(bob_info.clone()),
             ));
             card.update(info::Message::Copy(bob.user_id().to_string()));
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "info-user",
     );
@@ -1819,7 +1851,7 @@ async fn room_management_screens() {
             ));
             // A link being added.
             card.update(info::Message::Topic(topic::Edit::Add(false)));
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "room-settings",
     );
@@ -1830,7 +1862,7 @@ async fn room_management_screens() {
             });
             dialog.prefer_spaces(vec![space.clone()]);
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "new-room-people",
     );
@@ -1839,7 +1871,7 @@ async fn room_management_screens() {
             let mut dialog = Dialog::new(dialog::Kind::DirectChat);
             dialog.offer_self(main.own_user.clone());
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "direct-chat-people",
     );
@@ -1880,7 +1912,7 @@ async fn room_management_screens() {
                 Ok(space_settings.clone()),
             ));
             main.space_rooms.loaded(space.clone(), Ok(children.clone()));
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "space-overview",
     );
@@ -1912,7 +1944,7 @@ async fn room_management_screens() {
             );
             main.space_rooms.loaded(space.clone(), Ok(children.clone()));
             main.space_rooms.start(&space, true);
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "space-overview-updating",
     );
@@ -1932,7 +1964,7 @@ async fn room_management_screens() {
                     next: None,
                 }),
             ));
-            main.join = Some(join);
+            main.modal = Some(Modal::Join(join));
         }),
         "join",
     );
@@ -2021,7 +2053,7 @@ async fn mention_colours() {
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = entries;
     with_start(&mut open.entries);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "mention-colours");
 }
@@ -2140,7 +2172,7 @@ async fn media_messages() {
     let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
-    let main_with = async |viewer: Option<Viewer>, pdf: Option<pdf_viewer::Viewer>| {
+    let main_with = async |modal: Option<Modal>| {
         let mut main = Main::new(session.clone());
         main.rooms = rooms.clone();
         main.verified = Some(true);
@@ -2151,13 +2183,12 @@ async fn media_messages() {
         for media in &images {
             main.previews.load_now(&session, media).await;
         }
-        main.room = Some(open);
-        main.viewer = viewer;
-        main.pdf = pdf;
+        main.pane = Pane::Open(open);
+        main.modal = modal;
         Box::new(main)
     };
     for (mode, name) in [(Mode::Light, "media-light"), (Mode::Dark, "media-dark")] {
-        snapshot(&app(Screen::Main(main_with(None, None).await), mode), name);
+        snapshot(&app(Screen::Main(main_with(None).await), mode), name);
     }
     // Files attached to a message being written sit in the composer.
     let files = dir.path().join("attach");
@@ -2169,8 +2200,8 @@ async fn media_messages() {
     )
     .unwrap();
     std::fs::write(&paths[1], crate::pdf::sample()).unwrap();
-    let mut main = main_with(None, None).await;
-    let open = main.room.as_mut().unwrap();
+    let mut main = main_with(None).await;
+    let open = main.pane.room_mut().unwrap();
     open.attachments = crate::media::read_attached(paths)
         .await
         .into_iter()
@@ -2185,7 +2216,7 @@ async fn media_messages() {
     viewer.load_now(&session).await;
     snapshot(
         &app(
-            Screen::Main(main_with(Some(viewer), None).await),
+            Screen::Main(main_with(Some(Modal::Image(viewer))).await),
             Mode::Light,
         ),
         "image-viewer",
@@ -2194,7 +2225,7 @@ async fn media_messages() {
     viewer.open_now(&session).await;
     snapshot(
         &app(
-            Screen::Main(main_with(None, Some(viewer)).await),
+            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
             Mode::Light,
         ),
         "pdf-viewer",
@@ -2204,7 +2235,7 @@ async fn media_messages() {
     viewer.open_now(&session).await;
     snapshot(
         &app(
-            Screen::Main(main_with(None, Some(viewer)).await),
+            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
             Mode::Dark,
         ),
         "pdf-viewer-zoomed-out",
@@ -2289,6 +2320,7 @@ async fn room_categories() {
                 space: None,
                 rooms: &mut main.rooms.rooms,
                 grouping: mtrx_core::Grouping::default(),
+                popup: &mut main.popup,
             },
         );
     };
@@ -2465,6 +2497,7 @@ async fn show_menu() {
                 space: Some(&space),
                 rooms: &mut main.rooms.rooms,
                 grouping: mtrx_core::Grouping::default(),
+                popup: &mut main.popup,
             },
         );
     };
@@ -2497,7 +2530,7 @@ async fn show_menu() {
         unreachable!()
     };
     send(main, arrange::Message::Released);
-    assert!(main.arrange.show_menu);
+    assert!(matches!(main.popup, Some(Popup::ShowMenu)));
     let order = main.arrange.categories.layout(Some(&space)).order();
     assert_eq!(order[3..5], [Section::Rooms, Section::Category(papers)]);
     snapshot(&app, "show-menu");
@@ -2745,7 +2778,7 @@ async fn website_screenshots() {
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
         with_start(&mut open.entries);
-        main.room = Some(open);
+        main.pane = Pane::Open(open);
         let mut app = app(Screen::Main(Box::new(main)), mode);
         app.settings.colored_names = mode == Mode::Dark;
         app
@@ -2753,7 +2786,7 @@ async fn website_screenshots() {
     async fn finish(app: &mut App, ana: &Session) {
         let params = app.math_params();
         if let Screen::Main(main) = &mut app.screen {
-            for document in main.room.as_ref().unwrap().math_documents() {
+            for document in main.pane.room().unwrap().math_documents() {
                 app.math.render_now(document, &params);
             }
             for (mxc, size) in main.avatars_on_screen(&Default::default()) {
@@ -2774,13 +2807,13 @@ async fn website_screenshots() {
     // Sending later: the picker, with a draft.
     let mut app = screen(Mode::Light);
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.composer = text_editor::Content::with_text("Results are in the shared folder 📈");
-        open.later.picker = Some(send_later::Picker::new(
-            now,
-            mtrx_core::parse_send_time("tomorrow 8:00", now),
-        ));
+        main.popup = Some(Popup::SendLater(send_later::SendLater {
+            picker: send_later::Picker::new(now, mtrx_core::parse_send_time("tomorrow 8:00", now)),
+            rescheduling: None,
+        }));
     }
     finish(&mut app, &ana).await;
     snapshot(&app, "site-send-later");
@@ -2788,7 +2821,7 @@ async fn website_screenshots() {
     // Copying: a selection through typeset math into the next message.
     let mut app = screen(Mode::Light);
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         let math = id_of("The basal melt");
         open.selection = Some(Selection {
@@ -2806,7 +2839,10 @@ async fn website_screenshots() {
             dragging: false,
         });
         open.hover(math.clone(), true);
-        open.menu = Some((math, MenuAt::Toolbar));
+        main.popup = Some(Popup::MessageMenu {
+            row: math,
+            at: MenuAt::Toolbar,
+        });
     }
     finish(&mut app, &ana).await;
     snapshot(&app, "site-copy");
@@ -2850,7 +2886,7 @@ async fn composer_scrolls_alone() {
         })
         .collect();
     open.composer = typed(&draft.join("\n"));
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
@@ -2902,7 +2938,10 @@ async fn composer_scrolls_alone() {
             "round {round}"
         );
         for message in messages {
-            assert!(matches!(message, Message::Composer(_)), "{message:?}");
+            assert!(
+                matches!(message, Message::Room(_, room::Message::Composer(_))),
+                "{message:?}"
+            );
             let _ = app.update(message);
         }
     }
@@ -2930,9 +2969,40 @@ impl iced::advanced::widget::Operation for TimelineView {
     }
 }
 
+/// A room in the room list.
+fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
+    mtrx_core::RoomSummary {
+        id: id.clone(),
+        name: name.into(),
+        avatar: None,
+        topic: None,
+        kind: RoomKind::Room,
+        invited: false,
+        encrypted: false,
+        public: false,
+        unread_messages: 0,
+        unread_mentions: 0,
+        unread_notifications: 0,
+        last_activity: None,
+        parents: Vec::new(),
+        tag: RoomTag::None,
+        direct_user: None,
+        alias: None,
+        joined_members: 1,
+        pinned: Vec::new(),
+    }
+}
+
 fn open_room(app: &mut App) -> &mut Room {
     match &mut app.screen {
-        Screen::Main(main) => main.room.as_mut().unwrap(),
+        Screen::Main(main) => main.pane.room_mut().unwrap(),
+        _ => unreachable!(),
+    }
+}
+
+fn pane(app: &App) -> &Pane {
+    match &app.screen {
+        Screen::Main(main) => &main.pane,
         _ => unreachable!(),
     }
 }
@@ -2974,7 +3044,7 @@ async fn drafts_stay_in_their_room() {
     let mut open = Room::new(a.clone(), timeline.clone());
     open.entries = timeline.current();
     open.restore_draft(None);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     // Writing an answer, kept after a pause.
@@ -2987,9 +3057,11 @@ async fn drafts_stay_in_their_room() {
             }
             _ => None,
         });
-    let _ = app.update(Message::Act(actions::Message::Reply(target.unwrap())));
-    let paused = app.update(Message::Composer(text_editor::Action::Edit(
-        text_editor::Edit::Paste(Arc::new("Yes, see you".into())),
+    let _ = app.update(Message::Shown(room::Message::Act(actions::Message::Reply(
+        target.unwrap(),
+    ))));
+    let paused = app.update(Message::Shown(room::Message::Composer(
+        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Yes, see you".into()))),
     )));
     for message in messages_of(paused).await {
         let _ = messages_of(app.update(message)).await;
@@ -3001,8 +3073,8 @@ async fn drafts_stay_in_their_room() {
     assert_eq!(alice.draft(&a).await.unwrap(), Some(kept.clone()));
 
     // More written, then another room opened at once: kept as it was.
-    let _ = app.update(Message::Composer(text_editor::Action::Edit(
-        text_editor::Edit::Paste(Arc::new(" there".into())),
+    let _ = app.update(Message::Shown(room::Message::Composer(
+        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(" there".into()))),
     )));
     let before = app.room_draft();
     let other = Room::new(b.clone(), Arc::new(alice.timeline(&b).await.unwrap()));
@@ -3022,4 +3094,350 @@ async fn drafts_stay_in_their_room() {
     assert_eq!(back.composer.text().trim_end(), "Yes, see you there");
     assert_eq!(back.compose.reply_to(), Some(&question));
     assert_eq!(back.draft_to_keep(), None, "nothing new to keep");
+}
+
+/// Typed while another room opens: in neither room, nor in the draft kept
+/// for the room left.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn typing_while_a_room_opens_goes_nowhere() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("opening", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let alice = Arc::new(alice);
+    let mut main = Main::new(alice.clone());
+    main.verified = Some(true);
+    let mut open = Room::new(a.clone(), timeline.clone());
+    open.restore_draft(None);
+    open.set_composer(typed("Hello"));
+    main.pane = Pane::Open(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let opened = messages_of(app.update(Message::OpenRoom(b.clone()))).await;
+    assert!(matches!(pane(&app), Pane::Opening(id) if *id == b));
+    let _ =
+        messages_of(app.update(Message::Shown(room::Message::TypeInComposer("x".into())))).await;
+    for message in opened {
+        let _ = app.update(message);
+    }
+    assert_eq!(open_room(&mut app).id, b);
+    assert_eq!(open_room(&mut app).composer.text().trim_end(), "");
+    let kept = mtrx_core::Draft {
+        text: "Hello".into(),
+        reply_to: None,
+    };
+    assert_eq!(alice.draft(&a).await.unwrap(), Some(kept));
+}
+
+/// An invite chosen while a room opens stays shown: the room opening late
+/// does not open behind it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn an_invite_chosen_while_a_room_opens_stays() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("invited", &dir).await;
+    let a = alice
+        .create_room(NewRoom {
+            name: Some("a".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let invite: OwnedRoomId = "!invite:localhost".try_into().unwrap();
+    let mut main = Main::new(Arc::new(alice));
+    main.verified = Some(true);
+    main.rooms.rooms = vec![
+        summary(&a, "a"),
+        mtrx_core::RoomSummary {
+            invited: true,
+            ..summary(&invite, "invite")
+        },
+    ];
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let opened = messages_of(app.update(Message::OpenRoom(a.clone()))).await;
+    let _ = app.update(Message::OpenRoom(invite.clone()));
+    for message in opened {
+        let _ = app.update(message);
+    }
+    assert!(matches!(
+        pane(&app),
+        Pane::Invite { id, answering: false } if *id == invite
+    ));
+}
+
+/// What finishes for a room after another opened stays with it: a message
+/// scheduled there leaves the other's composer alone, and its failures do
+/// not show in the other.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn results_stay_with_their_room() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("results", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let mut main = Main::new(Arc::new(alice));
+    main.verified = Some(true);
+    let mut open = Room::new(a.clone(), timeline);
+    open.restore_draft(None);
+    open.set_composer(typed("Later, in a"));
+    main.pane = Pane::Open(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
+    let later = send_later::Message::At(in_an_hour);
+    let scheduled = app.update(room::Message::Later(later).to(&a));
+    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+        let _ = app.update(message);
+    }
+    open_room(&mut app).set_composer(typed("Draft in b"));
+    for message in messages_of(scheduled).await {
+        let _ = app.update(message);
+    }
+    let failed = actions::Message::Done(Err("Could not react".into()));
+    let _ = app.update(room::Message::Act(failed).to(&a));
+
+    let open = open_room(&mut app);
+    assert_eq!(open.id, b);
+    assert_eq!(open.composer.text().trim_end(), "Draft in b");
+    assert_eq!(open.error, None);
+}
+
+/// A room that failed to open says so in the notice bar, offering to open
+/// it again, until it opens.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_room_that_failed_to_open_opens_again() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("reopen", &dir).await;
+    let a = alice
+        .create_room(NewRoom {
+            name: Some("a".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let mut main = Main::new(Arc::new(alice));
+    main.verified = Some(true);
+    main.rooms.rooms = vec![summary(&a, "a")];
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+    let problem = |app: &App| match &app.screen {
+        Screen::Main(main) => main.notice.as_ref().filter(|n| n.error).map(|n| {
+            assert_eq!(n.room.as_ref(), Some(&a));
+            n.text.clone()
+        }),
+        _ => None,
+    };
+
+    let _ = app.update(Message::OpenRoom(a.clone()));
+    let _ = app.update(Message::RoomOpened(a.clone(), Err("timed out".into())));
+    assert!(matches!(pane(&app), Pane::Empty));
+    assert_eq!(
+        problem(&app).as_deref(),
+        Some("Could not open the room: timed out")
+    );
+    let _ = app.update(Message::OpenRoom(a.clone()));
+    let _ = app.update(Message::RoomOpened(a.clone(), Ok(Shared(timeline))));
+    assert_eq!(open_room(&mut app).id, a);
+    assert_eq!(problem(&app), None);
+}
+
+/// A dialog's request reports back to that dialog: one closed while it ran
+/// says how it went in the notice bar, not in the dialog open since.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_cancelled_request_reports_in_the_notice_bar() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("cancelled", &dir).await;
+    let mut shown = Main::new(Arc::new(alice));
+    shown.verified = Some(true);
+    let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
+    fn main(app: &mut App) -> &mut Main {
+        match &mut app.screen {
+            Screen::Main(main) => main,
+            _ => unreachable!(),
+        }
+    }
+    let leave = |name: &str| dialog::Kind::Leave {
+        room: format!("!{name}:localhost").try_into().unwrap(),
+        name: name.into(),
+    };
+
+    // Not run: the result is given below.
+    let _ = app.update(Message::OpenDialog(leave("first")));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let first = main(&mut app).last_request;
+    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    assert!(main(&mut app).modal.is_none());
+    let _ = app.update(Message::OpenDialog(leave("second")));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let second = main(&mut app).last_request;
+    assert_ne!(first, second);
+
+    let failed = Err("no such room".into());
+    let _ = app.update(Message::Dialog(dialog::Message::Done(first, failed)));
+    let notice = main(&mut app).notice.take().expect("a notice");
+    assert!(notice.error);
+    assert_eq!(notice.text, "Could not leave first: no such room");
+    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+        panic!("the second dialog closed");
+    };
+    assert!(open.busy(), "still waiting for its own request");
+
+    // Its own result, which only it takes.
+    let failed = Err("not a member".into());
+    let _ = app.update(Message::Dialog(dialog::Message::Done(second, failed)));
+    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+        panic!("the second dialog closed");
+    };
+    assert!(!open.busy());
+    assert!(main(&mut app).notice.is_none());
+}
+
+/// A request finishing after its dialog was closed still does what it
+/// did: a room left closes, signing out shows the sign-in.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_cancelled_request_still_takes_effect() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("cancelleffect", &dir).await;
+    let mut shown = Main::new(Arc::new(alice));
+    shown.verified = Some(true);
+    let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
+    fn main(app: &mut App) -> &mut Main {
+        match &mut app.screen {
+            Screen::Main(main) => main,
+            _ => unreachable!(),
+        }
+    }
+    let lab: OwnedRoomId = "!lab:localhost".try_into().unwrap();
+    main(&mut app).set_pane(Pane::Opening(lab.clone()));
+    main(&mut app).space = Some(lab.clone());
+
+    // Not run: the results are given below.
+    let leave = dialog::Kind::Leave {
+        room: lab.clone(),
+        name: "Lab".into(),
+    };
+    let _ = app.update(Message::OpenDialog(leave));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let left = main(&mut app).last_request;
+    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let done = Ok(dialog::Opened::Left(lab.clone()));
+    let _ = app.update(Message::Dialog(dialog::Message::Done(left, done)));
+    assert!(main(&mut app).notice.is_some());
+    assert!(
+        main(&mut app).pane.id().is_none(),
+        "the room left still shows"
+    );
+    assert!(main(&mut app).space.is_none(), "the space left still shows");
+
+    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let out = main(&mut app).last_request;
+    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let done = Ok(dialog::Opened::SignedOut);
+    let _ = app.update(Message::Dialog(dialog::Message::Done(out, done)));
+    assert!(matches!(app.screen, Screen::Login(_)), "still signed in");
+}
+
+/// A direct chat that could not be started says so in the notice bar,
+/// whatever dialog is open.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_chat_that_cannot_start_reports_in_the_notice_bar() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("chatwith", &dir).await;
+    // Signed out elsewhere: the server refuses to start the chat.
+    let alice = Arc::new(alice);
+    alice.logout().await.unwrap();
+    let mut main = Main::new(alice);
+    main.verified = Some(true);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
+
+    let ghost: OwnedUserId = "@ghost:localhost".try_into().unwrap();
+    let started = messages_of(app.update(Message::ChatWith(ghost))).await;
+    assert!(
+        matches!(&started[..], [Message::ChatStarted(Err(_))]),
+        "{started:?}"
+    );
+    for message in started {
+        let _ = app.update(message);
+    }
+    let Screen::Main(main) = &app.screen else {
+        unreachable!()
+    };
+    let notice = main.notice.as_ref().expect("a notice");
+    assert!(notice.error);
+    assert!(
+        notice.text.starts_with("Could not open the direct chat: "),
+        "{}",
+        notice.text
+    );
+    let Some(Modal::Dialog(open)) = &main.modal else {
+        panic!("the dialog closed");
+    };
+    assert!(!open.busy());
+    assert!(matches!(pane(&app), Pane::Empty));
+}
+
+/// A message scheduled in a room left before the server confirmed it is
+/// no longer that room's draft.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn scheduled_in_a_room_left_clears_its_draft() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("scheduled", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let alice = Arc::new(alice);
+    let mut main = Main::new(alice.clone());
+    main.verified = Some(true);
+    let mut open = Room::new(a.clone(), timeline);
+    open.restore_draft(None);
+    open.set_composer(typed("Later, in a"));
+    main.pane = Pane::Open(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
+    let later = send_later::Message::At(in_an_hour);
+    let scheduled = app.update(room::Message::Later(later).to(&a));
+    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+        let _ = app.update(message);
+    }
+    let kept = mtrx_core::Draft {
+        text: "Later, in a".into(),
+        reply_to: None,
+    };
+    assert_eq!(
+        alice.draft(&a).await.unwrap(),
+        Some(kept),
+        "kept on leaving"
+    );
+    for message in messages_of(scheduled).await {
+        let _ = messages_of(app.update(message)).await;
+    }
+
+    assert_eq!(alice.draft(&a).await.unwrap(), None);
+    let drafts = alice.rooms_with_drafts_updates().next().await.unwrap();
+    assert!(!drafts.contains(&a), "{drafts:?}");
+    assert_eq!(open_room(&mut app).id, b);
 }

@@ -18,7 +18,7 @@ use crate::{
     icons,
     popover::{Edge, Side, popover},
     reorder::{self, Reorder},
-    style, topic,
+    room, style, topic,
 };
 
 const MENU_WIDTH: f32 = 300.0;
@@ -53,13 +53,18 @@ fn start_hint(service: &CallService) -> String {
 pub struct RoomCalls {
     room: OwnedRoomId,
     pub space_service: Option<CallService>,
-    pub menu: bool,
     /// A call is being started.
     pub busy: bool,
-    /// Starting a call failed.
-    pub error: Option<String>,
+}
+
+/// The menu of the room's calls and links, while open (the window's
+/// popup): their drags.
+#[derive(Default)]
+pub struct Menu {
     pub calls: Reorder,
     pub links: Reorder,
+    /// Starting a call failed.
+    pub error: Option<String>,
 }
 
 impl RoomCalls {
@@ -67,27 +72,12 @@ impl RoomCalls {
         Self {
             room,
             space_service: None,
-            menu: false,
             busy: false,
-            error: None,
-            calls: Reorder::default(),
-            links: Reorder::default(),
         }
     }
 
-    pub fn is_open(&self) -> bool {
-        self.menu
-    }
-
-    pub fn close(&mut self) {
-        self.menu = false;
-        self.error = None;
-        self.calls = Reorder::default();
-        self.links = Reorder::default();
-    }
-
     fn message(&self, message: Message) -> app::Message {
-        app::Message::Calls(self.room.clone(), message)
+        room::Message::Calls(message).to(&self.room)
     }
 
     /// The service "Start call" uses: the space's, else the first own one.
@@ -107,14 +97,16 @@ impl RoomCalls {
 
     /// The split button at the right of the room header: Join the room's
     /// call, or Start call; and how many calls and links the room has,
-    /// opening the menu. `can_edit`: whether we may change the topic.
+    /// opening the menu (`menu`, while open). `can_edit`: whether we may
+    /// change the topic.
     pub fn header_controls<'a>(
         &'a self,
         topic: &Topic,
         own: &'a [CallService],
         can_edit: bool,
+        menu: Option<&'a Menu>,
     ) -> Element<'a, app::Message> {
-        let open = self.is_open();
+        let open = menu.is_some();
         // Hints would cover the open menu.
         let tip = |control: Element<'a, app::Message>, label: Element<'a, app::Message>| {
             if open {
@@ -197,7 +189,7 @@ impl RoomCalls {
                 .size(12)
                 .into(),
         );
-        let menu = open.then(|| self.menu_view(topic, own, can_edit));
+        let menu = menu.map(|menu| self.menu_view(menu, topic, own, can_edit));
         popover(
             row![main, toggle].spacing(1).height(SPLIT_HEIGHT),
             menu,
@@ -210,6 +202,7 @@ impl RoomCalls {
 
     fn menu_view<'a>(
         &'a self,
+        state: &'a Menu,
         topic: &Topic,
         own: &'a [CallService],
         can_edit: bool,
@@ -228,8 +221,8 @@ impl RoomCalls {
         let (calls, links): (Vec<&RoomLink>, Vec<&RoomLink>) =
             topic.links.iter().partition(|l| l.is_call());
         for (group, order, message) in [
-            (calls, &self.calls, Message::Calls as fn(_) -> _),
-            (links, &self.links, Message::Links),
+            (calls, &state.calls, Message::Calls as fn(_) -> _),
+            (links, &state.links, Message::Links),
         ] {
             let Some(first) = group.first() else {
                 continue;
@@ -242,7 +235,7 @@ impl RoomCalls {
                 .collect();
             let room = self.room.clone();
             menu = menu.push(reorder::list(order, rows, can_edit && many, move |m| {
-                app::Message::Calls(room.clone(), message(m))
+                room::Message::Calls(message(m)).to(&room)
             }));
         }
         if !topic.links.is_empty() {
@@ -271,10 +264,10 @@ impl RoomCalls {
                     .width(Length::Fill)
                     .padding([4, 10])
                     .style(style::list_item(false))
-                    .on_press(app::Message::Topic(self.room.clone(), topic::Message::Edit)),
+                    .on_press(room::Message::Topic(topic::Message::Edit).to(&self.room)),
             );
         }
-        if let Some(error) = &self.error {
+        if let Some(error) = &state.error {
             menu = menu.push(container(text(error).size(12).style(text::danger)).padding([4, 10]));
         }
         container(menu)

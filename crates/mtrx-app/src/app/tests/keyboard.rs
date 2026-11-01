@@ -52,7 +52,7 @@ impl Ui {
     }
 
     fn room(&mut self) -> &mut Room {
-        self.main().room.as_mut().expect("a room is open")
+        self.main().pane.room_mut().expect("a room is open")
     }
 
     /// `events` through the widgets, then to the shortcuts with whether a
@@ -173,7 +173,7 @@ async fn room_with(prefix: &str, messages: &[&str]) -> (Ui, TempDir) {
     let mut open = Room::new(room, timeline.clone());
     open.entries = timeline.current();
     with_start(&mut open.entries);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     (Ui::new(app(Screen::Main(Box::new(main)), Mode::Light)), dir)
 }
 
@@ -237,7 +237,13 @@ fn shift_and_arrows_move_the_end_of_the_selection() {
     assert_shortcuts(
         cases
             .into_iter()
-            .map(|(key, modifiers, message)| (key, modifiers, Message::Select(message)))
+            .map(|(key, modifiers, message)| {
+                (
+                    key,
+                    modifiers,
+                    Message::Shown(room::Message::Select(message)),
+                )
+            })
             .collect(),
     );
 }
@@ -291,7 +297,13 @@ fn page_keys_and_arrows_scroll_the_timeline() {
     assert_shortcuts(
         cases
             .into_iter()
-            .map(|(key, modifiers, scroll)| (key, modifiers, Message::ScrollKey(scroll)))
+            .map(|(key, modifiers, scroll)| {
+                (
+                    key,
+                    modifiers,
+                    Message::Shown(room::Message::ScrollKey(scroll)),
+                )
+            })
             .collect(),
     );
 }
@@ -414,30 +426,6 @@ fn keys_go_to_rooms_from_fields_too() {
     }
 }
 
-/// A room in the room list.
-fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
-    mtrx_core::RoomSummary {
-        id: id.clone(),
-        name: name.into(),
-        avatar: None,
-        topic: None,
-        kind: RoomKind::Room,
-        invited: false,
-        encrypted: false,
-        public: false,
-        unread_messages: 0,
-        unread_mentions: 0,
-        unread_notifications: 0,
-        last_activity: None,
-        parents: Vec::new(),
-        tag: RoomTag::None,
-        direct_user: None,
-        alias: None,
-        joined_members: 1,
-        pinned: Vec::new(),
-    }
-}
-
 /// ⌥⌘↓ and ⌘1 open the room below and the first, also from the composer,
 /// which leaves them: ⌘1 types no 1.
 #[tokio::test(flavor = "multi_thread")]
@@ -445,6 +433,7 @@ fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
 async fn keys_go_to_other_rooms_from_the_composer() {
     let (mut ui, _dir) = room_with("goto", &[]).await;
     let open = ui.room().id.clone();
+    let timeline = ui.room().timeline.clone();
     let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
     ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
     ui.run(iced::widget::operation::focus(room::COMPOSER));
@@ -459,14 +448,24 @@ async fn keys_go_to_other_rooms_from_the_composer() {
     for (key, modifiers) in keys {
         let (statuses, messages) = ui.messages(&[press(key.clone(), modifiers)]);
         assert_eq!(statuses, [Status::Ignored], "{key:?}");
+        let typing = |m: &Message| {
+            matches!(
+                m,
+                Message::Room(_, room::Message::Composer(text_editor::Action::Edit(_)))
+            )
+        };
+        assert!(!messages.iter().any(typing), "{key:?}");
         // Opening it (its tasks are not run: rooms load their timeline by
         // a subscription, which this window has not).
         for message in messages {
             let _ = ui.app.update(message);
         }
-        assert_eq!(ui.main().opening.as_ref(), Some(&other), "{key:?}");
-        ui.main().opening = None;
-        assert_eq!(ui.room().composer.text(), "");
+        assert!(
+            matches!(&ui.main().pane, Pane::Opening(id) if *id == other),
+            "{key:?}"
+        );
+        // Open again for the next key.
+        ui.main().pane = Pane::Open(Room::new(open.clone(), timeline.clone()));
     }
 }
 
@@ -479,7 +478,12 @@ fn characters_typed_with_nothing_focused_go_to_the_composer() {
             shortcuts(press(key, modifiers), status, window::Id::unique())
         )
     };
-    let to_composer = |text: &str| format!("{:?}", Some(Message::TypeInComposer(text.into())));
+    let to_composer = |text: &str| {
+        format!(
+            "{:?}",
+            Some(Message::Shown(room::Message::TypeInComposer(text.into())))
+        )
+    };
     assert_eq!(
         typed("h", Modifiers::empty(), Status::Ignored),
         to_composer("h")
@@ -539,7 +543,7 @@ async fn typing_with_nothing_focused_goes_to_the_composer() {
     assert_eq!(ui.room().composer.text(), "Ok");
 
     // Nothing focused, under the settings: nothing.
-    ui.app.settings_panel = Some(settings::Panel::default());
+    ui.main().modal = Some(Modal::Settings(settings::Panel::default()));
     ui.run(iced::widget::operation::focus("nothing"));
     assert_eq!(
         ui.press(Key::Character("x".into()), Modifiers::empty()),
@@ -679,7 +683,9 @@ impl Ui {
             mouse::Button::Left,
         ))]);
         // The app listens for the release while a selection is dragged.
-        messages.push(Message::Select(selection::Message::End));
+        messages.push(Message::Shown(room::Message::Select(
+            selection::Message::End,
+        )));
         for message in messages {
             self.update(message);
         }
@@ -771,6 +777,75 @@ async fn shortcuts_type_nothing_in_fields() {
     // Typing still types, also with ⌥.
     assert_eq!(
         typed(&mut ui, "é", Modifiers::ALT),
-        "[Composer(Edit(Insert('é')))]"
+        format!("[Room({open:?}, Composer(Edit(Insert('é'))))]")
     );
+}
+
+/// One panel over the window at a time, above the card: a dialog opened
+/// from the settings replaces them; Esc closes it, then the card.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn escape_closes_the_modal_then_the_card() {
+    let (mut ui, _dir) = room_with("modal", &[]).await;
+    let room = ui.room().id.clone();
+    ui.main().card = Some(info::Card::new(
+        info::Target::Room(room.clone()),
+        &[],
+        overview::Tab::Rooms,
+    ));
+    ui.main().modal = Some(Modal::Settings(settings::Panel::default()));
+    ui.update(Message::OpenDialog(dialog::Kind::Leave {
+        room,
+        name: "modal".into(),
+    }));
+    assert!(matches!(ui.main().modal, Some(Modal::Dialog(_))));
+
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(ui.main().modal.is_none());
+    assert!(ui.main().card.is_some());
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(ui.main().card.is_none());
+}
+
+/// One popup at a time in the whole window: one opened replaces another,
+/// Esc closes it before the card; the open room's closes as its timeline
+/// is reloaded or another pane shows, the room list's stays.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn one_popup_in_the_window() {
+    let (mut ui, _dir) = room_with("popup", &["Calving"]).await;
+    let room = ui.room().id.clone();
+    let row = row_of(ui.room(), "Calving");
+    let menu = actions::Message::OpenMenu(row.clone(), MenuAt::Toolbar);
+    ui.update(actions::act(&room, menu));
+    assert!(matches!(ui.main().popup, Some(Popup::MessageMenu { .. })));
+    ui.update(Message::AddMenu(true));
+    assert!(matches!(ui.main().popup, Some(Popup::AddMenu)));
+
+    ui.main().card = Some(info::Card::new(
+        info::Target::Room(room.clone()),
+        &[],
+        overview::Tab::Rooms,
+    ));
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(ui.main().popup.is_none());
+    assert!(ui.main().card.is_some());
+    ui.main().card = None;
+
+    let reload = |ui: &mut Ui| {
+        let (id, timeline) = (ui.room().id.clone(), ui.room().timeline.clone());
+        let reloaded = room::Message::Reloaded(Ok(Shared(timeline)));
+        let _ = ui.app.update(reloaded.to(&id));
+    };
+    ui.update(actions::act(&room, actions::Message::OpenReaders(row)));
+    reload(&mut ui);
+    assert!(ui.main().popup.is_none());
+    ui.main().popup = Some(Popup::RoomMenu(room.clone()));
+    reload(&mut ui);
+    assert!(matches!(ui.main().popup, Some(Popup::RoomMenu(_))));
+
+    ui.update(room::Message::Calls(calls::Message::OpenMenu).to(&room));
+    assert!(matches!(ui.main().popup, Some(Popup::Calls(_))));
+    ui.main().set_pane(Pane::Empty);
+    assert!(ui.main().popup.is_none());
 }

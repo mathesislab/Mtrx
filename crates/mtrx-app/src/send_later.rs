@@ -12,13 +12,13 @@ use iced::{
         Id, button, column, container, operation, row, scrollable, space, text, text::Wrapping,
     },
 };
-use mtrx_core::{ScheduledMessage, describe_send_time, parse_send_time};
+use mtrx_core::{OwnedRoomId, ScheduledMessage, describe_send_time, parse_send_time};
 
 use crate::{
     actions::{Editing, InlineEdit},
     app, fonts,
     popover::{Edge, Side, popover},
-    style,
+    room, style,
 };
 
 /// The wheels' scrollables, to bring the picked hour and minute into view.
@@ -51,17 +51,18 @@ pub enum Message {
     ChangeTime(ScheduledMessage),
     SendNow(String),
     Cancel(String),
-    /// The composer's text was scheduled or the edit saved.
+    /// The composer's text was scheduled: no longer the room's draft, also
+    /// once the room was left.
+    Scheduled(Result<(), String>),
+    /// A scheduled message got its new time.
     Saved(Result<(), String>),
     /// Sending now or cancelling finished.
     Done(Result<(), String>),
 }
 
-/// Send-later state of an open room.
-#[derive(Default)]
+/// A send time being picked, in the window's popup.
 pub struct SendLater {
-    /// The time picker, while open.
-    pub picker: Option<Picker>,
+    pub picker: Picker,
     /// The scheduled message the picker picks a new time for; otherwise it
     /// schedules the composer's text.
     pub rescheduling: Option<ScheduledMessage>,
@@ -140,12 +141,12 @@ impl Picker {
     }
 
     /// A month of days, Monday first; past days are disabled.
-    fn calendar<'a>(&self, today: NaiveDate) -> Element<'a, app::Message> {
+    fn calendar<'a>(&self, room: &OwnedRoomId, today: NaiveDate) -> Element<'a, app::Message> {
         let nav = |label: &'static str, by: i32, enabled: bool| {
             button(text(label).size(14))
                 .padding([0, 8])
                 .style(style::text_button)
-                .on_press_maybe(enabled.then_some(app::Message::Later(Message::Month(by))))
+                .on_press_maybe(enabled.then(|| later(room, Message::Month(by))))
         };
         let header = row![
             nav("‹", -1, self.month > first_of_month(today)),
@@ -172,7 +173,7 @@ impl Picker {
             let mut week = row![];
             for _ in 0..7 {
                 week = week.push(if day.month() == self.month.month() {
-                    self.day_button(day, today)
+                    self.day_button(room, day, today)
                 } else {
                     space().width(DAY_CELL).into()
                 });
@@ -183,7 +184,12 @@ impl Picker {
         weeks.into()
     }
 
-    fn day_button<'a>(&self, day: NaiveDate, today: NaiveDate) -> Element<'a, app::Message> {
+    fn day_button<'a>(
+        &self,
+        room: &OwnedRoomId,
+        day: NaiveDate,
+        today: NaiveDate,
+    ) -> Element<'a, app::Message> {
         let label = text(day.day().to_string()).size(12).center();
         let label = if day == today {
             label.font(fonts::SEMIBOLD)
@@ -195,13 +201,14 @@ impl Picker {
             .width(DAY_CELL)
             .padding([4, 0])
             .style(move |theme, status| style::wheel_item(theme, status, selected))
-            .on_press_maybe((day >= today).then_some(app::Message::Later(Message::Day(day))))
+            .on_press_maybe((day >= today).then(|| later(room, Message::Day(day))))
             .into()
     }
 
     /// A scrolling column of hours or minutes; past ones are disabled.
     fn wheel<'a>(
         &self,
+        room: &OwnedRoomId,
         id: &'static str,
         values: impl Iterator<Item = u32>,
         picked: u32,
@@ -219,7 +226,7 @@ impl Picker {
             .height(WHEEL_ROW)
             .padding([4, 0])
             .style(move |theme, status| style::wheel_item(theme, status, selected))
-            .on_press_maybe(allowed(value).then(|| app::Message::Later(message(value))))
+            .on_press_maybe(allowed(value).then(|| later(room, message(value))))
             .into()
         });
         scrollable(column(entries).width(48))
@@ -252,24 +259,30 @@ pub struct Pending<'a> {
 }
 
 /// The bar of a room's scheduled messages; the one being edited shows its
-/// editor.
+/// editor (`popup`: the window's, which may be the editor's menu or emoji),
+/// the one `rescheduling` its time picker.
 pub fn queue<'a>(
+    room: &OwnedRoomId,
     pending: &Pending<'a>,
-    later: &'a SendLater,
+    rescheduling: Option<&'a SendLater>,
     editing: Option<&'a InlineEdit>,
     frequent_emoji: &[String],
+    popup: Option<&'a app::Popup>,
 ) -> Element<'a, app::Message> {
     let (messages, now) = (&pending.messages, pending.now);
     column(messages.iter().map(|message| {
         let edit = editing.filter(|e| e.target == Editing::Scheduled(message.id.clone()));
-        let item = item(message, edit, frequent_emoji, now);
-        let picking = later
-            .rescheduling
-            .as_ref()
-            .is_some_and(|m| m.id == message.id);
-        let picker = picking.then(|| picker(later, true, now)).flatten();
+        let item = item(room, message, edit, frequent_emoji, now, popup);
+        let picker = rescheduling
+            .filter(|later| {
+                later
+                    .rescheduling
+                    .as_ref()
+                    .is_some_and(|m| m.id == message.id)
+            })
+            .map(|later| picker(room, later, true, now));
         popover(item, picker, Side::Above, Edge::Right)
-            .on_dismiss(app::Message::Later(Message::Close))
+            .on_dismiss(self::later(room, Message::Close))
             .into()
     }))
     .spacing(4)
@@ -277,10 +290,12 @@ pub fn queue<'a>(
 }
 
 fn item<'a>(
+    room: &OwnedRoomId,
     message: &'a ScheduledMessage,
     edit: Option<&'a InlineEdit>,
     frequent_emoji: &[String],
     now: SystemTime,
+    popup: Option<&'a app::Popup>,
 ) -> Element<'a, app::Message> {
     let editing = edit.is_some();
     let when = describe_send_time(message.send_at, now);
@@ -306,7 +321,7 @@ fn item<'a>(
             } else {
                 style::text_button
             })
-            .on_press_maybe(on_press.map(app::Message::Later))
+            .on_press_maybe(on_press.map(|message| later(room, message)))
     };
     let time_label = if message.overdue {
         "Reschedule"
@@ -314,7 +329,7 @@ fn item<'a>(
         "Change time"
     };
     let content: Element<'a, app::Message> = match edit {
-        Some(edit) => column![status.size(12), edit.view(frequent_emoji)]
+        Some(edit) => column![status.size(12), edit.view(room, frequent_emoji, popup)]
             .spacing(6)
             .into(),
         None => row![
@@ -376,11 +391,12 @@ fn item<'a>(
 /// the right, with the picked time and Schedule below them. Only as wide
 /// as needed: it floats over the room.
 pub fn picker<'a>(
+    room: &OwnedRoomId,
     state: &'a SendLater,
     can_schedule: bool,
     now: SystemTime,
-) -> Option<Element<'a, app::Message>> {
-    let picker = state.picker.as_ref()?;
+) -> Element<'a, app::Message> {
+    let picker = &state.picker;
     let can_schedule = can_schedule || state.rescheduling.is_some();
     let local = DateTime::<Local>::from(now);
     let today = local.date_naive();
@@ -391,7 +407,7 @@ pub fn picker<'a>(
             .style(style::secondary_button)
             .on_press_maybe(
                 at.filter(|_| can_schedule)
-                    .map(|at| app::Message::Later(Message::At(at))),
+                    .map(|at| later(room, Message::At(at))),
             )
     };
     let title = match &state.rescheduling {
@@ -417,6 +433,7 @@ pub fn picker<'a>(
     // Past hours and minutes of today are not offered.
     let on_today = picker.date == today;
     let hours = picker.wheel(
+        room,
         HOURS,
         0..24,
         picker.hour,
@@ -425,6 +442,7 @@ pub fn picker<'a>(
     );
     let this_hour = on_today && picker.hour == local.hour();
     let minutes = picker.wheel(
+        room,
         MINUTES,
         (0..60).step_by(MINUTE_STEP as usize),
         picker.minute,
@@ -447,10 +465,10 @@ pub fn picker<'a>(
         .size(13),
         Err(problem) => text(problem).size(13).style(text::danger),
     };
-    let schedule = (can_schedule && time.is_ok()).then_some(app::Message::Later(Message::Schedule));
+    let schedule = (can_schedule && time.is_ok()).then(|| later(room, Message::Schedule));
     let chosen = column![
         row![
-            picker.calendar(today),
+            picker.calendar(room, today),
             wheel("Hour", hours),
             wheel("Min", minutes)
         ]
@@ -465,7 +483,7 @@ pub fn picker<'a>(
             button(text("Close").size(13))
                 .padding([5, 12])
                 .style(style::text_button)
-                .on_press(app::Message::Later(Message::Close)),
+                .on_press(later(room, Message::Close)),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -476,7 +494,7 @@ pub fn picker<'a>(
     let content = row![container(quick_picks).center_y(Length::Shrink), chosen]
         .spacing(24)
         .align_y(Alignment::Center);
-    Some(container(content).padding(12).style(style::toolbar).into())
+    container(content).padding(12).style(style::toolbar).into()
 }
 
 /// "in 5 min", "in 2 h 10 min", "in 3 days".
@@ -531,6 +549,11 @@ fn item_style(theme: &Theme, kind: Kind) -> container::Style {
         border: Border::default().rounded(6).width(1).color(edge),
         ..Default::default()
     }
+}
+
+/// `message` for `room`, as the app gets it.
+fn later(room: &OwnedRoomId, message: Message) -> app::Message {
+    room::Message::Later(message).to(room)
 }
 
 #[cfg(test)]
