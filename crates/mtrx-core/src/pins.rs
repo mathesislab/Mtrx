@@ -2,10 +2,13 @@
 //! event IDs in the order they were pinned. Pinning needs leave to send
 //! that state event, as changing the topic does.
 
-use matrix_sdk::ruma::{
-    EventId, OwnedEventId, RoomId,
-    events::{AnySyncTimelineEvent, StateEventType},
-    serde::Raw,
+use matrix_sdk::{
+    Room,
+    ruma::{
+        EventId, OwnedEventId, RoomId,
+        events::{AnySyncTimelineEvent, StateEventType},
+        serde::Raw,
+    },
 };
 use matrix_sdk_ui::timeline::{RoomExt, TimelineFocus};
 use serde::Deserialize;
@@ -55,7 +58,7 @@ impl Session {
 
     /// Whether we may pin and unpin messages in the room.
     pub async fn can_pin(&self, room_id: &RoomId) -> Result<bool> {
-        self.can_send_state(room_id, "m.room.pinned_events").await
+        can_pin(&self.room(room_id)?).await
     }
 
     /// The room's pinned messages, as a timeline of their own: loaded as
@@ -70,6 +73,12 @@ impl Session {
             .map_err(timeline_error)?;
         Ok(self.room_timeline(room_id, timeline).await)
     }
+}
+
+/// Whether we may pin and unpin messages in `room`.
+pub(crate) async fn can_pin(room: &Room) -> Result<bool> {
+    let levels = room.power_levels().await.map_err(matrix_sdk::Error::from)?;
+    Ok(levels.user_can_send_state(room.own_user_id(), StateEventType::RoomPinnedEvents))
 }
 
 /// What an `m.room.pinned_events` event in the timeline changed, from its

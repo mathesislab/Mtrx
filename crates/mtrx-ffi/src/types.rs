@@ -292,6 +292,73 @@ pub enum TimelineItemContent {
     ReadMarker,
 }
 
+/// One row of a timeline as shown: messages grouped by sender, runs of state
+/// events in one line.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct TimelineRow {
+    /// Unique in the timeline and stable while the row stays (also when a
+    /// sent message's local echo becomes the server's event): use it as the
+    /// row's identity in lists. A summary has its first event's.
+    pub id: String,
+    pub content: RowContent,
+}
+
+// Nearly all rows are messages, so boxing would only add indirection.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum RowContent {
+    /// The room's beginning; back-pagination reached it.
+    Start,
+    /// The first event of a new day follows.
+    Day { date: SystemTime },
+    /// Everything below was not read yet.
+    ReadMarker,
+    /// A run of state events (joins, renames, ...) in one line, e.g. "alice
+    /// created and configured the room · bob joined".
+    Summary { text: String },
+    /// A message, or a deleted or undecryptable one.
+    Message {
+        event: TimelineEvent,
+        /// Starts a group of messages by one sender.
+        first_in_group: bool,
+        /// Show the sender's name above it and their avatar beside it: the
+        /// first of a group by someone else, outside direct chats.
+        show_sender: bool,
+        /// Someone else's message outside a direct chat: the avatars'
+        /// column is on its left.
+        avatar_column: bool,
+        /// Undecryptable while message keys arrive: it may decrypt
+        /// meanwhile ("Decrypting…").
+        decrypting: bool,
+        /// What holding it offers, in the menu's order.
+        actions: Vec<MessageAction>,
+    },
+}
+
+/// What can be done with a message, in the menu's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum MessageAction {
+    /// Add (or remove) a reaction: `Timeline.react`.
+    React,
+    /// Answer it: `Timeline.reply`.
+    Reply,
+    /// Copy its text (`Message.body`).
+    Copy,
+    /// Show its text to select from.
+    SelectText,
+    /// Change its text: `Timeline.edit`.
+    Edit,
+    /// Pin it, or unpin it: `Session.setPinned`.
+    Pin,
+    Unpin,
+    /// Delete it for everyone: `Timeline.delete`.
+    Delete,
+    /// Send it again after the server refused it: `Timeline.retry`.
+    Retry,
+    /// Drop it after the server refused it: `Timeline.discard`.
+    Discard,
+}
+
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct TimelineEvent {
     /// The server's ID; `None` while a message we sent is not sent yet.
@@ -561,6 +628,61 @@ fn timeline_item(entry: &core::TimelineEntry) -> TimelineItem {
             id: "read-marker".into(),
             content: TimelineItemContent::ReadMarker,
         },
+    }
+}
+
+impl From<&core::Row> for TimelineRow {
+    fn from(row: &core::Row) -> Self {
+        let (id, content) = match row {
+            core::Row::Start => ("start".into(), RowContent::Start),
+            core::Row::Day(date) => (
+                // One per day.
+                format!(
+                    "day-{}",
+                    date.duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                ),
+                RowContent::Day { date: *date },
+            ),
+            core::Row::ReadMarker => ("read-marker".into(), RowContent::ReadMarker),
+            core::Row::Summary { id, text } => {
+                (id.clone(), RowContent::Summary { text: text.clone() })
+            }
+            core::Row::Message(row) => (
+                row.event.id.clone(),
+                RowContent::Message {
+                    event: TimelineEvent::from(&row.event),
+                    first_in_group: row.first_in_group,
+                    show_sender: row.show_sender,
+                    avatar_column: row.avatar_column,
+                    decrypting: row.decrypting,
+                    actions: row
+                        .actions
+                        .iter()
+                        .map(|a| MessageAction::from(*a))
+                        .collect(),
+                },
+            ),
+        };
+        Self { id, content }
+    }
+}
+
+impl From<core::MessageAction> for MessageAction {
+    fn from(action: core::MessageAction) -> Self {
+        match action {
+            core::MessageAction::React => Self::React,
+            core::MessageAction::Reply => Self::Reply,
+            core::MessageAction::Copy => Self::Copy,
+            core::MessageAction::SelectText => Self::SelectText,
+            core::MessageAction::Edit => Self::Edit,
+            core::MessageAction::Pin => Self::Pin,
+            core::MessageAction::Unpin => Self::Unpin,
+            core::MessageAction::Delete => Self::Delete,
+            core::MessageAction::Retry => Self::Retry,
+            core::MessageAction::Discard => Self::Discard,
+        }
     }
 }
 
@@ -847,6 +969,60 @@ mod tests {
                 "b"
             ]
         );
+    }
+
+    #[test]
+    fn timeline_rows_have_unique_ids() {
+        let message = core::MessageRow {
+            event: event("b", core::EventContent::UnableToDecrypt),
+            first_in_group: true,
+            show_sender: false,
+            avatar_column: false,
+            decrypting: true,
+            actions: vec![core::MessageAction::Delete],
+        };
+        let rows = [
+            core::Row::Start,
+            core::Row::Day(at(86_400)),
+            core::Row::Summary {
+                id: "a".into(),
+                text: "bob joined".into(),
+            },
+            core::Row::ReadMarker,
+            core::Row::Day(at(2 * 86_400)),
+            core::Row::Message(message),
+        ];
+        let rows: Vec<_> = rows.iter().map(TimelineRow::from).collect();
+        let ids: Vec<_> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "start",
+                "day-86400000",
+                "a",
+                "read-marker",
+                "day-172800000",
+                "b"
+            ]
+        );
+        assert_eq!(
+            rows[2].content,
+            RowContent::Summary {
+                text: "bob joined".into()
+            }
+        );
+        let RowContent::Message {
+            event,
+            decrypting,
+            actions,
+            ..
+        } = &rows[5].content
+        else {
+            panic!("not a message: {:?}", rows[5]);
+        };
+        assert_eq!(event.content, EventContent::UnableToDecrypt);
+        assert!(decrypting);
+        assert_eq!(actions, &[MessageAction::Delete]);
     }
 
     #[test]
