@@ -2872,27 +2872,33 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        // The request of a dialog closed while it ran.
-        if let dialog::Message::Done(id, result) = &message
-            && let Some((done, failed)) = main.background.remove(id)
-        {
-            match result {
-                Ok(opened) => {
-                    main.notice = Some(Notice {
-                        text: done,
-                        room: match opened {
-                            dialog::Opened::Room(id) | dialog::Opened::Space(id) => {
-                                Some(id.clone())
-                            }
-                            _ => None,
-                        },
-                        error: false,
-                    })
-                }
-                Err(e) => main.report(format!("{failed}: {e}"), None),
+        // The request of a dialog closed while it ran: what it changed, and
+        // a notice, which opens what it made.
+        let message = match message {
+            dialog::Message::Done(id, result) if main.background.contains_key(&id) => {
+                let (done, failed) = main.background.remove(&id).unwrap_or_default();
+                return match result {
+                    Ok(opened) => {
+                        main.notice = Some(Notice {
+                            text: done,
+                            room: match &opened {
+                                dialog::Opened::Room(id) | dialog::Opened::Space(id) => {
+                                    Some(id.clone())
+                                }
+                                _ => None,
+                            },
+                            error: false,
+                        });
+                        self.request_done(opened)
+                    }
+                    Err(e) => {
+                        main.report(format!("{failed}: {e}"), None);
+                        Task::none()
+                    }
+                };
             }
-            return Task::none();
-        }
+            message => message,
+        };
         let Some(Modal::Dialog(dialog)) = &mut main.modal else {
             return Task::none();
         };
@@ -2936,29 +2942,45 @@ impl App {
             }
             dialog::Action::Finished(opened) => {
                 main.modal = None;
-                match opened {
-                    dialog::Opened::Nothing => Task::none(),
-                    dialog::Opened::Members(room) => self.refresh_members(&room),
-                    dialog::Opened::Settings(room) => self.reload_card(&room),
-                    dialog::Opened::Room(id) => self.update(Message::OpenRoom(id)),
-                    dialog::Opened::Space(id) => self.update(Message::SelectSpace(Some(id))),
-                    dialog::Opened::Left(id) => {
-                        if main.pane.id() == Some(&id) {
-                            main.set_pane(Pane::Empty);
-                        }
-                        if main.card.as_ref().and_then(|c| c.room()) == Some(&id) {
-                            main.card = None;
-                        }
-                        if main.space.as_ref() == Some(&id) {
-                            main.space = None;
-                        }
-                        Task::none()
+                let show = match &opened {
+                    dialog::Opened::Room(id) => self.update(Message::OpenRoom(id.clone())),
+                    dialog::Opened::Space(id) => {
+                        self.update(Message::SelectSpace(Some(id.clone())))
                     }
-                    dialog::Opened::SignedOut => {
-                        self.screen = Screen::Login(Login::default());
-                        Task::none()
-                    }
+                    _ => Task::none(),
+                };
+                Task::batch([self.request_done(opened), show])
+            }
+        }
+    }
+
+    /// What a dialog's request changed, shown, whether the dialog still
+    /// shows or not: a room left closes, signing out ends the session.
+    fn request_done(&mut self, opened: dialog::Opened) -> Task<Message> {
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        match opened {
+            dialog::Opened::Nothing | dialog::Opened::Room(_) | dialog::Opened::Space(_) => {
+                Task::none()
+            }
+            dialog::Opened::Members(room) => self.refresh_members(&room),
+            dialog::Opened::Settings(room) => self.reload_card(&room),
+            dialog::Opened::Left(id) => {
+                if main.pane.id() == Some(&id) {
+                    main.set_pane(Pane::Empty);
                 }
+                if main.card.as_ref().and_then(|c| c.room()) == Some(&id) {
+                    main.card = None;
+                }
+                if main.space.as_ref() == Some(&id) {
+                    main.space = None;
+                }
+                Task::none()
+            }
+            dialog::Opened::SignedOut => {
+                self.screen = Screen::Login(Login::default());
+                Task::none()
             }
         }
     }

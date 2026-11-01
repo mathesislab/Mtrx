@@ -3306,6 +3306,53 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     assert!(main(&mut app).notice.is_none());
 }
 
+/// A request finishing after its dialog was closed still does what it
+/// did: a room left closes, signing out shows the sign-in.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_cancelled_request_still_takes_effect() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("cancelleffect", &dir).await;
+    let mut shown = Main::new(Arc::new(alice));
+    shown.verified = Some(true);
+    let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
+    fn main(app: &mut App) -> &mut Main {
+        match &mut app.screen {
+            Screen::Main(main) => main,
+            _ => unreachable!(),
+        }
+    }
+    let lab: OwnedRoomId = "!lab:localhost".try_into().unwrap();
+    main(&mut app).set_pane(Pane::Opening(lab.clone()));
+    main(&mut app).space = Some(lab.clone());
+
+    // Not run: the results are given below.
+    let leave = dialog::Kind::Leave {
+        room: lab.clone(),
+        name: "Lab".into(),
+    };
+    let _ = app.update(Message::OpenDialog(leave));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let left = main(&mut app).last_request;
+    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let done = Ok(dialog::Opened::Left(lab.clone()));
+    let _ = app.update(Message::Dialog(dialog::Message::Done(left, done)));
+    assert!(main(&mut app).notice.is_some());
+    assert!(
+        main(&mut app).pane.id().is_none(),
+        "the room left still shows"
+    );
+    assert!(main(&mut app).space.is_none(), "the space left still shows");
+
+    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let out = main(&mut app).last_request;
+    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let done = Ok(dialog::Opened::SignedOut);
+    let _ = app.update(Message::Dialog(dialog::Message::Done(out, done)));
+    assert!(matches!(app.screen, Screen::Login(_)), "still signed in");
+}
+
 /// A direct chat that could not be started says so in the notice bar,
 /// whatever dialog is open.
 #[tokio::test(flavor = "multi_thread")]
