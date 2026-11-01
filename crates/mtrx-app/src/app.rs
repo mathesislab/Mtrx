@@ -2218,10 +2218,11 @@ impl App {
         }
     }
 
-    /// A message for room `id`; dropped unless that room is open.
+    /// A message for room `id`. One for a room no longer open goes to
+    /// [`App::room_left`] first.
     fn room(&mut self, id: OwnedRoomId, message: room::Message) -> Task<Message> {
         if !matches!(&self.screen, Screen::Main(main) if main.pane.open(&id).is_some()) {
-            return Task::none();
+            return self.room_left(id, message);
         }
         match message {
             room::Message::Timeline(entries) => {
@@ -2819,6 +2820,21 @@ impl App {
                 }
                 Task::none()
             }
+        }
+    }
+
+    /// A message for room `id`, which is not open: the results that still
+    /// concern it act on it; anything else is dropped.
+    fn room_left(&mut self, id: OwnedRoomId, message: room::Message) -> Task<Message> {
+        let Screen::Main(main) = &self.screen else {
+            return Task::none();
+        };
+        match message {
+            // The draft kept on leaving holds the text scheduled since.
+            room::Message::Later(send_later::Message::Scheduled(Ok(()))) => {
+                save_draft(&main.session, id, Draft::default())
+            }
+            _ => Task::none(),
         }
     }
 
@@ -3763,12 +3779,11 @@ impl App {
             },
             Later::At(send_at) => {
                 room.error = None;
-                let saved = reply(Later::Saved);
                 if let Some(message) = &room.later.rescheduling {
                     let id = message.id.clone();
                     return Task::perform(
                         async move { session.reschedule(&id, send_at).await },
-                        saved,
+                        reply(Later::Saved),
                     );
                 }
                 let text = room.composer.text().trim_end().to_owned();
@@ -3786,7 +3801,7 @@ impl App {
                             .await
                             .map(|_| ())
                     },
-                    saved,
+                    reply(Later::Scheduled),
                 )
             }
             Later::Edit(message) => {
@@ -3804,17 +3819,19 @@ impl App {
                 async move { session.unschedule(&id).await.map(|_| ()) },
                 reply(Later::Done),
             ),
-            Later::Saved(Ok(())) => {
-                // A new time leaves the composer alone; scheduling took its text.
-                if room.later.rescheduling.is_none() {
-                    room.compose = Compose::New;
-                    room.set_composer(text_editor::Content::new());
-                    room.attachments.clear();
-                }
+            // Scheduling took the composer's text; a new time leaves it alone.
+            Later::Scheduled(Ok(())) => {
+                room.compose = Compose::New;
+                room.set_composer(text_editor::Content::new());
+                room.attachments.clear();
                 room.later = Default::default();
                 Task::none()
             }
-            Later::Saved(Err(e)) | Later::Done(Err(e)) => {
+            Later::Saved(Ok(())) => {
+                room.later = Default::default();
+                Task::none()
+            }
+            Later::Scheduled(Err(e)) | Later::Saved(Err(e)) | Later::Done(Err(e)) => {
                 room.error = Some(e);
                 Task::none()
             }

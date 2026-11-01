@@ -51,7 +51,10 @@ pub enum Message {
     ChangeTime(ScheduledMessage),
     SendNow(String),
     Cancel(String),
-    /// The composer's text was scheduled or the edit saved.
+    /// The composer's text was scheduled: no longer the room's draft, also
+    /// once the room was left.
+    Scheduled(Result<(), String>),
+    /// A scheduled message got its new time.
     Saved(Result<(), String>),
     /// Sending now or cancelling finished.
     Done(Result<(), String>),

@@ -3197,3 +3197,51 @@ async fn results_stay_with_their_room() {
     assert_eq!(open.composer.text().trim_end(), "Draft in b");
     assert_eq!(open.error, None);
 }
+
+/// A message scheduled in a room left before the server confirmed it is
+/// no longer that room's draft.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn scheduled_in_a_room_left_clears_its_draft() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("scheduled", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let alice = Arc::new(alice);
+    let mut main = Main::new(alice.clone());
+    main.verified = Some(true);
+    let mut open = Room::new(a.clone(), timeline);
+    open.restore_draft(None);
+    open.set_composer(typed("Later, in a"));
+    main.pane = Pane::Open(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
+    let later = send_later::Message::At(in_an_hour);
+    let scheduled = app.update(room::Message::Later(later).to(&a));
+    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+        let _ = app.update(message);
+    }
+    let kept = mtrx_core::Draft {
+        text: "Later, in a".into(),
+        reply_to: None,
+    };
+    assert_eq!(
+        alice.draft(&a).await.unwrap(),
+        Some(kept),
+        "kept on leaving"
+    );
+    for message in messages_of(scheduled).await {
+        let _ = messages_of(app.update(message)).await;
+    }
+
+    assert_eq!(alice.draft(&a).await.unwrap(), None);
+    let drafts = alice.rooms_with_drafts_updates().next().await.unwrap();
+    assert!(!drafts.contains(&a), "{drafts:?}");
+    assert_eq!(open_room(&mut app).id, b);
+}
