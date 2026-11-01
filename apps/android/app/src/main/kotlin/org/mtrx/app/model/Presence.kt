@@ -134,8 +134,8 @@ class PresenceModel(
     /**
      * The app comes to the foreground (also at start and sign-in), before
      * sync starts: read others' presence again, and tell the library (the
-     * session's first time after "Share my presence"), returning once ours
-     * is set, so that sync says the same.
+     * session's first time after "Share my presence"). Not sharing, returns
+     * once we are offline, as sync's requests would say online.
      */
     suspend fun foreground() {
         if (closed) return
@@ -144,10 +144,11 @@ class PresenceModel(
         started = true
         if (!_available.value) return
         if (users != null) subscribe()
-        tell {
+        val told = tell {
             if (first) session.setPresenceSharing(sharing.current())
             session.presenceActivity(PresenceActivity.FOREGROUND)
-        }.join()
+        }
+        if (!sharing.current()) told.join()
     }
 
     /**

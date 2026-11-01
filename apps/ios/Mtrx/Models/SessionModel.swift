@@ -194,10 +194,10 @@ final class SessionModel: ObservableObject {
         rooms.first { $0.id == id }
     }
 
-    /// Sync while the app is in the foreground, once our presence is set
-    /// (so that sync says the same); when it goes to the background, go
-    /// offline, then stop and save the sync position, before iOS suspends
-    /// it.
+    /// Sync while the app is in the foreground, and set our presence;
+    /// when it goes to the background, go offline, then stop and save the
+    /// sync position, before iOS suspends it. Not sharing our presence,
+    /// offline before sync starts.
     func setForeground(_ on: Bool) {
         guard on != foreground else { return }
         foreground = on

@@ -1018,9 +1018,8 @@ impl App {
                 main.restore = self.view_file.as_deref().map(LastView::load);
                 self.screen = Screen::Main(Box::new(main));
                 let migrate = self.move_colours_to_account(&session);
-                // Before syncing, whose requests say the same.
-                let presence =
-                    presence::start(&session, self.settings.share_presence).map(Message::Presence);
+                let share = self.settings.share_presence;
+                let presence = presence::start(&session, share).map(Message::Presence);
                 let start = Task::perform(
                     async move {
                         session.start_sync().await;
@@ -1033,7 +1032,14 @@ impl App {
                         Message::Ready(result.map_err(|e| e.to_string()))
                     },
                 );
-                Task::batch([presence.chain(start), migrate])
+                // Not sharing, offline before syncing, whose requests would
+                // say online; sharing, sync need not wait.
+                let start = if share {
+                    Task::batch([presence, start])
+                } else {
+                    presence.chain(start)
+                };
+                Task::batch([start, migrate])
             }
             Message::Colours(colours) => {
                 if let Screen::Main(main) = &mut self.screen {

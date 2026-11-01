@@ -503,7 +503,7 @@ class Account(
     private suspend fun updateSync() {
         val current = session
         if (current != null && foreground && !syncing) {
-            // Ours is set before sync can say otherwise.
+            // Not sharing, offline before sync can say otherwise.
             presence?.foreground()
             current.startSync()
             syncing = true

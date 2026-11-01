@@ -174,17 +174,23 @@ class FakeSession : Session(NoHandle) {
         calls += "stopSync"
     }
 
-    /** What the library was told for our presence, in order; [ownPresenceError] fails the calls. */
+    /**
+     * What the library was told for our presence, in order; [ownPresenceError] fails the calls, and
+     * they wait for [ownPresenceGate].
+     */
     val presenceCalls get() = calls.filter { it.startsWith("presence ") || it.startsWith("sharing ") }
     var ownPresenceError: MtrxException? = null
+    var ownPresenceGate: CompletableDeferred<Unit>? = null
 
     override suspend fun presenceActivity(activity: PresenceActivity) {
         calls += "presence ${activity.name.lowercase()}"
+        ownPresenceGate?.await()
         ownPresenceError?.let { throw it }
     }
 
     override suspend fun setPresenceSharing(on: Boolean) {
         calls += "sharing $on"
+        ownPresenceGate?.await()
         ownPresenceError?.let { throw it }
     }
 

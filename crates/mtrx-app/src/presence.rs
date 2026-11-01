@@ -160,8 +160,8 @@ pub fn sharing(session: &Arc<Session>, on: bool) -> Task<Message> {
     reported(session.own_presence().set_sharing(on))
 }
 
-/// Pass "Share my presence" (`share`), then come to the foreground; sync
-/// starts after, to say the same.
+/// Pass "Share my presence" (`share`), then come to the foreground. Not
+/// sharing, sync starts after, as its requests would say online.
 pub fn start(session: &Arc<Session>, share: bool) -> Task<Message> {
     let own = session.own_presence();
     let (sharing, foreground) = (own.set_sharing(share), own.activity(Activity::Foreground));

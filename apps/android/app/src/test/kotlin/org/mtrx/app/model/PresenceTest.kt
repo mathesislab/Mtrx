@@ -1,5 +1,6 @@
 package org.mtrx.app.model
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -156,18 +157,38 @@ class PresenceTest {
     }
 
     @Test
-    fun theLibraryHearsOfTheForegroundBeforeSyncStartsAndOfTheBackgroundBeforeItStops() = runTest {
+    fun theLibraryHearsOfTheForegroundAndOfTheBackgroundBeforeSyncStops() = runTest {
         val session = FakeSession()
         val account = signedIn(session, foreground = false)
         assertTrue(session.calls.isEmpty())
 
         // "Share my presence" goes first, once.
         account.setForeground(true)
-        assertEquals(listOf("sharing true", "presence foreground", "startSync"), session.calls)
+        assertEquals(listOf("sharing true", "presence foreground"), session.presenceCalls)
+        assertTrue("startSync" in session.calls)
         account.setForeground(false)
         assertEquals(listOf("presence background", "stopSync"), session.calls.takeLast(2))
         account.setForeground(true)
-        assertEquals(listOf("presence foreground", "startSync"), session.calls.takeLast(2))
+        assertEquals(listOf("presence background", "presence foreground"), session.presenceCalls.takeLast(2))
+        assertEquals("startSync", session.calls.last { it.endsWith("Sync") })
+    }
+
+    @Test
+    fun sharingSyncDoesNotWaitForOurPresence() = runTest {
+        val session = FakeSession().apply { ownPresenceGate = CompletableDeferred() }
+        signedIn(session)
+        assertEquals(listOf("sharing true", "startSync"), session.calls)
+        session.ownPresenceGate!!.complete(Unit)
+        assertEquals("presence foreground", session.calls.last())
+    }
+
+    @Test
+    fun notSharingSyncWaitsUntilWeAreOffline() = runTest {
+        val session = FakeSession().apply { ownPresenceGate = CompletableDeferred() }
+        signedIn(session, FakeSharePresenceStore(saved = false))
+        assertEquals(listOf("sharing false"), session.calls)
+        session.ownPresenceGate!!.complete(Unit)
+        assertEquals(listOf("sharing false", "presence foreground", "startSync"), session.calls)
     }
 
     @Test

@@ -132,8 +132,9 @@ final class PresenceModel: ObservableObject {
 
     /// The app comes to the foreground (also at start and sign-in): read
     /// others' presence again, and tell the library, which sets ours (the
-    /// first time after "Share my presence"). Returns that call, to wait for
-    /// before sync starts (so that sync says the same).
+    /// first time after "Share my presence"). Not sharing, returns that
+    /// call, to wait for before sync starts (whose requests would say
+    /// online).
     func enterForeground(first: Bool) -> Task<Void, Never>? {
         foreground = true
         guard available else { return nil }
@@ -141,12 +142,13 @@ final class PresenceModel: ObservableObject {
             subscribe()
         }
         let sharing = first ? self.sharing : nil
-        return tell { session in
+        let told = tell { session in
             if let sharing {
                 try await session.setPresenceSharing(on: sharing)
             }
             try await session.presenceActivity(activity: .foreground)
         }
+        return self.sharing ? nil : told
     }
 
     /// The app goes to the background: stop reading others' presence, and

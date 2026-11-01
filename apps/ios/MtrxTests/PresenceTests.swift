@@ -105,6 +105,27 @@ final class PresenceModelTests: XCTestCase {
         XCTAssertEqual(session.presenceSubscriptions[1].users, [Self.bob, Self.carol])
     }
 
+    func testSharingSyncDoesNotWaitForOurPresence() async {
+        session.ownPresenceHangs = true
+        await start()
+        model.setForeground(true)
+        await eventually { self.session.calls.contains("startSync") }
+        XCTAssertEqual(session.calls, ["sharing true", "startSync"])
+        session.ownPresenceHangs = false
+        await eventually { self.session.calls.last == "presence foreground" }
+    }
+
+    func testNotSharingSyncWaitsUntilWeAreOffline() async throws {
+        session.ownPresenceHangs = true
+        await start(sharing: false)
+        model.setForeground(true)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(session.calls, ["sharing false"])
+        session.ownPresenceHangs = false
+        await eventually { self.session.calls.contains("startSync") }
+        XCTAssertEqual(session.calls, ["sharing false", "presence foreground", "startSync"])
+    }
+
     func testSignOutEndsTheSubscriptionAndGoesOfflineFirst() async throws {
         await start()
         model.setForeground(true)
@@ -182,11 +203,11 @@ final class PresenceModelTests: XCTestCase {
 
     // MARK: Ours
 
-    func testForegroundBeforeSyncStartsAndBackgroundBeforeSyncStops() async {
+    func testForegroundAndBackgroundBeforeSyncStops() async {
         await start()
         model.setForeground(true)
         await eventually { self.session.calls.count == 3 }
-        XCTAssertEqual(session.calls, ["sharing true", "presence foreground", "startSync"])
+        XCTAssertEqual(session.presenceCalls, ["sharing true", "presence foreground"])
 
         model.setForeground(false)
         await eventually { self.session.calls.count == 5 }
@@ -195,7 +216,7 @@ final class PresenceModelTests: XCTestCase {
         // "Share my presence" goes to the library once.
         model.setForeground(true)
         await eventually { self.session.calls.count == 7 }
-        XCTAssertEqual(session.calls.suffix(2), ["presence foreground", "startSync"])
+        XCTAssertEqual(session.presenceCalls.suffix(2), ["presence background", "presence foreground"])
     }
 
     func testNotSharingIsPassedBeforeSyncFirstStarts() async {

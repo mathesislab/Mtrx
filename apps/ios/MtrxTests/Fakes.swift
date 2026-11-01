@@ -175,6 +175,8 @@ final class FakeSession: Session, @unchecked Sendable {
     var presenceRequests: [String] = []
     /// Fails `presenceActivity` and `setPresenceSharing`.
     var ownPresenceError: Error?
+    /// `presenceActivity` and `setPresenceSharing` wait while this is set.
+    var ownPresenceHangs = false
     /// Each `subscribePresence`, in order.
     var presenceSubscriptions: [(users: [String], listener: PresenceListener, handle: FakeTaskHandle)] = []
     /// The calls that change the session's state on the server, in order:
@@ -258,11 +260,13 @@ final class FakeSession: Session, @unchecked Sendable {
 
     override func presenceActivity(activity: PresenceActivity) async throws {
         record("presence \(activity)")
+        while ownPresenceHangs { try await Task.sleep(nanoseconds: 10_000_000) }
         if let ownPresenceError { throw ownPresenceError }
     }
 
     override func setPresenceSharing(on: Bool) async throws {
         record("sharing \(on)")
+        while ownPresenceHangs { try await Task.sleep(nanoseconds: 10_000_000) }
         if let ownPresenceError { throw ownPresenceError }
     }
 
