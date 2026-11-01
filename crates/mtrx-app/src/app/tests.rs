@@ -895,7 +895,7 @@ async fn main_screen_with_math() {
                 .unwrap(),
             );
         }
-        main.room = Some(open);
+        main.pane = Pane::Open(open);
         for (mxc, size) in main.avatars_on_screen(&Default::default()) {
             main.avatars.load_now(&alice, &mxc, size).await;
         }
@@ -905,7 +905,7 @@ async fn main_screen_with_math() {
         app.settings.colored_names = mode == Mode::Dark;
         let params = app.math_params();
         if let Screen::Main(main) = &app.screen {
-            for document in main.room.as_ref().unwrap().math_documents() {
+            for document in main.pane.room().unwrap().math_documents() {
                 app.math.render_now(document, &params);
             }
         }
@@ -914,7 +914,7 @@ async fn main_screen_with_math() {
         {
             // A quote of a long message wraps onto a few lines; the message
             // it quotes is marked, as just gone to.
-            let room = main.room.as_mut().unwrap();
+            let room = main.pane.room_mut().unwrap();
             let quoted = room.entries.iter_mut().find_map(|entry| match entry {
                 TimelineEntry::Event(ev) => match &mut ev.content {
                     EventContent::Message(m) => m.in_reply_to.as_mut(),
@@ -930,7 +930,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
-            assert_eq!(main.room.as_ref().unwrap().marked, row);
+            assert_eq!(main.pane.room().unwrap().marked, row);
         }
         let name = if mode == Mode::Dark {
             "main-dark"
@@ -944,7 +944,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
+            let open = main.pane.room_mut().unwrap();
             let read = (open.entries.iter())
                 .find_map(|e| match e {
                     TimelineEntry::Event(ev)
@@ -966,7 +966,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
+            let open = main.pane.room_mut().unwrap();
             let reacted = (open.entries.iter())
                 .find_map(|e| match e {
                     TimelineEntry::Event(ev) => match &ev.content {
@@ -989,7 +989,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
+            let open = main.pane.room_mut().unwrap();
             open.reactors = None;
             open.readers = readers;
             // Alice's first message not sent, offered to retry or delete,
@@ -997,7 +997,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
+            let open = main.pane.room_mut().unwrap();
             let readers = open.readers.take();
             let unsent = (open.entries.iter_mut())
                 .find_map(|e| match e {
@@ -1018,7 +1018,7 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.room.as_mut().unwrap();
+            let open = main.pane.room_mut().unwrap();
             open.unsent = None;
             open.readers = readers;
             for entry in &mut open.entries {
@@ -1062,7 +1062,7 @@ async fn main_screen_with_math() {
                 "{messages:?}"
             );
             if let Screen::Main(main) = &mut app.screen {
-                main.room.as_mut().unwrap().readers = None;
+                main.pane.room_mut().unwrap().readers = None;
             }
             composer_keeps_focus(&mut app);
             // The topic panel, not editing: Edit in its corner.
@@ -1075,12 +1075,12 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
-            assert!(!main.room.as_ref().unwrap().calls.is_open());
+            assert!(!main.pane.room().unwrap().calls.is_open());
         }
         // ⌘F: every match highlighted, in text and typeset math, the
         // newest one current; Esc closes the bar.
         if let Screen::Main(main) = &mut app.screen {
-            main.room.as_mut().unwrap().selection = None;
+            main.pane.room_mut().unwrap().selection = None;
         }
         let _ = app.update(Message::Find(find::Message::Open));
         let _ = app.update(Message::Find(find::Message::Query("FLUX".into())));
@@ -1088,8 +1088,8 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
-            main.room
-                .as_ref()
+            main.pane
+                .room()
                 .unwrap()
                 .find
                 .as_ref()
@@ -1121,7 +1121,7 @@ fn composer_keeps_focus(app: &mut App) {
         main
     }
     fn room(app: &mut App) -> &mut Room {
-        main(app).room.as_mut().unwrap()
+        main(app).pane.room_mut().unwrap()
     }
     // Nothing else open that could take the focus.
     room(app).menu = None;
@@ -1323,14 +1323,14 @@ async fn send_later_bar() {
         now,
         mtrx_core::parse_send_time("tomorrow 8:00", now),
     ));
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
 
     // Editing in place: a sent message, then a scheduled one, while the
     // composer keeps its draft.
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.later = Default::default();
         let sent = open
@@ -1350,7 +1350,7 @@ async fn send_later_bar() {
     }
     snapshot(&app, "edit-sent");
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = Some(actions::InlineEdit::new(
             actions::Editing::Scheduled("b".into()),
@@ -1359,7 +1359,7 @@ async fn send_later_bar() {
     }
     snapshot(&app, "edit-scheduled");
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = None;
         open.later = Default::default();
@@ -1377,13 +1377,13 @@ async fn send_later_bar() {
     }
     snapshot(&app, "emoji");
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.picker = None;
         open.emoji = None;
     }
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.composer_emoji = Some(emoji::Panel::default());
     }
@@ -1410,7 +1410,7 @@ async fn send_later_bar() {
         "{on_crab:?}"
     );
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.composer_emoji = None;
         let sent = open
@@ -1430,19 +1430,19 @@ async fn send_later_bar() {
     }
     snapshot(&app, "edit-emoji");
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = None;
     }
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.editing = None;
     }
     // Completing a mention: names starting with "an" first, then those
     // with it inside; the two people named Ana complete as their IDs.
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         use mtrx_core::Role::{Admin, Member};
         open.members_loaded(Ok((
@@ -1463,7 +1463,7 @@ async fn send_later_bar() {
     let _ = app.update(Message::Mention(mention::Message::Down));
     let _ = app.update(Message::Mention(mention::Message::Choose));
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         assert_eq!(
             open.composer.text(),
@@ -1597,7 +1597,7 @@ async fn big_room_benchmark() {
     let mut main = Main::new(session);
     let mut open = Room::new(room.clone(), timeline.clone());
     with_start(&mut open.entries);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     let start = std::time::Instant::now();
     for _ in 0..5 {
@@ -1675,7 +1675,7 @@ async fn room_management_screens() {
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = timeline.current();
         with_start(&mut open.entries);
-        main.room = Some(open);
+        main.pane = Pane::Open(open);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
     };
@@ -1689,14 +1689,14 @@ async fn room_management_screens() {
     // The status pill: looking for a message gone to, and a problem.
     snapshot(
         &main_with(&|main| {
-            let room = main.room.as_mut().unwrap();
+            let room = main.pane.room_mut().unwrap();
             room.seeking = Some(("$gone:localhost".try_into().unwrap(), 3));
         }),
         "status-seeking",
     );
     snapshot(
         &main_with(&|main| {
-            main.room.as_mut().unwrap().error =
+            main.pane.room_mut().unwrap().error =
                 Some("The original message was not found in the room's history".into());
         }),
         "status-problem",
@@ -1748,8 +1748,10 @@ async fn room_management_screens() {
     );
     snapshot(
         &main_with(&|main| {
-            main.room = None;
-            main.invite = Some((room.clone(), false));
+            main.pane = Pane::Invite {
+                id: room.clone(),
+                answering: false,
+            };
             main.notice = Some(Notice {
                 text: "The room “model runs” is ready.".into(),
                 room: Some(room.clone()),
@@ -1762,7 +1764,7 @@ async fn room_management_screens() {
         &main_with(&|main| {
             main.filter = "ice".into();
             main.show_members = true;
-            let room = main.room.as_mut().unwrap();
+            let room = main.pane.room_mut().unwrap();
             room.members_loaded(Ok((members.clone(), true)));
         }),
         "members-search",
@@ -1771,7 +1773,7 @@ async fn room_management_screens() {
     // and its members load.
     let mut app = main_with(&|main| {
         main.show_members = true;
-        let room = main.room.as_mut().unwrap();
+        let room = main.pane.room_mut().unwrap();
         room.members_loaded(Ok((members.clone(), true)));
     });
     let _ = app.update(Message::OpenRoom(other.clone()));
@@ -1781,7 +1783,7 @@ async fn room_management_screens() {
     let Screen::Main(main) = &app.screen else {
         unreachable!()
     };
-    let open = main.room.as_ref().unwrap();
+    let open = main.pane.room().unwrap();
     assert_eq!(open.id, other);
     assert!(main.show_members);
     assert!(open.loading_members && open.member_list.is_none());
@@ -2021,7 +2023,7 @@ async fn mention_colours() {
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = entries;
     with_start(&mut open.entries);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "mention-colours");
 }
@@ -2151,7 +2153,7 @@ async fn media_messages() {
         for media in &images {
             main.previews.load_now(&session, media).await;
         }
-        main.room = Some(open);
+        main.pane = Pane::Open(open);
         main.viewer = viewer;
         main.pdf = pdf;
         Box::new(main)
@@ -2170,7 +2172,7 @@ async fn media_messages() {
     .unwrap();
     std::fs::write(&paths[1], crate::pdf::sample()).unwrap();
     let mut main = main_with(None, None).await;
-    let open = main.room.as_mut().unwrap();
+    let open = main.pane.room_mut().unwrap();
     open.attachments = crate::media::read_attached(paths)
         .await
         .into_iter()
@@ -2745,7 +2747,7 @@ async fn website_screenshots() {
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
         with_start(&mut open.entries);
-        main.room = Some(open);
+        main.pane = Pane::Open(open);
         let mut app = app(Screen::Main(Box::new(main)), mode);
         app.settings.colored_names = mode == Mode::Dark;
         app
@@ -2753,7 +2755,7 @@ async fn website_screenshots() {
     async fn finish(app: &mut App, ana: &Session) {
         let params = app.math_params();
         if let Screen::Main(main) = &mut app.screen {
-            for document in main.room.as_ref().unwrap().math_documents() {
+            for document in main.pane.room().unwrap().math_documents() {
                 app.math.render_now(document, &params);
             }
             for (mxc, size) in main.avatars_on_screen(&Default::default()) {
@@ -2774,7 +2776,7 @@ async fn website_screenshots() {
     // Sending later: the picker, with a draft.
     let mut app = screen(Mode::Light);
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         open.composer = text_editor::Content::with_text("Results are in the shared folder 📈");
         open.later.picker = Some(send_later::Picker::new(
@@ -2788,7 +2790,7 @@ async fn website_screenshots() {
     // Copying: a selection through typeset math into the next message.
     let mut app = screen(Mode::Light);
     if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.room.as_mut()
+        && let Some(open) = main.pane.room_mut()
     {
         let math = id_of("The basal melt");
         open.selection = Some(Selection {
@@ -2850,7 +2852,7 @@ async fn composer_scrolls_alone() {
         })
         .collect();
     open.composer = typed(&draft.join("\n"));
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
@@ -2930,9 +2932,40 @@ impl iced::advanced::widget::Operation for TimelineView {
     }
 }
 
+/// A room in the room list.
+fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
+    mtrx_core::RoomSummary {
+        id: id.clone(),
+        name: name.into(),
+        avatar: None,
+        topic: None,
+        kind: RoomKind::Room,
+        invited: false,
+        encrypted: false,
+        public: false,
+        unread_messages: 0,
+        unread_mentions: 0,
+        unread_notifications: 0,
+        last_activity: None,
+        parents: Vec::new(),
+        tag: RoomTag::None,
+        direct_user: None,
+        alias: None,
+        joined_members: 1,
+        pinned: Vec::new(),
+    }
+}
+
 fn open_room(app: &mut App) -> &mut Room {
     match &mut app.screen {
-        Screen::Main(main) => main.room.as_mut().unwrap(),
+        Screen::Main(main) => main.pane.room_mut().unwrap(),
+        _ => unreachable!(),
+    }
+}
+
+fn pane(app: &App) -> &Pane {
+    match &app.screen {
+        Screen::Main(main) => &main.pane,
         _ => unreachable!(),
     }
 }
@@ -2974,7 +3007,7 @@ async fn drafts_stay_in_their_room() {
     let mut open = Room::new(a.clone(), timeline.clone());
     open.entries = timeline.current();
     open.restore_draft(None);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     // Writing an answer, kept after a pause.
@@ -3022,4 +3055,79 @@ async fn drafts_stay_in_their_room() {
     assert_eq!(back.composer.text().trim_end(), "Yes, see you there");
     assert_eq!(back.compose.reply_to(), Some(&question));
     assert_eq!(back.draft_to_keep(), None, "nothing new to keep");
+}
+
+/// Typed while another room opens: in neither room, nor in the draft kept
+/// for the room left.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn typing_while_a_room_opens_goes_nowhere() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("opening", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let alice = Arc::new(alice);
+    let mut main = Main::new(alice.clone());
+    main.verified = Some(true);
+    let mut open = Room::new(a.clone(), timeline.clone());
+    open.restore_draft(None);
+    open.set_composer(typed("Hello"));
+    main.pane = Pane::Open(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let opened = messages_of(app.update(Message::OpenRoom(b.clone()))).await;
+    assert!(matches!(pane(&app), Pane::Opening(id) if *id == b));
+    let _ = messages_of(app.update(Message::TypeInComposer("x".into()))).await;
+    for message in opened {
+        let _ = app.update(message);
+    }
+    assert_eq!(open_room(&mut app).id, b);
+    assert_eq!(open_room(&mut app).composer.text().trim_end(), "");
+    let kept = mtrx_core::Draft {
+        text: "Hello".into(),
+        reply_to: None,
+    };
+    assert_eq!(alice.draft(&a).await.unwrap(), Some(kept));
+}
+
+/// An invite chosen while a room opens stays shown: the room opening late
+/// does not open behind it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn an_invite_chosen_while_a_room_opens_stays() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("invited", &dir).await;
+    let a = alice
+        .create_room(NewRoom {
+            name: Some("a".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let invite: OwnedRoomId = "!invite:localhost".try_into().unwrap();
+    let mut main = Main::new(Arc::new(alice));
+    main.verified = Some(true);
+    main.rooms.rooms = vec![
+        summary(&a, "a"),
+        mtrx_core::RoomSummary {
+            invited: true,
+            ..summary(&invite, "invite")
+        },
+    ];
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let opened = messages_of(app.update(Message::OpenRoom(a.clone()))).await;
+    let _ = app.update(Message::OpenRoom(invite.clone()));
+    for message in opened {
+        let _ = app.update(message);
+    }
+    assert!(matches!(
+        pane(&app),
+        Pane::Invite { id, answering: false } if *id == invite
+    ));
 }

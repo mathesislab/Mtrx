@@ -350,7 +350,7 @@ struct Main {
     room_list: Option<Arc<RoomList>>,
     rooms: RoomListState,
     space: Option<OwnedRoomId>,
-    room: Option<Room>,
+    pane: Pane,
     /// The member list is shown beside the open room, whichever it is.
     show_members: bool,
     /// `None` until known.
@@ -387,10 +387,6 @@ struct Main {
     notes_moved: bool,
     /// The member whose menu is open, and in which room.
     member_menu: Option<members::MenuKey>,
-    /// The invite shown instead of a room, and whether it is being answered.
-    invite: Option<(OwnedRoomId, bool)>,
-    /// A room being opened (its timeline loads).
-    opening: Option<OwnedRoomId>,
     /// Something finished in the background, or failed.
     notice: Option<Notice>,
     /// The room search text.
@@ -424,6 +420,47 @@ struct Main {
     activity: Activity,
 }
 
+/// What the room pane shows.
+// One, in the boxed [`Main`]: boxing the room would only add indirection.
+#[allow(clippy::large_enum_variant)]
+enum Pane {
+    Empty,
+    /// Its timeline loads.
+    Opening(OwnedRoomId),
+    /// Accept and Decline instead of a timeline; `answering` while it is answered.
+    Invite {
+        id: OwnedRoomId,
+        answering: bool,
+    },
+    Open(Room),
+}
+
+impl Pane {
+    /// The open room.
+    fn room(&self) -> Option<&Room> {
+        match self {
+            Pane::Open(room) => Some(room),
+            _ => None,
+        }
+    }
+
+    fn room_mut(&mut self) -> Option<&mut Room> {
+        match self {
+            Pane::Open(room) => Some(room),
+            _ => None,
+        }
+    }
+
+    /// The room shown: opening, invited to or open.
+    fn id(&self) -> Option<&OwnedRoomId> {
+        match self {
+            Pane::Empty => None,
+            Pane::Opening(id) | Pane::Invite { id, .. } => Some(id),
+            Pane::Open(room) => Some(&room.id),
+        }
+    }
+}
+
 /// The room list's width limits, and its draggable edge's.
 const MIN_ROOM_LIST_WIDTH: f32 = 200.0;
 const MAX_ROOM_LIST_WIDTH: f32 = 520.0;
@@ -449,7 +486,7 @@ impl Main {
             room_list: None,
             rooms: RoomListState::default(),
             space: None,
-            room: None,
+            pane: Pane::Empty,
             show_members: false,
             verified: None,
             recovery_key: String::new(),
@@ -482,8 +519,6 @@ impl Main {
             space_topic: Default::default(),
             notes_moved: false,
             member_menu: None,
-            invite: None,
-            opening: None,
             notice: None,
             filter: String::new(),
             previews: Previews::new(),
@@ -507,7 +542,7 @@ impl Main {
         if let Some(join) = &self.join {
             wanted.extend(join.avatars());
         }
-        if let Some(room) = &self.room {
+        if let Some(room) = self.pane.room() {
             wanted.extend(room.avatars(
                 rooms.iter().find(|r| r.id == room.id),
                 &self.own_user,
@@ -525,11 +560,7 @@ impl Main {
         sidebar::RoomListView {
             rooms: &self.rooms.rooms,
             selected_space: self.space.as_ref(),
-            open: self
-                .opening
-                .as_ref()
-                .or(self.invite.as_ref().map(|(id, _)| id))
-                .or(self.room.as_ref().map(|r| &r.id)),
+            open: self.pane.id(),
             loaded: self.rooms.loaded,
             avatars: &self.avatars,
             scheduled: &self.scheduled,
@@ -556,8 +587,8 @@ impl Main {
     fn shown_people(&self, settings: &Settings) -> Vec<OwnedUserId> {
         let rooms = &self.rooms.rooms;
         let open = self
-            .room
-            .as_ref()
+            .pane
+            .room()
             .and_then(|room| rooms.iter().find(|r| r.id == room.id));
         let mut people: Vec<&OwnedUserId> = open
             .filter(|r| r.kind == RoomKind::Direct)
@@ -569,7 +600,7 @@ impl Main {
             &self.own_user,
         ));
         if self.show_members
-            && let Some(Ok(members)) = self.room.as_ref().and_then(|r| r.member_list.as_ref())
+            && let Some(Ok(members)) = self.pane.room().and_then(|r| r.member_list.as_ref())
         {
             people.extend(members.iter().map(|m| &m.id));
         }
@@ -869,8 +900,8 @@ impl App {
     fn room_draft(&self) -> Option<(OwnedRoomId, Option<Draft>)> {
         match &self.screen {
             Screen::Main(main) => main
-                .room
-                .as_ref()
+                .pane
+                .room()
                 .map(|room| (room.id.clone(), room.draft_to_keep())),
             _ => None,
         }
@@ -883,7 +914,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        match (before, main.room.as_mut()) {
+        match (before, main.pane.room_mut()) {
             (Some((id, _)), Some(room)) if room.id == id => {
                 if room.draft_to_keep().is_none() {
                     return Task::none();
@@ -1112,17 +1143,18 @@ impl App {
                 main.info = None;
                 // Chosen now: last time's view is no longer wanted.
                 main.restore = None;
-                if main.room.as_ref().is_some_and(|r| r.id == id) && main.invite.is_none() {
+                if main.pane.room().is_some_and(|r| r.id == id) {
                     return Task::none();
                 }
                 // An invite shows Accept and Decline instead of a timeline.
                 if main.rooms.rooms.iter().any(|r| r.id == id && r.invited) {
-                    main.invite = Some((id, false));
-                    main.room = None;
+                    main.pane = Pane::Invite {
+                        id,
+                        answering: false,
+                    };
                     return Task::none();
                 }
-                main.invite = None;
-                main.opening = Some(id.clone());
+                main.pane = Pane::Opening(id.clone());
                 let session = main.session.clone();
                 Task::perform(
                     async move {
@@ -1136,11 +1168,10 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if main.opening.as_ref() != Some(&id) {
-                    // Another room was chosen meanwhile.
+                if !matches!(&main.pane, Pane::Opening(opening) if *opening == id) {
+                    // Another room or an invite was chosen meanwhile.
                     return Task::none();
                 }
-                main.opening = None;
                 match result {
                     Ok(Shared(timeline)) => {
                         let mut room = Room::new(id.clone(), timeline);
@@ -1152,7 +1183,7 @@ impl App {
                         } else {
                             Task::none()
                         };
-                        main.room = Some(room);
+                        main.pane = Pane::Open(room);
                         let (session, room) = (main.session.clone(), id.clone());
                         let draft = Task::perform(
                             async move {
@@ -1181,6 +1212,7 @@ impl App {
                         ])
                     }
                     Err(e) => {
+                        main.pane = Pane::Empty;
                         main.error = Some(e);
                         Task::none()
                     }
@@ -1190,7 +1222,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut().filter(|r| r.id == id) else {
+                let Some(room) = main.pane.room_mut().filter(|r| r.id == id) else {
                     return Task::none();
                 };
                 let grew = entries.len() != room.entries.len();
@@ -1217,7 +1249,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 match room.older(&viewport) {
@@ -1238,7 +1270,7 @@ impl App {
                     return Task::none();
                 };
                 let mut more = Task::none();
-                if let Some(room) = main.room.as_mut().filter(|r| r.id == id) {
+                if let Some(room) = main.pane.room_mut().filter(|r| r.id == id) {
                     room.paginating = false;
                     let seeking = room.seeking.take();
                     match result {
@@ -1265,7 +1297,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 let edit = action.is_edit();
@@ -1299,7 +1331,8 @@ impl App {
                 Task::batch([members, typing, avatars])
             }
             Message::TypeInComposer(text) => {
-                let shown = matches!(&self.screen, Screen::Main(main) if main.room.is_some());
+                let shown =
+                    matches!(&self.screen, Screen::Main(main) if main.pane.room().is_some());
                 if !shown || self.covered() {
                     return Task::none();
                 }
@@ -1321,7 +1354,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 let count = room.candidates(&main.own_user).len();
@@ -1357,7 +1390,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 let text = room.composer.text();
@@ -1390,7 +1423,7 @@ impl App {
             }
             Message::SendingSlow(id, row) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                    && let Some(room) = main.pane.room_mut().filter(|r| r.id == id)
                 {
                     room.sending_slow(&row);
                 }
@@ -1398,7 +1431,7 @@ impl App {
             }
             Message::Sent(id, result) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                    && let Some(room) = main.pane.room_mut().filter(|r| r.id == id)
                     && let Err(e) = result
                 {
                     room.error = Some(e);
@@ -1417,7 +1450,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 if scroll != room::Scroll::Oldest {
@@ -1435,7 +1468,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 match message {
@@ -1480,7 +1513,7 @@ impl App {
             Message::Find(message) => self.find(message),
             Message::Typing(room_id, names) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
+                    && let Some(room) = main.pane.room_mut().filter(|r| r.id == room_id)
                 {
                     room.typing = names;
                 }
@@ -1506,7 +1539,7 @@ impl App {
             Message::Topic(room, message) => self.room_topic(room, message),
             Message::Uploads(room_id, uploads) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
+                    && let Some(room) = main.pane.room_mut().filter(|r| r.id == room_id)
                 {
                     room.set_uploads(uploads);
                 }
@@ -1514,7 +1547,7 @@ impl App {
             }
             Message::DismissError | Message::StopSeeking => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut()
+                    && let Some(room) = main.pane.room_mut()
                 {
                     match message {
                         Message::DismissError => room.error = None,
@@ -1527,7 +1560,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+                let Some(room) = main.pane.room_mut().filter(|r| r.id == room_id) else {
                     return Task::none();
                 };
                 if let pins::Message::GoTo(event) = message {
@@ -1591,7 +1624,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 match message {
@@ -1618,7 +1651,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 emoji::insert(&mut room.composer, &emoji);
@@ -1821,7 +1854,7 @@ impl App {
                     Connection::SignedOut => return Task::none(),
                     Connection::Online => {}
                 }
-                let Some(room) = &mut main.room else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 room.reloading = true;
@@ -1848,7 +1881,7 @@ impl App {
                     Task::none()
                 };
                 // History that could not load while offline.
-                let history = match main.room.as_mut() {
+                let history = match main.pane.room_mut() {
                     Some(room) if back => fill(room),
                     _ => Task::none(),
                 };
@@ -1887,7 +1920,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut().filter(|r| r.id == id) else {
+                let Some(room) = main.pane.room_mut().filter(|r| r.id == id) else {
                     return Task::none();
                 };
                 match result {
@@ -1914,7 +1947,10 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.invite = Some((id.clone(), true));
+                main.pane = Pane::Invite {
+                    id: id.clone(),
+                    answering: true,
+                };
                 let session = main.session.clone();
                 Task::perform(
                     {
@@ -1943,8 +1979,8 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if main.invite.as_ref().is_some_and(|(i, _)| *i == id) {
-                    main.invite = None;
+                if matches!(&main.pane, Pane::Invite { id: invite, .. } if *invite == id) {
+                    main.pane = Pane::Empty;
                 }
                 match result {
                     Ok(()) if accept => self.update(Message::OpenRoom(id)),
@@ -2083,59 +2119,63 @@ impl App {
                         main.pdf = None;
                     } else if main.info.is_some() {
                         main.info = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.calls.is_open()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.calls.is_open()) {
                         room.calls.close();
                     } else if let Some(room) = main
-                        .room
-                        .as_mut()
+                        .pane
+                        .room_mut()
                         .filter(|r| !r.candidates(&main.own_user).is_empty())
                     {
                         room.completion = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.menu.is_some()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.menu.is_some()) {
                         room.menu = None;
                     } else if let Some(room) =
-                        main.room.as_mut().filter(|r| r.composer_menu.is_some())
+                        main.pane.room_mut().filter(|r| r.composer_menu.is_some())
                     {
                         room.composer_menu = None;
                     } else if let Some(edit) = main
-                        .room
-                        .as_mut()
+                        .pane
+                        .room_mut()
                         .and_then(|r| r.editing.as_mut())
                         .filter(|e| e.menu.is_some())
                     {
                         edit.menu = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.readers.is_some()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.readers.is_some())
+                    {
                         room.readers = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.reactors.is_some()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.reactors.is_some())
+                    {
                         room.reactors = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.unsent.is_some()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.unsent.is_some()) {
                         room.unsent = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.find.is_some()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.find.is_some()) {
                         room.find = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.selection.is_some())
+                    } else if let Some(room) =
+                        main.pane.room_mut().filter(|r| r.selection.is_some())
                     {
                         room.selection = None;
                     } else if let Some(room) =
-                        main.room.as_mut().filter(|r| r.composer_emoji.is_some())
+                        main.pane.room_mut().filter(|r| r.composer_emoji.is_some())
                     {
                         room.composer_emoji = None;
-                    } else if main.room.as_ref().is_some_and(|r| r.compose.cancellable()) {
+                    } else if main.pane.room().is_some_and(|r| r.compose.cancellable()) {
                         // From the composer its own Esc does it first.
                         return Task::done(Message::Act(actions::Message::CancelCompose));
                     } else if let Some(edit) = main
-                        .room
-                        .as_mut()
+                        .pane
+                        .room_mut()
                         .and_then(|r| r.editing.as_mut())
                         .filter(|e| e.emoji.is_some())
                     {
                         edit.emoji = None;
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.editing.is_some()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.editing.is_some())
+                    {
                         room.editing = None;
                     } else if let Some(room) =
-                        main.room.as_mut().filter(|r| r.later.picker.is_some())
+                        main.pane.room_mut().filter(|r| r.later.picker.is_some())
                     {
                         room.later = Default::default();
-                    } else if let Some(room) = main.room.as_mut().filter(|r| r.picker.is_some()) {
+                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.picker.is_some()) {
                         room.picker = None;
                         room.emoji = None;
                     } else if !main.arrange.escape() {
@@ -2197,7 +2237,7 @@ impl App {
                 };
                 main.show_members = true;
                 main.info = None;
-                match main.room.as_mut() {
+                match main.pane.room_mut() {
                     Some(room) if room.id == id => {
                         if room.loading_members {
                             Task::none()
@@ -2214,7 +2254,7 @@ impl App {
                 };
                 main.show_members = !main.show_members;
                 // Opening it shows the members anew.
-                match main.room.as_mut() {
+                match main.pane.room_mut() {
                     Some(room) if main.show_members && !room.loading_members => {
                         load_members(&main.session, room)
                     }
@@ -2223,7 +2263,7 @@ impl App {
             }
             Message::MembersLoaded(id, result) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                    && let Some(room) = main.pane.room_mut().filter(|r| r.id == id)
                 {
                     room.members_loaded(result);
                 }
@@ -2256,8 +2296,8 @@ impl App {
                 };
                 let looking = self.focused
                     && main
-                        .room
-                        .as_ref()
+                        .pane
+                        .room()
                         .is_some_and(|r| r.id == notification.room_id);
                 if !self.settings.desktop_notifications || looking {
                     return Task::none();
@@ -2298,7 +2338,7 @@ impl App {
             }
             Message::DraftLoaded(id, draft) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                    && let Some(room) = main.pane.room_mut().filter(|r| r.id == id)
                 {
                     room.restore_draft(draft);
                 }
@@ -2309,8 +2349,8 @@ impl App {
                     return Task::none();
                 };
                 let Some(room) = main
-                    .room
-                    .as_mut()
+                    .pane
+                    .room_mut()
                     .filter(|r| r.id == id && r.draft_changes == changes)
                 else {
                     return Task::none();
@@ -2332,7 +2372,7 @@ impl App {
             Message::CloseWindow(id) => {
                 // What is being written is kept before the session ends.
                 let draft = match &self.screen {
-                    Screen::Main(main) => main.room.as_ref().and_then(|room| {
+                    Screen::Main(main) => main.pane.room().and_then(|room| {
                         let draft = room.draft_to_keep()?;
                         Some(save_draft(&main.session, room.id.clone(), draft))
                     }),
@@ -2372,7 +2412,7 @@ impl App {
             }
             Message::Scheduled(scheduled) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    if let Some(room) = main.room.as_mut() {
+                    if let Some(room) = main.pane.room_mut() {
                         room.scheduled_changed(&scheduled);
                     }
                     main.scheduled = scheduled;
@@ -2449,7 +2489,7 @@ impl App {
             Message::LinkClicked(url) => match message::mentioned_user(&url) {
                 Some(user) => {
                     let room = match &self.screen {
-                        Screen::Main(main) => main.room.as_ref(),
+                        Screen::Main(main) => main.pane.room(),
                         _ => None,
                     };
                     let card = match room {
@@ -2544,7 +2584,7 @@ impl App {
             }
             Message::Hover(id, entered) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut()
+                    && let Some(room) = main.pane.room_mut()
                 {
                     room.hover(id, entered);
                 }
@@ -2554,7 +2594,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 room.error = None;
@@ -2568,7 +2608,7 @@ impl App {
             }
             Message::Unmark(id) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut()
+                    && let Some(room) = main.pane.room_mut()
                     && room.marked.as_ref() == Some(&id)
                 {
                     room.marked = None;
@@ -2640,7 +2680,7 @@ impl App {
                     && let Err(e) = result
                 {
                     // Shown where it was saved from.
-                    match (&mut main.viewer, &mut main.pdf, &mut main.room) {
+                    match (&mut main.viewer, &mut main.pdf, main.pane.room_mut()) {
                         (Some(viewer), _, _) => viewer.error = Some(e),
                         (None, Some(pdf), _) => pdf.error = Some(e),
                         (None, None, Some(room)) => room.error = Some(e),
@@ -2653,7 +2693,7 @@ impl App {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                let Some(room) = &main.room else {
+                let Some(room) = main.pane.room() else {
                     return Task::none();
                 };
                 let id = room.id.clone();
@@ -2663,7 +2703,7 @@ impl App {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                let Some(room) = &main.room else {
+                let Some(room) = main.pane.room() else {
                     return Task::none();
                 };
                 attach(room.id.clone(), vec![path])
@@ -2672,7 +2712,7 @@ impl App {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                let Some(room) = &main.room else {
+                let Some(room) = main.pane.room() else {
                     return Task::none();
                 };
                 let id = room.id.clone();
@@ -2684,7 +2724,7 @@ impl App {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                if main.room.as_ref().is_none_or(|room| room.id != id) {
+                if main.pane.room().is_none_or(|room| room.id != id) {
                     return Task::none();
                 }
                 match pasted {
@@ -2709,7 +2749,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(room) = main.room.as_mut() else {
+                let Some(room) = main.pane.room_mut() else {
                     return Task::none();
                 };
                 let (content, menu, focus) = match field {
@@ -2779,7 +2819,7 @@ impl App {
             }
             Message::Attached(id, attached) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = main.room.as_mut().filter(|r| r.id == id)
+                    && let Some(room) = main.pane.room_mut().filter(|r| r.id == id)
                 {
                     for attached in attached {
                         match attached {
@@ -2792,7 +2832,7 @@ impl App {
             }
             Message::Unattach(index) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(room) = &mut main.room
+                    && let Some(room) = main.pane.room_mut()
                     && index < room.attachments.len()
                 {
                     room.attachments.remove(index);
@@ -2870,8 +2910,8 @@ impl App {
                     dialog::Opened::Room(id) => self.update(Message::OpenRoom(id)),
                     dialog::Opened::Space(id) => self.update(Message::SelectSpace(Some(id))),
                     dialog::Opened::Left(id) => {
-                        if main.room.as_ref().is_some_and(|r| r.id == id) {
-                            main.room = None;
+                        if main.pane.id() == Some(&id) {
+                            main.pane = Pane::Empty;
                         }
                         if main.info.as_ref().and_then(|c| c.room()) == Some(&id) {
                             main.info = None;
@@ -2906,7 +2946,7 @@ impl App {
                     .find(|r| &r.id == id)
                     .map_or_else(|| id.to_string(), |r| r.name.clone())
             };
-            if let Some(room) = &main.room {
+            if let Some(room) = main.pane.room() {
                 panel.room = Some(settings::Access::new(
                     room.id.clone(),
                     name(&room.id),
@@ -3163,7 +3203,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = main.room.as_mut().filter(|r| r.id == room_id) else {
+        let Some(room) = main.pane.room_mut().filter(|r| r.id == room_id) else {
             return Task::none();
         };
         let session = main.session.clone();
@@ -3240,7 +3280,7 @@ impl App {
         }
         // From the call menu too.
         if let topic::Message::Edit = message
-            && let Some(room) = main.room.as_mut().filter(|r| r.id == room_id)
+            && let Some(room) = main.pane.room_mut().filter(|r| r.id == room_id)
         {
             room.calls.close();
         }
@@ -3349,7 +3389,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = main.room.as_mut() else {
+        let Some(room) = main.pane.room_mut() else {
             return Task::none();
         };
         let pinned = (main.rooms.rooms.iter())
@@ -3374,7 +3414,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = main.room.as_mut() else {
+        let Some(room) = main.pane.room_mut() else {
             return Task::none();
         };
         let timeline = room.timeline.clone();
@@ -3646,7 +3686,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = main.room.as_mut() else {
+        let Some(room) = main.pane.room_mut() else {
             return Task::none();
         };
         let mut focus = Task::none();
@@ -3717,7 +3757,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = main.room.as_mut() else {
+        let Some(room) = main.pane.room_mut() else {
             return Task::none();
         };
         let session = main.session.clone();
@@ -3868,11 +3908,11 @@ impl App {
         let (Screen::Main(main), Some(file)) = (&self.screen, &self.view_file) else {
             return;
         };
-        let room = main
-            .opening
-            .as_ref()
-            .or(main.room.as_ref().map(|r| &r.id))
-            .cloned();
+        let room = match &main.pane {
+            Pane::Opening(id) => Some(id.clone()),
+            Pane::Open(room) => Some(room.id.clone()),
+            Pane::Empty | Pane::Invite { .. } => None,
+        };
         LastView {
             space: main.space.clone(),
             room,
@@ -3904,7 +3944,7 @@ impl App {
         let Screen::Main(main) = &self.screen else {
             return Task::none();
         };
-        let Some(room) = &main.room else {
+        let Some(room) = main.pane.room() else {
             return Task::none();
         };
         let tasks: Vec<_> = room
@@ -3921,7 +3961,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let beside = match main.room.as_mut() {
+        let beside = match main.pane.room_mut() {
             Some(open) if open.id == *room && main.show_members => {
                 load_members(&main.session, open)
             }
@@ -4117,7 +4157,7 @@ impl App {
         main.arrange.escape();
         main.add_menu = false;
         // Opened from the list of a message's readers, say.
-        if let Some(room) = &mut main.room {
+        if let Some(room) = main.pane.room_mut() {
             room.readers = None;
             room.reactors = None;
         }
@@ -4171,7 +4211,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(room) = &main.room else {
+        let Some(room) = main.pane.room() else {
             return Task::none();
         };
         let tasks: Vec<_> = room
@@ -4220,8 +4260,8 @@ impl App {
             subscriptions.push(iced::event::listen_with(shortcuts));
             // A selection being dragged ends wherever the button is released.
             if main
-                .room
-                .as_ref()
+                .pane
+                .room()
                 .and_then(|r| r.selection.as_ref())
                 .is_some_and(|s| s.dragging)
             {
@@ -4291,7 +4331,7 @@ impl App {
                         .map(Message::Rooms),
                 );
             }
-            if let Some(room) = &main.room {
+            if let Some(room) = main.pane.room() {
                 subscriptions.push(Subscription::run_with(
                     (Shared(room.timeline.clone()), "typing"),
                     |(t, _)| {
@@ -4450,11 +4490,11 @@ impl App {
             banners = banners.push(container(text(error).style(text::danger)).padding(12));
         }
         let mut content = column![banners];
-        let room_view: Element<'a, Message> = match (&main.invite, &main.opening, &main.room) {
-            (Some((id, answering)), _, _) => {
+        let room_view: Element<'a, Message> = match &main.pane {
+            Pane::Invite { id, answering } => {
                 invite_view(rooms.iter().find(|r| &r.id == id), id, *answering)
             }
-            (None, Some(id), _) => {
+            Pane::Opening(id) => {
                 let opening =
                     container(text("Opening…").style(text::secondary)).center(Length::Fill);
                 // The member list stays where it is, loading.
@@ -4482,7 +4522,7 @@ impl App {
                     opening.into()
                 }
             }
-            (None, None, Some(room)) => {
+            Pane::Open(room) => {
                 let summary = rooms.iter().find(|r| r.id == room.id);
                 let scheduled = send_later::Pending {
                     messages: main
@@ -4509,7 +4549,7 @@ impl App {
                 };
                 room.view(summary, &look, &scheduled)
             }
-            (None, None, None) => container(text("Select a room").style(text::secondary))
+            Pane::Empty => container(text("Select a room").style(text::secondary))
                 .center(Length::Fill)
                 .into(),
         };
@@ -4590,7 +4630,7 @@ fn recovery_banner(main: &Main) -> Element<'_, Message> {
 /// Points to rooms (other than the open one) with overdue scheduled
 /// messages; their composer bar offers sending or cancelling them.
 fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
-    let open = main.room.as_ref().map(|r| &r.id);
+    let open = main.pane.id();
     let mut rooms: Vec<(&OwnedRoomId, usize)> = Vec::new();
     for message in main.scheduled.iter().filter(|m| m.overdue) {
         if Some(&message.room_id) == open {
@@ -5016,7 +5056,7 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
 /// we may mention everyone.
 /// The topic panel of `room`: the open room's, or the selected space's.
 fn topic_panel<'a>(main: &'a mut Main, room: &OwnedRoomId) -> Option<&'a mut topic::Panel> {
-    match &mut main.room {
+    match main.pane.room_mut() {
         Some(open) if open.id == *room => Some(&mut open.topic),
         _ => (main.space.as_ref() == Some(room)).then_some(&mut main.space_topic),
     }

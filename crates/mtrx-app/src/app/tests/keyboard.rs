@@ -52,7 +52,7 @@ impl Ui {
     }
 
     fn room(&mut self) -> &mut Room {
-        self.main().room.as_mut().expect("a room is open")
+        self.main().pane.room_mut().expect("a room is open")
     }
 
     /// `events` through the widgets, then to the shortcuts with whether a
@@ -173,7 +173,7 @@ async fn room_with(prefix: &str, messages: &[&str]) -> (Ui, TempDir) {
     let mut open = Room::new(room, timeline.clone());
     open.entries = timeline.current();
     with_start(&mut open.entries);
-    main.room = Some(open);
+    main.pane = Pane::Open(open);
     (Ui::new(app(Screen::Main(Box::new(main)), Mode::Light)), dir)
 }
 
@@ -414,30 +414,6 @@ fn keys_go_to_rooms_from_fields_too() {
     }
 }
 
-/// A room in the room list.
-fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
-    mtrx_core::RoomSummary {
-        id: id.clone(),
-        name: name.into(),
-        avatar: None,
-        topic: None,
-        kind: RoomKind::Room,
-        invited: false,
-        encrypted: false,
-        public: false,
-        unread_messages: 0,
-        unread_mentions: 0,
-        unread_notifications: 0,
-        last_activity: None,
-        parents: Vec::new(),
-        tag: RoomTag::None,
-        direct_user: None,
-        alias: None,
-        joined_members: 1,
-        pinned: Vec::new(),
-    }
-}
-
 /// ⌥⌘↓ and ⌘1 open the room below and the first, also from the composer,
 /// which leaves them: ⌘1 types no 1.
 #[tokio::test(flavor = "multi_thread")]
@@ -445,6 +421,7 @@ fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
 async fn keys_go_to_other_rooms_from_the_composer() {
     let (mut ui, _dir) = room_with("goto", &[]).await;
     let open = ui.room().id.clone();
+    let timeline = ui.room().timeline.clone();
     let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
     ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
     ui.run(iced::widget::operation::focus(room::COMPOSER));
@@ -459,14 +436,19 @@ async fn keys_go_to_other_rooms_from_the_composer() {
     for (key, modifiers) in keys {
         let (statuses, messages) = ui.messages(&[press(key.clone(), modifiers)]);
         assert_eq!(statuses, [Status::Ignored], "{key:?}");
+        let typing = |m: &Message| matches!(m, Message::Composer(text_editor::Action::Edit(_)));
+        assert!(!messages.iter().any(typing), "{key:?}");
         // Opening it (its tasks are not run: rooms load their timeline by
         // a subscription, which this window has not).
         for message in messages {
             let _ = ui.app.update(message);
         }
-        assert_eq!(ui.main().opening.as_ref(), Some(&other), "{key:?}");
-        ui.main().opening = None;
-        assert_eq!(ui.room().composer.text(), "");
+        assert!(
+            matches!(&ui.main().pane, Pane::Opening(id) if *id == other),
+            "{key:?}"
+        );
+        // Open again for the next key.
+        ui.main().pane = Pane::Open(Room::new(open.clone(), timeline.clone()));
     }
 }
 
