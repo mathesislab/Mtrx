@@ -435,7 +435,10 @@ async fn keys_go_to_other_rooms_from_the_composer() {
     let open = ui.room().id.clone();
     let timeline = ui.room().timeline.clone();
     let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
-    ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
+    ui.main().show_rooms(RoomListState {
+        rooms: vec![summary(&other, "other"), summary(&open, "open")],
+        loaded: false,
+    });
     ui.run(iced::widget::operation::focus(room::COMPOSER));
 
     let keys = [
@@ -756,7 +759,10 @@ async fn shortcuts_type_nothing_in_fields() {
     let (mut ui, _dir) = room_with("search", &[]).await;
     let open = ui.room().id.clone();
     let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
-    ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
+    ui.main().show_rooms(RoomListState {
+        rooms: vec![summary(&other, "other"), summary(&open, "open")],
+        loaded: false,
+    });
     let typed = |ui: &mut Ui, key: &str, modifiers| {
         let (_, messages) = ui.messages(&[press(Key::Character(key.into()), modifiers)]);
         format!("{messages:?}")

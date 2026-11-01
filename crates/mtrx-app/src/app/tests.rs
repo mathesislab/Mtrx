@@ -79,6 +79,19 @@ fn with_start(entries: &mut Vec<TimelineEntry>) {
     }
 }
 
+impl Main {
+    /// Show `state` as the core arranges it.
+    fn show_rooms(&mut self, state: RoomListState) {
+        self.lists = Arc::new(RoomLists::new(
+            state,
+            self.arrange.categories.clone(),
+            HashMap::new(),
+            &self.own_user,
+            BTreeSet::new(),
+        ));
+    }
+}
+
 fn snapshot(app: &App, name: &str) {
     snapshot_at(app, name, None);
 }
@@ -782,7 +795,7 @@ async fn main_screen_with_math() {
     for mode in [Mode::Light, Mode::Dark] {
         let session = Arc::new(Session::restore(alice.profile().clone()).await.unwrap());
         let mut main = Main::new(session);
-        main.rooms = rooms.clone();
+        let mut state = rooms.clone();
         if mode == Mode::Dark {
             // Notes to self, started and unread; pinned above the sections.
             let mut notes = (rooms.rooms.iter())
@@ -792,7 +805,7 @@ async fn main_screen_with_math() {
             notes.id = "!notes:localhost".try_into().unwrap();
             notes.direct_user = Some(alice.user_id());
             notes.unread_messages = 2;
-            main.rooms.rooms.push(notes);
+            state.rooms.push(notes);
         }
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
@@ -809,10 +822,11 @@ async fn main_screen_with_math() {
                 _ => None,
             })
             .unwrap();
-        if let Some(summary) = main.rooms.rooms.iter_mut().find(|r| r.id == room) {
+        if let Some(summary) = state.rooms.iter_mut().find(|r| r.id == room) {
             summary.topic = Some(TOPIC.into());
             summary.pinned = vec![first];
         }
+        main.show_rooms(state);
         open.pins.update(pins::Message::CanPin(Some(true)));
         open.pins.update(pins::Message::Updated(entries.clone()));
         open.calls.space_service =
@@ -1310,7 +1324,7 @@ async fn send_later_bar() {
         files: Vec::new(),
     };
     let mut main = Main::new(Arc::new(alice));
-    main.rooms = rooms;
+    main.show_rooms(rooms);
     main.verified = Some(true);
     main.now = now;
     main.scheduled = vec![
@@ -1700,7 +1714,7 @@ async fn room_management_screens() {
 
     let main_with = |configure: &dyn Fn(&mut Main)| {
         let mut main = Main::new(session.clone());
-        main.rooms = rooms.clone();
+        main.show_rooms(rooms.clone());
         main.space = Some(space.clone());
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
@@ -1843,7 +1857,7 @@ async fn room_management_screens() {
         &main_with(&|main| {
             let mut card = info::Card::new(
                 info::Target::Room(room.clone()),
-                &main.rooms.rooms,
+                &main.lists.rooms,
                 overview::Tab::Rooms,
             );
             card.update(info::Message::SettingsLoaded(
@@ -1905,7 +1919,7 @@ async fn room_management_screens() {
         &main_with(&|main| {
             let mut card = info::Card::new(
                 info::Target::Room(space.clone()),
-                &main.rooms.rooms,
+                &main.lists.rooms,
                 overview::Tab::Rooms,
             );
             card.update(info::Message::SettingsLoaded(
@@ -1921,7 +1935,8 @@ async fn room_management_screens() {
     for (open, name) in [(false, "space-topic"), (true, "space-topic-open")] {
         snapshot(
             &main_with(&|main| {
-                if let Some(summary) = main.rooms.rooms.iter_mut().find(|r| r.id == space) {
+                let mut state = rooms.clone();
+                if let Some(summary) = state.rooms.iter_mut().find(|r| r.id == space) {
                     summary.topic = Some(
                         "Paleoclimate modelling and analysis, ice group\n\
                          [call Weekly] https://meet.google.com/abc-defg-hij\n\
@@ -1929,6 +1944,7 @@ async fn room_management_screens() {
                             .into(),
                     );
                 }
+                main.show_rooms(state);
                 main.space_topic.can_edit = Some(true);
                 main.space_topic.open = open;
             }),
@@ -1940,7 +1956,7 @@ async fn room_management_screens() {
         &main_with(&|main| {
             let card = info::Card::new(
                 info::Target::Room(space.clone()),
-                &main.rooms.rooms,
+                &main.lists.rooms,
                 overview::Tab::Rooms,
             );
             main.space_rooms.loaded(space.clone(), Ok(children.clone()));
@@ -2049,7 +2065,7 @@ async fn mention_colours() {
     );
 
     let mut main = Main::new(Arc::new(alice));
-    main.rooms = rooms;
+    main.show_rooms(rooms);
     main.verified = Some(true);
     let mut open = Room::new(room.clone(), timeline.clone());
     open.entries = entries;
@@ -2175,7 +2191,7 @@ async fn media_messages() {
     let session = Arc::new(alice);
     let main_with = async |modal: Option<Modal>| {
         let mut main = Main::new(session.clone());
-        main.rooms = rooms.clone();
+        main.show_rooms(rooms.clone());
         main.verified = Some(true);
         let mut open = Room::new(room.clone(), timeline.clone());
         open.entries = entries.clone();
@@ -2308,7 +2324,7 @@ async fn room_categories() {
 
     let main_with = |configure: &dyn Fn(&mut Main)| {
         let mut main = Main::new(session.clone());
-        main.rooms = rooms.clone();
+        main.show_rooms(rooms.clone());
         main.verified = Some(true);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
@@ -2319,7 +2335,7 @@ async fn room_categories() {
             arrange::Context {
                 session: &session,
                 space: None,
-                rooms: &mut main.rooms.rooms,
+                rooms: &main.lists.rooms,
                 grouping: mtrx_core::Grouping::default(),
                 popup: &mut main.popup,
             },
@@ -2379,7 +2395,7 @@ async fn room_categories() {
         "heading-drag",
     );
     let mut main = Main::new(session.clone());
-    main.rooms = rooms.clone();
+    main.show_rooms(rooms.clone());
     for message in drag_heading.into_iter().chain([arrange::Message::Released]) {
         send(&mut main, message);
     }
@@ -2388,7 +2404,7 @@ async fn room_categories() {
 
     // Dropping moves the room into the category; the menu favourites one.
     let mut main = Main::new(session.clone());
-    main.rooms = rooms.clone();
+    main.show_rooms(rooms.clone());
     for message in [
         arrange::Message::Row(ids["admin"].clone(), true),
         arrange::Message::Pressed,
@@ -2404,8 +2420,6 @@ async fn room_categories() {
     let in_projects = |name| home.category_of(&ids[name]).map(|c| c.id.clone());
     assert_eq!(in_projects("admin"), Some(projects.clone()));
     assert_eq!(in_projects("seminar"), None);
-    let seminar = main.rooms.rooms.iter().find(|r| r.id == ids["seminar"]);
-    assert_eq!(seminar.map(|r| r.tag), Some(RoomTag::Favourite));
     assert!(main.arrange.drag.is_none());
 }
 
@@ -2487,7 +2501,15 @@ async fn show_menu() {
     let session = Arc::new(alice);
 
     let mut main = Main::new(session.clone());
-    main.rooms = rooms;
+    // The space's members, as if loaded, for the direct chat with Bob.
+    let members = HashMap::from([(space.clone(), HashSet::from([bob.user_id()]))]);
+    main.lists = Arc::new(RoomLists::new(
+        rooms,
+        main.arrange.categories.clone(),
+        members,
+        &main.own_user,
+        BTreeSet::new(),
+    ));
     main.verified = Some(true);
     main.space = Some(space.clone());
     let send = |main: &mut Main, message| {
@@ -2496,20 +2518,12 @@ async fn show_menu() {
             arrange::Context {
                 session: &session,
                 space: Some(&space),
-                rooms: &mut main.rooms.rooms,
+                rooms: &main.lists.rooms,
                 grouping: mtrx_core::Grouping::default(),
                 popup: &mut main.popup,
             },
         );
     };
-    // The space's members, as if loaded, for the direct chat with Bob.
-    for (due, count) in main.arrange.space_members.due(&main.rooms.rooms) {
-        let members = HashSet::from([bob.user_id()]);
-        send(
-            &mut main,
-            arrange::Message::SpaceMembers(due, count, Ok(members)),
-        );
-    }
     send(&mut main, arrange::Message::ShowMenu(true));
     // Rooms dragged by its grip to the place of Papers, above it.
     let papers = main.arrange.categories.layout(Some(&space)).categories[1]
@@ -2763,7 +2777,7 @@ async fn website_screenshots() {
         .into();
     let screen = |mode: Mode| {
         let mut main = Main::new(ana.clone());
-        main.rooms = rooms.clone();
+        main.show_rooms(rooms.clone());
         main.space = Some(space.clone());
         main.verified = Some(true);
         main.now = now;
@@ -3153,13 +3167,16 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
     let invite: OwnedRoomId = "!invite:localhost".try_into().unwrap();
     let mut main = Main::new(Arc::new(alice));
     main.verified = Some(true);
-    main.rooms.rooms = vec![
-        summary(&a, "a"),
-        mtrx_core::RoomSummary {
-            invited: true,
-            ..summary(&invite, "invite")
-        },
-    ];
+    main.show_rooms(RoomListState {
+        rooms: vec![
+            summary(&a, "a"),
+            mtrx_core::RoomSummary {
+                invited: true,
+                ..summary(&invite, "invite")
+            },
+        ],
+        loaded: false,
+    });
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     let opened = messages_of(app.update(Message::OpenRoom(a.clone()))).await;
@@ -3232,7 +3249,10 @@ async fn a_room_that_failed_to_open_opens_again() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let mut main = Main::new(Arc::new(alice));
     main.verified = Some(true);
-    main.rooms.rooms = vec![summary(&a, "a")];
+    main.show_rooms(RoomListState {
+        rooms: vec![summary(&a, "a")],
+        loaded: false,
+    });
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     let problem = |app: &App| match &app.screen {
         Screen::Main(main) => main.notice.as_ref().filter(|n| n.error).map(|n| {

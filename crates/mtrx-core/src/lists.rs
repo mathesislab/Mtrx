@@ -21,7 +21,9 @@ use tracing::warn;
 
 use crate::{
     Grouping, Layout, Result, RoomCategories, RoomKind, RoomList, RoomListState, RoomSummary,
-    Section, Session, SpaceMembers, home_rooms, space_rooms, top_level_spaces,
+    Section, Session,
+    spaces::{SpaceMembers, home_rooms, space_rooms},
+    top_level_spaces,
 };
 
 /// What a room list lists.

@@ -50,7 +50,7 @@ fn listed(room: &RoomSummary) -> bool {
 /// favourites in spaces (those only when the room list has its Favourites
 /// section, by `grouping`). A room is in a space when a joined space lists it
 /// as a child ([`RoomSummary::parents`]).
-pub fn home_rooms<'a>(
+pub(crate) fn home_rooms<'a>(
     rooms: &'a [RoomSummary],
     categories: &RoomCategories,
     grouping: &Grouping,
@@ -74,7 +74,7 @@ pub fn home_rooms<'a>(
 /// (through nested spaces), direct chats with its joined `members`, and rooms
 /// the user put into its categories (`layout`). Spaces are not listed, except
 /// invites to them, to be answered.
-pub fn space_rooms<'a>(
+pub(crate) fn space_rooms<'a>(
     rooms: &'a [RoomSummary],
     space: &RoomId,
     members: Option<&HashSet<OwnedUserId>>,
@@ -98,7 +98,7 @@ pub fn space_rooms<'a>(
 /// list. Loaded when a space appears and again when its number of joined
 /// members changes; a failed load is tried again then.
 #[derive(Clone, Debug, Default)]
-pub struct SpaceMembers {
+pub(crate) struct SpaceMembers {
     known: HashMap<OwnedRoomId, HashSet<OwnedUserId>>,
     /// The number of joined members each space had when its members were
     /// last asked for.
@@ -110,7 +110,7 @@ impl SpaceMembers {
     /// with their number of members, to pass back to [`Self::loaded`].
     ///
     /// [`Session::joined_member_ids`]: crate::Session::joined_member_ids
-    pub fn due(&mut self, rooms: &[RoomSummary]) -> Vec<(OwnedRoomId, u64)> {
+    pub(crate) fn due(&mut self, rooms: &[RoomSummary]) -> Vec<(OwnedRoomId, u64)> {
         let spaces = top_level_spaces(rooms);
         self.asked
             .retain(|id, _| spaces.iter().any(|space| &space.id == id));
@@ -128,15 +128,10 @@ impl SpaceMembers {
 
     /// Members loaded for a space that had `count` joined members; dropped
     /// if a newer load was started since.
-    pub fn loaded(&mut self, space: OwnedRoomId, count: u64, ids: HashSet<OwnedUserId>) {
+    pub(crate) fn loaded(&mut self, space: OwnedRoomId, count: u64, ids: HashSet<OwnedUserId>) {
         if self.asked.get(&space) == Some(&count) {
             self.known.insert(space, ids);
         }
-    }
-
-    /// The members of `space`, once loaded.
-    pub fn get(&self, space: &RoomId) -> Option<&HashSet<OwnedUserId>> {
-        self.known.get(space)
     }
 
     /// The members of each space loaded.
@@ -277,9 +272,9 @@ pub(crate) mod tests {
         let rooms = [space(3)];
         assert_eq!(members.due(&rooms), [(owned_room_id!("!a:x"), 3)]);
         members.loaded(owned_room_id!("!a:x"), 2, bob.clone());
-        assert!(members.get(&owned_room_id!("!a:x")).is_none());
+        assert!(members.known().get(&owned_room_id!("!a:x")).is_none());
         members.loaded(owned_room_id!("!a:x"), 3, bob.clone());
-        assert_eq!(members.get(&owned_room_id!("!a:x")), Some(&bob));
+        assert_eq!(members.known().get(&owned_room_id!("!a:x")), Some(&bob));
 
         // Gone spaces are forgotten.
         assert!(members.due(&[]).is_empty());

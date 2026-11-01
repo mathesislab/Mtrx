@@ -35,7 +35,7 @@ pub struct RoomCategories {
 
 /// Which rooms of spaces Home lists too. It always lists direct chats,
 /// invites, rooms in no space and those put into its categories
-/// ([`crate::home_rooms`]).
+/// ([`crate::SpaceKey::Home`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AtHome {

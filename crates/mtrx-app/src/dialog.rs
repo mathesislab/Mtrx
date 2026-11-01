@@ -13,7 +13,8 @@ use iced::{
 };
 use mtrx_core::{
     Confirmation, Contact, Grouping, Member, NewRoom, OwnedRoomId, OwnedUserId, Permissions,
-    RoomCategories, RoomKind, RoomSummary, UserId, UserSummary, a_role, typed_level,
+    RoomCategories, RoomKind, RoomLists, RoomSummary, SpaceKey, UserId, UserSummary, a_role,
+    typed_level,
 };
 
 use crate::{
@@ -21,7 +22,7 @@ use crate::{
     arrange::{self, Arrange, CategoryEdit},
     fonts, frame,
     hint::{Position, hint},
-    sidebar, spelling, style,
+    spelling, style,
 };
 
 /// Which dialog is open.
@@ -622,10 +623,11 @@ impl Dialog {
     /// by `grouping`).
     pub fn view<'a>(
         &'a self,
-        rooms: &'a [RoomSummary],
+        lists: &'a RoomLists,
         arrange: &'a Arrange,
         grouping: &Grouping,
     ) -> Element<'a, app::Message> {
+        let rooms = &lists.rooms;
         let (title, submit) = match &self.kind {
             Kind::NewRoom {
                 space: Some((_, space)),
@@ -682,7 +684,7 @@ impl Dialog {
             Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
             Kind::Category { space, .. } => body
                 .push(self.prose_field("Name", &self.name, Message::Name))
-                .push(self.category_rooms_view(space.as_ref(), rooms, arrange, grouping)),
+                .push(self.category_rooms_view(space.as_ref(), lists, arrange, grouping)),
             Kind::Encrypt { .. } => body.push(
                 text(
                     "From now on, only members' devices can read new messages; servers and \
@@ -956,7 +958,7 @@ impl Dialog {
     fn category_rooms_view<'a>(
         &'a self,
         space: Option<&OwnedRoomId>,
-        rooms: &'a [RoomSummary],
+        lists: &'a RoomLists,
         arrange: &'a Arrange,
         grouping: &Grouping,
     ) -> Element<'a, app::Message> {
@@ -965,16 +967,10 @@ impl Dialog {
             Kind::Category { category, .. } => category.as_deref(),
             _ => None,
         };
-        let found: Vec<_> = sidebar::search(
-            rooms,
-            space,
-            arrange,
-            grouping,
-            &self.query.trim().to_lowercase(),
-        )
-        .into_iter()
-        .filter(|r| !r.invited)
-        .collect();
+        let key = space.map_or(SpaceKey::Home, |space| SpaceKey::Space(space.clone()));
+        let found: Vec<_> = (lists.search(Some(&key), grouping, &self.query).into_iter())
+            .filter(|r| !r.invited)
+            .collect();
         let unticked: Vec<OwnedRoomId> = (found.iter())
             .filter(|r| !self.rooms.contains(&r.id))
             .map(|r| r.id.clone())
