@@ -1376,8 +1376,8 @@ separate process the locks are made for.
 Whether people are online, idle or away, and sharing ours. The library
 part is done and tested (section 5); the rest is in the apps, which do the
 same on both. The desktop follows the same rules, with "Share my presence"
-under General, idle after 5 minutes without input while its window is not
-focused, and offline when its window closes.
+under General, idle after 5 minutes without input (its window focused or
+not), and offline when its window closes.
 
 **How the library gets it.** Sync does not carry presence: simplified
 sliding sync (MSC4186) has no presence extension, and the SDK delivers

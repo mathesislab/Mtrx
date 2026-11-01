@@ -380,7 +380,7 @@ impl Card {
             theme.extended_palette().background.base.color
         });
         let mut title = column![selectable_text(name).size(18).font(fonts::SEMIBOLD)].spacing(2);
-        if let Some(line) = presence.and_then(|p| presence::line(p, now)) {
+        if let Some(line) = presence.and_then(|p| p.line(now)) {
             title = title.push(text(line).size(13).style(text::secondary));
         }
         let title = row![picture, title.width(Length::Fill), star]

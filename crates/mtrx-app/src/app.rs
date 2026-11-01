@@ -21,9 +21,9 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Connection, Contact, Draft, Google, Media, MediaRef, Notification, OwnedEventId,
-    OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, PresenceState,
-    Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomOrAliasId,
-    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, Topic, Url,
+    OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, Profile,
+    RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomOrAliasId, RoomTag,
+    RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, Topic, Url,
 };
 
 use crate::{
@@ -47,7 +47,7 @@ use crate::{
     overview, pdf_viewer, pins,
     placement::{self, Frame, Placement},
     popover,
-    presence::{self, Activity, Presences},
+    presence::{self, Presences},
     room::{self, Look, Older, Room},
     selection::{self, Selection},
     send_later,
@@ -354,8 +354,6 @@ struct Main {
     restore: Option<LastView>,
     /// Others' presence, for the people shown.
     presences: Presences,
-    /// Our presence, from the window's focus and input.
-    activity: Activity,
 }
 
 /// What the room pane shows.
@@ -541,7 +539,6 @@ impl Main {
             out_of_view: Default::default(),
             restore: None,
             presences: Presences::default(),
-            activity: Activity::new(true, Instant::now()),
             now: SystemTime::now(),
             session,
             avatars: Avatars::new(),
@@ -676,12 +673,13 @@ impl Main {
         }
     }
 
-    /// Set our presence, unless the server does not share it.
-    fn set_presence(&self, state: PresenceState) -> Task<Message> {
+    /// What the app is doing, which sets our presence, unless the server
+    /// does not share it.
+    fn activity(&self, activity: mtrx_core::Activity) -> Task<Message> {
         if self.presences.unavailable() {
             return Task::none();
         }
-        presence::set_own(&self.session, state).map(Message::Presence)
+        presence::activity(&self.session, activity).map(Message::Presence)
     }
 
     /// The Notes to self if pinned; missing ones only once the room list
@@ -1018,21 +1016,13 @@ impl App {
             Message::Restored(Ok(Shared(session))) | Message::LoggedIn(Ok(Shared(session))) => {
                 let mut main = Main::new(session.clone());
                 main.restore = self.view_file.as_deref().map(LastView::load);
-                main.activity = Activity::new(self.focused, Instant::now());
-                let share = self.settings.share_presence;
-                let online = if share {
-                    main.set_presence(PresenceState::Online)
-                } else {
-                    Task::none()
-                };
                 self.screen = Screen::Main(Box::new(main));
                 let migrate = self.move_colours_to_account(&session);
+                // Before syncing, whose requests say the same.
+                let presence =
+                    presence::start(&session, self.settings.share_presence).map(Message::Presence);
                 let start = Task::perform(
                     async move {
-                        // Before syncing, whose requests would say online.
-                        if !share {
-                            presence::go_offline(&session).await;
-                        }
                         session.start_sync().await;
                         session.start_scheduler();
                         let list = session.room_list().await?;
@@ -1043,7 +1033,7 @@ impl App {
                         Message::Ready(result.map_err(|e| e.to_string()))
                     },
                 );
-                Task::batch([start, migrate, online])
+                Task::batch([presence.chain(start), migrate])
             }
             Message::Colours(colours) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -1574,18 +1564,11 @@ impl App {
                 let back =
                     main.connection == Connection::Offline && connection == Connection::Online;
                 main.connection = connection;
-                // Our presence, if it could not be set while offline.
-                let presence = if back && self.settings.share_presence {
-                    main.set_presence(main.activity.state())
-                } else {
-                    Task::none()
-                };
                 // History that could not load while offline.
-                let history = match main.pane.room_mut() {
+                match main.pane.room_mut() {
                     Some(room) if back => fill(room),
                     _ => Task::none(),
-                };
-                Task::batch([presence, history])
+                }
             }
             Message::SignInAgain => {
                 let Screen::Main(main) = &self.screen else {
@@ -1936,13 +1919,11 @@ impl App {
             }
             Message::WindowFocused(focused) => {
                 self.focused = focused;
-                let Screen::Main(main) = &mut self.screen else {
+                let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                match main.activity.focus(focused, Instant::now()) {
-                    Some(state) if self.settings.share_presence => main.set_presence(state),
-                    _ => Task::none(),
-                }
+                // The window was in use until now.
+                main.activity(mtrx_core::Activity::Input)
             }
             Message::Drafts(drafts) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -1962,11 +1943,12 @@ impl App {
                 .unwrap_or_else(Task::none);
                 // Others see us offline now, not once the server forgets us.
                 let offline = match &self.screen {
-                    Screen::Main(main)
-                        if self.settings.share_presence && !main.presences.unavailable() =>
-                    {
+                    Screen::Main(main) if !main.presences.unavailable() => {
                         let session = main.session.clone();
-                        Task::future(async move { presence::go_offline(&session).await }).discard()
+                        Task::future(async move {
+                            presence::go_offline(&session, mtrx_core::Activity::Background).await
+                        })
+                        .discard()
                     }
                     _ => Task::none(),
                 };
@@ -3118,15 +3100,12 @@ impl App {
             }
             settings::Action::SharePresence => {
                 self.save_settings();
-                let Screen::Main(main) = &mut self.screen else {
+                let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                let state = if self.settings.share_presence {
-                    main.activity.restart(Instant::now())
-                } else {
-                    PresenceState::Offline
-                };
-                main.set_presence(state)
+                // The switch is off while the server does not share presence.
+                presence::sharing(&main.session, self.settings.share_presence)
+                    .map(Message::Presence)
             }
             settings::Action::GoogleSignIn(client) => {
                 let google = self.google.clone();
@@ -3247,18 +3226,12 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let now = Instant::now();
-        let ours = match message {
-            presence::Message::Input => main.activity.input(now),
-            presence::Message::CheckIdle => main.activity.check(now),
+        match message {
+            presence::Message::Input => main.activity(mtrx_core::Activity::Input),
             message => {
                 main.presences.update(message);
-                None
+                Task::none()
             }
-        };
-        match ours {
-            Some(state) if self.settings.share_presence => main.set_presence(state),
-            _ => Task::none(),
         }
     }
 
@@ -4355,12 +4328,6 @@ impl App {
             }
             if self.settings.share_presence && !main.presences.unavailable() {
                 subscriptions.push(iced::event::listen_with(input));
-                if main.activity.may_idle() {
-                    subscriptions.push(
-                        iced::time::every(presence::IDLE_CHECK)
-                            .map(|_| Message::Presence(presence::Message::CheckIdle)),
-                    );
-                }
             }
             if let Some(Modal::Dialog(dialog)) = &main.modal
                 && dialog.busy()
@@ -4879,7 +4846,7 @@ async fn run_request(
             }
             Request::SignOut => {
                 // Others see us offline now, not once the server forgets us.
-                presence::go_offline(&session).await;
+                presence::go_offline(&session, mtrx_core::Activity::SignOut).await;
                 session.logout().await?;
                 Opened::SignedOut
             }
@@ -5046,7 +5013,7 @@ fn arrow_key(
     Some(Message::Shown(room::Message::Select(message)))
 }
 
-/// Keys, clicks and scrolling: we are here (see [`presence::Activity`]).
+/// Keys, clicks and scrolling: we are here (see [`mtrx_core::Activity::Input`]).
 fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) -> Option<Message> {
     use iced::keyboard;
     match event {

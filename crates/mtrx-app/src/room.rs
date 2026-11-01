@@ -1221,7 +1221,7 @@ impl Room {
             )
         };
         let mut about = column![ellipsis(name).size(16).font(fonts::SEMIBOLD)];
-        if let Some(line) = presence.and_then(|p| presence::line(p, look.now)) {
+        if let Some(line) = presence.and_then(|p| p.line(look.now)) {
             about = about.push(ellipsis(line).size(12).style(text::secondary));
         }
         // A room just created or joined is listed once sync delivers it.
