@@ -341,27 +341,25 @@ apps/ios/
   overlap.
 - Presence (section 11): `PresenceModel`, owned by `SessionModel` and an
   environment object of its own. `SessionModel.setForeground` (from the
-  scene phase) runs the lifecycle: in the foreground `online` (sharing)
-  alongside `startSync()`, or, not sharing, `offline` before the
-  session's first `startSync()`; to the background, a `beginBackgroundTask`,
-  then `offline`, then `stopSync()`. `logout` sets `offline` first;
-  `forget` sets nothing. Our `setPresence` calls are chained, so they
-  arrive in order. Idle: `InputWatcher`, behind the tabs, puts a
+  scene phase) runs the lifecycle: in the foreground `presenceActivity(
+  .foreground)` (the first time after `setPresenceSharing`) before
+  `startSync()`; to the background, a `beginBackgroundTask`, then
+  `.background`, then `stopSync()`. `logout` tells `.signOut` first;
+  `forget` tells nothing. These calls are chained, so they reach the
+  library in order. Input: `InputWatcher`, behind the tabs, puts a
   recognizer on the window that reports each touch or press and fails at
   once (it cancels and delays nothing; sheets are in the same window), and
   counts text changing (`UITextField`/`UITextView` notifications) as
-  input, as the keyboard is a window of its own. One timer task waits for
-  `lastInput` + 5 minutes; input only moves `lastInput`, except when idle
-  (`online` again). Others: the subscription is for the Chats tab's
-  people, which include the open direct chat's (it is in the room list);
-  dots only in Chats, not in a space's People section. The dot's ring is
-  outside its size (12 + 2 + 2 pt), centred on the avatar's circle at
-  45°. The line re-renders each minute (`TimelineView(.everyMinute)`);
-  `RelativeDateTimeFormatter` `.abbreviated` writes "2h ago" in US
-  English, "2 hr ago" in British. The person sheet calls `presence` from
-  its `.task`, into the map (the subscription's next update replaces
-  it). Once the server does not share presence, our own presence is not
-  set either (every call would fail).
+  input, as the keyboard is a window of its own; each is `.input` (the
+  library keeps the idle timer). Others: the subscription is for the Chats
+  tab's people, which include the open direct chat's (it is in the room
+  list); dots only in Chats, not in a space's People section. The dot's
+  ring is outside its size (12 + 2 + 2 pt), centred on the avatar's
+  circle at 45°. The line re-renders each minute (`TimelineView(
+  .everyMinute)`, with `presenceLine(presence, now)`). The person sheet
+  calls `presence` from its `.task`, into the map (the subscription's
+  next update replaces it). Once the server does not share presence,
+  nothing more is told either (every call would fail).
 - Images: avatars and `mediaPreview`s decoded off the main thread, kept in
   an `NSCache` (the library caches the downloads).
 - Tests: fakes subclass the generated classes (`init(noHandle:)`), so the

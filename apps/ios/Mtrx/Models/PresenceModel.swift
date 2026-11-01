@@ -3,13 +3,12 @@ import MtrxFFI
 import os
 
 /// Presence: the direct chats' people (online, idle or away), read while
-/// the app is in the foreground, and ours, set from the app's lifecycle
-/// while "Share my presence" is on. When the server does not share
-/// presence, all of it is hidden for the rest of the session.
+/// the app is in the foreground, and ours, which the library sets from the
+/// app's lifecycle and input while "Share my presence" is on. When the
+/// server does not share presence, all of it is hidden for the rest of the
+/// session.
 @MainActor
 final class PresenceModel: ObservableObject {
-    /// Without input for this long in the foreground, we are idle.
-    nonisolated static let idleTime: TimeInterval = 5 * 60
     private static let sharingKey = "sharePresence"
     private static let log = Logger(subsystem: "org.mtrx.Mtrx", category: "presence")
 
@@ -24,24 +23,17 @@ final class PresenceModel: ObservableObject {
     private let session: Session
     private let userId: String
     private let defaults: UserDefaults
-    private let idleTime: TimeInterval
     private var foreground = false
     /// The users to read: the direct chats' people (nil before the first
     /// loaded room list).
     private var users: Set<String>?
     private var subscription: Subscriptions?
-    /// Ours, as last set here.
-    private(set) var own: PresenceState?
-    /// The last `setPresence` call: each waits for the one before.
-    private var ownCall: Task<Void, Never>?
-    private var lastInput = Date()
-    /// Waits for 5 minutes without input, while online.
-    private var idleTimer: Task<Void, Never>?
+    /// The last call telling the library what the app does.
+    private var lastCall: Task<Void, Never>?
 
-    init(session: Session, defaults: UserDefaults = .standard, idleTime: TimeInterval = PresenceModel.idleTime) {
+    init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
         self.defaults = defaults
-        self.idleTime = idleTime
         userId = session.userId()
         sharing = defaults.object(forKey: Self.sharingKey) as? Bool ?? true
     }
@@ -121,7 +113,6 @@ final class PresenceModel: ObservableObject {
         presences = [:]
         users = nil
         stopReading()
-        stopIdleTimer()
     }
 
     private func stopReading() {
@@ -140,39 +131,42 @@ final class PresenceModel: ObservableObject {
     // MARK: Ours and the lifecycle
 
     /// The app comes to the foreground (also at start and sign-in): read
-    /// others' presence again and, sharing ours, be online. Not sharing,
-    /// the first call returns `setPresence(offline)`, to wait for before
-    /// sync starts (so that sync does not report us online either).
+    /// others' presence again, and tell the library, which sets ours (the
+    /// first time after "Share my presence"). Returns that call, to wait for
+    /// before sync starts (so that sync says the same).
     func enterForeground(first: Bool) -> Task<Void, Never>? {
         foreground = true
         guard available else { return nil }
         if users != nil {
             subscribe()
         }
-        if sharing {
-            beActive()
-            return nil
+        let sharing = first ? self.sharing : nil
+        return tell { session in
+            if let sharing {
+                try await session.setPresenceSharing(on: sharing)
+            }
+            try await session.presenceActivity(activity: .foreground)
         }
-        return first ? setOwn(.offline) : nil
     }
 
-    /// The app goes to the background: stop reading others' presence and,
-    /// sharing ours, go offline. Returns that call, to wait for before sync
-    /// stops (within the background task).
+    /// The app goes to the background: stop reading others' presence, and
+    /// go offline. Returns that call, to wait for before sync stops (within
+    /// the background task).
     func enterBackground() -> Task<Void, Never>? {
         foreground = false
         stopReading()
-        stopIdleTimer()
-        guard available, sharing else { return nil }
-        return setOwn(.offline)
+        guard available else { return nil }
+        return tell { try await $0.presenceActivity(activity: .background) }
     }
 
     /// Signing out: no more reading, and offline (to wait for before
-    /// `logout`) if shared.
+    /// `logout`).
     func signOut() -> Task<Void, Never>? {
-        let offline = enterBackground()
+        foreground = false
         users = nil
-        return offline
+        stopReading()
+        guard available else { return nil }
+        return tell { try await $0.presenceActivity(activity: .signOut) }
     }
 
     /// The session is deleted without signing out: no more reading or
@@ -181,7 +175,6 @@ final class PresenceModel: ObservableObject {
         foreground = false
         users = nil
         stopReading()
-        stopIdleTimer()
     }
 
     /// Share our presence or stop: offline at once, or online if in the
@@ -191,68 +184,32 @@ final class PresenceModel: ObservableObject {
         sharing = on
         defaults.set(on, forKey: Self.sharingKey)
         guard available else { return }
-        if on {
-            if foreground {
-                beActive()
-            }
-        } else {
-            stopIdleTimer()
-            setOwn(.offline)
-        }
+        tell { try await $0.setPresenceSharing(on: on) }
     }
 
     /// A touch or key press: online again if idle.
     func input() {
-        lastInput = Date()
-        guard foreground, sharing, available, idleTimer == nil else { return }
-        beActive()
+        guard foreground, available else { return }
+        tell { try await $0.presenceActivity(activity: .input) }
     }
 
-    /// Online, until idle.
-    private func beActive() {
-        lastInput = Date()
-        setOwn(.online)
-        startIdleTimer()
-    }
-
-    private func stopIdleTimer() {
-        idleTimer?.cancel()
-        idleTimer = nil
-    }
-
-    /// Unavailable once `idleTime` has passed since the last input.
-    private func startIdleTimer() {
-        stopIdleTimer()
-        let idleTime = self.idleTime
-        idleTimer = Task { [weak self] in
-            while let last = self?.lastInput {
-                let left = last.addingTimeInterval(idleTime).timeIntervalSinceNow
-                if left <= 0 { break }
-                try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000))
-                if Task.isCancelled { return }
-            }
-            guard let self else { return }
-            self.idleTimer = nil
-            self.setOwn(.unavailable)
-        }
-    }
-
-    /// Set ours, after the previous call.
+    /// Tell the library with `call`, after the call before (the library
+    /// counts each as of when it gets it), which sets ours; failures are
+    /// logged (or hide presence).
     @discardableResult
-    private func setOwn(_ state: PresenceState) -> Task<Void, Never> {
-        own = state
-        let previous = ownCall
+    private func tell(_ call: @escaping @Sendable (Session) async throws -> Void) -> Task<Void, Never> {
+        let previous = lastCall
         let session = self.session
-        let call = Task { [weak self] in
+        let task = Task { [weak self] in
             await previous?.value
             do {
-                try await session.setPresence(state: state, statusMessage: nil)
+                try await call(session)
             } catch {
                 self?.failed(error, "Setting our presence")
             }
         }
-        ownCall = call
-        return call
+        lastCall = task
+        return task
     }
 }
 
@@ -267,51 +224,4 @@ enum PresenceUpdate: Sendable {
 extension Feed: PresenceListener where Value == PresenceUpdate {
     func onUpdate(presences: [String: Presence]) { send(.presences(presences)) }
     func onUnavailable() { send(.unavailable) }
-}
-
-/// How a presence shows: the dot on the avatar and the line under the
-/// name.
-enum PresenceText {
-    enum Dot: Equatable {
-        case online
-        case idle
-
-        var label: String {
-            switch self {
-            case .online: return "Online"
-            case .idle: return "Idle"
-            }
-        }
-    }
-
-    /// Green online, amber unavailable; none offline or unknown.
-    static func dot(_ presence: Presence?) -> Dot? {
-        switch presence?.state {
-        case .online: return .online
-        case .unavailable: return .idle
-        case .offline, nil: return nil
-        }
-    }
-
-    /// The status message, else "Active now" or "Idle", else when they were
-    /// last active; nil for nothing to say.
-    static func line(_ presence: Presence?, now: Date = .now, locale: Locale = .current) -> String? {
-        guard let presence else { return nil }
-        if let status = presence.statusMessage, !status.isEmpty {
-            return status
-        }
-        switch presence.state {
-        case .online: return "Active now"
-        case .unavailable: return "Idle"
-        case .offline:
-            guard let last = presence.lastActive else { return nil }
-            if now.timeIntervalSince(last) < 60 {
-                return "Last active just now"
-            }
-            let formatter = RelativeDateTimeFormatter()
-            formatter.unitsStyle = .abbreviated
-            formatter.locale = locale
-            return "Last active \(formatter.localizedString(for: last, relativeTo: now))"
-        }
-    }
 }

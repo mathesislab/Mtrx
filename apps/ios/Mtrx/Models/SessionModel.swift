@@ -84,11 +84,11 @@ final class SessionModel: ObservableObject {
     /// The rooms opened lately, kept by earlier versions.
     private static let recentKey = "recentRooms"
 
-    init(session: Session, defaults: UserDefaults = .standard, idleTime: TimeInterval = PresenceModel.idleTime) {
+    init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
         self.defaults = defaults
         images = ImageCache(session: session)
-        presence = PresenceModel(session: session, defaults: defaults, idleTime: idleTime)
+        presence = PresenceModel(session: session, defaults: defaults)
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
@@ -194,21 +194,21 @@ final class SessionModel: ObservableObject {
         rooms.first { $0.id == id }
     }
 
-    /// Sync while the app is in the foreground, and set our presence;
-    /// when it goes to the background, go offline, then stop and save the
-    /// sync position, before iOS suspends it. Not sharing our presence,
-    /// offline before sync first starts.
+    /// Sync while the app is in the foreground, once our presence is set
+    /// (so that sync says the same); when it goes to the background, go
+    /// offline, then stop and save the sync position, before iOS suspends
+    /// it.
     func setForeground(_ on: Bool) {
         guard on != foreground else { return }
         foreground = on
         let previous = syncChange
         let session = self.session
         if on {
-            let offline = presence.enterForeground(first: !started)
+            let ours = presence.enterForeground(first: !started)
             started = true
             syncChange = Task {
                 await previous?.value
-                await offline?.value
+                await ours?.value
                 await session.startSync()
             }
         } else {

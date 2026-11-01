@@ -173,12 +173,13 @@ final class FakeSession: Session, @unchecked Sendable {
     /// What `presence` returns, and for whom it was asked.
     var presenceResult: Result<Presence, Error> = .failure(MtrxError.Other(reason: "No connection"))
     var presenceRequests: [String] = []
-    var setPresenceError: Error?
+    /// Fails `presenceActivity` and `setPresenceSharing`.
+    var ownPresenceError: Error?
     /// Each `subscribePresence`, in order.
     var presenceSubscriptions: [(users: [String], listener: PresenceListener, handle: FakeTaskHandle)] = []
     /// The calls that change the session's state on the server, in order:
-    /// "startSync", "stopSync", "presence <state>", "logout". Our presence
-    /// may be set while sync starts, on another thread.
+    /// "startSync", "stopSync", "presence <activity>", "sharing <on>",
+    /// "logout".
     var calls: [String] {
         lock.lock()
         defer { lock.unlock() }
@@ -193,9 +194,10 @@ final class FakeSession: Session, @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Our presence as set, in order.
-    var presencesSet: [String] {
-        calls.filter { $0.hasPrefix("presence ") }.map { String($0.dropFirst("presence ".count)) }
+    /// What the library was told for our presence, in order: activities
+    /// and "sharing <on>".
+    var presenceCalls: [String] {
+        calls.filter { $0.hasPrefix("presence ") || $0.hasPrefix("sharing ") }
     }
 
     override func userId() -> String { "@me:example.org" }
@@ -254,9 +256,14 @@ final class FakeSession: Session, @unchecked Sendable {
         return try presenceResult.get()
     }
 
-    override func setPresence(state: PresenceState, statusMessage: String?) async throws {
-        if let setPresenceError { throw setPresenceError }
-        record("presence \(state)")
+    override func presenceActivity(activity: PresenceActivity) async throws {
+        record("presence \(activity)")
+        if let ownPresenceError { throw ownPresenceError }
+    }
+
+    override func setPresenceSharing(on: Bool) async throws {
+        record("sharing \(on)")
+        if let ownPresenceError { throw ownPresenceError }
     }
 
     override func subscribePresence(userIds: [String], listener: PresenceListener) throws -> TaskHandle {
@@ -542,10 +549,19 @@ enum Make {
                 rawBody: rawBody))
     }
 
+    /// With its dot and line, as the library sends them.
     static func presence(
         _ state: PresenceState, lastActive: Date? = nil, status: String? = nil
     ) -> Presence {
-        Presence(state: state, lastActive: lastActive, currentlyActive: state == .online, statusMessage: status)
+        let dot: PresenceDot? = switch state {
+        case .online: .online
+        case .unavailable: .idle
+        case .offline: nil
+        }
+        var presence = Presence(
+            state: state, lastActive: lastActive, currentlyActive: state == .online, statusMessage: status, dot: dot)
+        presence.line = presenceLine(presence: presence, now: Date())
+        return presence
     }
 
     static func reader(_ name: String, named: Bool = true) -> Reader {
