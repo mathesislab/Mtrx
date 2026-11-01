@@ -80,7 +80,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   room or a space). Push (section 10): `setPusher(gatewayUrl, pushkey,
   appId, appName, deviceName, lang)`, `deletePusher(pushkey)`,
   `pushers() -> [PusherInfo]`. Presence (section 11):
-  `presence(userId) -> Presence`, `setPresence(state, statusMessage?)`,
+  `presence(userId) -> Presence`,
   `presenceActivity(activity)`, `setPresenceSharing(on)`,
   `subscribePresence(userIds, listener) -> TaskHandle`.
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
@@ -551,29 +551,28 @@ and tested by CI only; no Android SDK is used locally.
   - Presence (section 11), `model/Presence.kt`: `PresenceModel`, one per
     session, made by the `Account` and in `AccountState.SignedIn`,
     closed at sign-out. The `Account` runs the lifecycle under its lock:
-    `foreground()` before `startSync()` (`online` if sharing, not waited
-    for; not sharing, the session's first one waits for `offline`), and
-    `background()` before `stopSync()` (waits for `offline` if sharing),
-    which a sign-out also goes through, so `offline` precedes `logout`;
-    `forget` closes it first and sets nothing. Our `setPresence` calls are
-    chained, so they arrive in order. Idle: `MainActivity`'s
-    `dispatchTouchEvent` and `dispatchKeyEvent`, and each change of the
-    composer's draft (the soft keyboard is another window), call
-    `Account.input()`; one timer coroutine waits for the last input + 5
-    minutes (a monotonic clock); input only moves the last input, except
-    when idle (`online` again). Others: the subscription is for the
+    `foreground()` before `startSync()` (`presenceActivity(FOREGROUND)`,
+    the session's first time after `setPresenceSharing`, waited for), and
+    `background()` before `stopSync()` (`BACKGROUND`, waited for); a
+    sign-out tells `SIGN_OUT` first, so `offline` precedes `logout` (a
+    failed one comes back with the next `foreground()`); `forget` closes
+    it first and tells nothing. These calls are chained, so they reach the
+    library in order. Input: `MainActivity`'s `dispatchTouchEvent` and
+    `dispatchKeyEvent`, and each change of the composer's draft (the soft
+    keyboard is another window), call `Account.input()`, each `INPUT` (the
+    library keeps the idle timer). Others: the subscription is for the
     people of the loaded room list's direct chats (`directPeople`; the
     open direct chat's person is one of them), debounced by 1 s (room
     lists come in bursts), replaced only when they change, ended in the
     background and at sign-out; dots only in Chats, not in a space's
     People section. `refresh(userId)` when the person sheet opens, into
-    the map. Once the server does not share presence, ours is not set
-    either. "Share my presence": `SharePresence` (DataStore `view`, key
-    `share_presence`), the `Account`'s, read before the first sync. The
-    dot (`ui/PresenceViews.kt`): its ring outside its size (12 + 2 + 2
-    dp), centred on the avatar's circle at 45°; 10 dp on the header's 32
-    dp avatar. The line re-renders each minute; `DateUtils` writes "2 hr.
-    ago" in English.
+    the map. Once the server does not share presence, nothing more is
+    told either. "Share my presence": `SharePresence` (DataStore `view`,
+    key `share_presence`), the `Account`'s, read before the first sync.
+    The dot (`ui/PresenceViews.kt`): `Presence.dot`, its ring outside its
+    size (12 + 2 + 2 dp), centred on the avatar's circle at 45°; 10 dp on
+    the header's 32 dp avatar. The line re-renders each minute, with
+    `presenceLine(presence, now)`.
   - Screens: sign-in (homeserver, then password or "Sign in with browser" as
     `supportsOauth` says), the home (`ui/HomeScreen.kt`, section 7: a
     bottom bar with Chats, Spaces and Settings, only on this screen; Chats
@@ -689,18 +688,18 @@ and tested by CI only; no Android SDK is used locally.
     room on screen only in the foreground; clearing on opening, on
     `markRead` (not when it fails) and when a room's count drops to 0;
     a tapped notification's room; the Settings switch and lines.
-    Presence (section 11): the dot and the line for each state, status
-    message and age; the subscription following the loaded room list's
-    direct chats (not the Notes to self), kept on other changes, replaced
-    when they change (once for a burst), only in the foreground, ended at
-    sign-out; the person sheet's fresh value, kept on a failure; hiding
-    after `onUnavailable` or the error (also from `setPresence`), with
-    nothing read or set after, and shown again in the next session;
-    online alongside sync and offline before it stops and before
-    `logout`, nothing at `forget`, offline before the first sync when not
-    sharing, the switch (saved, kept at sign-out, in the background),
-    idle after five minutes without input and online at the next,
-    failures ignored; the Settings footnote.
+    Presence (section 11): the subscription following the loaded room
+    list's direct chats (not the Notes to self), kept on other changes,
+    replaced when they change (once for a burst), only in the
+    foreground, ended at sign-out; the person sheet's fresh value, kept
+    on a failure; hiding after `onUnavailable` or `PresenceUnavailable`
+    (also from telling ours), with nothing read or told after, and shown
+    again in the next session; the foreground told before sync starts
+    (after "Share my presence", once), the background before it stops,
+    the sign-out before `logout` (and the foreground again when it
+    fails), nothing at `forget`, input passed on in the foreground, the
+    switch (saved, kept at sign-out), failures ignored; the Settings
+    footnote.
   - Instrumented test (`androidTest`, `PushEndToEndTest`), against Synapse
     on the host (`http://10.0.2.2:8008`): registers Bob and Alice with
     the shared-secret admin API, signs Bob in through the app's `Account`
@@ -1382,29 +1381,32 @@ sliding sync (MSC4186) has no presence extension, and the SDK delivers
 none. So the library reads the presence endpoint: `presence(userId)` once,
 `subscribePresence(userIds, listener)` for a set, reading each user about
 once a minute (all at once at the start, then spread over the minute)
-while the handle lives. `setPresence(state, statusMessage)` sets ours,
-and the library sends it again every 20 s until it is set again, set
-offline, or the `Session` is released: servers drop a presence that no
+while the handle lives. Ours is set from what the app does
+(`presenceActivity`, below), and the library sends it again every 20 s
+until it is set again, set offline, or the `Session` is released (a send
+that failed too): servers drop a presence that no
 client refreshes (Synapse after 30 s, and its sliding sync does not
 count). So a suspended or killed app goes offline by itself about 30 s
 later.
 
 **The dot.** On the avatar's bottom right, with a 2 pt/dp ring in the
-background colour: green for `online`, amber for `unavailable`, none for
-`offline` or unknown. 12 pt/dp on the Chats rows' avatars (44), 9 on the
+background colour: `Presence.dot`, from the library: green for `online`,
+amber for `idle` (`unavailable`), none for `offline` or unknown. 12 pt/dp on the Chats rows' avatars (44), 9 on the
 direct chat header's (28), 20 on the person sheet's (80). In Chats only on
 direct chats (`kind == direct`, the `directUserId`'s presence; not the
-Notes to self). Accessibility label "Online" or "Idle".
+Notes to self). Accessibility label `presenceDotLabel(dot)`: "Online" or
+"Idle".
 
 **The line under the name**, in the direct chat header (under the title)
 and on the person sheet (under the name, above the user ID): secondary
-text, one line,
+text, one line, from the library (`Presence.line` as sent, and
+`presenceLine(presence, now)` each minute, as ages change):
 - the status message, if set;
 - else `online`: "Active now"; `unavailable`: "Idle";
-- else `offline` with `lastActive`: "Last active 2 h ago" (iOS
-  `RelativeDateTimeFormatter`, `.abbreviated`; Android
-  `DateUtils.getRelativeTimeSpanString` with `FORMAT_ABBREV_RELATIVE`;
-  "just now" under a minute);
+- else `offline` with `lastActive`: "Last active 2 hr ago" (English, as
+  iOS's `RelativeDateTimeFormatter` `.abbreviated` writes it in British
+  English: "just now" under a minute, "5 min ago", "1 day ago", "3 days
+  ago", "2 wk ago", "4 mo ago", "1 yr ago");
 - else nothing (the line is left out).
 It follows the presences as they arrive.
 
@@ -1430,46 +1432,54 @@ or the network: that user shows nothing, nothing else changes. Synapse
 with presence turned off answers "offline" with nothing else for
 everyone, which the rules above show as nothing.
 
-**Our own presence**, while signed in and "Share my presence" is on:
-- `setPresence(online, nil)` at sign-in, at start, and when the app comes
-  to the foreground (iOS `scenePhase` `.active`; Android
-  `ProcessLifecycleOwner` started).
-- `setPresence(unavailable, nil)` after 5 minutes in the foreground
-  without input (touches and key presses anywhere in the app: iOS a
+**Our own presence**, while signed in and "Share my presence" is on, is
+the library's: the app tells it what it does, with
+`presenceActivity(activity)`, and the library sets ours on each change
+only:
+- `foreground` at sign-in, at start, and when the app comes to the
+  foreground (iOS `scenePhase` `.active`; Android `ProcessLifecycleOwner`
+  started), before `startSync()`, waited for: `online`.
+- `input` for touches and key presses anywhere in the app (iOS a
   window-level gesture recognizer that does not cancel touches; Android
-  `MainActivity.dispatchTouchEvent` / `dispatchKeyEvent`); the next input
-  sets `online` again. Call only on a change, not per input.
-- `setPresence(offline, nil)` when going to the background (iOS
-  `scenePhase` `.background`, in a `beginBackgroundTask` so that it
-  completes before suspension; Android `ProcessLifecycleOwner` stopped),
-  before `stopSync()`; and before `logout()`.
+  `MainActivity.dispatchTouchEvent` / `dispatchKeyEvent`): after 5
+  minutes in the foreground without input the library sets
+  `unavailable`, and the next input `online` again.
+- `background` when going to the background (iOS `scenePhase`
+  `.background`, in a `beginBackgroundTask` so that it completes before
+  suspension; Android `ProcessLifecycleOwner` stopped), before
+  `stopSync()`, and `signOut` before `logout()`, both waited for:
+  `offline` (until the next `foreground`, should signing out fail).
 
-Failures are logged and otherwise ignored, except the one above (hide
-presence). nil clears a status message set elsewhere (say
-`mtrx presence --set online --status …`): the apps do not set one yet.
+Each counts from the call: the apps make them in order. Failures are
+logged and otherwise ignored, except `PresenceUnavailable` (hide
+presence); the library sends a failed one again with its refreshes. No
+status message is set (one set elsewhere, say `mtrx presence --set online
+--status …`, is cleared).
 
 **Settings.** A switch "Share my presence" in a "Privacy" section just
 above "Encryption", on by default, a device
 preference kept at sign-out (iOS UserDefaults `sharePresence`; Android
 DataStore `view`, key `share_presence`). Footnote: "Others see when you
-are online or idle." Off: `setPresence(offline, nil)` at once, no
-lifecycle calls while off, and at start `setPresence(offline, nil)` once
-before `startSync()` (so that sync does not report us online either); on:
-`online` at once if in the foreground. Others' presence still shows. When
+are online or idle." It is passed with `setPresenceSharing(on)` before the
+session's first `foreground`, and at each change: off, the library sets
+`offline` at once and stays so (at start, before `startSync()`, so that
+sync does not report us online either); on, `online` at once if in the
+foreground. Others' presence still shows. When
 the server does not share presence, the footnote reads "This server does
 not share presence." and the switch is disabled.
 
 **Errors, fakes and tests.** `presence` and `subscribePresence` fail
-with `InvalidInput` for a malformed ID; `presence`, `setPresence`,
+with `InvalidInput` for a malformed ID; `presence`,
 `presenceActivity` and `setPresenceSharing` with `PresenceUnavailable`
 (above) or `Other`. Fakes of `Session`
-implement `presence`, `setPresence` and `subscribePresence` (keep the
-listener, call it). Worth testing in the models: the lifecycle's calls
-(foreground online; 5 minutes idle unavailable, input online again;
-background offline before `stopSync`; the switch off and on; offline
-before `startSync` when off), the line for each case, the subscription
-replaced only when the direct chats' users change, and hiding after
-`onUnavailable` or the error.
+implement `presence`, `presenceActivity`, `setPresenceSharing` and
+`subscribePresence` (keep the listener, call it). Worth testing in the
+models: the lifecycle's calls (foreground before `startSync`, after the
+sharing setting the first time; background before `stopSync`; sign-out
+before `logout`; input passed on; the switch), the subscription replaced
+only when the direct chats' users change, and hiding after
+`onUnavailable` or the error. The idle timer, the states set and the
+line are the library's, tested there.
 
 ## Later
 

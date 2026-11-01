@@ -1,4 +1,5 @@
-//! Presence: whether people are online, idle or away; and setting ours.
+//! Presence: whether people are online, idle or away; and ours, from what
+//! the app does.
 
 use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
@@ -172,22 +173,6 @@ impl Session {
         let user = OwnedUserId::try_from(user_id.as_str()).map_err(MtrxError::invalid)?;
         let session = self.core();
         run(async move { Ok(session.presence(&user).await?.into()) }).await
-    }
-
-    /// Set our presence, and keep it until it is set again, set offline or
-    /// the session ends. `status_message` nil clears it.
-    pub async fn set_presence(
-        &self,
-        state: PresenceState,
-        status_message: Option<String>,
-    ) -> Result<(), MtrxError> {
-        let session = self.core();
-        run(async move {
-            Ok(session
-                .set_presence(state.into(), status_message.as_deref())
-                .await?)
-        })
-        .await
     }
 
     /// What the app is doing, which sets our presence while sharing it:

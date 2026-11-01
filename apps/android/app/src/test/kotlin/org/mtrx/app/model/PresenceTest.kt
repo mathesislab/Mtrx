@@ -1,7 +1,5 @@
 package org.mtrx.app.model
 
-import java.time.Duration
-import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -10,7 +8,6 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeMtrx
@@ -28,37 +25,6 @@ import uniffi.mtrx.RoomListState
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PresenceTest {
-    private val now = Instant.parse("2026-10-22T12:00:00Z")
-    private val ago: (Instant, Instant) -> String = { at, until -> "${Duration.between(at, until).toHours()} h ago" }
-
-    private fun line(state: PresenceState, lastActive: Instant? = null, status: String? = null) =
-        presenceLine(makePresence(state, lastActive, status), now, ago)
-
-    @Test
-    fun theDotIsGreenOnlineAmberIdleAndNoneOtherwise() {
-        assertEquals(PresenceDot.Online, presenceDot(makePresence(PresenceState.ONLINE)))
-        assertEquals(PresenceDot.Idle, presenceDot(makePresence(PresenceState.UNAVAILABLE)))
-        assertNull(presenceDot(makePresence(PresenceState.OFFLINE, lastActive = now)))
-        assertNull(presenceDot(null))
-        assertEquals("Online", PresenceDot.Online.label)
-        assertEquals("Idle", PresenceDot.Idle.label)
-    }
-
-    @Test
-    fun theLineIsTheStatusElseTheStateElseWhenLastActive() {
-        assertEquals("In a meeting", line(PresenceState.ONLINE, status = "In a meeting"))
-        assertEquals("On holiday", line(PresenceState.OFFLINE, lastActive = now.minusSeconds(7200), status = "On holiday"))
-        assertEquals("Active now", line(PresenceState.ONLINE, status = " "))
-        assertEquals("Idle", line(PresenceState.UNAVAILABLE, lastActive = now.minusSeconds(600)))
-        assertEquals("Last active 2 h ago", line(PresenceState.OFFLINE, lastActive = now.minusSeconds(7200)))
-        assertEquals("Last active just now", line(PresenceState.OFFLINE, lastActive = now.minusSeconds(30)))
-        // A clock ahead of ours.
-        assertEquals("Last active just now", line(PresenceState.OFFLINE, lastActive = now.plusSeconds(5)))
-        // Synapse with presence off: offline and nothing else.
-        assertNull(line(PresenceState.OFFLINE))
-        assertNull(presenceLine(null, now, ago))
-    }
-
     @Test
     fun theSettingsFootnoteSaysWhenTheServerDoesNotSharePresence() {
         assertEquals("Others see when you are online or idle.", sharePresenceFootnote(available = true))
@@ -190,89 +156,26 @@ class PresenceTest {
     }
 
     @Test
-    fun weAreOnlineInTheForegroundAndOfflineBeforeSyncStops() = runTest {
+    fun theLibraryHearsOfTheForegroundBeforeSyncStartsAndOfTheBackgroundBeforeItStops() = runTest {
         val session = FakeSession()
         val account = signedIn(session, foreground = false)
         assertTrue(session.calls.isEmpty())
 
-        // Online alongside sync (not waited for).
+        // "Share my presence" goes first, once.
         account.setForeground(true)
-        assertEquals(listOf(PresenceState.ONLINE), session.presenceSets)
-        assertEquals(1, session.syncStarts)
+        assertEquals(listOf("sharing true", "presence foreground", "startSync"), session.calls)
         account.setForeground(false)
-        assertEquals(listOf("presence offline", "stopSync"), session.calls.takeLast(2))
+        assertEquals(listOf("presence background", "stopSync"), session.calls.takeLast(2))
         account.setForeground(true)
-        assertEquals(PresenceState.ONLINE, session.presenceSets.last())
+        assertEquals(listOf("presence foreground", "startSync"), session.calls.takeLast(2))
     }
 
     @Test
-    fun weAreOfflineBeforeSigningOut() = runTest {
+    fun notSharingIsPassedBeforeTheFirstSync() = runTest {
         val session = FakeSession()
-        session.onLogout = { session.calls += "logout" }
-        val account = signedIn(session)
-        account.signOut()
-        assertEquals(listOf("presence offline", "stopSync", "logout"), session.calls.takeLast(3))
-    }
-
-    @Test
-    fun aFailedSignOutIsOnlineAgain() = runTest {
-        val session = FakeSession().apply { logoutError = MtrxException.Other("offline") }
-        val account = signedIn(session)
-        account.signOut()
-        assertEquals(listOf(PresenceState.ONLINE, PresenceState.OFFLINE, PresenceState.ONLINE), session.presenceSets)
-    }
-
-    @Test
-    fun forgettingTheSessionSetsNothing() = runTest {
-        val session = FakeSession()
-        val account = signedIn(session)
-        account.forget()
-        assertEquals(listOf(PresenceState.ONLINE), session.presenceSets)
-        assertTrue(session.forgotten)
-    }
-
-    @Test
-    fun withoutInputForFiveMinutesWeAreIdleUntilTheNext() = runTest {
-        val session = FakeSession()
-        val account = signedIn(session)
-        val minute = 60_000L
-
-        // Input moves the deadline without calls.
-        advanceTimeBy(4 * minute)
-        account.input()
-        advanceTimeBy(4 * minute)
-        assertEquals(listOf(PresenceState.ONLINE), session.presenceSets)
-
-        advanceTimeBy(minute + 1)
-        assertEquals(listOf(PresenceState.ONLINE, PresenceState.UNAVAILABLE), session.presenceSets)
-        assertEquals(PresenceState.UNAVAILABLE, account.sessionPresence.own)
-
-        // The next input: online again, once.
-        account.input()
-        account.input()
-        assertEquals(listOf(PresenceState.ONLINE, PresenceState.UNAVAILABLE, PresenceState.ONLINE), session.presenceSets)
-
-        // In the background, idling ends and input sets nothing.
-        account.setForeground(false)
-        advanceTimeBy(10 * minute)
-        account.input()
-        assertEquals(PresenceState.OFFLINE, session.presenceSets.last())
-        assertEquals(4, session.presenceSets.size)
-    }
-
-    @Test
-    fun notSharingWeAreOfflineBeforeTheFirstSyncAndSetNothingMore() = runTest {
-        val session = FakeSession()
-        val store = FakeSharePresenceStore(saved = false)
-        val account = signedIn(session, store)
+        val account = signedIn(session, FakeSharePresenceStore(saved = false))
         assertFalse(account.sharePresence.on.value)
-        assertEquals(listOf("presence offline", "startSync"), session.calls)
-
-        account.setForeground(false)
-        account.setForeground(true)
-        advanceTimeBy(PresenceModel.IDLE_AFTER_MS + 1)
-        account.input()
-        assertEquals(listOf(PresenceState.OFFLINE), session.presenceSets)
+        assertEquals(listOf("sharing false", "presence foreground", "startSync"), session.calls)
         // Others' presence is still read.
         session.rooms(SpacesFixture.state())
         settle()
@@ -280,7 +183,46 @@ class PresenceTest {
     }
 
     @Test
-    fun theSwitchSetsOursAtOnceAndIsKept() = runTest {
+    fun signingOutGoesOfflineFirst() = runTest {
+        val session = FakeSession()
+        session.onLogout = { session.calls += "logout" }
+        val account = signedIn(session)
+        account.signOut()
+        assertEquals(listOf("presence sign_out", "presence background", "stopSync", "logout"), session.calls.takeLast(4))
+    }
+
+    @Test
+    fun aFailedSignOutComesBackToTheForeground() = runTest {
+        val session = FakeSession().apply { logoutError = MtrxException.Other("offline") }
+        val account = signedIn(session)
+        account.signOut()
+        assertEquals("presence foreground", session.presenceCalls.last())
+    }
+
+    @Test
+    fun forgettingTheSessionTellsNothing() = runTest {
+        val session = FakeSession()
+        val account = signedIn(session)
+        account.forget()
+        assertEquals(listOf("sharing true", "presence foreground"), session.presenceCalls)
+        assertTrue(session.forgotten)
+    }
+
+    @Test
+    fun inputInTheForegroundIsPassedOn() = runTest {
+        val session = FakeSession()
+        val account = signedIn(session)
+        account.input()
+        account.input()
+        assertEquals(listOf("presence input", "presence input"), session.presenceCalls.takeLast(2))
+
+        account.setForeground(false)
+        account.input()
+        assertEquals("presence background", session.presenceCalls.last())
+    }
+
+    @Test
+    fun theSwitchIsPassedOnAndKept() = runTest {
         val session = FakeSession()
         val store = FakeSharePresenceStore()
         val account = signedIn(session, store)
@@ -288,22 +230,14 @@ class PresenceTest {
 
         account.setSharePresence(false)
         assertEquals(false, store.saved)
-        assertEquals(listOf(PresenceState.ONLINE, PresenceState.OFFLINE), session.presenceSets)
-        // No idling while off.
-        advanceTimeBy(PresenceModel.IDLE_AFTER_MS + 1)
-        assertEquals(2, session.presenceSets.size)
-
+        assertEquals("sharing false", session.presenceCalls.last())
         account.setSharePresence(true)
         assertEquals(true, store.saved)
-        assertEquals(PresenceState.ONLINE, session.presenceSets.last())
-
-        // In the background, on sets nothing until the foreground.
-        account.setForeground(false)
-        account.setSharePresence(false)
+        assertEquals("sharing true", session.presenceCalls.last())
+        // Unchanged: nothing to say.
+        val told = session.presenceCalls.size
         account.setSharePresence(true)
-        assertEquals(listOf(PresenceState.ONLINE, PresenceState.OFFLINE, PresenceState.ONLINE, PresenceState.OFFLINE, PresenceState.OFFLINE), session.presenceSets)
-        account.setForeground(true)
-        assertEquals(PresenceState.ONLINE, session.presenceSets.last())
+        assertEquals(told, session.presenceCalls.size)
 
         // A device preference: kept at sign-out.
         account.signOut()
@@ -313,11 +247,10 @@ class PresenceTest {
 
     @Test
     fun failuresToSetOursAreIgnored() = runTest {
-        val session = FakeSession().apply { setPresenceError = MtrxException.Other("The server is unreachable") }
+        val session = FakeSession().apply { ownPresenceError = MtrxException.Other("The server is unreachable") }
         val account = signedIn(session)
         account.setForeground(false)
-        assertEquals(listOf(PresenceState.ONLINE, PresenceState.OFFLINE), session.presenceSets)
-        assertEquals(listOf("presence offline", "stopSync"), session.calls.takeLast(2))
+        assertEquals(listOf("presence background", "stopSync"), session.calls.takeLast(2))
         assertTrue(account.sessionPresence.available.value)
     }
 
@@ -343,10 +276,10 @@ class PresenceTest {
         account.setForeground(false)
         account.setForeground(true)
         account.setSharePresence(false)
-        advanceTimeBy(PresenceModel.IDLE_AFTER_MS + 1)
+        account.input()
         assertEquals(1, session.presenceSubscriptions.size)
         assertTrue(session.presenceReads.isEmpty())
-        assertEquals(listOf(PresenceState.ONLINE), session.presenceSets)
+        assertEquals(listOf("sharing true", "presence foreground"), session.presenceCalls)
     }
 
     @Test
@@ -361,11 +294,11 @@ class PresenceTest {
         assertTrue(session.presenceSubscriptions.single().second.cancelled)
 
         // Setting ours failing the same way hides it as well.
-        val other = FakeSession().apply { setPresenceError = MtrxException.PresenceUnavailable() }
+        val other = FakeSession().apply { ownPresenceError = MtrxException.PresenceUnavailable() }
         val otherAccount = signedIn(other)
         assertFalse(otherAccount.sessionPresence.available.value)
         otherAccount.setForeground(false)
-        assertEquals(listOf(PresenceState.ONLINE), other.presenceSets)
+        assertEquals(listOf("sharing true"), other.presenceCalls)
     }
 
     @Test
@@ -385,6 +318,6 @@ class PresenceTest {
         mtrx.loginSession = next
         account.login("example.org", "me", "secret")
         assertTrue(account.sessionPresence.available.value)
-        assertEquals(listOf(PresenceState.ONLINE), next.presenceSets)
+        assertEquals(listOf("sharing true", "presence foreground"), next.presenceCalls)
     }
 }

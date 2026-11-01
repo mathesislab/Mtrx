@@ -1,7 +1,5 @@
 package org.mtrx.app.model
 
-import java.time.Duration
-import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.FlowPreview
@@ -9,7 +7,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,44 +19,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Presence
+import uniffi.mtrx.PresenceActivity
 import uniffi.mtrx.PresenceListener
-import uniffi.mtrx.PresenceState
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomListState
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
-
-/** The dot on an avatar: green online, amber idle (unavailable). */
-enum class PresenceDot(val label: String) {
-    Online("Online"),
-    Idle("Idle"),
-}
-
-/** The dot for [presence]; none offline or unknown. */
-fun presenceDot(presence: Presence?): PresenceDot? = when (presence?.state) {
-    PresenceState.ONLINE -> PresenceDot.Online
-    PresenceState.UNAVAILABLE -> PresenceDot.Idle
-    PresenceState.OFFLINE, null -> null
-}
-
-/**
- * The line under a person's name: the status message, else "Active now" or
- * "Idle", else when they were last active ([ago] says how long before
- * [now], e.g. "2 hr. ago"; under a minute "just now"); null for nothing to
- * say.
- */
-fun presenceLine(presence: Presence?, now: Instant, ago: (Instant, Instant) -> String): String? {
-    if (presence == null) return null
-    presence.statusMessage?.takeIf { it.isNotBlank() }?.let { return it }
-    return when (presence.state) {
-        PresenceState.ONLINE -> "Active now"
-        PresenceState.UNAVAILABLE -> "Idle"
-        PresenceState.OFFLINE -> presence.lastActive?.let { last ->
-            if (Duration.between(last, now) < Duration.ofMinutes(1)) "Last active just now" else "Last active ${ago(last, now)}"
-        }
-    }
-}
 
 /** The person of a direct chat whose presence shows: not ours (the Notes to self). */
 fun directPerson(room: RoomSummary, ownUserId: String): String? =
@@ -112,13 +78,14 @@ class SharePresence(private val store: SharePresenceStore, private val scope: Co
 /**
  * A session's presence: the people of the direct chats in [rooms] (their
  * presences in [presences], read while the app is in the foreground), and
- * ours, set from the app's lifecycle while [sharing] is on. Once the server
- * does not share presence ([available] false), all of it is hidden and
- * nothing more is read or set. The `Account` calls [foreground] and
- * [background] around sync, [sharingChanged] for the switch, [input] for
- * touches and keys, and [close] at sign-out. Used on [parent]'s (main)
- * thread; listener callbacks hop there. [clock] counts milliseconds;
- * what goes wrong goes to [log].
+ * ours, which the library sets from what the app does (as the `Account`
+ * tells it here) while [sharing] is on. Once the server does not share
+ * presence ([available] false), all of it is hidden and nothing more is
+ * read or told. The `Account` calls [foreground] and [background] around
+ * sync, [signOut] before logging out, [sharingChanged] for the switch,
+ * [input] for touches and keys, and [close] at sign-out. Used on
+ * [parent]'s (main) thread; listener callbacks hop there. What goes wrong
+ * goes to [log].
  */
 @OptIn(FlowPreview::class)
 class PresenceModel(
@@ -127,9 +94,7 @@ class PresenceModel(
     rooms: StateFlow<RoomListState>,
     private val sharing: SharePresence,
     parent: CoroutineScope,
-    private val clock: () -> Long,
     private val log: Logger,
-    private val idleAfter: Long = IDLE_AFTER_MS,
 ) {
     private val scope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
 
@@ -140,10 +105,6 @@ class PresenceModel(
     /** The server shares presence (until it says it does not). */
     private val _available = MutableStateFlow(true)
     val available: StateFlow<Boolean> = _available.asStateFlow()
-
-    /** Ours, as last set here. */
-    var own: PresenceState? = null
-        private set
 
     private var foreground = false
     private var started = false
@@ -156,12 +117,8 @@ class PresenceModel(
     // Updates of an earlier subscription are dropped.
     private var generation = 0
 
-    /** The last setPresence call: each waits for the one before. */
+    /** The last call telling the library what the app does. */
     private var lastCall: Job? = null
-    private var lastInput = clock()
-
-    /** Waits for [idleAfter] without input, while online. */
-    private var idleTimer: Job? = null
 
     init {
         scope.launch {
@@ -176,9 +133,9 @@ class PresenceModel(
 
     /**
      * The app comes to the foreground (also at start and sign-in), before
-     * sync starts: read others' presence again and, sharing ours, be
-     * online. Not sharing, the session's first call returns after setting
-     * us offline, so that sync does not report us online either.
+     * sync starts: read others' presence again, and tell the library (the
+     * session's first time after "Share my presence"), returning once ours
+     * is set, so that sync says the same.
      */
     suspend fun foreground() {
         if (closed) return
@@ -187,41 +144,39 @@ class PresenceModel(
         started = true
         if (!_available.value) return
         if (users != null) subscribe()
-        if (sharing.current()) {
-            beActive()
-        } else if (first) {
-            setOwn(PresenceState.OFFLINE).join()
-        }
+        tell {
+            if (first) session.setPresenceSharing(sharing.current())
+            session.presenceActivity(PresenceActivity.FOREGROUND)
+        }.join()
     }
 
     /**
      * The app goes to the background, before sync stops: stop reading
-     * others' presence and, sharing ours, return once we are offline.
+     * others' presence, and return once we are offline.
      */
     suspend fun background() {
         if (closed) return
         foreground = false
         stopReading()
-        stopIdleTimer()
-        if (_available.value && sharing.current()) setOwn(PresenceState.OFFLINE).join()
+        if (_available.value) tell { session.presenceActivity(PresenceActivity.BACKGROUND) }.join()
+    }
+
+    /** Signing out, before logging out: return once we are offline. */
+    suspend fun signOut() {
+        if (closed || !_available.value) return
+        tell { session.presenceActivity(PresenceActivity.SIGN_OUT) }.join()
     }
 
     /** "Share my presence" changed: offline at once, or online if in the foreground. */
     fun sharingChanged(on: Boolean) {
         if (closed || !_available.value) return
-        if (on) {
-            if (foreground) beActive()
-        } else {
-            stopIdleTimer()
-            setOwn(PresenceState.OFFLINE)
-        }
+        tell { session.setPresenceSharing(on) }
     }
 
-    /** A touch or key press: online again if idle. Cheap otherwise. */
+    /** A touch or key press: online again if idle. */
     fun input() {
-        lastInput = clock()
-        if (!foreground || closed || idleTimer?.isActive == true || !_available.value || !sharing.on.value) return
-        beActive()
+        if (!foreground || closed || !_available.value) return
+        tell { session.presenceActivity(PresenceActivity.INPUT) }
     }
 
     /** Read [userId]'s presence now (their info sheet opens); a failure keeps what is known. */
@@ -297,7 +252,6 @@ class PresenceModel(
         _presences.value = emptyMap()
         users = null
         stopReading()
-        stopIdleTimer()
     }
 
     private fun failed(error: MtrxException, doing: String) {
@@ -308,42 +262,18 @@ class PresenceModel(
         }
     }
 
-    /** Online, until idle. */
-    private fun beActive() {
-        lastInput = clock()
-        setOwn(PresenceState.ONLINE)
-        startIdleTimer()
-    }
-
-    private fun stopIdleTimer() {
-        idleTimer?.cancel()
-        idleTimer = null
-    }
-
-    /** Unavailable once [idleAfter] has passed since the last input. */
-    private fun startIdleTimer() {
-        stopIdleTimer()
-        // Hidden by the call just made.
-        if (!_available.value) return
-        idleTimer = scope.launch {
-            while (true) {
-                val left = lastInput + idleAfter - clock()
-                if (left <= 0) break
-                delay(left)
-            }
-            setOwn(PresenceState.UNAVAILABLE)
-        }
-    }
-
-    /** Set ours, after the previous call (unless that hid presence); failures are logged (or hide presence). */
-    private fun setOwn(state: PresenceState): Job {
-        own = state
+    /**
+     * Tell the library with [call], after the call before (the library
+     * counts each as of when it gets it), unless that hid presence;
+     * failures are logged (or hide presence).
+     */
+    private fun tell(call: suspend () -> Unit): Job {
         val previous = lastCall
         return scope.launch {
             previous?.join()
             if (!_available.value) return@launch
             try {
-                session.setPresence(state, null)
+                call()
             } catch (e: MtrxException) {
                 failed(e, "Setting our presence")
             }
@@ -351,9 +281,6 @@ class PresenceModel(
     }
 
     companion object {
-        /** Without input for this long in the foreground, we are idle. */
-        const val IDLE_AFTER_MS = 5 * 60 * 1000L
-
         /** The room list's direct chats must settle this long before subscribing anew. */
         const val FOLLOW_DEBOUNCE_MS = 1000L
 

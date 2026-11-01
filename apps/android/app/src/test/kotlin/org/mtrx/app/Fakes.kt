@@ -2,10 +2,7 @@ package org.mtrx.app
 
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
-import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.TestDispatcher
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Distributors
 import org.mtrx.app.model.GatewayDiscovery
@@ -55,6 +52,8 @@ import uniffi.mtrx.NoHandle
 import uniffi.mtrx.NotificationContent
 import uniffi.mtrx.OAuthLogin
 import uniffi.mtrx.Presence
+import uniffi.mtrx.PresenceActivity
+import uniffi.mtrx.PresenceDot
 import uniffi.mtrx.PresenceListener
 import uniffi.mtrx.PresenceState
 import uniffi.mtrx.PusherInfo
@@ -162,7 +161,7 @@ class FakeSession : Session(NoHandle) {
 
     override fun connection(): ConnectionState = ConnectionState.ONLINE
 
-    /** Sync and presence calls in order: "startSync", "stopSync", "presence online". */
+    /** Sync and presence calls in order: "startSync", "stopSync", "presence foreground", "sharing true". */
     val calls = mutableListOf<String>()
 
     override suspend fun startSync() {
@@ -175,14 +174,18 @@ class FakeSession : Session(NoHandle) {
         calls += "stopSync"
     }
 
-    /** Our presence as set, in order; [setPresenceError] fails the calls. */
-    val presenceSets = mutableListOf<PresenceState>()
-    var setPresenceError: MtrxException? = null
+    /** What the library was told for our presence, in order; [ownPresenceError] fails the calls. */
+    val presenceCalls get() = calls.filter { it.startsWith("presence ") || it.startsWith("sharing ") }
+    var ownPresenceError: MtrxException? = null
 
-    override suspend fun setPresence(state: PresenceState, statusMessage: String?) {
-        presenceSets += state
-        calls += "presence ${state.name.lowercase()}"
-        setPresenceError?.let { throw it }
+    override suspend fun presenceActivity(activity: PresenceActivity) {
+        calls += "presence ${activity.name.lowercase()}"
+        ownPresenceError?.let { throw it }
+    }
+
+    override suspend fun setPresenceSharing(on: Boolean) {
+        calls += "sharing $on"
+        ownPresenceError?.let { throw it }
     }
 
     /** [presence] gives these, or offline without more; [presenceError] fails it. */
@@ -603,11 +606,22 @@ class FakeSortStore(var saved: RoomSort? = null) : RoomSortStore {
     }
 }
 
+/** With its dot, as the library sends it (the line needs the library). */
 fun makePresence(
     state: PresenceState,
     lastActive: Instant? = null,
     statusMessage: String? = null,
-): Presence = Presence(state = state, lastActive = lastActive, currentlyActive = state == PresenceState.ONLINE, statusMessage = statusMessage)
+): Presence = Presence(
+    state = state,
+    lastActive = lastActive,
+    currentlyActive = state == PresenceState.ONLINE,
+    statusMessage = statusMessage,
+    dot = when (state) {
+        PresenceState.ONLINE -> PresenceDot.ONLINE
+        PresenceState.UNAVAILABLE -> PresenceDot.IDLE
+        PresenceState.OFFLINE -> null
+    },
+)
 
 fun summary(
     id: String,
@@ -968,14 +982,7 @@ class FakeSharePresenceStore(var saved: Boolean? = null) : SharePresenceStore {
     }
 }
 
-/** The virtual time of [scope]'s test dispatcher, in milliseconds; 0 without one. */
-@OptIn(ExperimentalCoroutinesApi::class)
-fun testClock(scope: CoroutineScope): () -> Long {
-    val scheduler = (scope.coroutineContext[ContinuationInterceptor] as? TestDispatcher)?.scheduler ?: return { 0L }
-    return { scheduler.currentTime }
-}
-
-/** An account on fakes, with push registration and notifications that tests may look at; idling in virtual time. */
+/** An account on fakes, with push registration and notifications that tests may look at. */
 fun testAccount(
     mtrx: MtrxInterface,
     scope: CoroutineScope,
@@ -986,7 +993,7 @@ fun testAccount(
     sharePresence: SharePresenceStore = FakeSharePresenceStore(),
     sections: SectionStore = FakeSectionStore(),
     log: FakeLog = FakeLog(),
-): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, testClock(scope), log)
+): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, log)
 
 /** What the models logged, as "tag: message". */
 class FakeLog : Logger {

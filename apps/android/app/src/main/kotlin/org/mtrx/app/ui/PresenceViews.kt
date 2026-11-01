@@ -24,10 +24,10 @@ import androidx.compose.ui.unit.dp
 import java.time.Instant
 import kotlin.math.sqrt
 import kotlinx.coroutines.delay
-import org.mtrx.app.model.PresenceDot
-import org.mtrx.app.model.presenceDot
-import org.mtrx.app.model.presenceLine
 import uniffi.mtrx.Presence
+import uniffi.mtrx.PresenceDot
+import uniffi.mtrx.presenceDotLabel
+import uniffi.mtrx.presenceLine
 
 private val Online = Color(0xFF34C759)
 private val Idle = Color(0xFFFFA000)
@@ -48,7 +48,7 @@ fun WithPresenceDot(
 ) {
     Box(modifier) {
         avatar()
-        val dot = presenceDot(presence) ?: return@Box
+        val dot = presence?.dot ?: return@Box
         val outer = dotSize + 4.dp
         val centre = avatarSize * ((1f + 1f / sqrt(2f)) / 2f)
         Box(
@@ -59,8 +59,8 @@ fun WithPresenceDot(
                 .background(ring)
                 .padding(2.dp)
                 .clip(CircleShape)
-                .background(if (dot == PresenceDot.Online) Online else Idle)
-                .semantics { contentDescription = dot.label },
+                .background(if (dot == PresenceDot.ONLINE) Online else Idle)
+                .semantics { contentDescription = presenceDotLabel(dot) },
         )
     }
 }
@@ -83,7 +83,7 @@ fun PresenceLine(
             delay(60_000)
         }
     }
-    val text = presenceLine(presence, now, ::timeAgo) ?: return
+    val text = presence?.let { presenceLine(it, now) } ?: return
     Text(
         text,
         modifier,

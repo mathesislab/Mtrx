@@ -66,8 +66,8 @@ sealed interface BrowserLogin {
  * sign-out; the order of the spaces' rooms in [roomSortStore]. [push] is
  * told when a session opens and before it closes; [notifications] are
  * cleared as rooms are opened or read. Each session's [PresenceModel] reads
- * the direct chats' presence and sets ours around sync, as [sharePresence]
- * says; [clock] counts milliseconds, for idling; [log] has what goes
+ * the direct chats' presence and tells the library what the app does
+ * (which sets ours), as [sharePresence] says; [log] has what goes
  * wrong. How this phone arranges the spaces' sections is kept in
  * [sectionStore] (the device's, as the rooms' order).
  */
@@ -80,7 +80,6 @@ class Account(
     private val notifications: RoomNotifications,
     sharePresenceStore: SharePresenceStore,
     sectionStore: SectionStore,
-    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val log: Logger = AndroidLog,
 ) {
     private val _state = MutableStateFlow<AccountState>(AccountState.Loading)
@@ -323,6 +322,7 @@ class Account(
     fun signOut(): Job = scope.launch {
         lock.withLock {
             val current = session ?: return@withLock
+            presence?.signOut()
             stopSync()
             // No more pushes to this device: on the server, then at the distributor.
             push.closing(current)
@@ -492,7 +492,7 @@ class Account(
             }
         })
         subscriptions = handles
-        val sessionPresence = PresenceModel(signedIn, signedIn.userId(), rooms, sharePresence, scope, clock, log)
+        val sessionPresence = PresenceModel(signedIn, signedIn.userId(), rooms, sharePresence, scope, log)
         presence = sessionPresence
         _state.value = AccountState.SignedIn(signedIn, Images(signedIn), sessionPresence)
         updateSync()
@@ -503,7 +503,7 @@ class Account(
     private suspend fun updateSync() {
         val current = session
         if (current != null && foreground && !syncing) {
-            // Online, or (not sharing, at first) offline before sync can say otherwise.
+            // Ours is set before sync can say otherwise.
             presence?.foreground()
             current.startSync()
             syncing = true
@@ -513,7 +513,7 @@ class Account(
         }
     }
 
-    // Under the lock. Offline (if shared) first, also before a logout.
+    // Under the lock. Offline first.
     private suspend fun stopSync() {
         if (syncing) {
             presence?.background()
