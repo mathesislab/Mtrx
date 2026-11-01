@@ -31,8 +31,8 @@ import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.ReplyQuote
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
+import uniffi.mtrx.RowContent
+import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.Topic
 import uniffi.mtrx.UserProfile
 
@@ -158,7 +158,7 @@ class TimelineViewModelTest {
         editable = true,
     )
 
-    private fun show(vararg items: TimelineItem) = timeline.listener!!.onUpdate(items.toList())
+    private fun show(vararg rows: TimelineRow) = timeline.listener!!.onUpdate(rows.toList())
 
     @Test
     fun repliesFromTheComposer() = runTest {
@@ -304,7 +304,7 @@ class TimelineViewModelTest {
         ),
     )
 
-    private val start = TimelineItem("start", TimelineItemContent.Start)
+    private val start = TimelineRow("start", RowContent.Start)
 
     @Test
     fun goesToAnOriginalLoadedAlready() = runTest {
@@ -470,12 +470,10 @@ class TimelineViewModelTest {
     }
 
     @Test
-    fun topicAndPinsFollowTheRoomsSettings() = runTest {
+    fun topicFollowsTheRoomsSettings() = runTest {
         session.settings = roomSettings(may = true)
-        session.pinAllowed = true
         val viewModel = TimelineViewModel("!a:x", session, onRead = {}, composeTopic = { "composed ${it.text}" })
         assertEquals(true, viewModel.settings.value?.canChangeTopic)
-        assertTrue(viewModel.canPin.value)
         viewModel.saveTopic(Topic("Ice", emptyList()))
         viewModel.setPinned("\$1", true)
         assertEquals(listOf("topic composed Ice", "pin \$1"), session.roomCalls)
@@ -488,17 +486,5 @@ class TimelineViewModelTest {
         viewModel.hidePinned()
         assertNull(viewModel.pinned.value)
         assertTrue(session.pinnedRoomTimeline.closed)
-    }
-
-    @Test
-    fun pinAndUnpinInTheMenuOfSentMessagesWhereAllowed() {
-        val row = timelineRows(listOf(textEvent("1", alice, "hi"))).filterIsInstance<EventRow>().single()
-        assertFalse(MessageAction.PIN in menuActions(row, canPin = false, pinned = emptyList()))
-        assertTrue(MessageAction.PIN in menuActions(row, canPin = true, pinned = emptyList()))
-        val pinned = menuActions(row, canPin = true, pinned = listOf("\$1"))
-        assertTrue(MessageAction.UNPIN in pinned)
-        assertFalse(MessageAction.PIN in pinned)
-        // In the menu's order.
-        assertEquals(pinned.sortedBy { it.ordinal }, pinned.toList())
     }
 }

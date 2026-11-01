@@ -265,33 +265,6 @@ fn section_of(
     }
 }
 
-/// One row of a timeline.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct TimelineItem {
-    /// Unique in the timeline and stable while the item stays (also when a
-    /// sent message's local echo becomes the server's event): use it as the
-    /// row's identity in lists.
-    pub id: String,
-    pub content: TimelineItemContent,
-}
-
-// Nearly all items are events, so boxing would only add indirection.
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
-pub enum TimelineItemContent {
-    /// The room's beginning; back-pagination reached it.
-    Start,
-    Event {
-        event: TimelineEvent,
-    },
-    /// The first event of a new day follows.
-    DayDivider {
-        date: SystemTime,
-    },
-    /// Everything below was not read yet.
-    ReadMarker,
-}
-
 /// One row of a timeline as shown: messages grouped by sender, runs of state
 /// events in one line.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -597,40 +570,6 @@ pub enum MembershipChange {
     Other,
 }
 
-/// The timeline as the apps see it, oldest first.
-pub(crate) fn timeline_items(entries: &[core::TimelineEntry]) -> Vec<TimelineItem> {
-    entries.iter().map(timeline_item).collect()
-}
-
-fn timeline_item(entry: &core::TimelineEntry) -> TimelineItem {
-    match entry {
-        core::TimelineEntry::Start => TimelineItem {
-            id: "start".into(),
-            content: TimelineItemContent::Start,
-        },
-        core::TimelineEntry::Event(event) => TimelineItem {
-            id: event.id.clone(),
-            content: TimelineItemContent::Event {
-                event: TimelineEvent::from(event),
-            },
-        },
-        core::TimelineEntry::DayDivider(date) => TimelineItem {
-            // One per day.
-            id: format!(
-                "day-{}",
-                date.duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-            ),
-            content: TimelineItemContent::DayDivider { date: *date },
-        },
-        core::TimelineEntry::ReadMarker => TimelineItem {
-            id: "read-marker".into(),
-            content: TimelineItemContent::ReadMarker,
-        },
-    }
-}
-
 impl From<&core::Row> for TimelineRow {
     fn from(row: &core::Row) -> Self {
         let (id, content) = match row {
@@ -891,16 +830,10 @@ mod tests {
     fn undecryptable_events_say_why() {
         let mut undecryptable = event("a", core::EventContent::UnableToDecrypt);
         undecryptable.utd_cause = Some(core::UtdCause::SentBeforeWeJoined);
-        let entries = [
-            core::TimelineEntry::Event(undecryptable),
-            core::TimelineEntry::Event(event("b", core::EventContent::Redacted)),
-        ];
-        let causes: Vec<_> = timeline_items(&entries)
-            .into_iter()
-            .map(|item| match item.content {
-                TimelineItemContent::Event { event } => (event.content, event.utd_cause),
-                content => panic!("not an event: {content:?}"),
-            })
+        let causes: Vec<_> = [undecryptable, event("b", core::EventContent::Redacted)]
+            .iter()
+            .map(TimelineEvent::from)
+            .map(|event| (event.content, event.utd_cause))
             .collect();
         assert_eq!(
             causes,
@@ -945,30 +878,6 @@ mod tests {
             reactions: Vec::new(),
             media,
         })
-    }
-
-    #[test]
-    fn timeline_items_have_unique_ids() {
-        let entries = vec![
-            core::TimelineEntry::Start,
-            core::TimelineEntry::DayDivider(at(86_400)),
-            core::TimelineEntry::Event(event("a", core::EventContent::Redacted)),
-            core::TimelineEntry::ReadMarker,
-            core::TimelineEntry::DayDivider(at(2 * 86_400)),
-            core::TimelineEntry::Event(event("b", core::EventContent::UnableToDecrypt)),
-        ];
-        let ids: Vec<_> = timeline_items(&entries).into_iter().map(|i| i.id).collect();
-        assert_eq!(
-            ids,
-            [
-                "start",
-                "day-86400000",
-                "a",
-                "read-marker",
-                "day-172800000",
-                "b"
-            ]
-        );
     }
 
     #[test]
@@ -1027,14 +936,10 @@ mod tests {
 
     #[test]
     fn events_carry_plain_ids_and_text() {
-        let entries = [core::TimelineEntry::Event(event(
+        let event = TimelineEvent::from(&event(
             "a",
             message(Document::from_html("<b>bold</b> text"), None),
-        ))];
-        let [item] = timeline_items(&entries).try_into().unwrap();
-        let TimelineItemContent::Event { event } = item.content else {
-            panic!("not an event: {:?}", item.content);
-        };
+        ));
         assert_eq!(event.sender_id, "@alice:example.org");
         assert_eq!(
             event.sender_avatar_url.as_deref(),

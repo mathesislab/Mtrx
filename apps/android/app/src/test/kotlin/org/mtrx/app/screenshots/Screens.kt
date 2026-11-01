@@ -14,6 +14,7 @@ import java.time.ZoneOffset
 import org.mtrx.app.FakeSession
 import org.mtrx.app.directoryRoom
 import org.mtrx.app.member
+import org.mtrx.app.messageRow
 import org.mtrx.app.model.Images
 import org.mtrx.app.roomSettings
 import org.mtrx.app.rooms.JoinActions
@@ -46,8 +47,7 @@ import uniffi.mtrx.RoomSection
 import uniffi.mtrx.SectionKind
 import uniffi.mtrx.SpaceRooms
 import uniffi.mtrx.TimelineEvent
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
+import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.Topic
 
 // Fake data for the screenshot tests: a team working on ice sheets. No
@@ -125,7 +125,7 @@ val rooms = uniffi.mtrx.RoomListState(
     drafts = listOf("!with-bob:example.org", "!with-dan:example.org", ICE, SEA, LOOSE),
 )
 
-/** A message by [sender] ([name]) at [time]. */
+/** A message by [sender] ([name]) at [time]; the [first] of a group unless said otherwise. */
 fun say(
     id: String,
     sender: String,
@@ -136,7 +136,8 @@ fun say(
     reactions: List<Reaction> = emptyList(),
     readBy: List<Reader> = emptyList(),
     replyTo: ReplyQuote? = null,
-): TimelineItem = event(
+    first: Boolean = true,
+): TimelineRow = event(
     id,
     sender,
     name,
@@ -144,9 +145,10 @@ fun say(
     own,
     EventContent.Message(Message(kind = MessageKind.TEXT, body = body, edited = false, media = null, reactions = reactions, replyTo = replyTo)),
     readBy,
+    first,
 )
 
-/** An event with [content] by [sender] ([name]) at [time]. */
+/** The row of an event with [content] by [sender] ([name]) at [time]. */
 fun event(
     id: String,
     sender: String,
@@ -155,22 +157,22 @@ fun event(
     own: Boolean,
     content: EventContent,
     readBy: List<Reader> = emptyList(),
-): TimelineItem = TimelineItem(
-    id = id,
-    content = TimelineItemContent.Event(
-        TimelineEvent(
-            eventId = "\$$id",
-            senderId = sender,
-            senderName = name,
-            senderAvatarUrl = null,
-            timestamp = time,
-            own = own,
-            content = content,
-            sendState = SendState.Sent,
-            editable = own,
-            readBy = readBy,
-        ),
+    first: Boolean = true,
+): TimelineRow = messageRow(
+    id,
+    TimelineEvent(
+        eventId = "\$$id",
+        senderId = sender,
+        senderName = name,
+        senderAvatarUrl = null,
+        timestamp = time,
+        own = own,
+        content = content,
+        sendState = SendState.Sent,
+        editable = own,
+        readBy = readBy,
     ),
+    firstInGroup = first,
 )
 
 /** A loaded quote of [sender]'s message [id]. */
@@ -182,7 +184,7 @@ val ana = "@ana:example.org"
 
 val conversation = listOf(
     say("1", ana, "Ana Alves", "The new run with the finer grid finished overnight.", at(9, 12)),
-    say("2", ana, "Ana Alves", "Grounding line retreat is about 20% slower than before.", at(9, 13)),
+    say("2", ana, "Ana Alves", "Grounding line retreat is about 20% slower than before.", at(9, 13), first = false),
     say(
         "3",
         bob,
@@ -204,7 +206,7 @@ val conversation = listOf(
         reactions = listOf(Reaction(key = "🎉", count = 1uL, byUs = false, senders = emptyList())),
         replyTo = quoting("2", ana, "Ana Alves", "Grounding line retreat is about 20% slower than before."),
     ),
-    event("7", ME, "Me", at(10, 35), own = true, EventContent.Redacted),
+    event("7", ME, "Me", at(10, 35), own = true, EventContent.Redacted, first = false),
 )
 
 val pinnedMessages = listOf(
