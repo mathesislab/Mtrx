@@ -4504,7 +4504,6 @@ impl App {
                             name,
                             members::Shown {
                                 room: id,
-                                own: &main.own_user,
                                 avatars: &main.avatars,
                                 presences: &main.presences,
                                 menu: Popup::member_menu(main.popup.as_ref()),

@@ -603,15 +603,26 @@ enum Make {
     }
 
     /// A member at `level` (nil: an owner); `upTo`: the highest level we
-    /// may give them (nil: theirs is not ours to change).
+    /// may give them (nil: theirs is not ours to change). Their label and
+    /// level choices as the library gives them, without what it asks.
     static func member(
         _ name: String, level: Int64?, upTo: Int64? = nil, remove: Bool = false, ban: Bool = false,
         invited: Bool = false, named: Bool = true
     ) -> Member {
-        Member(
+        let labels: [Int64: String] = [100: "Admin", 50: "Mod", 0: ""]
+        let label = level.map { labels[$0] ?? "Level \($0)" } ?? "Owner"
+        let levels: [(String, Int64)] = [("Admin", 100), ("Moderator", 50), ("Member", 0)]
+        let choices = upTo.map { upTo in
+            levels.filter { $0.1 <= upTo || $0.1 == level }
+                .map { LevelChoice(title: $0.0, level: $0.1, current: $0.1 == level, confirmation: nil) }
+        }
+        return Member(
             userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil,
             role: level == 100 || level == nil ? .admin : level == 50 ? .moderator : .member, level: level,
-            invited: invited, manage: Manage(remove: remove, ban: ban, upTo: upTo, defaultLevel: 0))
+            invited: invited, own: name == "me",
+            manage: Manage(remove: remove, ban: ban, upTo: upTo, defaultLevel: 0, alone: false),
+            label: label.isEmpty ? nil : label, choices: choices ?? [],
+            manageable: upTo != nil || remove || ban)
     }
 
     /// A section of a space's list; `key` as the library makes them.

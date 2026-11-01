@@ -28,7 +28,7 @@ struct MembersSection: View {
 
     private func rows(_ members: [Member]) -> some View {
         ForEach(members, id: \.userId) { member in
-            if MemberRoles.manageable(member) {
+            if member.manageable {
                 NavigationLink {
                     MemberMenu(member: member, model: model)
                 } label: {
@@ -62,7 +62,7 @@ struct MemberRow: View {
                     }
                 }
                 Spacer(minLength: 8)
-                if let role = MemberRoles.label(member) {
+                if let role = member.label {
                     Text(role)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -85,13 +85,12 @@ struct MemberMenu: View {
     let member: Member
     @ObservedObject var model: RoomInfoModel
     @Environment(\.dismiss) private var dismiss
-    @State private var confirming: (level: Int64, confirmation: MemberRoles.Confirmation)?
+    @State private var confirming: (level: Int64, confirmation: LevelConfirmation)?
     @State private var customLevel = false
     @State private var typed = ""
     @State private var removing: Bool?
     @State private var reason = ""
 
-    private var own: Bool { member.userId == model.userId }
     private var name: String { member.shownName }
 
     var body: some View {
@@ -109,11 +108,11 @@ struct MemberMenu: View {
                 }
                 .listRowBackground(Color.clear)
             }
-            if let upTo = member.manage.upTo {
+            if member.manage.upTo != nil {
                 Section("Role") {
-                    ForEach(MemberRoles.choices(for: member)) { choice in
+                    ForEach(member.choices, id: \.level) { choice in
                         Button {
-                            give(choice.level)
+                            give(choice.level, asking: choice.confirmation)
                         } label: {
                             HStack {
                                 Image(systemName: "checkmark")
@@ -127,7 +126,7 @@ struct MemberMenu: View {
                                     .monospacedDigit()
                             }
                         }
-                        .disabled(choice.current || choice.level > upTo)
+                        .disabled(choice.current)
                     }
                     Button("Custom level…") {
                         typed = member.level.map(String.init) ?? ""
@@ -161,12 +160,12 @@ struct MemberMenu: View {
         } message: { confirming in
             Text(confirming.confirmation.message)
         }
-        .alert(own ? "Your power level" : "Power level for \(name)", isPresented: $customLevel) {
+        .alert(member.own ? "Your power level" : "Power level for \(name)", isPresented: $customLevel) {
             TextField("Level", text: $typed)
                 .keyboardType(.numbersAndPunctuation)
             Button("Set") {
-                if let upTo = member.manage.upTo, let level = MemberRoles.level(typed: typed, upTo: upTo) {
-                    give(level)
+                if let upTo = member.manage.upTo, let level = typedLevel(text: typed, upTo: upTo) {
+                    give(level, asking: levelConfirmation(member: member, level: level))
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -200,12 +199,10 @@ struct MemberMenu: View {
         return hint
     }
 
-    /// Give `level`, asking first where it can't be undone.
-    private func give(_ level: Int64) {
+    /// Give `level`, asking `asking` first where it can't be undone.
+    private func give(_ level: Int64, asking: LevelConfirmation?) {
         guard level != member.level else { return }
-        if let confirmation = MemberRoles.confirmation(
-            level: level, for: member, name: name, own: own, alone: model.alone)
-        {
+        if let confirmation = asking {
             confirming = (level, confirmation)
         } else {
             model.setLevel(level, of: member.userId)

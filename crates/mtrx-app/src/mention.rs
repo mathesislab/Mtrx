@@ -263,6 +263,7 @@ mod tests {
             role: Role::Member,
             level: Some(0),
             invited: false,
+            own: false,
             manage: Default::default(),
         }
     }

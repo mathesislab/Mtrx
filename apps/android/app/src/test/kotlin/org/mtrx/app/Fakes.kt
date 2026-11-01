@@ -29,6 +29,7 @@ import uniffi.mtrx.DirectoryPage
 import uniffi.mtrx.DirectoryRoom
 import uniffi.mtrx.History
 import uniffi.mtrx.JoinAccess
+import uniffi.mtrx.LevelChoice
 import uniffi.mtrx.Manage
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
@@ -482,7 +483,7 @@ fun roomSettings(
     canUnban = may,
 )
 
-/** A member at [level] (null for an owner), and what we may do to them. */
+/** A member at [level] (null for an owner), and what we may do to them; their label and level choices as the library gives them, without what it asks. */
 fun member(
     userId: String,
     name: String? = null,
@@ -503,7 +504,21 @@ fun member(
     },
     level = level,
     invited = invited,
-    manage = Manage(remove = remove, ban = ban, upTo = upTo, defaultLevel = defaultLevel),
+    own = userId == FakeSession.USER_ID,
+    manage = Manage(remove = remove, ban = ban, upTo = upTo, defaultLevel = defaultLevel, alone = false),
+    label = when (level) {
+        null -> "Owner"
+        100L -> "Admin"
+        50L -> "Mod"
+        defaultLevel -> null
+        else -> "Level $level"
+    },
+    choices = upTo?.let { upTo ->
+        listOf("Admin" to 100L, "Moderator" to 50L, "Member" to defaultLevel)
+            .filter { (_, at) -> at <= upTo || at == level }
+            .map { (title, at) -> LevelChoice(title, at, current = at == level, confirmation = null) }
+    }.orEmpty(),
+    manageable = upTo != null || remove || ban,
 )
 
 /** A listed room or space. */

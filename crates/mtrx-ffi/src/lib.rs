@@ -36,8 +36,8 @@ pub use encryption::{
 };
 pub use error::MtrxError;
 pub use manage::{
-    Access, Banned, History, Manage, Member, NotifyMode, Permissions, Role, RoomSettings,
-    SpaceLink, role_level,
+    Access, Banned, History, LevelChoice, LevelConfirmation, Manage, Member, NotifyMode,
+    Permissions, Role, RoomSettings, SpaceLink, level_confirmation, role_level, typed_level,
 };
 pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,

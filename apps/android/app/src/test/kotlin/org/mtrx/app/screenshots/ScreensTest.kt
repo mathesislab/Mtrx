@@ -157,14 +157,14 @@ open class ScreensTest {
     @Test
     fun memberMenu() = snap("member-menu") {
         Surface(Modifier.fillMaxWidth()) {
-            MemberMenu(member("@bob:example.org", "Bob Berg", level = 50, upTo = 100, remove = true, ban = true), own = false, onChoose = {})
+            MemberMenu(member("@bob:example.org", "Bob Berg", level = 50, upTo = 100, remove = true, ban = true), onChoose = {})
         }
     }
 
     @Test
     fun ownMemberMenu() = snap("member-menu-own") {
         Surface(Modifier.fillMaxWidth()) {
-            MemberMenu(member(ME, "Me", level = 100, upTo = 99), own = true, onChoose = {})
+            MemberMenu(member(ME, "Me", level = 100, upTo = 99), onChoose = {})
         }
     }
 

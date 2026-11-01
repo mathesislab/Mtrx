@@ -176,7 +176,7 @@ fun SpaceOverviewContent(
                 }
                 when (tab) {
                     OverviewTab.ROOMS -> roomsTab(rooms, filter, { filter = it }, images, rowActions)
-                    OverviewTab.MEMBERS -> membersSection(members, ownUserId, images, infoActions)
+                    OverviewTab.MEMBERS -> membersSection(members, images, infoActions)
                     OverviewTab.SETTINGS -> if (settings == null) {
                         item(key = "loading") { Spinner() }
                     } else {

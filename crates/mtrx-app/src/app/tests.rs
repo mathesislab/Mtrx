@@ -60,6 +60,7 @@ fn person(id: &str, name: &str, role: mtrx_core::Role) -> mtrx_core::Member {
         role,
         level: Some(role.level(0)),
         invited: false,
+        own: false,
         manage: Default::default(),
     }
 }

@@ -56,7 +56,10 @@ pub use encryption::{
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
 pub use media::MediaRef;
-pub use members::{Manage, Member, Role};
+pub use members::{
+    Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,
+    shown_name, typed_level,
+};
 pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
