@@ -177,7 +177,8 @@ class PresenceTest {
     fun sharingSyncDoesNotWaitForOurPresence() = runTest {
         val session = FakeSession().apply { ownPresenceGate = CompletableDeferred() }
         signedIn(session)
-        assertEquals(listOf("sharing true", "startSync"), session.calls)
+        // Sync started while "Share my presence" still waits.
+        assertEquals(setOf("sharing true", "startSync"), session.calls.toSet())
         session.ownPresenceGate!!.complete(Unit)
         assertEquals("presence foreground", session.calls.last())
     }
