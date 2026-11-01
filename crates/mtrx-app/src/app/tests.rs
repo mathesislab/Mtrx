@@ -1189,9 +1189,9 @@ fn composer_keeps_focus(app: &mut App) {
         ("offline", |app| main(app).connection = Connection::Offline),
         ("online", |app| main(app).connection = Connection::Online),
         ("a banner", |app| {
-            main(app).error = Some("Something failed".into())
+            main(app).report("Something failed".into(), None)
         }),
-        ("it goes", |app| main(app).error = None),
+        ("it goes", |app| main(app).notice = None),
         ("settings open", |app| {
             main(app).modal = Some(Modal::Settings(settings::Panel::default()));
         }),
@@ -3212,6 +3212,46 @@ async fn results_stay_with_their_room() {
     assert_eq!(open.id, b);
     assert_eq!(open.composer.text().trim_end(), "Draft in b");
     assert_eq!(open.error, None);
+}
+
+/// A room that failed to open says so in the notice bar, offering to open
+/// it again, until it opens.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_room_that_failed_to_open_opens_again() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("reopen", &dir).await;
+    let a = alice
+        .create_room(NewRoom {
+            name: Some("a".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let mut main = Main::new(Arc::new(alice));
+    main.verified = Some(true);
+    main.rooms.rooms = vec![summary(&a, "a")];
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+    let problem = |app: &App| match &app.screen {
+        Screen::Main(main) => main.notice.as_ref().filter(|n| n.error).map(|n| {
+            assert_eq!(n.room.as_ref(), Some(&a));
+            n.text.clone()
+        }),
+        _ => None,
+    };
+
+    let _ = app.update(Message::OpenRoom(a.clone()));
+    let _ = app.update(Message::RoomOpened(a.clone(), Err("timed out".into())));
+    assert!(matches!(pane(&app), Pane::Empty));
+    assert_eq!(
+        problem(&app).as_deref(),
+        Some("Could not open the room: timed out")
+    );
+    let _ = app.update(Message::OpenRoom(a.clone()));
+    let _ = app.update(Message::RoomOpened(a.clone(), Ok(Shared(timeline))));
+    assert_eq!(open_room(&mut app).id, a);
+    assert_eq!(problem(&app), None);
 }
 
 /// A message scheduled in a room left before the server confirmed it is

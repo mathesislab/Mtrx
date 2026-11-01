@@ -308,7 +308,6 @@ struct Main {
     drafts: BTreeSet<OwnedRoomId>,
     /// When scheduled times were last compared to the clock.
     now: SystemTime,
-    error: Option<String>,
     avatars: Avatars,
     /// The panel over the window, above the card.
     modal: Option<Modal>,
@@ -504,9 +503,12 @@ pub enum Resize {
     End,
 }
 
+/// Something finished in the background, or failed.
 struct Notice {
     text: String,
+    /// The room it concerns, offered to open.
     room: Option<OwnedRoomId>,
+    /// A problem, not news.
     error: bool,
 }
 
@@ -537,7 +539,6 @@ impl Main {
             activity: Activity::new(true, Instant::now()),
             now: SystemTime::now(),
             session,
-            error: None,
             avatars: Avatars::new(),
             modal: None,
             popup: None,
@@ -554,6 +555,17 @@ impl Main {
 }
 
 impl Main {
+    /// Say that something failed outside a room (where its status pill
+    /// would say it): in the notice bar, until closed or replaced. With
+    /// `room`, the room it concerns, offered to open (again).
+    fn report(&mut self, problem: String, room: Option<OwnedRoomId>) {
+        self.notice = Some(Notice {
+            text: problem,
+            room,
+            error: true,
+        });
+    }
+
     /// Show `pane`; the popup of the room shown before closes.
     fn set_pane(&mut self, pane: Pane) {
         let left = std::mem::replace(&mut self.pane, pane);
@@ -1110,7 +1122,7 @@ impl App {
                         main.room_list = Some(list);
                         main.verified = Some(verified);
                     }
-                    Err(e) => main.error = Some(e),
+                    Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
                 }
                 let members = main
                     .arrange
@@ -1166,11 +1178,7 @@ impl App {
             }
             Message::ArrangeFailed(e) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.notice = Some(Notice {
-                        text: format!("Could not rearrange the room list: {e}"),
-                        room: None,
-                        error: true,
-                    });
+                    main.report(format!("Could not rearrange the room list: {e}"), None);
                 }
                 Task::none()
             }
@@ -1212,6 +1220,9 @@ impl App {
                 }
                 match result {
                     Ok(Shared(timeline)) => {
+                        // It opened after all.
+                        main.notice
+                            .take_if(|notice| notice.error && notice.room.as_ref() == Some(&id));
                         let mut room = Room::new(id.clone(), timeline);
                         let paginate = fill(&mut room);
                         let read = mark_read(&room);
@@ -1251,7 +1262,7 @@ impl App {
                     }
                     Err(e) => {
                         main.set_pane(Pane::Empty);
-                        main.error = Some(e);
+                        main.report(format!("Could not open the room: {e}"), Some(id));
                         Task::none()
                     }
                 }
@@ -1643,14 +1654,8 @@ impl App {
                     Ok(()) if accept => self.update(Message::OpenRoom(id)),
                     Ok(()) => Task::none(),
                     Err(e) => {
-                        main.notice = Some(Notice {
-                            text: format!(
-                                "Could not {} the invite: {e}",
-                                if accept { "accept" } else { "decline" }
-                            ),
-                            room: None,
-                            error: true,
-                        });
+                        let answer = if accept { "accept" } else { "decline" };
+                        main.report(format!("Could not {answer} the invite: {e}"), None);
                         Task::none()
                     }
                 }
@@ -1711,11 +1716,7 @@ impl App {
                     }
                     Ok(()) => self.update(Message::OpenRoom(room)),
                     Err(e) => {
-                        main.notice = Some(Notice {
-                            text: format!("Could not join: {e}"),
-                            room: None,
-                            error: true,
-                        });
+                        main.report(format!("Could not join: {e}"), None);
                         Task::none()
                     }
                 }
@@ -1832,11 +1833,7 @@ impl App {
             }
             Message::MembersChanged(room, result) => {
                 if let (Err(e), Screen::Main(main)) = (&result, &mut self.screen) {
-                    main.notice = Some(Notice {
-                        text: format!("Could not change the members: {e}"),
-                        room: None,
-                        error: true,
-                    });
+                    main.report(format!("Could not change the members: {e}"), None);
                 }
                 self.refresh_members(&room)
             }
@@ -2243,13 +2240,7 @@ impl App {
                 };
                 match error {
                     Some(error) => *error = Some(e),
-                    None => {
-                        main.notice = Some(Notice {
-                            text: e,
-                            room: None,
-                            error: true,
-                        })
-                    }
+                    None => main.report(e, None),
                 }
                 Task::none()
             }
@@ -4479,9 +4470,6 @@ impl App {
         }
         if let Some(notice) = &main.notice {
             banners = banners.push(notice_bar(notice));
-        }
-        if let Some(error) = &main.error {
-            banners = banners.push(container(text(error).style(text::danger)).padding(12));
         }
         let mut content = column![banners];
         let room_view: Element<'a, Message> = match &main.pane {
