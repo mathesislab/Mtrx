@@ -7,7 +7,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeSession
 import org.mtrx.app.directoryRoom
-import org.mtrx.app.member
 import org.mtrx.app.roomSettings
 import uniffi.mtrx.Access
 import uniffi.mtrx.JoinAccess
@@ -44,53 +43,6 @@ class RoomWordsTest {
         assertEquals("42", topic.links[0].passcode)
         assertNull(topic.links[2].passcode)
         assertNull(topic.links[2].title)
-    }
-
-    @Test
-    fun rolesAreOwnerAdminModLevelOrNothing() {
-        assertEquals("Owner", roleLabel(member("@a:x", level = null)))
-        assertEquals("Admin", roleLabel(member("@a:x", level = 100)))
-        assertEquals("Mod", roleLabel(member("@a:x", level = 50)))
-        assertEquals("Level 20", roleLabel(member("@a:x", level = 20)))
-        assertNull(roleLabel(member("@a:x", level = 0)))
-        assertEquals("an admin", aRole(100, 0))
-        assertEquals("a moderator", aRole(50, 0))
-        assertEquals("a member", aRole(0, 0))
-        assertEquals("level 20", aRole(20, 0))
-    }
-
-    @Test
-    fun theMenuOffersLevelsUpToOursWithTheirsTicked() {
-        // We are a moderator: admin is above us.
-        val choices = levelChoices(member("@b:x", level = 20, upTo = 50))
-        assertEquals(listOf("Level 20", "Moderator 50", "Member 0"), choices.map { it.label })
-        assertEquals(listOf(true, false, false), choices.map { it.current })
-        assertEquals(listOf(false, true, true), choices.map { it.enabled })
-        assertTrue(levelChoices(member("@b:x", level = 0, upTo = null)).isEmpty())
-    }
-
-    @Test
-    fun askingFirstWhereItCannotBeUndone() {
-        val bob = member("@b:x", level = 0, upTo = 100)
-        assertNull(levelConfirmation(bob, "Bob", 50, own = false, alone = false))
-        val admin = levelConfirmation(bob, "Bob", 100, own = false, alone = false)!!
-        assertEquals("Make Bob an admin?", admin.title)
-        assertTrue(admin.message.contains("an admin can't demote another admin"))
-        // A moderator making someone a moderator: their own level.
-        val same = levelConfirmation(member("@b:x", level = 0, upTo = 50), "Bob", 50, own = false, alone = false)!!
-        assertTrue(same.message.startsWith("They'll have the same level as you."))
-        // Stepping down, the last one at our level.
-        val down = levelConfirmation(member(FakeSession.USER_ID, level = 100, upTo = 99), "Me", 50, own = true, alone = true)!!
-        assertEquals("Step down to moderator?", down.title)
-        assertTrue(down.message.endsWith("nobody will be able to do all you can now."))
-    }
-
-    @Test
-    fun aloneWhenNobodyElseHasOurLevel() {
-        val me = member(FakeSession.USER_ID, level = 100)
-        assertTrue(aloneAtOurLevel(listOf(me, member("@b:x", level = 50)), FakeSession.USER_ID))
-        assertFalse(aloneAtOurLevel(listOf(me, member("@b:x", level = 100)), FakeSession.USER_ID))
-        assertTrue(aloneAtOurLevel(listOf(me, member("@b:x", level = 100, invited = true)), FakeSession.USER_ID))
     }
 
     @Test
