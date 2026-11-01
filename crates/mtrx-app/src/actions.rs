@@ -214,10 +214,6 @@ pub struct InlineEdit {
     content: text_editor::Content,
     /// The text before editing.
     original: String,
-    /// Its emoji panel, while shown.
-    pub emoji: Option<emoji::Panel>,
-    /// Its menu (right-click), while open.
-    pub menu: Option<edit_menu::Menu>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -235,8 +231,6 @@ impl InlineEdit {
             target,
             content,
             original: text.to_owned(),
-            emoji: None,
-            menu: None,
         }
     }
 
@@ -262,17 +256,20 @@ impl InlineEdit {
         self.content.text().trim_end().to_owned()
     }
 
-    /// Its editor and menu, for the menu's actions.
-    pub fn with_menu(&mut self) -> (&mut text_editor::Content, &mut Option<edit_menu::Menu>) {
-        (&mut self.content, &mut self.menu)
+    /// Its editor, for its menu's actions.
+    pub fn content_mut(&mut self) -> &mut text_editor::Content {
+        &mut self.content
     }
 
     /// The editor, with emoji, Save and Cancel; Enter saves, Esc cancels.
+    /// `popup`: the window's, which may be its menu or emoji panel.
     pub fn view<'a>(
         &'a self,
         room: &OwnedRoomId,
         frequent: &[String],
+        popup: Option<&'a app::Popup>,
     ) -> Element<'a, app::Message> {
+        let (menu, emoji) = room::in_field(popup, Field::Edit);
         let selected = self.content.selection().is_some();
         let (on_action, on_key) = (room.clone(), room.clone());
         let editor = text_editor(&self.content)
@@ -298,14 +295,14 @@ impl InlineEdit {
             })
             .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
             .max_height(240);
-        let editor = edit_menu::with_menu(room, Field::Edit, editor, self.menu.as_ref(), selected);
+        let editor = edit_menu::with_menu(room, Field::Edit, editor, menu, selected);
         let editor = emoji::in_field(
             editor,
-            self.emoji.is_some(),
+            emoji.is_some(),
             true,
             act(room, Message::EditEmoji(emoji::Message::Open)),
         );
-        let panel = self.emoji.as_ref().map(|panel| {
+        let panel = emoji.map(|panel| {
             panel.view(
                 frequent,
                 |emoji| act(room, Message::EditInsertEmoji(emoji)),

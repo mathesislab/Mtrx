@@ -27,7 +27,7 @@ use mtrx_core::{
 };
 
 use crate::{
-    actions::{self, Compose, Editing, InlineEdit},
+    actions::{self, Compose, Editing, InlineEdit, PickerAt},
     arrange::{self, Arrange},
     avatar::{self, Avatars},
     badge::{self, Badge},
@@ -42,7 +42,9 @@ use crate::{
     login::{self, Login},
     math::{self, Math, Rendered},
     media::{self, Previews, Viewer},
-    members, mention, message, overview, pdf_viewer, pins,
+    members, mention, message,
+    message_menu::MenuAt,
+    overview, pdf_viewer, pins,
     placement::{self, Frame, Placement},
     popover,
     presence::{self, Activity, Presences},
@@ -310,23 +312,19 @@ struct Main {
     avatars: Avatars,
     /// The panel over the window, above the card.
     modal: Option<Modal>,
+    /// The menu or picker open, anywhere in the window.
+    popup: Option<Popup>,
     /// A space just joined, whose overview shows once it is in the room
     /// list.
     joined_space: Option<OwnedRoomId>,
     /// A dialog closed while its request runs: notices for success and failure.
     background: Option<(String, String)>,
-    /// The room list's "+" menu is open.
-    add_menu: bool,
-    /// The space bar's "+" menu, or a space's, is open.
-    space_menu: Option<sidebar::SpaceMenu>,
     /// The rooms of our spaces, for the room search.
     space_rooms: directory::SpaceRooms,
     /// The selected space's topic panel, below its name.
     space_topic: topic::Panel,
     /// This desktop's "Notes at the top" was offered to the account.
     notes_moved: bool,
-    /// The member whose menu is open, and in which room.
-    member_menu: Option<members::MenuKey>,
     /// Something finished in the background, or failed.
     notice: Option<Notice>,
     /// The room search text.
@@ -421,6 +419,78 @@ enum Modal {
     Pdf(pdf_viewer::Viewer),
 }
 
+/// A menu or picker: one at a time in the whole window, the one opened last
+/// replacing any other. Those of the open room close with it, see
+/// [`Main::set_pane`].
+pub enum Popup {
+    /// A timeline row's menu, and where.
+    MessageMenu { row: String, at: MenuAt },
+    /// A timeline row's reaction window, and where; with all emoji while
+    /// shown.
+    Reactions {
+        row: String,
+        at: PickerAt,
+        all: Option<emoji::Panel>,
+    },
+    /// Everyone who read up to a timeline row's message.
+    Readers(String),
+    /// Everyone who reacted to a timeline row's message with a key.
+    Reactors { row: String, key: String },
+    /// Retry or delete a timeline row's message that was not sent.
+    Unsent(String),
+    /// Confirm deleting a timeline row's message.
+    ConfirmDelete(String),
+    /// The menu of a field one writes in.
+    FieldMenu(Field, edit_menu::Menu),
+    /// The emoji panel of a field one writes in.
+    FieldEmoji(Field, emoji::Panel),
+    /// The room's calls and links.
+    Calls(calls::Menu),
+    /// A send time, for the composer's text or a scheduled message.
+    SendLater(send_later::SendLater),
+    /// The room list's "+".
+    AddMenu,
+    /// The space bar's "+", or a space's.
+    SpaceMenu(sidebar::SpaceMenu),
+    /// A member's, in a room's member list or a space's overview.
+    MemberMenu(members::MenuKey),
+    /// A room's in the room list.
+    RoomMenu(OwnedRoomId),
+    /// A category's in the room list.
+    CategoryMenu(String),
+    /// Which of a space's sections are expanded.
+    ShowMenu,
+}
+
+impl Popup {
+    /// It belongs to room `room`, the open one: to its timeline, fields or
+    /// header, or a member's menu in its member list.
+    fn of_room(&self, room: &OwnedRoomId) -> bool {
+        match self {
+            Popup::MemberMenu((of, ..)) => of == room,
+            Popup::AddMenu
+            | Popup::SpaceMenu(_)
+            | Popup::RoomMenu(_)
+            | Popup::CategoryMenu(_)
+            | Popup::ShowMenu => false,
+            _ => true,
+        }
+    }
+
+    /// It belongs to `field`.
+    fn in_field(&self, field: Field) -> bool {
+        matches!(self, Popup::FieldMenu(f, _) | Popup::FieldEmoji(f, _) if *f == field)
+    }
+
+    /// The member whose menu it is.
+    pub fn member_menu(popup: Option<&Self>) -> Option<&members::MenuKey> {
+        match popup {
+            Some(Popup::MemberMenu(key)) => Some(key),
+            _ => None,
+        }
+    }
+}
+
 /// The room list's width limits, and its draggable edge's.
 const MIN_ROOM_LIST_WIDTH: f32 = 200.0;
 const MAX_ROOM_LIST_WIDTH: f32 = 520.0;
@@ -470,14 +540,12 @@ impl Main {
             error: None,
             avatars: Avatars::new(),
             modal: None,
+            popup: None,
             joined_space: None,
             background: None,
-            add_menu: false,
-            space_menu: None,
             space_rooms: Default::default(),
             space_topic: Default::default(),
             notes_moved: false,
-            member_menu: None,
             notice: None,
             filter: String::new(),
             previews: Previews::new(),
@@ -486,6 +554,14 @@ impl Main {
 }
 
 impl Main {
+    /// Show `pane`; the popup of the room shown before closes.
+    fn set_pane(&mut self, pane: Pane) {
+        let left = std::mem::replace(&mut self.pane, pane);
+        if let Some(room) = left.id() {
+            self.popup.take_if(|popup| popup.of_room(room));
+        }
+    }
+
     /// Pictures of the spaces, listed rooms, and the open room's header and
     /// timeline senders, with their sizes.
     fn avatars_on_screen(&self, settings: &Settings) -> Vec<(OwnedMxcUri, f32)> {
@@ -504,6 +580,7 @@ impl Main {
                 rooms.iter().find(|r| r.id == room.id),
                 &self.own_user,
                 self.show_members,
+                self.popup.as_ref(),
             ));
         }
         wanted
@@ -522,7 +599,7 @@ impl Main {
             avatars: &self.avatars,
             scheduled: &self.scheduled,
             drafts: &self.drafts,
-            add_menu: self.add_menu,
+            popup: self.popup.as_ref(),
             filter: &self.filter,
             arrange: &self.arrange,
             grouping,
@@ -786,36 +863,38 @@ impl App {
                 | Message::OpenRoom(_)
                 | Message::WindowResized(_)
         );
-        // A menu's choice closes it.
+        // A menu's choice closes it, as does what opens over it.
         if let Screen::Main(main) = &mut self.screen
-            && main.space_menu.is_some()
             && matches!(
                 message,
                 Message::OpenDialog(_)
                     | Message::OpenJoin
                     | Message::ShowSpace(..)
+                    | Message::ShowInfo(_)
                     | Message::SelectSpace(_)
+                    | Message::OpenRoom(_)
             )
         {
-            main.space_menu = None;
-        }
-        if let Screen::Main(main) = &mut self.screen
-            && main.member_menu.is_some()
-            && matches!(message, Message::OpenDialog(_) | Message::ShowInfo(_))
-        {
-            main.member_menu = None;
+            main.popup = None;
         }
         let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
         let card = self.card_shown();
+        let edit = self.edit_shown();
         let space = self.selected_space();
         let draft = self.room_draft();
         let task = self.handle(message);
         let keep_draft = self.keep_draft(draft);
-        // A member's menu goes with the card it was opened on.
-        if self.card_shown() != card
-            && let Screen::Main(main) = &mut self.screen
-        {
-            main.member_menu = None;
+        // A member's menu goes with the card it was opened on, a field's
+        // menu and emoji with the message edited.
+        let (card_changed, edit_changed) = (self.card_shown() != card, self.edit_shown() != edit);
+        if let Screen::Main(main) = &mut self.screen {
+            if card_changed {
+                main.popup
+                    .take_if(|popup| matches!(popup, Popup::MemberMenu(_)));
+            }
+            if edit_changed {
+                main.popup.take_if(|popup| popup.in_field(Field::Edit));
+            }
         }
         // Another space, however chosen: its topic, closed, and whether we
         // may edit it.
@@ -1080,6 +1159,7 @@ impl App {
                     space: main.space.as_ref(),
                     rooms: &mut main.rooms.rooms,
                     grouping: self.settings.room_list,
+                    popup: &mut main.popup,
                 };
                 let task = main.arrange.update(message, context);
                 Task::batch([task, self.load_avatars()])
@@ -1098,7 +1178,6 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.add_menu = false;
                 main.card = None;
                 // Chosen now: last time's view is no longer wanted.
                 main.restore = None;
@@ -1107,13 +1186,13 @@ impl App {
                 }
                 // An invite shows Accept and Decline instead of a timeline.
                 if main.rooms.rooms.iter().any(|r| r.id == id && r.invited) {
-                    main.pane = Pane::Invite {
+                    main.set_pane(Pane::Invite {
                         id,
                         answering: false,
-                    };
+                    });
                     return Task::none();
                 }
-                main.pane = Pane::Opening(id.clone());
+                main.set_pane(Pane::Opening(id.clone()));
                 let session = main.session.clone();
                 Task::perform(
                     async move {
@@ -1142,7 +1221,7 @@ impl App {
                         } else {
                             Task::none()
                         };
-                        main.pane = Pane::Open(room);
+                        main.set_pane(Pane::Open(room));
                         let (session, room) = (main.session.clone(), id.clone());
                         let draft = Task::perform(
                             async move {
@@ -1171,7 +1250,7 @@ impl App {
                         ])
                     }
                     Err(e) => {
-                        main.pane = Pane::Empty;
+                        main.set_pane(Pane::Empty);
                         main.error = Some(e);
                         Task::none()
                     }
@@ -1212,13 +1291,19 @@ impl App {
             Message::SpaceTopic(space, message) => self.space_topic(space, message),
             Message::AddMenu(open) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.add_menu = open;
+                    match open {
+                        true => main.popup = Some(Popup::AddMenu),
+                        false => _ = main.popup.take_if(|p| matches!(p, Popup::AddMenu)),
+                    }
                 }
                 Task::none()
             }
             Message::SpaceMenu(menu) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.space_menu = menu;
+                    match menu {
+                        Some(menu) => main.popup = Some(Popup::SpaceMenu(menu)),
+                        None => _ = main.popup.take_if(|p| matches!(p, Popup::SpaceMenu(_))),
+                    }
                 }
                 Task::none()
             }
@@ -1226,7 +1311,6 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.add_menu = false;
                 // A card stays below, e.g. a space's overview, to come
                 // back to.
                 let near = near_spaces(&kind, &main.rooms.rooms, main.space.as_ref());
@@ -1279,7 +1363,6 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.add_menu = false;
                 main.card = None;
                 let session = main.session.clone();
                 let (join, action) = join::Join::new(
@@ -1521,10 +1604,10 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.pane = Pane::Invite {
+                main.set_pane(Pane::Invite {
                     id: id.clone(),
                     answering: true,
-                };
+                });
                 let session = main.session.clone();
                 Task::perform(
                     {
@@ -1554,7 +1637,7 @@ impl App {
                     return Task::none();
                 };
                 if matches!(&main.pane, Pane::Invite { id: invite, .. } if *invite == id) {
-                    main.pane = Pane::Empty;
+                    main.set_pane(Pane::Empty);
                 }
                 match result {
                     Ok(()) if accept => self.update(Message::OpenRoom(id)),
@@ -1670,97 +1753,42 @@ impl App {
             }
             Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
             // Closes the topmost thing: the modal (the image viewer's menu
-            // first), the card, a drag, menu or category name, else the
-            // search.
+            // first), the popup, the card, then in the open room the
+            // mention offered, the find bar, the selection, the reply and
+            // the message edited in place; then a drag or category name,
+            // else the search.
             Message::Escape => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                match (&mut main.modal, &main.card) {
-                    (Some(Modal::Dialog(_)), _) => {
+                match &mut main.modal {
+                    Some(Modal::Dialog(_)) => {
                         return Task::done(Message::Dialog(dialog::Message::Cancel));
                     }
-                    (Some(Modal::Join(_)), _) => {
-                        return Task::done(Message::Join(join::Message::Close));
-                    }
-                    (Some(Modal::Image(viewer)), _) if viewer.menu => viewer.menu = false,
-                    (Some(_), _) => main.modal = None,
-                    (None, Some(_)) => main.card = None,
-                    (None, None) => {
-                        if let Some(room) = main.pane.room_mut().filter(|r| r.calls.is_open()) {
-                            room.calls.close();
-                        } else if let Some(room) = main
-                            .pane
-                            .room_mut()
-                            .filter(|r| !r.candidates(&main.own_user).is_empty())
-                        {
+                    Some(Modal::Join(_)) => return Task::done(Message::Join(join::Message::Close)),
+                    Some(Modal::Image(viewer)) if viewer.menu => viewer.menu = false,
+                    Some(_) => main.modal = None,
+                    None if main.popup.is_some() => main.popup = None,
+                    None if main.card.is_some() => main.card = None,
+                    None => match main.pane.room_mut() {
+                        Some(room) if !room.candidates(&main.own_user).is_empty() => {
                             room.completion = None;
-                        } else if let Some(room) = main.pane.room_mut().filter(|r| r.menu.is_some())
-                        {
-                            room.menu = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.composer_menu.is_some())
-                        {
-                            room.composer_menu = None;
-                        } else if let Some(edit) = main
-                            .pane
-                            .room_mut()
-                            .and_then(|r| r.editing.as_mut())
-                            .filter(|e| e.menu.is_some())
-                        {
-                            edit.menu = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.readers.is_some())
-                        {
-                            room.readers = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.reactors.is_some())
-                        {
-                            room.reactors = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.unsent.is_some())
-                        {
-                            room.unsent = None;
-                        } else if let Some(room) = main.pane.room_mut().filter(|r| r.find.is_some())
-                        {
-                            room.find = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.selection.is_some())
-                        {
-                            room.selection = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.composer_emoji.is_some())
-                        {
-                            room.composer_emoji = None;
-                        } else if main.pane.room().is_some_and(|r| r.compose.cancellable()) {
-                            // From the composer its own Esc does it first.
+                        }
+                        Some(room) if room.find.is_some() => room.find = None,
+                        Some(room) if room.selection.is_some() => room.selection = None,
+                        // From the composer its own Esc does it first.
+                        Some(room) if room.compose.cancellable() => {
                             return Task::done(Message::Shown(room::Message::Act(
                                 actions::Message::CancelCompose,
                             )));
-                        } else if let Some(edit) = main
-                            .pane
-                            .room_mut()
-                            .and_then(|r| r.editing.as_mut())
-                            .filter(|e| e.emoji.is_some())
-                        {
-                            edit.emoji = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.editing.is_some())
-                        {
-                            room.editing = None;
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.later.picker.is_some())
-                        {
-                            room.later = Default::default();
-                        } else if let Some(room) =
-                            main.pane.room_mut().filter(|r| r.picker.is_some())
-                        {
-                            room.picker = None;
-                            room.emoji = None;
-                        } else if !main.arrange.escape() {
-                            main.filter.clear();
                         }
-                    }
+                        Some(room) if room.editing.is_some() => room.editing = None,
+                        _ => {
+                            if !main.arrange.escape() {
+                                main.filter.clear();
+                            }
+                        }
+                    },
                 }
                 Task::none()
             }
@@ -1779,7 +1807,10 @@ impl App {
             }
             Message::MemberMenu(menu) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.member_menu = menu;
+                    match menu {
+                        Some(menu) => main.popup = Some(Popup::MemberMenu(menu)),
+                        None => _ = main.popup.take_if(|p| matches!(p, Popup::MemberMenu(_))),
+                    }
                 }
                 Task::none()
             }
@@ -1787,7 +1818,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.member_menu = None;
+                main.popup.take_if(|p| matches!(p, Popup::MemberMenu(_)));
                 let session = main.session.clone();
                 Task::perform(
                     {
@@ -1958,6 +1989,13 @@ impl App {
                     if let Some(room) = main.pane.room_mut() {
                         room.scheduled_changed(&scheduled);
                     }
+                    // A message given a new time may have been sent (it
+                    // became due) or cancelled elsewhere.
+                    let gone = |id: &str| !scheduled.iter().any(|m| m.id == id);
+                    main.popup.take_if(|popup| {
+                        matches!(popup, Popup::SendLater(later)
+                            if later.rescheduling.as_ref().is_some_and(|m| gone(&m.id)))
+                    });
                     main.scheduled = scheduled;
                     main.now = SystemTime::now();
                 }
@@ -2582,33 +2620,10 @@ impl App {
                 room.pins.update(message);
                 Task::none()
             }
-            room::Message::ComposerEmoji(message) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let Some(room) = main.pane.open_mut(&id) else {
-                    return Task::none();
-                };
-                match message {
-                    emoji::Message::Close => {
-                        room.composer_emoji = None;
-                        Task::none()
-                    }
-                    emoji::Message::Open => {
-                        room.composer_emoji = Some(emoji::Panel::default());
-                        Task::batch([
-                            iced::widget::operation::focus(emoji::SEARCH),
-                            load_frequent_emoji(&main.session),
-                        ])
-                    }
-                    message => {
-                        if let Some(panel) = &mut room.composer_emoji {
-                            panel.update(message);
-                        }
-                        Task::none()
-                    }
-                }
-            }
+            room::Message::ComposerEmoji(message) => match &mut self.screen {
+                Screen::Main(main) => field_emoji(main, Field::Composer, message),
+                _ => Task::none(),
+            },
             room::Message::InsertEmoji(emoji) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -2631,6 +2646,8 @@ impl App {
                 match result {
                     Ok(Shared(timeline)) => {
                         room.reload(timeline);
+                        // Its rows are new.
+                        main.popup.take_if(|popup| popup.of_room(&id));
                         Task::batch([
                             fill(room),
                             mark_read(room),
@@ -2738,24 +2755,28 @@ impl App {
                 let Some(room) = main.pane.open_mut(&id) else {
                     return Task::none();
                 };
-                let (content, menu, focus) = match field {
+                let (content, focus) = match field {
                     Field::Composer => (
                         &mut room.composer,
-                        &mut room.composer_menu,
                         iced::widget::operation::focus(room::COMPOSER),
                     ),
                     Field::Edit => {
                         let Some(edit) = room.editing.as_mut() else {
                             return Task::none();
                         };
-                        let (content, menu) = edit.with_menu();
-                        (content, menu, InlineEdit::focus())
+                        (edit.content_mut(), InlineEdit::focus())
                     }
                 };
                 // Any choice closes the menu.
-                let misspelled = menu.take().and_then(|menu| menu.misspelled);
+                let misspelled = match main
+                    .popup
+                    .take_if(|p| matches!(p, Popup::FieldMenu(f, _) if *f == field))
+                {
+                    Some(Popup::FieldMenu(_, menu)) => menu.misspelled,
+                    _ => None,
+                };
                 if message == Menu::Open {
-                    *menu = Some(edit_menu::Menu::at(content));
+                    main.popup = Some(Popup::FieldMenu(field, edit_menu::Menu::at(content)));
                     return Task::none();
                 }
                 let selection = content.selection();
@@ -2915,7 +2936,7 @@ impl App {
                     dialog::Opened::Space(id) => self.update(Message::SelectSpace(Some(id))),
                     dialog::Opened::Left(id) => {
                         if main.pane.id() == Some(&id) {
-                            main.pane = Pane::Empty;
+                            main.set_pane(Pane::Empty);
                         }
                         if main.card.as_ref().and_then(|c| c.room()) == Some(&id) {
                             main.card = None;
@@ -3222,28 +3243,27 @@ impl App {
         let session = main.session.clone();
         let google = self.google.clone();
         let state = &mut room.calls;
+        let menu = |popup: &mut Popup| matches!(popup, Popup::Calls(_));
         let moved = match message {
             Calls::SpaceService(service) => {
                 state.space_service = service;
                 return Task::none();
             }
             Calls::OpenMenu => {
-                state.menu = true;
-                state.error = None;
+                main.popup = Some(Popup::Calls(calls::Menu::default()));
                 return Task::none();
             }
             Calls::Close => {
-                state.close();
+                main.popup.take_if(menu);
                 return Task::none();
             }
             Calls::Open(url) => {
-                state.close();
+                main.popup.take_if(menu);
                 return Task::done(Message::LinkClicked(url));
             }
             Calls::Start(service) => {
                 state.busy = true;
-                state.menu = false;
-                state.error = None;
+                main.popup.take_if(menu);
                 let room = room.id.clone();
                 return Task::perform(
                     async move {
@@ -3264,8 +3284,14 @@ impl App {
                 }
                 return Task::none();
             }
-            Calls::Calls(order) => state.calls.update(order).map(|moved| (true, moved)),
-            Calls::Links(order) => state.links.update(order).map(|moved| (false, moved)),
+            Calls::Calls(order) => match &mut main.popup {
+                Some(Popup::Calls(menu)) => menu.calls.update(order).map(|moved| (true, moved)),
+                _ => None,
+            },
+            Calls::Links(order) => match &mut main.popup {
+                Some(Popup::Calls(menu)) => menu.links.update(order).map(|moved| (false, moved)),
+                _ => None,
+            },
         };
         let Some((calls, moved)) = moved else {
             return Task::none();
@@ -3295,7 +3321,7 @@ impl App {
         };
         // From the call menu too.
         if let topic::Message::Edit = message {
-            room.calls.close();
+            main.popup.take_if(|popup| matches!(popup, Popup::Calls(_)));
         }
         let synced = (main.rooms.rooms.iter())
             .find(|r| r.id == id)
@@ -3434,6 +3460,9 @@ impl App {
                 actions::act(&id, Act::Done(result.map_err(|e| e.to_string())))
             }
         };
+        let menu = |popup: &mut Popup| matches!(popup, Popup::MessageMenu { .. });
+        let unsent = |popup: &mut Popup| matches!(popup, Popup::Unsent(_));
+        let confirm_delete = |popup: &mut Popup| matches!(popup, Popup::ConfirmDelete(_));
         match message {
             Act::Pin(event, pin) => {
                 let (session, room_id) = (main.session.clone(), room.id.clone());
@@ -3443,8 +3472,8 @@ impl App {
                 )
             }
             Act::React(key, emoji) => {
-                room.picker = None;
-                room.emoji = None;
+                main.popup
+                    .take_if(|popup| matches!(popup, Popup::Reactions { .. }));
                 let react = Task::perform(
                     {
                         let emoji = emoji.clone();
@@ -3455,28 +3484,10 @@ impl App {
                 Task::batch([react, used_emoji(main, vec![emoji])])
             }
             Act::EditEmoji(message) => {
-                let Some(edit) = &mut room.editing else {
+                if room.editing.is_none() {
                     return Task::none();
-                };
-                match message {
-                    emoji::Message::Close => {
-                        edit.emoji = None;
-                        Task::none()
-                    }
-                    emoji::Message::Open => {
-                        edit.emoji = Some(emoji::Panel::default());
-                        Task::batch([
-                            iced::widget::operation::focus(emoji::SEARCH),
-                            load_frequent_emoji(&main.session),
-                        ])
-                    }
-                    message => {
-                        if let Some(panel) = &mut edit.emoji {
-                            panel.update(message);
-                        }
-                        Task::none()
-                    }
                 }
+                field_emoji(main, Field::Edit, message)
             }
             Act::EditInsertEmoji(emoji) => {
                 if let Some(edit) = &mut room.editing {
@@ -3485,72 +3496,72 @@ impl App {
                 // Counted as used once saved.
                 InlineEdit::focus()
             }
-            Act::OpenMenu(id, at) => {
-                room.menu = Some((id, at));
-                room.picker = None;
-                room.emoji = None;
+            Act::OpenMenu(row, at) => {
+                main.popup = Some(Popup::MessageMenu { row, at });
                 Task::none()
             }
             Act::CloseMenu => {
-                room.menu = None;
+                main.popup.take_if(menu);
                 Task::none()
             }
-            Act::OpenReaders(id) => {
-                room.readers = Some(id);
+            Act::OpenReaders(row) => {
+                main.popup = Some(Popup::Readers(row));
                 Task::none()
             }
             Act::CloseReaders => {
-                room.readers = None;
+                main.popup
+                    .take_if(|popup| matches!(popup, Popup::Readers(_)));
                 Task::none()
             }
-            Act::OpenReactors(id, key) => {
-                room.reactors = Some((id, key));
+            Act::OpenReactors(row, key) => {
+                main.popup = Some(Popup::Reactors { row, key });
                 Task::none()
             }
             Act::CloseReactors => {
-                room.reactors = None;
+                main.popup
+                    .take_if(|popup| matches!(popup, Popup::Reactors { .. }));
                 Task::none()
             }
-            Act::OpenUnsent(id) => {
-                room.unsent = Some(id);
+            Act::OpenUnsent(row) => {
+                main.popup = Some(Popup::Unsent(row));
                 Task::none()
             }
             Act::CloseUnsent => {
-                room.unsent = None;
+                main.popup.take_if(unsent);
                 Task::none()
             }
             Act::Retry(key) => {
-                room.unsent = None;
+                main.popup.take_if(unsent);
                 Task::perform(async move { timeline.retry(&key).await }, done)
             }
             Act::Discard(key) => {
-                room.unsent = None;
+                main.popup.take_if(unsent);
                 Task::perform(async move { timeline.discard(&key).await }, done)
             }
             Act::OpenLink(url) => {
-                room.menu = None;
+                main.popup.take_if(menu);
                 Task::done(Message::LinkClicked(url))
             }
             Act::Copy(copied) => {
-                room.menu = None;
+                main.popup.take_if(menu);
                 copy(&id, copied)
             }
             Act::CopyLink(url) => {
-                room.menu = None;
+                main.popup.take_if(menu);
                 iced::clipboard::write(url)
             }
             Act::CopySelection => {
-                room.menu = None;
+                main.popup.take_if(menu);
                 Task::done(room::Message::Select(selection::Message::Copy).to(&id))
             }
             Act::CopyImage(document) => {
-                room.menu = None;
+                main.popup.take_if(menu);
                 Task::perform(self.math.copy_image(&document), move |result| {
                     actions::act(&id, Act::Done(result))
                 })
             }
             Act::SaveImage(document) => {
-                room.menu = None;
+                main.popup.take_if(menu);
                 let png = self.math.png(&document);
                 Task::perform(
                     async move {
@@ -3569,37 +3580,47 @@ impl App {
                     move |result| actions::act(&id, Act::Done(result)),
                 )
             }
-            Act::TogglePicker(id, at) => {
-                let picker = (id, at);
-                room.picker = (room.picker.as_ref() != Some(&picker)).then_some(picker);
-                room.emoji = None;
-                if room.picker.is_none() {
+            Act::TogglePicker(row, at) => {
+                let open = matches!(&main.popup,
+                    Some(Popup::Reactions { row: open, at: open_at, .. })
+                        if *open == row && *open_at == at);
+                if open {
+                    main.popup = None;
                     return Task::none();
                 }
+                main.popup = Some(Popup::Reactions { row, at, all: None });
                 load_frequent_emoji(&main.session)
             }
             Act::ClosePicker => {
-                room.picker = None;
-                room.emoji = None;
-                Task::none()
-            }
-            Act::Emoji(emoji::Message::Open) => {
-                room.emoji = Some(emoji::Panel::default());
-                iced::widget::operation::focus(emoji::SEARCH)
-            }
-            Act::Emoji(emoji::Message::Close) => {
-                room.emoji = None;
+                main.popup
+                    .take_if(|popup| matches!(popup, Popup::Reactions { .. }));
                 Task::none()
             }
             Act::Emoji(message) => {
-                if let Some(panel) = &mut room.emoji {
-                    panel.update(message);
+                let Some(Popup::Reactions { all, .. }) = &mut main.popup else {
+                    return Task::none();
+                };
+                match message {
+                    emoji::Message::Open => {
+                        *all = Some(emoji::Panel::default());
+                        iced::widget::operation::focus(emoji::SEARCH)
+                    }
+                    emoji::Message::Close => {
+                        *all = None;
+                        Task::none()
+                    }
+                    message => {
+                        if let Some(panel) = all {
+                            panel.update(message);
+                        }
+                        Task::none()
+                    }
                 }
-                Task::none()
             }
             Act::Reply(target) => {
                 room.compose = Compose::Reply(target);
-                room.later.picker = None;
+                main.popup
+                    .take_if(|popup| matches!(popup, Popup::SendLater(_)));
                 Task::none()
             }
             Act::Edit(key, text) => {
@@ -3651,16 +3672,16 @@ impl App {
                 room.error = Some(e);
                 Task::none()
             }
-            Act::AskDelete(id) => {
-                room.confirm_delete = Some(id);
+            Act::AskDelete(row) => {
+                main.popup = Some(Popup::ConfirmDelete(row));
                 Task::none()
             }
             Act::CancelDelete => {
-                room.confirm_delete = None;
+                main.popup.take_if(confirm_delete);
                 Task::none()
             }
             Act::Delete(key) => {
-                room.confirm_delete = None;
+                main.popup.take_if(confirm_delete);
                 Task::perform(async move { timeline.redact(&key).await }, done)
             }
             Act::CancelCompose => {
@@ -3765,44 +3786,48 @@ impl App {
                 room::Message::Later(message(result.map_err(|e| e.to_string()))).to(&id)
             }
         };
+        let picking = |popup: &mut Popup| matches!(popup, Popup::SendLater(_));
+        let later = match &mut main.popup {
+            Some(Popup::SendLater(later)) => Some(later),
+            _ => None,
+        };
         match message {
             Later::Close => {
-                room.later = Default::default();
+                main.popup.take_if(picking);
                 Task::none()
             }
             Later::Open => {
-                room.composer_emoji = None;
                 let picker = send_later::Picker::new(SystemTime::now(), None);
                 let scroll = picker.scroll();
-                room.later.picker = Some(picker);
+                main.popup = Some(Popup::SendLater(send_later::SendLater {
+                    picker,
+                    rescheduling: None,
+                }));
                 scroll
             }
             Later::ChangeTime(message) => {
                 // From its time, unless that has passed.
                 let picker = send_later::Picker::new(SystemTime::now(), Some(message.send_at));
                 let scroll = picker.scroll();
-                room.later.picker = Some(picker);
-                room.later.rescheduling = Some(message);
+                main.popup = Some(Popup::SendLater(send_later::SendLater {
+                    picker,
+                    rescheduling: Some(message),
+                }));
                 scroll
             }
             Later::Month(_) | Later::Day(_) | Later::Hour(_) | Later::Minute(_) => {
-                if let Some(picker) = &mut room.later.picker {
-                    picker.update(&message, SystemTime::now());
+                if let Some(later) = later {
+                    later.picker.update(&message, SystemTime::now());
                 }
                 Task::none()
             }
-            Later::Schedule => match room
-                .later
-                .picker
-                .as_ref()
-                .map(|p| p.time(SystemTime::now()))
-            {
+            Later::Schedule => match later.map(|later| later.picker.time(SystemTime::now())) {
                 Some(Ok(at)) => self.later(id.clone(), Later::At(at)),
                 _ => Task::none(),
             },
             Later::At(send_at) => {
                 room.error = None;
-                if let Some(message) = &room.later.rescheduling {
+                if let Some(message) = later.and_then(|later| later.rescheduling.as_ref()) {
                     let id = message.id.clone();
                     return Task::perform(
                         async move { session.reschedule(&id, send_at).await },
@@ -3847,11 +3872,11 @@ impl App {
                 room.compose = Compose::New;
                 room.set_composer(text_editor::Content::new());
                 room.attachments.clear();
-                room.later = Default::default();
+                main.popup.take_if(picking);
                 Task::none()
             }
             Later::Saved(Ok(())) => {
-                room.later = Default::default();
+                main.popup.take_if(picking);
                 Task::none()
             }
             Later::Scheduled(Err(e)) | Later::Saved(Err(e)) | Later::Done(Err(e)) => {
@@ -4000,6 +4025,14 @@ impl App {
         }
     }
 
+    /// The message edited in place in the open room.
+    fn edit_shown(&self) -> Option<Editing> {
+        let Screen::Main(main) = &self.screen else {
+            return None;
+        };
+        Some(main.pane.room()?.editing.as_ref()?.target.clone())
+    }
+
     /// Which card is shown, and on which tab: whether one is, its room, and
     /// a space's tab.
     fn card_shown(&self) -> Option<(Option<OwnedRoomId>, Option<overview::Tab>)> {
@@ -4138,12 +4171,6 @@ impl App {
             return Task::none();
         };
         main.arrange.escape();
-        main.add_menu = false;
-        // Opened from the list of a message's readers, say.
-        if let Some(room) = main.pane.room_mut() {
-            room.readers = None;
-            room.reactors = None;
-        }
         let card = info::Card::new(target, &main.rooms.rooms, tab);
         // Fresher than the watcher's, and for people it does not follow.
         let presence = match card.user() {
@@ -4373,7 +4400,7 @@ impl App {
                         pinned_notes: main.arrange.categories.notes_at_top(),
                         call_services: &self.settings.call_services,
                         room_pictures: self.settings.room_pictures,
-                        member_menu: main.member_menu.as_ref(),
+                        member_menu: Popup::member_menu(main.popup.as_ref()),
                         space_rooms: &main.space_rooms,
                     });
                     layers = layers.push(panel(card, Message::Info(info::Message::Close), true));
@@ -4427,7 +4454,10 @@ impl App {
             &main.arrange,
             &self.settings.room_list,
             &main.avatars,
-            main.space_menu.as_ref(),
+            match &main.popup {
+                Some(Popup::SpaceMenu(menu)) => Some(menu),
+                _ => None,
+            },
             self.updater.unseen(&self.settings.updates),
         );
         let room_list = sidebar::room_list(sidebar::RoomListView {
@@ -4477,7 +4507,7 @@ impl App {
                                 own: &main.own_user,
                                 avatars: &main.avatars,
                                 presences: &main.presences,
-                                menu: main.member_menu.as_ref(),
+                                menu: Popup::member_menu(main.popup.as_ref()),
                             },
                         )
                     ]
@@ -4507,7 +4537,7 @@ impl App {
                     previews: &main.previews,
                     frequent_emoji: &main.frequent_emoji,
                     show_members: main.show_members,
-                    member_menu: main.member_menu.as_ref(),
+                    popup: main.popup.as_ref(),
                     presences: &main.presences,
                     now: main.now,
                 };
@@ -5039,9 +5069,36 @@ fn close_menu(main: &mut Main, from: &media::Origin) {
             }
         }
         media::Origin::Room(id) => {
-            if let Some(room) = main.pane.open_mut(id) {
-                room.menu = None;
+            if main.pane.open(id).is_some() {
+                main.popup
+                    .take_if(|popup| matches!(popup, Popup::MessageMenu { .. }));
             }
+        }
+    }
+}
+
+/// A message to the emoji panel of `field` in the open room.
+fn field_emoji(main: &mut Main, field: Field, message: emoji::Message) -> Task<Message> {
+    match message {
+        emoji::Message::Close => {
+            main.popup
+                .take_if(|popup| matches!(popup, Popup::FieldEmoji(f, _) if *f == field));
+            Task::none()
+        }
+        emoji::Message::Open => {
+            main.popup = Some(Popup::FieldEmoji(field, emoji::Panel::default()));
+            Task::batch([
+                iced::widget::operation::focus(emoji::SEARCH),
+                load_frequent_emoji(&main.session),
+            ])
+        }
+        message => {
+            if let Some(Popup::FieldEmoji(f, panel)) = &mut main.popup
+                && *f == field
+            {
+                panel.update(message);
+            }
+            Task::none()
         }
     }
 }

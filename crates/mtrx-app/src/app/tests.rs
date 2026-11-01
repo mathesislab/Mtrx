@@ -816,15 +816,21 @@ async fn main_screen_with_math() {
         open.pins.update(pins::Message::Updated(entries.clone()));
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
-        // The call menu and reaction picker in one shot, the topic's editor
-        // and a reply in the other.
-        open.calls.menu = mode == Mode::Dark;
+        // The call menu in one shot (the reaction picker after it), the
+        // topic's editor and a reply in the other.
+        let mut reaction_picker = None;
+        if mode == Mode::Dark {
+            main.popup = Some(Popup::Calls(Default::default()));
+        }
         if mode == Mode::Light {
             open.topic.open = true;
             open.topic.can_edit = Some(true);
             open.topic.editor = Some(topic::Editor::new(TOPIC));
             // The hovered message's menu, from its toolbar.
-            open.menu = Some((hovered.clone(), MenuAt::Toolbar));
+            main.popup = Some(Popup::MessageMenu {
+                row: hovered.clone(),
+                at: MenuAt::Toolbar,
+            });
             // Text selected from the first message into bob's reply.
             let id_of = |start: &str| {
                 entries
@@ -879,7 +885,11 @@ async fn main_screen_with_math() {
                     _ => None,
                 })
                 .unwrap();
-            open.picker = Some((reacted, actions::PickerAt::Reactions));
+            reaction_picker = Some(Popup::Reactions {
+                row: reacted,
+                at: actions::PickerAt::Reactions,
+                all: None,
+            });
         } else {
             let carol_message = entries.iter().rev().find_map(|e| match e {
                 TimelineEntry::Event(ev) if ev.sender == carol.user_id() => Some(ev),
@@ -954,8 +964,7 @@ async fn main_screen_with_math() {
                     _ => None,
                 })
                 .unwrap();
-            open.menu = None;
-            open.readers = Some(read);
+            main.popup = Some(Popup::Readers(read));
             for (mxc, size) in main.avatars_on_screen(&Default::default()) {
                 main.avatars.load_now(&alice, &mxc, size).await;
             }
@@ -979,8 +988,11 @@ async fn main_screen_with_math() {
                     _ => None,
                 })
                 .unwrap();
-            let readers = open.readers.take();
-            open.reactors = Some(reacted);
+            let readers = main.popup.take();
+            main.popup = Some(Popup::Reactors {
+                row: reacted.0,
+                key: reacted.1,
+            });
             for (mxc, size) in main.avatars_on_screen(&Default::default()) {
                 main.avatars.load_now(&alice, &mxc, size).await;
             }
@@ -988,16 +1000,14 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
-            let open = main.pane.room_mut().unwrap();
-            open.reactors = None;
-            open.readers = readers;
+            main.popup = readers;
             // Alice's first message not sent, offered to retry or delete,
             // instead of the list of readers.
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
+            let readers = main.popup.take();
             let open = main.pane.room_mut().unwrap();
-            let readers = open.readers.take();
             let unsent = (open.entries.iter_mut())
                 .find_map(|e| match e {
                     TimelineEntry::Event(ev)
@@ -1012,14 +1022,13 @@ async fn main_screen_with_math() {
                 &mut unsent.send_state,
                 mtrx_core::SendState::Failed("event too large".into()),
             );
-            open.unsent = Some(unsent.id.clone());
+            main.popup = Some(Popup::Unsent(unsent.id.clone()));
             snapshot(&app, "unsent-light");
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
             };
+            main.popup = readers;
             let open = main.pane.room_mut().unwrap();
-            open.unsent = None;
-            open.readers = readers;
             for entry in &mut open.entries {
                 if let TimelineEntry::Event(ev) = entry
                     && matches!(ev.send_state, mtrx_core::SendState::Failed(_))
@@ -1070,7 +1079,7 @@ async fn main_screen_with_math() {
                 "{messages:?}"
             );
             if let Screen::Main(main) = &mut app.screen {
-                main.pane.room_mut().unwrap().readers = None;
+                main.popup = None;
             }
             composer_keeps_focus(&mut app);
             // The topic panel, not editing: Edit in its corner.
@@ -1083,7 +1092,15 @@ async fn main_screen_with_math() {
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
-            assert!(!main.pane.room().unwrap().calls.is_open());
+            assert!(main.popup.is_none());
+            // The reaction window, from the smiley after alice's reactions.
+            if let Screen::Main(main) = &mut app.screen {
+                main.popup = reaction_picker.take();
+            }
+            snapshot(&app, "reactions-dark");
+            if let Screen::Main(main) = &mut app.screen {
+                main.popup = None;
+            }
         }
         // ⌘F: every match highlighted, in text and typeset math, the
         // newest one current; Esc closes the bar.
@@ -1134,7 +1151,7 @@ fn composer_keeps_focus(app: &mut App) {
         main(app).pane.room_mut().unwrap()
     }
     // Nothing else open that could take the focus.
-    room(app).menu = None;
+    main(app).popup = None;
     room(app).topic.editor = None;
     room(app).typing.clear();
 
@@ -1329,10 +1346,10 @@ async fn send_later_bar() {
     open.entries = timeline.current();
     with_start(&mut open.entries);
     open.composer = text_editor::Content::with_text("Who can take the Monday slot? ❤");
-    open.later.picker = Some(send_later::Picker::new(
-        now,
-        mtrx_core::parse_send_time("tomorrow 8:00", now),
-    ));
+    main.popup = Some(Popup::SendLater(send_later::SendLater {
+        picker: send_later::Picker::new(now, mtrx_core::parse_send_time("tomorrow 8:00", now)),
+        rescheduling: None,
+    }));
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
@@ -1342,7 +1359,7 @@ async fn send_later_bar() {
     if let Screen::Main(main) = &mut app.screen
         && let Some(open) = main.pane.room_mut()
     {
-        open.later = Default::default();
+        main.popup = None;
         let sent = open
             .entries
             .iter()
@@ -1372,7 +1389,6 @@ async fn send_later_bar() {
         && let Some(open) = main.pane.room_mut()
     {
         open.editing = None;
-        open.later = Default::default();
         let message = open
             .entries
             .iter()
@@ -1381,21 +1397,16 @@ async fn send_later_bar() {
                 _ => None,
             })
             .unwrap();
-        open.picker = Some((message, actions::PickerAt::Toolbar));
-        open.emoji = Some(emoji::Panel::default());
+        main.popup = Some(Popup::Reactions {
+            row: message,
+            at: actions::PickerAt::Toolbar,
+            all: Some(emoji::Panel::default()),
+        });
         main.frequent_emoji = vec!["🦀".into(), "🧊".into()];
     }
     snapshot(&app, "emoji");
-    if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.pane.room_mut()
-    {
-        open.picker = None;
-        open.emoji = None;
-    }
-    if let Screen::Main(main) = &mut app.screen
-        && let Some(open) = main.pane.room_mut()
-    {
-        open.composer_emoji = Some(emoji::Panel::default());
+    if let Screen::Main(main) = &mut app.screen {
+        main.popup = Some(Popup::FieldEmoji(Field::Composer, emoji::Panel::default()));
     }
     snapshot(&app, "composer-emoji");
     // A click outside the panel closes it; one on an emoji inserts it.
@@ -1425,7 +1436,7 @@ async fn send_later_bar() {
     if let Screen::Main(main) = &mut app.screen
         && let Some(open) = main.pane.room_mut()
     {
-        open.composer_emoji = None;
+        main.popup = None;
         let sent = open
             .entries
             .iter()
@@ -1434,11 +1445,11 @@ async fn send_later_bar() {
                 _ => None,
             })
             .unwrap();
-        let mut edit =
+        let edit =
             actions::InlineEdit::new(actions::Editing::Sent(sent), "Reviews are due Monday 🎉");
         let mut panel = emoji::Panel::default();
         panel.update(emoji::Message::Search("ice".into()));
-        edit.emoji = Some(panel);
+        main.popup = Some(Popup::FieldEmoji(Field::Edit, panel));
         open.editing = Some(edit);
     }
     snapshot(&app, "edit-emoji");
@@ -1701,7 +1712,7 @@ async fn room_management_screens() {
 
     snapshot(
         &main_with(&|main| {
-            main.add_menu = true;
+            main.popup = Some(Popup::AddMenu);
         }),
         "menus",
     );
@@ -2309,6 +2320,7 @@ async fn room_categories() {
                 space: None,
                 rooms: &mut main.rooms.rooms,
                 grouping: mtrx_core::Grouping::default(),
+                popup: &mut main.popup,
             },
         );
     };
@@ -2485,6 +2497,7 @@ async fn show_menu() {
                 space: Some(&space),
                 rooms: &mut main.rooms.rooms,
                 grouping: mtrx_core::Grouping::default(),
+                popup: &mut main.popup,
             },
         );
     };
@@ -2517,7 +2530,7 @@ async fn show_menu() {
         unreachable!()
     };
     send(main, arrange::Message::Released);
-    assert!(main.arrange.show_menu);
+    assert!(matches!(main.popup, Some(Popup::ShowMenu)));
     let order = main.arrange.categories.layout(Some(&space)).order();
     assert_eq!(order[3..5], [Section::Rooms, Section::Category(papers)]);
     snapshot(&app, "show-menu");
@@ -2797,10 +2810,10 @@ async fn website_screenshots() {
         && let Some(open) = main.pane.room_mut()
     {
         open.composer = text_editor::Content::with_text("Results are in the shared folder 📈");
-        open.later.picker = Some(send_later::Picker::new(
-            now,
-            mtrx_core::parse_send_time("tomorrow 8:00", now),
-        ));
+        main.popup = Some(Popup::SendLater(send_later::SendLater {
+            picker: send_later::Picker::new(now, mtrx_core::parse_send_time("tomorrow 8:00", now)),
+            rescheduling: None,
+        }));
     }
     finish(&mut app, &ana).await;
     snapshot(&app, "site-send-later");
@@ -2826,7 +2839,10 @@ async fn website_screenshots() {
             dragging: false,
         });
         open.hover(math.clone(), true);
-        open.menu = Some((math, MenuAt::Toolbar));
+        main.popup = Some(Popup::MessageMenu {
+            row: math,
+            at: MenuAt::Toolbar,
+        });
     }
     finish(&mut app, &ana).await;
     snapshot(&app, "site-copy");

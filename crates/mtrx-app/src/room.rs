@@ -27,7 +27,7 @@ use mtrx_core::{
 
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, PickerAt, Target, act},
-    app::{self, Shared},
+    app::{self, Popup, Shared},
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
     clipboard::{self, Copied, Field},
@@ -54,8 +54,7 @@ use crate::{
     selectable::{self, selectable},
     selectable_image::selectable_image,
     selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
-    send_later::{self, SendLater},
-    sidebar,
+    send_later, sidebar,
     status::{self, Status},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
@@ -183,7 +182,6 @@ pub struct Room {
     pub composer: text_editor::Content,
     /// Files sent after the composer's text.
     pub attachments: Vec<Attached>,
-    pub later: SendLater,
     pub calls: RoomCalls,
     /// The topic panel, below the room header; closed when the room
     /// opens.
@@ -200,31 +198,12 @@ pub struct Room {
     pub pending_reply: Option<OwnedEventId>,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
-    /// The timeline row whose reaction window is open, and where.
-    pub picker: Option<(String, PickerAt)>,
-    /// The timeline row whose menu is open, and where.
-    pub menu: Option<(String, MenuAt)>,
-    /// The timeline row whose readers are listed.
-    pub readers: Option<String>,
-    /// The timeline row and reaction key whose people are listed.
-    pub reactors: Option<(String, String)>,
-    /// The timeline row whose message was not sent and is offered to retry
-    /// or delete.
-    pub unsent: Option<String>,
     /// Our messages being sent.
     sending: Sending,
     /// Text selected in the timeline.
     pub selection: Option<Selection>,
     /// The find bar (⌘F), while open.
     pub find: Option<Find>,
-    /// All emoji in the reaction picker, while shown.
-    pub emoji: Option<emoji::Panel>,
-    /// The composer's emoji panel, while shown.
-    pub composer_emoji: Option<emoji::Panel>,
-    /// The composer's menu, while open.
-    pub composer_menu: Option<edit_menu::Menu>,
-    /// The timeline row whose deletion awaits confirmation.
-    pub confirm_delete: Option<String>,
     /// Names of others typing.
     pub typing: Vec<String>,
     /// The members once loaded, or why loading failed: for the member list
@@ -276,18 +255,9 @@ impl Room {
             pins: pins::Pins::default(),
             compose: Compose::New,
             editing: None,
-            picker: None,
-            menu: None,
-            readers: None,
-            reactors: None,
-            unsent: None,
             sending: Sending::already(&entries),
             selection: None,
             find: None,
-            emoji: None,
-            composer_emoji: None,
-            composer_menu: None,
-            confirm_delete: None,
             typing: Vec::new(),
             member_list: None,
             loading_members: false,
@@ -302,7 +272,6 @@ impl Room {
             draft_changes: 0,
             pending_reply: None,
             attachments: Vec::new(),
-            later: SendLater::default(),
             shown: WINDOW,
             paginating: false,
             reloading: false,
@@ -339,18 +308,10 @@ impl Room {
         }
     }
 
-    /// The scheduled messages changed: one being edited or given a new time
-    /// may have been sent (it became due) or cancelled elsewhere.
+    /// The scheduled messages changed: one being edited may have been sent
+    /// (it became due) or cancelled elsewhere.
     pub fn scheduled_changed(&mut self, scheduled: &[ScheduledMessage]) {
         let gone = |id: &str| !scheduled.iter().any(|m| m.id == id);
-        if self
-            .later
-            .rescheduling
-            .as_ref()
-            .is_some_and(|m| gone(&m.id))
-        {
-            self.later = Default::default();
-        }
         let Some(edit) = &self.editing else {
             return;
         };
@@ -493,11 +454,6 @@ impl Room {
         self.shown = WINDOW;
         self.paginating = false;
         self.reloading = false;
-        self.picker = None;
-        self.readers = None;
-        self.reactors = None;
-        self.unsent = None;
-        self.confirm_delete = None;
         self.error = None;
         self.find_again();
     }
@@ -617,12 +573,14 @@ impl Room {
     }
 
     /// Pictures of the header and the rendered senders, with their sizes.
-    /// `members_shown`: with the member list's.
+    /// `members_shown`: with the member list's; `popup`: with those it
+    /// lists.
     pub fn avatars<'a>(
         &'a self,
         summary: Option<&'a RoomSummary>,
         own: &UserId,
         members_shown: bool,
+        popup: Option<&'a Popup>,
     ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
         let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
         let senders = self
@@ -632,12 +590,13 @@ impl Room {
                 TimelineEntry::Event(event) => Some(event),
                 _ => None,
             })
-            .flat_map(|event| {
+            .flat_map(move |event| {
                 let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
-                let listed = self.readers.as_deref() == Some(event.id.as_str());
-                let reactors = (self.reactors.as_ref())
-                    .filter(|(id, _)| *id == event.id)
-                    .map(|(_, key)| key.as_str());
+                let listed = matches!(popup, Some(Popup::Readers(row)) if *row == event.id);
+                let reactors = match popup {
+                    Some(Popup::Reactors { row, key }) if *row == event.id => Some(key.as_str()),
+                    _ => None,
+                };
                 sender
                     .into_iter()
                     .chain(actions::reader_avatars(event, listed))
@@ -915,6 +874,7 @@ impl Room {
             .zip(order.as_ref())
             .and_then(|(selection, order)| Some((selection.ordered(order)?, order)));
         let id = &self.id;
+        let popup = look.popup;
         let context = Context {
             room: id,
             theme: &look.theme,
@@ -927,21 +887,43 @@ impl Room {
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
             marked: self.marked.as_deref(),
-            picker: self.picker.as_ref().map(|(id, at)| (id.as_str(), *at)),
-            menu: self.menu.as_ref().map(|(id, at)| (id.as_str(), at)),
-            readers: self.readers.as_deref(),
-            reactors: (self.reactors.as_ref()).map(|(id, key)| (id.as_str(), key.as_str())),
-            unsent: self.unsent.as_deref(),
+            picker: match popup {
+                Some(Popup::Reactions { row, at, .. }) => Some((row.as_str(), *at)),
+                _ => None,
+            },
+            menu: match popup {
+                Some(Popup::MessageMenu { row, at }) => Some((row.as_str(), at)),
+                _ => None,
+            },
+            readers: match popup {
+                Some(Popup::Readers(row)) => Some(row.as_str()),
+                _ => None,
+            },
+            reactors: match popup {
+                Some(Popup::Reactors { row, key }) => Some((row.as_str(), key.as_str())),
+                _ => None,
+            },
+            unsent: match popup {
+                Some(Popup::Unsent(row)) => Some(row.as_str()),
+                _ => None,
+            },
             newest_own: self.newest_own(),
             sending: &self.sending,
             selected,
             found: self.find.as_ref(),
             focus: self.selection.as_ref().map(|s| &s.focus),
             dragging: self.selection.as_ref().is_some_and(|s| s.dragging),
-            emoji: self.emoji.as_ref(),
+            emoji: match popup {
+                Some(Popup::Reactions { all, .. }) => all.as_ref(),
+                _ => None,
+            },
             frequent_emoji: look.frequent_emoji,
-            confirm_delete: self.confirm_delete.as_deref(),
+            confirm_delete: match popup {
+                Some(Popup::ConfirmDelete(row)) => Some(row.as_str()),
+                _ => None,
+            },
             editing: self.editing.as_ref(),
+            popup,
             pinned: summary.map_or(&[], |s| &s.pinned),
             can_pin: self.pins.can_pin == Some(true),
         };
@@ -1041,13 +1023,8 @@ impl Room {
                     }),
             )
             .max_height(200);
-        let composer = edit_menu::with_menu(
-            id,
-            Field::Composer,
-            composer,
-            self.composer_menu.as_ref(),
-            selected,
-        );
+        let (field_menu, field_emoji) = in_field(popup, Field::Composer);
+        let composer = edit_menu::with_menu(id, Field::Composer, composer, field_menu, selected);
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme
@@ -1064,7 +1041,7 @@ impl Room {
             Position::Top,
         );
         let toggle = emoji::toggle(
-            self.composer_emoji.is_some(),
+            field_emoji.is_some(),
             false,
             Message::ComposerEmoji(emoji::Message::Open).to(id),
         );
@@ -1084,7 +1061,7 @@ impl Room {
                 .padding(Padding::new(8.0).right(COMPOSER_INSET)),
             );
         }
-        let panel = self.composer_emoji.as_ref().map(|panel| {
+        let panel = field_emoji.map(|panel| {
             panel.view(
                 look.frequent_emoji,
                 |emoji| Message::InsertEmoji(emoji).to(id),
@@ -1110,8 +1087,17 @@ impl Room {
             "Send (Enter)",
             Position::Top,
         );
+        // The send time picked for the composer's text, or a scheduled
+        // message's.
+        let (scheduling, rescheduling) = match popup {
+            Some(Popup::SendLater(later)) => match &later.rescheduling {
+                None => (Some(later), None),
+                Some(_) => (None, Some(later)),
+            },
+            _ => (None, None),
+        };
         // While open, a click on it closes the picker as any outside click.
-        let picking = self.later.picker.is_some() && self.later.rescheduling.is_none();
+        let picking = scheduling.is_some();
         let later = hint(
             button(icons::clock(18.0, |theme| {
                 theme
@@ -1127,11 +1113,8 @@ impl Room {
             "Send later: pick a time",
             Position::Top,
         );
-        let picker = if self.later.rescheduling.is_none() {
-            send_later::picker(id, &self.later, !composer_empty, scheduled.now)
-        } else {
-            None
-        };
+        let picker =
+            scheduling.map(|later| send_later::picker(id, later, !composer_empty, scheduled.now));
         let send = popover(
             row![send, later].spacing(4),
             picker,
@@ -1148,9 +1131,10 @@ impl Room {
             above = above.push(send_later::queue(
                 id,
                 scheduled,
-                &self.later,
+                rescheduling,
                 self.editing.as_ref(),
                 look.frequent_emoji,
+                popup,
             ));
         }
         above = above.push(actions::typing(&self.typing));
@@ -1196,7 +1180,7 @@ impl Room {
                     own: look.own_user,
                     avatars: look.avatars,
                     presences: look.presences,
-                    menu: look.member_menu,
+                    menu: app::Popup::member_menu(popup),
                 },
             ));
         }
@@ -1317,8 +1301,15 @@ impl Room {
         let header = column![
             row![
                 about,
-                self.calls
-                    .header_controls(&topic, look.call_services, can_edit),
+                self.calls.header_controls(
+                    &topic,
+                    look.call_services,
+                    can_edit,
+                    match look.popup {
+                        Some(Popup::Calls(menu)) => Some(menu),
+                        _ => None,
+                    },
+                ),
                 hint(
                     button(text("Members").size(13))
                         .padding([5, 10])
@@ -1387,8 +1378,8 @@ pub struct Look<'a> {
     pub frequent_emoji: &'a [String],
     /// The member list is shown beside the room.
     pub show_members: bool,
-    /// The member whose menu is open, and in which room.
-    pub member_menu: Option<&'a crate::members::MenuKey>,
+    /// The menu or picker open in the window.
+    pub popup: Option<&'a Popup>,
     /// People's presence, in the member list and a direct chat's header.
     pub presences: &'a Presences,
     /// For how long ago people were last active.
@@ -1435,6 +1426,8 @@ struct Context<'a, 'b> {
     confirm_delete: Option<&'b str>,
     /// The message being edited in place, if any.
     editing: Option<&'a InlineEdit>,
+    /// The menu or picker open in the window, for the message edited.
+    popup: Option<&'a Popup>,
     /// The room's pinned messages, and whether we may pin.
     pinned: &'b [OwnedEventId],
     can_pin: bool,
@@ -1635,7 +1628,7 @@ fn event_view<'a>(
         .editing
         .filter(|e| e.target == Editing::Sent(event.key.clone()));
     item = item.push(match edit {
-        Some(edit) => edit.view(context.room, context.frequent_emoji),
+        Some(edit) => edit.view(context.room, context.frequent_emoji, context.popup),
         None => body,
     });
     let message = match &event.content {
@@ -1803,6 +1796,18 @@ fn event_view<'a>(
         column![space().height(6), row].into()
     } else {
         row.into()
+    }
+}
+
+/// The menu and emoji panel open in `field`, if either is.
+pub fn in_field(
+    popup: Option<&Popup>,
+    field: Field,
+) -> (Option<&edit_menu::Menu>, Option<&emoji::Panel>) {
+    match popup {
+        Some(Popup::FieldMenu(f, menu)) if *f == field => (Some(menu), None),
+        Some(Popup::FieldEmoji(f, panel)) if *f == field => (None, Some(panel)),
+        _ => (None, None),
     }
 }
 

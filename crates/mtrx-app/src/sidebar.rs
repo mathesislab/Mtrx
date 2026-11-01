@@ -20,7 +20,7 @@ use mtrx_core::{
 };
 
 use crate::{
-    app::Message,
+    app::{Message, Popup},
     arrange::{self, Arrange, NAME_INPUT},
     avatar::{Avatars, Shape},
     context_menu::{self, context_menu},
@@ -459,8 +459,9 @@ pub struct RoomListView<'a> {
     pub scheduled: &'a [ScheduledMessage],
     /// The rooms with a draft on this device.
     pub drafts: &'a BTreeSet<OwnedRoomId>,
-    /// The "+" menu is open.
-    pub add_menu: bool,
+    /// The menu or picker open in the window, which may be one of the
+    /// list's.
+    pub popup: Option<&'a Popup>,
     /// The search text.
     pub filter: &'a str,
     pub arrange: &'a Arrange,
@@ -562,10 +563,10 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     let RoomListView {
         rooms,
         selected_space,
-        add_menu,
         filter,
         ..
     } = view;
+    let add_menu = matches!(view.popup, Some(Popup::AddMenu));
     let title = match selected_space {
         Some(id) => rooms
             .iter()
@@ -723,10 +724,10 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
             .filter(|n| matches!(&section, Section::Category(id) if n.category == *id));
         let mut block = column![match renaming {
             Some(naming) => name_input(&naming.name),
-            None => section_header(&section, collapsed, space, arrange),
+            None => section_header(&section, collapsed, space, arrange, view.category_menu()),
         }];
         if let Section::Category(id) = &section
-            && arrange.category_menu.as_ref() == Some(id)
+            && view.category_menu() == Some(id)
         {
             block = block.push(category_menu(layout, space, id, &order));
         }
@@ -736,7 +737,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
                 continue;
             }
             block = block.push(view.room_entry(room));
-            if arrange.room_menu.as_ref() == Some(&room.id) {
+            if view.room_menu() == Some(&room.id) {
                 block = block.push(room_menu(room, space, layout, &view.grouping));
             }
         }
@@ -778,7 +779,7 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
         .filter(|s| *s != Section::Invites)
         .collect();
     let expanded = sections.iter().filter(|s| !layout.is_collapsed(s)).count();
-    let open = arrange.show_menu;
+    let open = matches!(view.popup, Some(Popup::ShowMenu));
     // While open, a click on it closes the menu as any outside click.
     let toggle = button(
         container(
@@ -989,11 +990,13 @@ fn section_name<'a>(
 
 /// A section's name, which collapses and expands it, and its grip; a
 /// category's also has its menu.
+/// `menu`: the category whose menu is open.
 fn section_header<'a>(
     section: &Section,
     collapsed: bool,
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
+    menu: Option<&String>,
 ) -> Element<'a, Message> {
     // The grey of the section's name.
     let chevron = icons::chevron(12.0, !collapsed, |theme| {
@@ -1015,7 +1018,7 @@ fn section_header<'a>(
     )));
     let mut header = row![title].spacing(2).align_y(Alignment::Center);
     if let Section::Category(id) = section {
-        let open = arrange.category_menu.as_ref() == Some(id);
+        let open = menu == Some(id);
         header = header.push(with_tooltip(
             button(text("⋯").size(13).style(text::secondary))
                 .padding([0, 6])
@@ -1349,6 +1352,22 @@ impl Later {
 }
 
 impl<'a> RoomListView<'a> {
+    /// The room whose menu is open.
+    fn room_menu(&self) -> Option<&'a OwnedRoomId> {
+        match self.popup {
+            Some(Popup::RoomMenu(room)) => Some(room),
+            _ => None,
+        }
+    }
+
+    /// The category whose menu is open.
+    fn category_menu(&self) -> Option<&'a String> {
+        match self.popup {
+            Some(Popup::CategoryMenu(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// What a row ends with: a pencil for a draft (in a room not open, where
     /// it shows), a clock for scheduled messages.
     fn marks(&self, room: &RoomSummary) -> Vec<Element<'a, Message>> {
@@ -1398,7 +1417,7 @@ impl<'a> RoomListView<'a> {
             }
         };
         let selected = self.open == Some(&room.id);
-        let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
+        let menu_open = self.room_menu() == Some(&room.id);
         let font = if is_unread(room) {
             fonts::SEMIBOLD
         } else {
@@ -1466,7 +1485,7 @@ impl<'a> RoomListView<'a> {
     /// section, and has a menu on right click or its "⋯".
     fn room_entry(&self, room: &'a RoomSummary) -> Element<'a, Message> {
         let selected = self.open == Some(&room.id);
-        let menu_open = self.arrange.room_menu.as_ref() == Some(&room.id);
+        let menu_open = self.room_menu() == Some(&room.id);
         let hovered =
             matches!(&self.arrange.hovered, Some(arrange::Dragged::Room(id)) if *id == room.id);
         let font = if is_unread(room) {
@@ -2038,7 +2057,7 @@ mod tests {
             avatars,
             scheduled: &[],
             drafts: &NO_DRAFTS,
-            add_menu: false,
+            popup: None,
             filter,
             arrange,
             grouping: Grouping::default(),

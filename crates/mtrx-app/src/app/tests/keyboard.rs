@@ -806,3 +806,46 @@ async fn escape_closes_the_modal_then_the_card() {
     ui.press(Key::Named(Named::Escape), Modifiers::empty());
     assert!(ui.main().card.is_none());
 }
+
+/// One popup at a time in the whole window: one opened replaces another,
+/// Esc closes it before the card; the open room's closes as its timeline
+/// is reloaded or another pane shows, the room list's stays.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn one_popup_in_the_window() {
+    let (mut ui, _dir) = room_with("popup", &["Calving"]).await;
+    let room = ui.room().id.clone();
+    let row = row_of(ui.room(), "Calving");
+    let menu = actions::Message::OpenMenu(row.clone(), MenuAt::Toolbar);
+    ui.update(actions::act(&room, menu));
+    assert!(matches!(ui.main().popup, Some(Popup::MessageMenu { .. })));
+    ui.update(Message::AddMenu(true));
+    assert!(matches!(ui.main().popup, Some(Popup::AddMenu)));
+
+    ui.main().card = Some(info::Card::new(
+        info::Target::Room(room.clone()),
+        &[],
+        overview::Tab::Rooms,
+    ));
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(ui.main().popup.is_none());
+    assert!(ui.main().card.is_some());
+    ui.main().card = None;
+
+    let reload = |ui: &mut Ui| {
+        let (id, timeline) = (ui.room().id.clone(), ui.room().timeline.clone());
+        let reloaded = room::Message::Reloaded(Ok(Shared(timeline)));
+        let _ = ui.app.update(reloaded.to(&id));
+    };
+    ui.update(actions::act(&room, actions::Message::OpenReaders(row)));
+    reload(&mut ui);
+    assert!(ui.main().popup.is_none());
+    ui.main().popup = Some(Popup::RoomMenu(room.clone()));
+    reload(&mut ui);
+    assert!(matches!(ui.main().popup, Some(Popup::RoomMenu(_))));
+
+    ui.update(room::Message::Calls(calls::Message::OpenMenu).to(&room));
+    assert!(matches!(ui.main().popup, Some(Popup::Calls(_))));
+    ui.main().set_pane(Pane::Empty);
+    assert!(ui.main().popup.is_none());
+}

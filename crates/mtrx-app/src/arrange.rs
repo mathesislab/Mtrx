@@ -16,7 +16,7 @@ use mtrx_core::{
 
 use tracing::warn;
 
-use crate::app;
+use crate::app::{self, Popup};
 
 /// The field naming a category.
 pub const NAME_INPUT: &str = "category-name";
@@ -160,9 +160,6 @@ pub struct Arrange {
     pub drag: Option<Drag>,
     /// The section a drag would drop into.
     pub target: Option<Section>,
-    pub room_menu: Option<OwnedRoomId>,
-    pub category_menu: Option<String>,
-    pub show_menu: bool,
     pub naming: Option<Naming>,
 }
 
@@ -172,6 +169,8 @@ pub struct Context<'a> {
     pub space: Option<&'a OwnedRoomId>,
     pub rooms: &'a mut [RoomSummary],
     pub grouping: Grouping,
+    /// The window's popup, where the room list's menus open.
+    pub popup: &'a mut Option<Popup>,
 }
 
 impl Arrange {
@@ -274,24 +273,20 @@ impl Arrange {
         });
     }
 
-    /// Close what is open; false if nothing was.
+    /// Stop a drag or naming a category; false if neither went on.
     pub fn escape(&mut self) -> bool {
-        let open = self.drag.is_some()
-            || self.room_menu.is_some()
-            || self.category_menu.is_some()
-            || self.show_menu
-            || self.naming.is_some();
+        let open = self.drag.is_some() || self.naming.is_some();
         self.drag = None;
         self.target = None;
-        self.room_menu = None;
-        self.category_menu = None;
-        self.show_menu = false;
         self.naming = None;
         open
     }
 
     pub fn update(&mut self, message: Message, context: Context<'_>) -> Task<app::Message> {
         let space = context.space.cloned();
+        // A choice in a menu closes it.
+        let room_menu = |popup: &mut Popup| matches!(popup, Popup::RoomMenu(_));
+        let category_menu = |popup: &mut Popup| matches!(popup, Popup::CategoryMenu(_));
         match message {
             Message::Categories(categories) => self.categories = categories,
             Message::SpaceMembers(space, count, Ok(joined)) => {
@@ -323,12 +318,11 @@ impl Arrange {
                     drag.at = Some(at);
                     if !drag.active && start.distance(at) > DRAG_THRESHOLD {
                         drag.active = true;
-                        self.room_menu = None;
-                        self.category_menu = None;
                         // Sections are also dragged in the Show menu.
-                        if matches!(drag.item, Dragged::Room(_)) {
-                            self.show_menu = false;
-                        }
+                        let section = matches!(drag.item, Dragged::Section(_));
+                        context
+                            .popup
+                            .take_if(|popup| !(section && matches!(popup, Popup::ShowMenu)));
                     }
                 }
             }
@@ -364,25 +358,26 @@ impl Arrange {
                     }
                 });
             }
-            Message::ShowMenu(open) => {
-                self.show_menu = open;
-                self.room_menu = None;
-                self.category_menu = None;
+            Message::ShowMenu(true) => *context.popup = Some(Popup::ShowMenu),
+            Message::ShowMenu(false) => {
+                context
+                    .popup
+                    .take_if(|popup| matches!(popup, Popup::ShowMenu));
             }
-            Message::RoomMenu(room) => {
-                self.room_menu = room;
-                self.category_menu = None;
+            Message::RoomMenu(Some(room)) => *context.popup = Some(Popup::RoomMenu(room)),
+            Message::RoomMenu(None) => {
+                context.popup.take_if(room_menu);
             }
-            Message::CategoryMenu(category) => {
-                self.category_menu = category;
-                self.room_menu = None;
+            Message::CategoryMenu(Some(id)) => *context.popup = Some(Popup::CategoryMenu(id)),
+            Message::CategoryMenu(None) => {
+                context.popup.take_if(category_menu);
             }
             Message::MoveTo(room, section) => {
-                self.room_menu = None;
+                context.popup.take_if(room_menu);
                 return self.move_to(room, section, context);
             }
             Message::Tag(room, tag) => {
-                self.room_menu = None;
+                context.popup.take_if(room_menu);
                 let Some(summary) = context.rooms.iter_mut().find(|r| r.id == room) else {
                     return Task::none();
                 };
@@ -415,7 +410,7 @@ impl Arrange {
                 return Task::batch(tasks);
             }
             Message::Rename(id) => {
-                self.category_menu = None;
+                context.popup.take_if(category_menu);
                 let layout = self.categories.layout(space.as_deref());
                 let name = layout.category(&id).map(|c| c.name.clone());
                 self.naming = Some(Naming {
@@ -447,7 +442,7 @@ impl Arrange {
                 });
             }
             Message::Delete(id) => {
-                self.category_menu = None;
+                context.popup.take_if(category_menu);
                 return self.change(context.session, move |c| {
                     c.layout_mut(space.as_deref()).remove_category(&id)
                 });
@@ -458,7 +453,7 @@ impl Arrange {
                 });
             }
             Message::Sort(id, sort) => {
-                self.category_menu = None;
+                context.popup.take_if(category_menu);
                 return self.change(context.session, move |c| {
                     if let Some(category) = c.layout_mut(space.as_deref()).category_mut(&id) {
                         category.sort = sort;
@@ -503,6 +498,7 @@ impl Arrange {
             space,
             rooms,
             grouping,
+            ..
         } = context;
         let Some(summary) = rooms.iter_mut().find(|r| r.id == room) else {
             return Task::none();

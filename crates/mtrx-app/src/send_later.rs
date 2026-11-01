@@ -60,11 +60,9 @@ pub enum Message {
     Done(Result<(), String>),
 }
 
-/// Send-later state of an open room.
-#[derive(Default)]
+/// A send time being picked, in the window's popup.
 pub struct SendLater {
-    /// The time picker, while open.
-    pub picker: Option<Picker>,
+    pub picker: Picker,
     /// The scheduled message the picker picks a new time for; otherwise it
     /// schedules the composer's text.
     pub rescheduling: Option<ScheduledMessage>,
@@ -261,23 +259,28 @@ pub struct Pending<'a> {
 }
 
 /// The bar of a room's scheduled messages; the one being edited shows its
-/// editor.
+/// editor (`popup`: the window's, which may be the editor's menu or emoji),
+/// the one `rescheduling` its time picker.
 pub fn queue<'a>(
     room: &OwnedRoomId,
     pending: &Pending<'a>,
-    later: &'a SendLater,
+    rescheduling: Option<&'a SendLater>,
     editing: Option<&'a InlineEdit>,
     frequent_emoji: &[String],
+    popup: Option<&'a app::Popup>,
 ) -> Element<'a, app::Message> {
     let (messages, now) = (&pending.messages, pending.now);
     column(messages.iter().map(|message| {
         let edit = editing.filter(|e| e.target == Editing::Scheduled(message.id.clone()));
-        let item = item(room, message, edit, frequent_emoji, now);
-        let picking = later
-            .rescheduling
-            .as_ref()
-            .is_some_and(|m| m.id == message.id);
-        let picker = picking.then(|| picker(room, later, true, now)).flatten();
+        let item = item(room, message, edit, frequent_emoji, now, popup);
+        let picker = rescheduling
+            .filter(|later| {
+                later
+                    .rescheduling
+                    .as_ref()
+                    .is_some_and(|m| m.id == message.id)
+            })
+            .map(|later| picker(room, later, true, now));
         popover(item, picker, Side::Above, Edge::Right)
             .on_dismiss(self::later(room, Message::Close))
             .into()
@@ -292,6 +295,7 @@ fn item<'a>(
     edit: Option<&'a InlineEdit>,
     frequent_emoji: &[String],
     now: SystemTime,
+    popup: Option<&'a app::Popup>,
 ) -> Element<'a, app::Message> {
     let editing = edit.is_some();
     let when = describe_send_time(message.send_at, now);
@@ -325,7 +329,7 @@ fn item<'a>(
         "Change time"
     };
     let content: Element<'a, app::Message> = match edit {
-        Some(edit) => column![status.size(12), edit.view(room, frequent_emoji)]
+        Some(edit) => column![status.size(12), edit.view(room, frequent_emoji, popup)]
             .spacing(6)
             .into(),
         None => row![
@@ -391,8 +395,8 @@ pub fn picker<'a>(
     state: &'a SendLater,
     can_schedule: bool,
     now: SystemTime,
-) -> Option<Element<'a, app::Message>> {
-    let picker = state.picker.as_ref()?;
+) -> Element<'a, app::Message> {
+    let picker = &state.picker;
     let can_schedule = can_schedule || state.rescheduling.is_some();
     let local = DateTime::<Local>::from(now);
     let today = local.date_naive();
@@ -490,7 +494,7 @@ pub fn picker<'a>(
     let content = row![container(quick_picks).center_y(Length::Shrink), chosen]
         .spacing(24)
         .align_y(Alignment::Center);
-    Some(container(content).padding(12).style(style::toolbar).into())
+    container(content).padding(12).style(style::toolbar).into()
 }
 
 /// "in 5 min", "in 2 h 10 min", "in 3 days".
