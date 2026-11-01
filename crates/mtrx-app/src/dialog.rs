@@ -12,8 +12,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Contact, Grouping, NewRoom, OwnedRoomId, OwnedUserId, Permissions, RoomCategories, RoomKind,
-    RoomSummary, UserId, UserSummary,
+    Confirmation, Contact, Grouping, Member, NewRoom, OwnedRoomId, OwnedUserId, Permissions,
+    RoomCategories, RoomKind, RoomSummary, UserId, UserSummary, a_role, typed_level,
 };
 
 use crate::{
@@ -69,45 +69,14 @@ pub enum Kind {
     },
 }
 
-/// A power level to give someone, or ourselves: asked first where it
-/// can't be undone, or entered.
+/// A power level to give someone, or ourselves: one chosen, asked first
+/// as it can't be undone, or one entered.
 #[derive(Clone, Debug)]
 pub struct LevelChange {
     pub room: OwnedRoomId,
-    pub user: OwnedUserId,
-    pub name: String,
-    /// `None`: entered in the dialog.
-    pub level: Option<i64>,
-    /// The highest level we may give.
-    pub up_to: i64,
-    /// A plain member's level in the room.
-    pub default_level: i64,
-    /// Our own level, lowered.
-    pub own: bool,
-    /// Nobody else in the room has our level.
-    pub alone: bool,
-}
-
-impl LevelChange {
-    /// What `level` makes someone: "admin", "moderator", "member" or
-    /// "level 20".
-    pub fn role(&self, level: i64) -> String {
-        match level {
-            100 => "admin".into(),
-            50 => "moderator".into(),
-            l if l == self.default_level => "member".into(),
-            l => format!("level {l}"),
-        }
-    }
-
-    /// The role with its article: "an admin", "level 20".
-    fn a_role(&self, level: i64) -> String {
-        match self.role(level) {
-            role if role.starts_with("level") => role,
-            role if role.starts_with('a') => format!("an {role}"),
-            role => format!("a {role}"),
-        }
-    }
+    pub member: Member,
+    /// The level chosen and what to ask; `None`: entered in the dialog.
+    pub asked: Option<(i64, Confirmation)>,
 }
 
 #[derive(Debug, Clone)]
@@ -393,17 +362,21 @@ impl Dialog {
                 format!("{name} was {}.", if *ban { "banned" } else { "removed" }),
                 format!("Could not {} {name}", if *ban { "ban" } else { "remove" }),
             ),
-            Kind::Level(change) => {
-                let role = self.level().map(|l| change.a_role(l)).unwrap_or_default();
-                if change.own {
+            Kind::Level(LevelChange { member, .. }) => {
+                let role = self
+                    .level()
+                    .map(|l| a_role(l, member.manage.default_level))
+                    .unwrap_or_default();
+                let name = member.shown_name();
+                if member.own {
                     (
                         format!("You are {role} now."),
                         "Could not change your level".into(),
                     )
                 } else {
                     (
-                        format!("{} is {role} now.", change.name),
-                        format!("Could not change {}'s level", change.name),
+                        format!("{name} is {role} now."),
+                        format!("Could not change {name}'s level"),
                     )
                 }
             }
@@ -599,7 +572,7 @@ impl Dialog {
             ),
             Kind::Encrypt { room, .. } => Request::Encrypt(room.clone()),
             Kind::Level(change) => {
-                Request::SetLevel(change.room.clone(), change.user.clone(), self.level()?)
+                Request::SetLevel(change.room.clone(), change.member.id.clone(), self.level()?)
             }
             Kind::SignOut => Request::SignOut,
             // Not for the server: see `category_edit`.
@@ -613,35 +586,9 @@ impl Dialog {
         let Kind::Level(change) = &self.kind else {
             return None;
         };
-        change
-            .level
-            .or_else(|| self.level.trim().parse().ok())
-            .filter(|l| *l <= change.up_to)
-    }
-
-    /// What can't be undone about the change, if anything.
-    fn level_warning(&self, change: &LevelChange) -> String {
-        let Some(level) = self.level() else {
-            return String::new();
-        };
-        if change.own {
-            let mut warning =
-                "You can't undo this: only someone with a higher level can raise you again."
-                    .to_owned();
-            if change.alone {
-                warning.push_str(" Nobody else here has your level, so nobody will be able to do all you can now.");
-            }
-            warning
-        } else if level < change.up_to {
-            String::new()
-        } else if level == 100 {
-            "Admins can do everything you can, including changing the room and its people. \
-             You can't take it back: an admin can't demote another admin."
-                .into()
-        } else {
-            "They'll have the same level as you. You can't take it back: nobody can lower \
-             someone with their own level."
-                .into()
+        match &change.asked {
+            Some((level, _)) => Some(*level),
+            None => typed_level(&self.level, change.member.manage.up_to?),
         }
     }
 
@@ -694,16 +641,13 @@ impl Dialog {
                 name, ban: false, ..
             } => (format!("Remove {name}?"), "Remove"),
             Kind::RemoveMember { name, .. } => (format!("Ban {name}?"), "Ban"),
-            Kind::Level(change) => match change.level {
-                Some(level) if change.own => {
-                    (format!("Step down to {}?", change.role(level)), "Step down")
-                }
-                Some(level) => (
-                    format!("Make {} {}?", change.name, change.a_role(level)),
-                    "Change",
+            Kind::Level(change) => match &change.asked {
+                Some((_, asked)) => (asked.title.clone(), asked.button.as_str()),
+                None if change.member.own => ("Your power level".into(), "Set"),
+                None => (
+                    format!("Power level for {}", change.member.shown_name()),
+                    "Set",
                 ),
-                None if change.own => ("Your power level".into(), "Set"),
-                None => (format!("Power level for {}", change.name), "Set"),
             },
             Kind::SignOut => ("Sign out?".into(), "Sign out"),
             Kind::Category { category: None, .. } => ("New category".into(), "Create"),
@@ -765,7 +709,8 @@ impl Dialog {
                     Message::Reason,
                 )),
             Kind::Level(change) => {
-                if change.level.is_none() {
+                let manage = &change.member.manage;
+                if change.asked.is_none() {
                     body = body.push(
                         column![
                             text_input("Level", &self.level)
@@ -775,11 +720,10 @@ impl Dialog {
                                 .style(style::input),
                             text(format!(
                                 "Admin 100 · Moderator 50 · Member {}{}",
-                                change.default_level,
-                                if change.up_to < 100 {
-                                    format!(" · at most {}", change.up_to)
-                                } else {
-                                    String::new()
+                                manage.default_level,
+                                match manage.up_to {
+                                    Some(up_to) if up_to < 100 => format!(" · at most {up_to}"),
+                                    _ => String::new(),
                                 }
                             ))
                             .size(12)
@@ -788,7 +732,13 @@ impl Dialog {
                         .spacing(6),
                     );
                 }
-                body.push(text(self.level_warning(change)).size(13))
+                // What can't be undone about it, if anything.
+                let warning = self
+                    .level()
+                    .and_then(|level| change.member.confirmation(level))
+                    .map(|asked| asked.message)
+                    .unwrap_or_default();
+                body.push(text(warning).size(13))
             }
             Kind::SignOut => body.push(
                 text(
@@ -815,7 +765,7 @@ impl Dialog {
                 | Kind::Encrypt { .. }
                 | Kind::SignOut
                 | Kind::RemoveMember { .. }
-                | Kind::Level(LevelChange { level: Some(_), .. })
+                | Kind::Level(LevelChange { asked: Some(_), .. })
         ) {
             body = body.push(
                 row![

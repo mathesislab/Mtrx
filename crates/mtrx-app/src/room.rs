@@ -1177,7 +1177,6 @@ impl Room {
                 name,
                 members::Shown {
                     room: &self.id,
-                    own: look.own_user,
                     avatars: look.avatars,
                     presences: look.presences,
                     menu: app::Popup::member_menu(popup),
