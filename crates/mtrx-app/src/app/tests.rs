@@ -133,7 +133,6 @@ fn app(screen: Screen, mode: Mode) -> App {
         placement: Placement::default(),
         placement_file: None,
         resizing: false,
-        settings_panel: None,
         screen,
         system_mode: mode,
         window: Size::new(1200.0, 800.0),
@@ -1177,9 +1176,9 @@ fn composer_keeps_focus(app: &mut App) {
         }),
         ("it goes", |app| main(app).error = None),
         ("settings open", |app| {
-            app.settings_panel = Some(settings::Panel::default());
+            main(app).modal = Some(Modal::Settings(settings::Panel::default()));
         }),
-        ("settings close", |app| app.settings_panel = None),
+        ("settings close", |app| main(app).modal = None),
         ("a message is queued", |app| {
             let room_id = room(app).id.clone();
             main(app).scheduled = vec![ScheduledMessage {
@@ -1500,7 +1499,9 @@ async fn send_later_bar() {
         &mut app.settings,
         settings::Message::AccessLoaded(room.clone(), Some(Permissions::Moderators), Some(true)),
     );
-    app.settings_panel = Some(panel);
+    if let Screen::Main(main) = &mut app.screen {
+        main.modal = Some(Modal::Settings(panel));
+    }
     // A newer version, also the dot on the gear behind the panel.
     app.updater.available = Some(update::Update {
         version: semver::Version::new(0, 4, 0),
@@ -1748,7 +1749,7 @@ async fn room_management_screens() {
                 avatar: None,
             }));
             dialog.update(dialog::Message::CoOwner(nils, true));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "new-room-owners",
     );
@@ -1760,7 +1761,7 @@ async fn room_management_screens() {
             dialog.update(dialog::Message::Name("model runs".into()));
             dialog.update(dialog::Message::Submit);
             dialog.tick(Instant::now() + Duration::from_secs(20));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "dialog-slow",
     );
@@ -1821,7 +1822,7 @@ async fn room_management_screens() {
                 Ok(bob_info.clone()),
             ));
             card.update(info::Message::Copy(bob.user_id().to_string()));
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "info-user",
     );
@@ -1839,7 +1840,7 @@ async fn room_management_screens() {
             ));
             // A link being added.
             card.update(info::Message::Topic(topic::Edit::Add(false)));
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "room-settings",
     );
@@ -1850,7 +1851,7 @@ async fn room_management_screens() {
             });
             dialog.prefer_spaces(vec![space.clone()]);
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "new-room-people",
     );
@@ -1859,7 +1860,7 @@ async fn room_management_screens() {
             let mut dialog = Dialog::new(dialog::Kind::DirectChat);
             dialog.offer_self(main.own_user.clone());
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.dialog = Some(dialog);
+            main.modal = Some(Modal::Dialog(dialog));
         }),
         "direct-chat-people",
     );
@@ -1900,7 +1901,7 @@ async fn room_management_screens() {
                 Ok(space_settings.clone()),
             ));
             main.space_rooms.loaded(space.clone(), Ok(children.clone()));
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "space-overview",
     );
@@ -1932,7 +1933,7 @@ async fn room_management_screens() {
             );
             main.space_rooms.loaded(space.clone(), Ok(children.clone()));
             main.space_rooms.start(&space, true);
-            main.info = Some(card);
+            main.card = Some(card);
         }),
         "space-overview-updating",
     );
@@ -1952,7 +1953,7 @@ async fn room_management_screens() {
                     next: None,
                 }),
             ));
-            main.join = Some(join);
+            main.modal = Some(Modal::Join(join));
         }),
         "join",
     );
@@ -2160,7 +2161,7 @@ async fn media_messages() {
     let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
-    let main_with = async |viewer: Option<Viewer>, pdf: Option<pdf_viewer::Viewer>| {
+    let main_with = async |modal: Option<Modal>| {
         let mut main = Main::new(session.clone());
         main.rooms = rooms.clone();
         main.verified = Some(true);
@@ -2172,12 +2173,11 @@ async fn media_messages() {
             main.previews.load_now(&session, media).await;
         }
         main.pane = Pane::Open(open);
-        main.viewer = viewer;
-        main.pdf = pdf;
+        main.modal = modal;
         Box::new(main)
     };
     for (mode, name) in [(Mode::Light, "media-light"), (Mode::Dark, "media-dark")] {
-        snapshot(&app(Screen::Main(main_with(None, None).await), mode), name);
+        snapshot(&app(Screen::Main(main_with(None).await), mode), name);
     }
     // Files attached to a message being written sit in the composer.
     let files = dir.path().join("attach");
@@ -2189,7 +2189,7 @@ async fn media_messages() {
     )
     .unwrap();
     std::fs::write(&paths[1], crate::pdf::sample()).unwrap();
-    let mut main = main_with(None, None).await;
+    let mut main = main_with(None).await;
     let open = main.pane.room_mut().unwrap();
     open.attachments = crate::media::read_attached(paths)
         .await
@@ -2205,7 +2205,7 @@ async fn media_messages() {
     viewer.load_now(&session).await;
     snapshot(
         &app(
-            Screen::Main(main_with(Some(viewer), None).await),
+            Screen::Main(main_with(Some(Modal::Image(viewer))).await),
             Mode::Light,
         ),
         "image-viewer",
@@ -2214,7 +2214,7 @@ async fn media_messages() {
     viewer.open_now(&session).await;
     snapshot(
         &app(
-            Screen::Main(main_with(None, Some(viewer)).await),
+            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
             Mode::Light,
         ),
         "pdf-viewer",
@@ -2224,7 +2224,7 @@ async fn media_messages() {
     viewer.open_now(&session).await;
     snapshot(
         &app(
-            Screen::Main(main_with(None, Some(viewer)).await),
+            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
             Mode::Dark,
         ),
         "pdf-viewer-zoomed-out",

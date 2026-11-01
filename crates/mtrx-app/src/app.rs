@@ -265,8 +265,6 @@ pub struct App {
     placement_file: Option<PathBuf>,
     /// The room list's edge is being dragged.
     resizing: bool,
-    /// The settings panel, while open.
-    settings_panel: Option<settings::Panel>,
     screen: Screen,
     /// Light or dark as iced reports the system (on macOS, the app's
     /// appearance, see [`crate::appearance`]).
@@ -310,9 +308,8 @@ struct Main {
     now: SystemTime,
     error: Option<String>,
     avatars: Avatars,
-    dialog: Option<Dialog>,
-    /// The dialog for joining a space or room from elsewhere.
-    join: Option<join::Join>,
+    /// The panel over the window, above the card.
+    modal: Option<Modal>,
     /// A space just joined, whose overview shows once it is in the room
     /// list.
     joined_space: Option<OwnedRoomId>,
@@ -336,14 +333,10 @@ struct Main {
     filter: String,
     own_user: OwnedUserId,
     previews: Previews,
-    /// An image shown large.
-    viewer: Option<Viewer>,
-    /// A PDF shown over the window.
-    pdf: Option<pdf_viewer::Viewer>,
     /// Categories, tags and dragging in the room list.
     arrange: Arrange,
-    /// The info card shown.
-    info: Option<info::Card>,
+    /// The info card shown: a panel to come back to, below a modal.
+    card: Option<info::Card>,
     /// People the user knows, closest first; refreshed when a dialog
     /// picking people opens.
     contacts: Vec<Contact>,
@@ -413,6 +406,21 @@ impl Pane {
     }
 }
 
+/// What shows over the whole window, above the card: one at a time, the
+/// one opened last replacing any other.
+// One, in the boxed [`Main`].
+#[allow(clippy::large_enum_variant)]
+enum Modal {
+    Settings(settings::Panel),
+    Dialog(Dialog),
+    /// Joining a space or room from elsewhere.
+    Join(join::Join),
+    /// An image shown large.
+    Image(Viewer),
+    /// A PDF shown large.
+    Pdf(pdf_viewer::Viewer),
+}
+
 /// The room list's width limits, and its draggable edge's.
 const MIN_ROOM_LIST_WIDTH: f32 = 200.0;
 const MAX_ROOM_LIST_WIDTH: f32 = 520.0;
@@ -448,7 +456,7 @@ impl Main {
             drafts: BTreeSet::new(),
             own_user: session.user_id(),
             arrange: Arrange::new(&session),
-            info: None,
+            card: None,
             contacts: Vec::new(),
             frequent_emoji: Vec::new(),
             connection: session.connection(),
@@ -461,8 +469,7 @@ impl Main {
             session,
             error: None,
             avatars: Avatars::new(),
-            dialog: None,
-            join: None,
+            modal: None,
             joined_space: None,
             background: None,
             add_menu: false,
@@ -474,8 +481,6 @@ impl Main {
             notice: None,
             filter: String::new(),
             previews: Previews::new(),
-            viewer: None,
-            pdf: None,
         }
     }
 }
@@ -486,12 +491,12 @@ impl Main {
     fn avatars_on_screen(&self, settings: &Settings) -> Vec<(OwnedMxcUri, f32)> {
         let rooms = &self.rooms.rooms;
         let mut wanted = sidebar::avatars(&self.room_list_view(settings));
-        wanted.extend(self.info.as_ref().and_then(|c| c.avatar(rooms)));
-        if let Some(overview) = self.info.as_ref().and_then(|c| c.overview.as_ref()) {
+        wanted.extend(self.card.as_ref().and_then(|c| c.avatar(rooms)));
+        if let Some(overview) = self.card.as_ref().and_then(|c| c.overview.as_ref()) {
             wanted.extend(overview.avatars());
             wanted.extend(self.space_rooms.avatars());
         }
-        if let Some(join) = &self.join {
+        if let Some(Modal::Join(join)) = &self.modal {
             wanted.extend(join.avatars());
         }
         if let Some(room) = self.pane.room() {
@@ -689,7 +694,6 @@ impl App {
                 .map_or(placement::DEFAULT_SIZE, |frame| frame.size()),
             placement,
             resizing: false,
-            settings_panel: None,
             screen: Screen::Starting,
             system_mode: Mode::Light,
             scale: 1.0,
@@ -1062,7 +1066,7 @@ impl App {
                     return Task::none();
                 };
                 main.space = space;
-                main.info = None;
+                main.card = None;
                 main.restore = None;
                 main.arrange.escape();
                 self.load_avatars()
@@ -1095,7 +1099,7 @@ impl App {
                     return Task::none();
                 };
                 main.add_menu = false;
-                main.info = None;
+                main.card = None;
                 // Chosen now: last time's view is no longer wanted.
                 main.restore = None;
                 if main.pane.open(&id).is_some() {
@@ -1174,7 +1178,10 @@ impl App {
                 }
             }
             Message::ShowSettings(false) => {
-                self.settings_panel = None;
+                if let Screen::Main(main) = &mut self.screen {
+                    main.modal
+                        .take_if(|modal| matches!(modal, Modal::Settings(_)));
+                }
                 Task::none()
             }
             Message::ShowSettings(true) => self.open_settings(),
@@ -1216,7 +1223,6 @@ impl App {
                 Task::none()
             }
             Message::OpenDialog(kind) => {
-                self.settings_panel = None;
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1228,14 +1234,14 @@ impl App {
                 let mut dialog = Dialog::new(kind);
                 dialog.fill_category(&main.arrange.categories);
                 if !dialog.picks_people() {
-                    main.dialog = Some(dialog);
+                    main.modal = Some(Modal::Dialog(dialog));
                     return Task::none();
                 }
                 dialog.prefer_spaces(near);
                 dialog.offer_self(main.own_user.clone());
                 let new_room = dialog.creates_room();
                 dialog.update(dialog::Message::Contacts(main.contacts.clone()));
-                main.dialog = Some(dialog);
+                main.modal = Some(Modal::Dialog(dialog));
                 let session = main.session.clone();
                 let owners = if new_room {
                     let session = session.clone();
@@ -1261,7 +1267,7 @@ impl App {
             }
             Message::ContactsLoaded(contacts) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    if let Some(dialog) = &mut main.dialog {
+                    if let Some(Modal::Dialog(dialog)) = &mut main.modal {
                         dialog.update(dialog::Message::Contacts(contacts.clone()));
                     }
                     main.contacts = contacts;
@@ -1274,13 +1280,13 @@ impl App {
                     return Task::none();
                 };
                 main.add_menu = false;
-                main.info = None;
+                main.card = None;
                 let session = main.session.clone();
                 let (join, action) = join::Join::new(
                     session.user_id().server_name().to_owned(),
                     &session.directory_servers().servers,
                 );
-                main.join = Some(join);
+                main.modal = Some(Modal::Join(join));
                 Task::batch([
                     self.join_action(action),
                     iced::widget::operation::focus(join::SEARCH),
@@ -1290,7 +1296,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(join) = &mut main.join else {
+                let Some(Modal::Join(join)) = &mut main.modal else {
                     return Task::none();
                 };
                 // A server whose directory answered is remembered.
@@ -1318,7 +1324,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let Some(card) = &mut main.info else {
+                let Some(card) = &mut main.card else {
                     return Task::none();
                 };
                 let session = main.session.clone();
@@ -1329,7 +1335,7 @@ impl App {
                 };
                 let task = match (&message, room) {
                     (info::Message::Close, _) => {
-                        main.info = None;
+                        main.card = None;
                         return Task::none();
                     }
                     (info::Message::Copy(text), _) => iced::clipboard::write(text.clone()),
@@ -1663,93 +1669,97 @@ impl App {
                 }
             }
             Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
-            // Closes the topmost thing: the settings, a dialog, the image
-            // viewer's menu, the viewer, a card, a drag, menu or category
-            // name, else the search.
+            // Closes the topmost thing: the modal (the image viewer's menu
+            // first), the card, a drag, menu or category name, else the
+            // search.
             Message::Escape => {
-                if self.settings_panel.is_some() {
-                    self.settings_panel = None;
+                let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
-                }
-                if let Screen::Main(main) = &self.screen {
-                    if main.dialog.is_some() {
+                };
+                match (&mut main.modal, &main.card) {
+                    (Some(Modal::Dialog(_)), _) => {
                         return Task::done(Message::Dialog(dialog::Message::Cancel));
                     }
-                    if main.join.is_some() {
+                    (Some(Modal::Join(_)), _) => {
                         return Task::done(Message::Join(join::Message::Close));
                     }
-                }
-                if let Screen::Main(main) = &mut self.screen {
-                    if let Some(viewer) = main.viewer.as_mut().filter(|v| v.menu) {
-                        viewer.menu = false;
-                    } else if main.viewer.is_some() || main.pdf.is_some() {
-                        main.viewer = None;
-                        main.pdf = None;
-                    } else if main.info.is_some() {
-                        main.info = None;
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.calls.is_open()) {
-                        room.calls.close();
-                    } else if let Some(room) = main
-                        .pane
-                        .room_mut()
-                        .filter(|r| !r.candidates(&main.own_user).is_empty())
-                    {
-                        room.completion = None;
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.menu.is_some()) {
-                        room.menu = None;
-                    } else if let Some(room) =
-                        main.pane.room_mut().filter(|r| r.composer_menu.is_some())
-                    {
-                        room.composer_menu = None;
-                    } else if let Some(edit) = main
-                        .pane
-                        .room_mut()
-                        .and_then(|r| r.editing.as_mut())
-                        .filter(|e| e.menu.is_some())
-                    {
-                        edit.menu = None;
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.readers.is_some())
-                    {
-                        room.readers = None;
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.reactors.is_some())
-                    {
-                        room.reactors = None;
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.unsent.is_some()) {
-                        room.unsent = None;
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.find.is_some()) {
-                        room.find = None;
-                    } else if let Some(room) =
-                        main.pane.room_mut().filter(|r| r.selection.is_some())
-                    {
-                        room.selection = None;
-                    } else if let Some(room) =
-                        main.pane.room_mut().filter(|r| r.composer_emoji.is_some())
-                    {
-                        room.composer_emoji = None;
-                    } else if main.pane.room().is_some_and(|r| r.compose.cancellable()) {
-                        // From the composer its own Esc does it first.
-                        return Task::done(Message::Shown(room::Message::Act(
-                            actions::Message::CancelCompose,
-                        )));
-                    } else if let Some(edit) = main
-                        .pane
-                        .room_mut()
-                        .and_then(|r| r.editing.as_mut())
-                        .filter(|e| e.emoji.is_some())
-                    {
-                        edit.emoji = None;
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.editing.is_some())
-                    {
-                        room.editing = None;
-                    } else if let Some(room) =
-                        main.pane.room_mut().filter(|r| r.later.picker.is_some())
-                    {
-                        room.later = Default::default();
-                    } else if let Some(room) = main.pane.room_mut().filter(|r| r.picker.is_some()) {
-                        room.picker = None;
-                        room.emoji = None;
-                    } else if !main.arrange.escape() {
-                        main.filter.clear();
+                    (Some(Modal::Image(viewer)), _) if viewer.menu => viewer.menu = false,
+                    (Some(_), _) => main.modal = None,
+                    (None, Some(_)) => main.card = None,
+                    (None, None) => {
+                        if let Some(room) = main.pane.room_mut().filter(|r| r.calls.is_open()) {
+                            room.calls.close();
+                        } else if let Some(room) = main
+                            .pane
+                            .room_mut()
+                            .filter(|r| !r.candidates(&main.own_user).is_empty())
+                        {
+                            room.completion = None;
+                        } else if let Some(room) = main.pane.room_mut().filter(|r| r.menu.is_some())
+                        {
+                            room.menu = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.composer_menu.is_some())
+                        {
+                            room.composer_menu = None;
+                        } else if let Some(edit) = main
+                            .pane
+                            .room_mut()
+                            .and_then(|r| r.editing.as_mut())
+                            .filter(|e| e.menu.is_some())
+                        {
+                            edit.menu = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.readers.is_some())
+                        {
+                            room.readers = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.reactors.is_some())
+                        {
+                            room.reactors = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.unsent.is_some())
+                        {
+                            room.unsent = None;
+                        } else if let Some(room) = main.pane.room_mut().filter(|r| r.find.is_some())
+                        {
+                            room.find = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.selection.is_some())
+                        {
+                            room.selection = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.composer_emoji.is_some())
+                        {
+                            room.composer_emoji = None;
+                        } else if main.pane.room().is_some_and(|r| r.compose.cancellable()) {
+                            // From the composer its own Esc does it first.
+                            return Task::done(Message::Shown(room::Message::Act(
+                                actions::Message::CancelCompose,
+                            )));
+                        } else if let Some(edit) = main
+                            .pane
+                            .room_mut()
+                            .and_then(|r| r.editing.as_mut())
+                            .filter(|e| e.emoji.is_some())
+                        {
+                            edit.emoji = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.editing.is_some())
+                        {
+                            room.editing = None;
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.later.picker.is_some())
+                        {
+                            room.later = Default::default();
+                        } else if let Some(room) =
+                            main.pane.room_mut().filter(|r| r.picker.is_some())
+                        {
+                            room.picker = None;
+                            room.emoji = None;
+                        } else if !main.arrange.escape() {
+                            main.filter.clear();
+                        }
                     }
                 }
                 Task::none()
@@ -1758,14 +1768,12 @@ impl App {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                let submit = if self.settings_panel.is_some() {
-                    None
-                } else if main.dialog.is_some() {
-                    Some(Message::Dialog(dialog::Message::Submit))
-                } else {
-                    main.info
+                let submit = match (&main.modal, &main.card) {
+                    (Some(Modal::Dialog(_)), _) => Some(Message::Dialog(dialog::Message::Submit)),
+                    (Some(_), _) => None,
+                    (None, card) => card
                         .as_ref()
-                        .and_then(|card| card.submit(&main.rooms.rooms))
+                        .and_then(|card| card.submit(&main.rooms.rooms)),
                 };
                 submit.map_or_else(Task::none, Task::done)
             }
@@ -1806,7 +1814,7 @@ impl App {
                     return Task::none();
                 };
                 main.show_members = true;
-                main.info = None;
+                main.card = None;
                 match main.pane.open_mut(&id) {
                     Some(room) => {
                         if room.loading_members {
@@ -1842,7 +1850,7 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                main.info = None;
+                main.card = None;
                 let session = main.session.clone();
                 Task::perform(
                     async move { session.direct_chat(&user).await.map_err(|e| e.to_string()) },
@@ -1939,7 +1947,7 @@ impl App {
             }
             Message::Progress => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(dialog) = &mut main.dialog
+                    && let Some(Modal::Dialog(dialog)) = &mut main.modal
                 {
                     dialog.tick(Instant::now());
                 }
@@ -2095,7 +2103,7 @@ impl App {
             }
             Message::Zoom(zoom) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(pdf) = &mut main.pdf
+                    && let Some(Modal::Pdf(pdf)) = &mut main.modal
                 {
                     return pdf.update(pdf_viewer::Message::Zoom(match zoom {
                         Zoom::In => pdf_viewer::Zoom::In,
@@ -2129,12 +2137,12 @@ impl App {
                 };
                 let viewer = Viewer::new(media);
                 let load = viewer.load(main.session.clone());
-                main.viewer = Some(viewer);
+                main.modal = Some(Modal::Image(viewer));
                 load
             }
             Message::ViewerMenu(open) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(viewer) = &mut main.viewer
+                    && let Some(Modal::Image(viewer)) = &mut main.modal
                 {
                     viewer.menu = open;
                 }
@@ -2142,8 +2150,8 @@ impl App {
             }
             Message::CloseImage => {
                 if let Screen::Main(main) = &mut self.screen {
-                    main.viewer = None;
-                    main.pdf = None;
+                    main.modal
+                        .take_if(|modal| matches!(modal, Modal::Image(_) | Modal::Pdf(_)));
                 }
                 Task::none()
             }
@@ -2153,14 +2161,14 @@ impl App {
                     return Task::none();
                 };
                 let open = viewer.open(main.session.clone());
-                main.pdf = Some(viewer);
+                main.modal = Some(Modal::Pdf(viewer));
                 open
             }
             Message::Pdf(message) => match &mut self.screen {
-                Screen::Main(main) => main
-                    .pdf
-                    .as_mut()
-                    .map_or_else(Task::none, |viewer| viewer.update(message)),
+                Screen::Main(main) => match &mut main.modal {
+                    Some(Modal::Pdf(viewer)) => viewer.update(message),
+                    _ => Task::none(),
+                },
                 _ => Task::none(),
             },
             Message::SaveMedia(file, from) => {
@@ -2188,10 +2196,10 @@ impl App {
                 };
                 // Shown where it was asked from, else as a notice.
                 let error = match &from {
-                    media::Origin::Viewer => match (&mut main.viewer, &mut main.pdf) {
-                        (Some(viewer), _) => Some(&mut viewer.error),
-                        (None, Some(pdf)) => Some(&mut pdf.error),
-                        (None, None) => None,
+                    media::Origin::Viewer => match &mut main.modal {
+                        Some(Modal::Image(viewer)) => Some(&mut viewer.error),
+                        Some(Modal::Pdf(pdf)) => Some(&mut pdf.error),
+                        _ => None,
                     },
                     media::Origin::Room(id) => main.pane.open_mut(id).map(|room| &mut room.error),
                 };
@@ -2209,7 +2217,7 @@ impl App {
             }
             Message::ImageLoaded(media, result) => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(viewer) = &mut main.viewer
+                    && let Some(Modal::Image(viewer)) = &mut main.modal
                 {
                     viewer.loaded(&media, result);
                 }
@@ -2842,7 +2850,7 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(dialog) = &mut main.dialog else {
+        let Some(Modal::Dialog(dialog)) = &mut main.modal else {
             // The dialog was closed while its request ran.
             if let dialog::Message::Done(result) = message {
                 let (done, failed) = main.background.take().unwrap_or_default();
@@ -2868,12 +2876,12 @@ impl App {
         match dialog.update(message) {
             dialog::Action::None => Task::none(),
             dialog::Action::Close => {
-                main.dialog = None;
+                main.modal = None;
                 Task::none()
             }
             dialog::Action::Background => {
                 main.background = Some(dialog.outcome());
-                main.dialog = None;
+                main.modal = None;
                 Task::none()
             }
             dialog::Action::Search(query) => {
@@ -2891,14 +2899,14 @@ impl App {
                 task
             }
             dialog::Action::Arrange(message) => {
-                main.dialog = None;
+                main.modal = None;
                 self.update(Message::Arrange(message))
             }
             dialog::Action::Submit(request) => Task::perform(run_request(session, request), |r| {
                 Message::Dialog(dialog::Message::Done(r))
             }),
             dialog::Action::Finished(opened) => {
-                main.dialog = None;
+                main.modal = None;
                 match opened {
                     dialog::Opened::Nothing => Task::none(),
                     dialog::Opened::Members(room) => self.refresh_members(&room),
@@ -2909,8 +2917,8 @@ impl App {
                         if main.pane.id() == Some(&id) {
                             main.pane = Pane::Empty;
                         }
-                        if main.info.as_ref().and_then(|c| c.room()) == Some(&id) {
-                            main.info = None;
+                        if main.card.as_ref().and_then(|c| c.room()) == Some(&id) {
+                            main.card = None;
                         }
                         if main.space.as_ref() == Some(&id) {
                             main.space = None;
@@ -2964,7 +2972,9 @@ impl App {
                 ));
             }
         }
-        self.settings_panel = Some(panel);
+        if let Screen::Main(main) = &mut self.screen {
+            main.modal = Some(Modal::Settings(panel));
+        }
         self.update_seen();
         Task::batch(tasks)
     }
@@ -2972,7 +2982,7 @@ impl App {
     /// An update shown in the open settings is seen: no dot on the gear
     /// until a newer one.
     fn update_seen(&mut self) {
-        if self.settings_panel.is_none() || !self.updater.unseen(&self.settings.updates) {
+        if self.settings_panel().is_none() || !self.updater.unseen(&self.settings.updates) {
             return;
         }
         let version = (self.updater.available.as_ref()).map(|u| u.version.to_string());
@@ -3008,14 +3018,21 @@ impl App {
             .as_ref()
             .and_then(|file| self.settings.save(file).err())
             .map(|e| e.to_string());
-        if let Some(panel) = &mut self.settings_panel {
+        if let Some(panel) = self.settings_panel() {
             panel.error = error;
         }
     }
 
     fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
         // Preferences change also from outside the panel, e.g. a card.
-        let action = match (message, &mut self.settings_panel) {
+        let panel = match &mut self.screen {
+            Screen::Main(main) => match &mut main.modal {
+                Some(Modal::Settings(panel)) => Some(panel),
+                _ => None,
+            },
+            _ => None,
+        };
+        let action = match (message, panel) {
             (settings::Message::Preference(preference), _) => {
                 settings::change(&mut self.settings, preference)
             }
@@ -3078,7 +3095,7 @@ impl App {
                 )
                 .abortable();
                 // Asked for from the panel, which shows it signing in.
-                if let Some(panel) = &mut self.settings_panel {
+                if let Some(panel) = self.settings_panel() {
                     panel.google.signing_in = Some(handle);
                 }
                 task
@@ -3315,17 +3332,23 @@ impl App {
     }
 
     /// Something shows over the main view, as [`App::view`] puts it there:
-    /// the settings, a dialog, an info card or a viewer.
+    /// a modal or the card.
     fn covered(&self) -> bool {
         let Screen::Main(main) = &self.screen else {
             return false;
         };
-        self.settings_panel.is_some()
-            || main.dialog.is_some()
-            || main.join.is_some()
-            || main.info.is_some()
-            || main.viewer.is_some()
-            || main.pdf.is_some()
+        main.modal.is_some() || main.card.is_some()
+    }
+
+    /// The settings panel, while open.
+    fn settings_panel(&mut self) -> Option<&mut settings::Panel> {
+        match &mut self.screen {
+            Screen::Main(main) => match &mut main.modal {
+                Some(Modal::Settings(panel)) => Some(panel),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Whether we may change a newly opened room's topic, and the call
@@ -3848,10 +3871,10 @@ impl App {
     fn pdf_resized(&mut self) -> Task<Message> {
         let (viewport, scale) = (self.viewport(), self.pixel_scale());
         match &mut self.screen {
-            Screen::Main(main) => main
-                .pdf
-                .as_mut()
-                .map_or_else(Task::none, |pdf| pdf.resized(viewport, scale)),
+            Screen::Main(main) => match &mut main.modal {
+                Some(Modal::Pdf(pdf)) => pdf.resized(viewport, scale),
+                _ => Task::none(),
+            },
             _ => Task::none(),
         }
     }
@@ -3942,7 +3965,7 @@ impl App {
             Some(open) if main.show_members => load_members(&main.session, open),
             _ => Task::none(),
         };
-        let overview = match main.info.as_ref().and_then(|c| c.overview.as_ref()) {
+        let overview = match main.card.as_ref().and_then(|c| c.overview.as_ref()) {
             Some(overview) if overview.space == *room => overview_task(
                 &main.session,
                 &mut main.space_rooms,
@@ -3983,14 +4006,14 @@ impl App {
         let Screen::Main(main) = &self.screen else {
             return None;
         };
-        let card = main.info.as_ref()?;
+        let card = main.card.as_ref()?;
         Some((card.room().cloned(), card.overview.as_ref().map(|o| o.tab)))
     }
 
     /// The settings again on `room`'s card, if it is open.
     fn reload_card(&self, room: &OwnedRoomId) -> Task<Message> {
         match &self.screen {
-            Screen::Main(main) if main.info.as_ref().and_then(|c| c.room()) == Some(room) => {
+            Screen::Main(main) if main.card.as_ref().and_then(|c| c.room()) == Some(room) => {
                 load_settings(&main.session, room)
             }
             _ => Task::none(),
@@ -4014,7 +4037,7 @@ impl App {
         match action {
             join::Action::None => Task::none(),
             join::Action::Close => {
-                main.join = None;
+                main.modal = None;
                 Task::none()
             }
             join::Action::Search(search) => {
@@ -4040,7 +4063,7 @@ impl App {
                     },
                 )
                 .abortable();
-                if let Some(join) = &mut main.join
+                if let Some(Modal::Join(join)) = &mut main.modal
                     && let Some(old) = join.request.replace(handle)
                 {
                     old.abort();
@@ -4061,7 +4084,7 @@ impl App {
                     },
                 )
                 .abortable();
-                if let Some(join) = &mut main.join
+                if let Some(Modal::Join(join)) = &mut main.modal
                     && let Some(old) = join.request.replace(handle)
                 {
                     old.abort();
@@ -4090,7 +4113,7 @@ impl App {
                 done(room),
             ),
             join::Action::ShowSpace(space) => {
-                main.join = None;
+                main.modal = None;
                 main.joined_space = Some(space.clone());
                 let shown = main.rooms.rooms.iter().any(|r| r.id == space);
                 let select = self.update(Message::SelectSpace(Some(space.clone())));
@@ -4147,7 +4170,7 @@ impl App {
         let overview = card.overview.as_ref().map_or(Task::none(), |o| {
             overview_task(&main.session, &mut main.space_rooms, &o.space, o.opened())
         });
-        main.info = Some(card);
+        main.card = Some(card);
         Task::batch([load, presence, overview, self.load_avatars()])
     }
 
@@ -4282,7 +4305,9 @@ impl App {
                     );
                 }
             }
-            if main.dialog.as_ref().is_some_and(Dialog::busy) {
+            if let Some(Modal::Dialog(dialog)) = &main.modal
+                && dialog.busy()
+            {
                 subscriptions.push(iced::time::every(PROGRESS_TICK).map(|_| Message::Progress));
             }
             if let Some(list) = &main.room_list {
@@ -4338,33 +4363,44 @@ impl App {
             // and closing what floats over it keeps its widgets' state.
             Screen::Main(main) => {
                 let mut layers = stack![self.main_view(main)];
-                // Panels whose content loads and changes keep their top where
-                // it is; dialogs are centred.
-                let (panel, close, anchored) = if let Some(panel) = &self.settings_panel {
-                    let spaces = mtrx_core::top_level_spaces(&main.rooms.rooms)
-                        .into_iter()
-                        .map(|s| (s.id.clone(), s.name.clone()))
-                        .collect();
-                    (
-                        panel.view(
+                if let Some(card) = &main.card {
+                    let card = card.view(info::Shown {
+                        rooms: &main.rooms.rooms,
+                        avatars: &main.avatars,
+                        own_user: &main.own_user,
+                        presences: &main.presences,
+                        now: main.now,
+                        pinned_notes: main.arrange.categories.notes_at_top(),
+                        call_services: &self.settings.call_services,
+                        room_pictures: self.settings.room_pictures,
+                        member_menu: main.member_menu.as_ref(),
+                        space_rooms: &main.space_rooms,
+                    });
+                    layers = layers.push(panel(card, Message::Info(info::Message::Close), true));
+                }
+                let modal = match &main.modal {
+                    None => return layers.into(),
+                    Some(Modal::Settings(settings)) => {
+                        let spaces = mtrx_core::top_level_spaces(&main.rooms.rooms)
+                            .into_iter()
+                            .map(|s| (s.id.clone(), s.name.clone()))
+                            .collect();
+                        let view = settings.view(
                             &self.settings,
                             spaces,
                             &main.colours,
                             &main.arrange.categories,
                             !main.presences.unavailable(),
                             &self.updater,
-                        ),
-                        Message::ShowSettings(false),
-                        true,
-                    )
-                } else if let Some(dialog) = &main.dialog {
-                    (
+                        );
+                        panel(view, Message::ShowSettings(false), true)
+                    }
+                    Some(Modal::Dialog(dialog)) => panel(
                         dialog.view(&main.rooms.rooms, &main.arrange, &self.settings.room_list),
                         Message::Dialog(dialog::Message::Cancel),
                         false,
-                    )
-                } else if let Some(join) = &main.join {
-                    (
+                    ),
+                    Some(Modal::Join(join)) => panel(
                         join.view(
                             &main.rooms.rooms,
                             &main.avatars,
@@ -4372,44 +4408,12 @@ impl App {
                         ),
                         Message::Join(join::Message::Close),
                         true,
-                    )
-                } else if let Some(card) = &main.info {
-                    (
-                        card.view(info::Shown {
-                            rooms: &main.rooms.rooms,
-                            avatars: &main.avatars,
-                            own_user: &main.own_user,
-                            presences: &main.presences,
-                            now: main.now,
-                            pinned_notes: main.arrange.categories.notes_at_top(),
-                            call_services: &self.settings.call_services,
-                            room_pictures: self.settings.room_pictures,
-                            member_menu: main.member_menu.as_ref(),
-                            space_rooms: &main.space_rooms,
-                        }),
-                        Message::Info(info::Message::Close),
-                        true,
-                    )
-                } else if let Some(viewer) = &main.viewer {
-                    // Fills the window, with its own backdrop.
-                    return layers.push(opaque(viewer.view(&main.previews))).into();
-                } else if let Some(pdf) = &main.pdf {
-                    return layers.push(opaque(pdf.view())).into();
-                } else {
-                    return layers.into();
+                    ),
+                    // Fill the window, with their own backdrop.
+                    Some(Modal::Image(viewer)) => opaque(viewer.view(&main.previews)),
+                    Some(Modal::Pdf(pdf)) => opaque(pdf.view()),
                 };
-                let placed = if anchored {
-                    container(opaque(panel))
-                        .center_x(Length::Fill)
-                        .height(Length::Fill)
-                        .align_top(Length::Fill)
-                        .padding(iced::Padding::new(24.0).top(PANEL_TOP))
-                } else {
-                    container(opaque(panel)).center(Length::Fill)
-                };
-                let backdrop = mouse_area(placed.style(style::backdrop)).on_press(close);
-                layers = layers.push(opaque(backdrop));
-                layers.into()
+                layers.push(modal).into()
             }
         }
     }
@@ -4540,6 +4544,22 @@ impl App {
         }
         layers.into()
     }
+}
+
+/// A panel over what is below, on a backdrop that closes it with `close`.
+/// Panels whose content loads and changes (`anchored`) keep their top
+/// where it is; dialogs are centred.
+fn panel<'a>(panel: Element<'a, Message>, close: Message, anchored: bool) -> Element<'a, Message> {
+    let placed = if anchored {
+        container(opaque(panel))
+            .center_x(Length::Fill)
+            .height(Length::Fill)
+            .align_top(Length::Fill)
+            .padding(iced::Padding::new(24.0).top(PANEL_TOP))
+    } else {
+        container(opaque(panel)).center(Length::Fill)
+    };
+    opaque(mouse_area(placed.style(style::backdrop)).on_press(close))
 }
 
 fn recovery_banner(main: &Main) -> Element<'_, Message> {
@@ -5014,7 +5034,7 @@ fn copy(room: &OwnedRoomId, copied: Copied) -> Task<Message> {
 fn close_menu(main: &mut Main, from: &media::Origin) {
     match from {
         media::Origin::Viewer => {
-            if let Some(viewer) = &mut main.viewer {
+            if let Some(Modal::Image(viewer)) = &mut main.modal {
                 viewer.menu = false;
             }
         }

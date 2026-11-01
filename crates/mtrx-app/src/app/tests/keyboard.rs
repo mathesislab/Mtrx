@@ -543,7 +543,7 @@ async fn typing_with_nothing_focused_goes_to_the_composer() {
     assert_eq!(ui.room().composer.text(), "Ok");
 
     // Nothing focused, under the settings: nothing.
-    ui.app.settings_panel = Some(settings::Panel::default());
+    ui.main().modal = Some(Modal::Settings(settings::Panel::default()));
     ui.run(iced::widget::operation::focus("nothing"));
     assert_eq!(
         ui.press(Key::Character("x".into()), Modifiers::empty()),
@@ -779,4 +779,30 @@ async fn shortcuts_type_nothing_in_fields() {
         typed(&mut ui, "é", Modifiers::ALT),
         format!("[Room({open:?}, Composer(Edit(Insert('é'))))]")
     );
+}
+
+/// One panel over the window at a time, above the card: a dialog opened
+/// from the settings replaces them; Esc closes it, then the card.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn escape_closes_the_modal_then_the_card() {
+    let (mut ui, _dir) = room_with("modal", &[]).await;
+    let room = ui.room().id.clone();
+    ui.main().card = Some(info::Card::new(
+        info::Target::Room(room.clone()),
+        &[],
+        overview::Tab::Rooms,
+    ));
+    ui.main().modal = Some(Modal::Settings(settings::Panel::default()));
+    ui.update(Message::OpenDialog(dialog::Kind::Leave {
+        room,
+        name: "modal".into(),
+    }));
+    assert!(matches!(ui.main().modal, Some(Modal::Dialog(_))));
+
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(ui.main().modal.is_none());
+    assert!(ui.main().card.is_some());
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(ui.main().card.is_none());
 }
