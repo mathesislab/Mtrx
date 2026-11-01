@@ -1,7 +1,7 @@
 //! Application state, messages and top-level layout.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fmt,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -165,6 +165,8 @@ pub enum Message {
     ShowSpace(OwnedRoomId, overview::Tab),
     /// Start or open a direct chat with a member.
     ChatWith(OwnedUserId),
+    /// The direct chat started or found, or why not.
+    ChatStarted(Result<OwnedRoomId, String>),
     /// Start the Notes to self and open them.
     StartNotes,
     Notified(Notification),
@@ -316,8 +318,11 @@ struct Main {
     /// A space just joined, whose overview shows once it is in the room
     /// list.
     joined_space: Option<OwnedRoomId>,
-    /// A dialog closed while its request runs: notices for success and failure.
-    background: Option<(String, String)>,
+    /// The last dialog request made.
+    last_request: dialog::RequestId,
+    /// Dialogs closed while their requests run: notices for success and
+    /// failure.
+    background: HashMap<dialog::RequestId, (String, String)>,
     /// The rooms of our spaces, for the room search.
     space_rooms: directory::SpaceRooms,
     /// The selected space's topic panel, below its name.
@@ -543,7 +548,8 @@ impl Main {
             modal: None,
             popup: None,
             joined_space: None,
-            background: None,
+            last_request: Default::default(),
+            background: HashMap::new(),
             space_rooms: Default::default(),
             space_topic: Default::default(),
             notes_moved: false,
@@ -1882,11 +1888,15 @@ impl App {
                 let session = main.session.clone();
                 Task::perform(
                     async move { session.direct_chat(&user).await.map_err(|e| e.to_string()) },
-                    |result| match result {
-                        Ok(room) => Message::OpenRoom(room),
-                        Err(e) => Message::Dialog(dialog::Message::Done(Err(e))),
-                    },
+                    Message::ChatStarted,
                 )
+            }
+            Message::ChatStarted(Ok(room)) => self.update(Message::OpenRoom(room)),
+            Message::ChatStarted(Err(e)) => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.report(format!("Could not open the direct chat: {e}"), None);
+                }
+                Task::none()
             }
             Message::Notified(notification) => {
                 let Screen::Main(main) = &self.screen else {
@@ -2862,26 +2872,28 @@ impl App {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let Some(Modal::Dialog(dialog)) = &mut main.modal else {
-            // The dialog was closed while its request ran.
-            if let dialog::Message::Done(result) = message {
-                let (done, failed) = main.background.take().unwrap_or_default();
-                main.notice = Some(match result {
-                    Ok(opened) => Notice {
+        // The request of a dialog closed while it ran.
+        if let dialog::Message::Done(id, result) = &message
+            && let Some((done, failed)) = main.background.remove(id)
+        {
+            match result {
+                Ok(opened) => {
+                    main.notice = Some(Notice {
                         text: done,
                         room: match opened {
-                            dialog::Opened::Room(id) | dialog::Opened::Space(id) => Some(id),
+                            dialog::Opened::Room(id) | dialog::Opened::Space(id) => {
+                                Some(id.clone())
+                            }
                             _ => None,
                         },
                         error: false,
-                    },
-                    Err(e) => Notice {
-                        text: format!("{failed}: {e}"),
-                        room: None,
-                        error: true,
-                    },
-                });
+                    })
+                }
+                Err(e) => main.report(format!("{failed}: {e}"), None),
             }
+            return Task::none();
+        }
+        let Some(Modal::Dialog(dialog)) = &mut main.modal else {
             return Task::none();
         };
         let session = main.session.clone();
@@ -2891,8 +2903,8 @@ impl App {
                 main.modal = None;
                 Task::none()
             }
-            dialog::Action::Background => {
-                main.background = Some(dialog.outcome());
+            dialog::Action::Background(id) => {
+                main.background.insert(id, dialog.outcome());
                 main.modal = None;
                 Task::none()
             }
@@ -2914,9 +2926,14 @@ impl App {
                 main.modal = None;
                 self.update(Message::Arrange(message))
             }
-            dialog::Action::Submit(request) => Task::perform(run_request(session, request), |r| {
-                Message::Dialog(dialog::Message::Done(r))
-            }),
+            dialog::Action::Submit(request) => {
+                let id = main.last_request.next();
+                main.last_request = id;
+                dialog.sent(id);
+                Task::perform(run_request(session, request), move |result| {
+                    Message::Dialog(dialog::Message::Done(id, result))
+                })
+            }
             dialog::Action::Finished(opened) => {
                 main.modal = None;
                 match opened {

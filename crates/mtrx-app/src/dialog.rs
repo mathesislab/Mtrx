@@ -137,8 +137,20 @@ pub enum Message {
     CoOwner(OwnedUserId, bool),
     Submit,
     Cancel,
-    /// The request finished; on success, possibly with a room to show.
-    Done(Result<Opened, String>),
+    /// A request finished; on success, possibly with a room to show. Only
+    /// the dialog that made it takes it.
+    Done(RequestId, Result<Opened, String>),
+}
+
+/// A dialog's request, as the app numbers them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct RequestId(u64);
+
+impl RequestId {
+    /// The one after this.
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
 }
 
 /// What to show once a dialog's request succeeded.
@@ -160,8 +172,9 @@ pub enum Action {
     None,
     Close,
     /// Close, letting the running request finish in the background.
-    Background,
+    Background(RequestId),
     Search(String),
+    /// Send the request, and say so with [`Dialog::sent`].
     Submit(Request),
     Finished(Opened),
     /// Close, and change the room list's arrangement.
@@ -206,8 +219,8 @@ pub struct Dialog {
     owners_offered: bool,
     /// The running user search; replaced by each new query.
     pub search: Option<Handle>,
-    /// When the request was sent, while it runs.
-    busy: Option<Instant>,
+    /// The request running, and when it was sent.
+    busy: Option<(RequestId, Instant)>,
     /// Refreshed by the app's tick, for the elapsed time.
     now: Instant,
     error: Option<String>,
@@ -339,6 +352,12 @@ impl Dialog {
     /// A request is running.
     pub fn busy(&self) -> bool {
         self.busy.is_some()
+    }
+
+    /// Its request was sent, as `id`.
+    pub fn sent(&mut self, id: RequestId) {
+        self.busy = Some((id, Instant::now()));
+        self.error = None;
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -507,15 +526,17 @@ impl Dialog {
             }
             Message::Submit => {
                 if let Some(request) = self.request().filter(|_| !self.busy()) {
-                    self.busy = Some(Instant::now());
-                    self.error = None;
                     return Action::Submit(request);
                 }
             }
-            Message::Cancel if self.busy() => return Action::Background,
-            Message::Cancel => return Action::Close,
-            Message::Done(Ok(opened)) => return Action::Finished(opened),
-            Message::Done(Err(e)) => {
+            Message::Cancel => match self.busy {
+                Some((id, _)) => return Action::Background(id),
+                None => return Action::Close,
+            },
+            // Another dialog's.
+            Message::Done(id, _) if self.busy.map(|(running, _)| running) != Some(id) => {}
+            Message::Done(_, Ok(opened)) => return Action::Finished(opened),
+            Message::Done(_, Err(e)) => {
                 self.busy = None;
                 self.error = Some(e);
             }
@@ -778,7 +799,7 @@ impl Dialog {
                 .size(13),
             ),
         };
-        if let Some(since) = self.busy {
+        if let Some((_, since)) = self.busy {
             body = body.push(self.progress(since));
         }
         if let Some(error) = &self.error {

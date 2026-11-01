@@ -3254,6 +3254,99 @@ async fn a_room_that_failed_to_open_opens_again() {
     assert_eq!(problem(&app), None);
 }
 
+/// A dialog's request reports back to that dialog: one closed while it ran
+/// says how it went in the notice bar, not in the dialog open since.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_cancelled_request_reports_in_the_notice_bar() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("cancelled", &dir).await;
+    let mut shown = Main::new(Arc::new(alice));
+    shown.verified = Some(true);
+    let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
+    fn main(app: &mut App) -> &mut Main {
+        match &mut app.screen {
+            Screen::Main(main) => main,
+            _ => unreachable!(),
+        }
+    }
+    let leave = |name: &str| dialog::Kind::Leave {
+        room: format!("!{name}:localhost").try_into().unwrap(),
+        name: name.into(),
+    };
+
+    // Not run: the result is given below.
+    let _ = app.update(Message::OpenDialog(leave("first")));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let first = main(&mut app).last_request;
+    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    assert!(main(&mut app).modal.is_none());
+    let _ = app.update(Message::OpenDialog(leave("second")));
+    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let second = main(&mut app).last_request;
+    assert_ne!(first, second);
+
+    let failed = Err("no such room".into());
+    let _ = app.update(Message::Dialog(dialog::Message::Done(first, failed)));
+    let notice = main(&mut app).notice.take().expect("a notice");
+    assert!(notice.error);
+    assert_eq!(notice.text, "Could not leave first: no such room");
+    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+        panic!("the second dialog closed");
+    };
+    assert!(open.busy(), "still waiting for its own request");
+
+    // Its own result, which only it takes.
+    let failed = Err("not a member".into());
+    let _ = app.update(Message::Dialog(dialog::Message::Done(second, failed)));
+    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+        panic!("the second dialog closed");
+    };
+    assert!(!open.busy());
+    assert!(main(&mut app).notice.is_none());
+}
+
+/// A direct chat that could not be started says so in the notice bar,
+/// whatever dialog is open.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_chat_that_cannot_start_reports_in_the_notice_bar() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("chatwith", &dir).await;
+    // Signed out elsewhere: the server refuses to start the chat.
+    let alice = Arc::new(alice);
+    alice.logout().await.unwrap();
+    let mut main = Main::new(alice);
+    main.verified = Some(true);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
+
+    let ghost: OwnedUserId = "@ghost:localhost".try_into().unwrap();
+    let started = messages_of(app.update(Message::ChatWith(ghost))).await;
+    assert!(
+        matches!(&started[..], [Message::ChatStarted(Err(_))]),
+        "{started:?}"
+    );
+    for message in started {
+        let _ = app.update(message);
+    }
+    let Screen::Main(main) = &app.screen else {
+        unreachable!()
+    };
+    let notice = main.notice.as_ref().expect("a notice");
+    assert!(notice.error);
+    assert!(
+        notice.text.starts_with("Could not open the direct chat: "),
+        "{}",
+        notice.text
+    );
+    let Some(Modal::Dialog(open)) = &main.modal else {
+        panic!("the dialog closed");
+    };
+    assert!(!open.busy());
+    assert!(matches!(pane(&app), Pane::Empty));
+}
+
 /// A message scheduled in a room left before the server confirmed it is
 /// no longer that room's draft.
 #[tokio::test(flavor = "multi_thread")]
