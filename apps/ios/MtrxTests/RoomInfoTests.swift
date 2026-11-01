@@ -2,72 +2,6 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// Members' roles, levels and what is asked first, as on the desktop.
-final class MemberRolesTests: XCTestCase {
-    func testLabels() {
-        XCTAssertEqual(MemberRoles.label(Make.member("ann", level: nil)), "Owner")
-        XCTAssertEqual(MemberRoles.label(Make.member("ann", level: 100)), "Admin")
-        XCTAssertEqual(MemberRoles.label(Make.member("ann", level: 50)), "Mod")
-        XCTAssertEqual(MemberRoles.label(Make.member("ann", level: 20)), "Level 20")
-        XCTAssertNil(MemberRoles.label(Make.member("ann", level: 0)))
-    }
-
-    func testChoicesUpToOurLevelTheirsTicked() {
-        let member = Make.member("bob", level: 50, upTo: 50)
-        XCTAssertEqual(
-            MemberRoles.choices(for: member),
-            [
-                .init(title: "Moderator", level: 50, current: true),
-                .init(title: "Member", level: 0, current: false),
-            ])
-        let custom = Make.member("bob", level: 20, upTo: 100)
-        XCTAssertEqual(
-            MemberRoles.choices(for: custom).map(\.title), ["Level 20", "Admin", "Moderator", "Member"])
-        XCTAssertEqual(MemberRoles.choices(for: custom).first?.current, true)
-        XCTAssertEqual(MemberRoles.choices(for: Make.member("bob", level: 0)), [])
-    }
-
-    func testAsksFirstWhereItCantBeUndone() {
-        let bob = Make.member("bob", level: 0, upTo: 100)
-        XCTAssertNil(MemberRoles.confirmation(level: 50, for: bob, name: "Bob", own: false, alone: false))
-        let admin = MemberRoles.confirmation(level: 100, for: bob, name: "Bob", own: false, alone: false)
-        XCTAssertEqual(admin?.title, "Make Bob an admin?")
-        XCTAssertEqual(admin?.button, "Change")
-        XCTAssertTrue(admin?.message.contains("an admin can't demote another admin") ?? false)
-
-        let asHighAsUs = MemberRoles.confirmation(
-            level: 50, for: Make.member("bob", level: 0, upTo: 50), name: "Bob", own: false, alone: false)
-        XCTAssertEqual(asHighAsUs?.title, "Make Bob a moderator?")
-        XCTAssertTrue(asHighAsUs?.message.hasPrefix("They'll have the same level as you.") ?? false)
-    }
-
-    func testSteppingDownAsksFirst() {
-        let me = Make.member("me", level: 100, upTo: 99)
-        let down = MemberRoles.confirmation(level: 50, for: me, name: "Me", own: true, alone: false)
-        XCTAssertEqual(down?.title, "Step down to moderator?")
-        XCTAssertEqual(down?.button, "Step down")
-        XCTAssertEqual(down?.message, "You can't undo this: only someone with a higher level can raise you again.")
-        let alone = MemberRoles.confirmation(level: 0, for: me, name: "Me", own: true, alone: true)
-        XCTAssertEqual(alone?.title, "Step down to member?")
-        XCTAssertTrue(alone?.message.hasSuffix("so nobody will be able to do all you can now.") ?? false)
-    }
-
-    func testAlone() {
-        let me = Make.member("me", level: 100)
-        XCTAssertTrue(MemberRoles.alone([me, Make.member("bob", level: 50)], ours: me.userId))
-        XCTAssertFalse(MemberRoles.alone([me, Make.member("bob", level: 100)], ours: me.userId))
-        XCTAssertFalse(MemberRoles.alone([me, Make.member("ann", level: nil)], ours: me.userId))
-        // Invited people do not count.
-        XCTAssertTrue(MemberRoles.alone([me, Make.member("cy", level: 100, invited: true)], ours: me.userId))
-    }
-
-    func testCustomLevels() {
-        XCTAssertEqual(MemberRoles.level(typed: " 20 ", upTo: 50), 20)
-        XCTAssertNil(MemberRoles.level(typed: "60", upTo: 50))
-        XCTAssertNil(MemberRoles.level(typed: "lots", upTo: 50))
-    }
-}
-
 /// A room's settings: shown changed at once, read again after.
 @MainActor
 final class RoomInfoModelTests: XCTestCase {
@@ -84,7 +18,6 @@ final class RoomInfoModelTests: XCTestCase {
     func testReadsTheSettingsAndMembers() {
         XCTAssertEqual(model.settings, Make.settings())
         XCTAssertEqual(model.members?.map(\.userId), ["@me:example.org"])
-        XCTAssertTrue(model.alone)
     }
 
     func testAChangeShowsAtOnceThenAsTheServerHasIt() async {

@@ -41,7 +41,6 @@ pub type MenuKey = (OwnedRoomId, OwnedUserId, Menu);
 #[derive(Clone, Copy)]
 pub struct Shown<'a> {
     pub room: &'a OwnedRoomId,
-    pub own: &'a OwnedUserId,
     pub avatars: &'a Avatars,
     pub presences: &'a Presences,
     /// The member whose menu is open, in any room.
@@ -97,14 +96,8 @@ pub fn rows<'a>(
         Some(Err(e)) => rows = rows.push(text(e).size(12).style(text::danger)),
         Some(Ok(members)) => {
             let (joined, invited): (Vec<_>, Vec<_>) = members.iter().partition(|m| !m.invited);
-            // A creator's level is above all.
-            let level = |m: &Member| m.level.unwrap_or(i64::MAX);
-            let ours = joined.iter().find(|m| m.id == *shown.own).map(|m| level(m));
             let common = Common {
                 more: members.iter().any(|m| m.manage.remove || m.manage.ban),
-                alone: !joined
-                    .iter()
-                    .any(|m| m.id != *shown.own && Some(level(m)) >= ours),
             };
             rows = rows.push(heading(format!("Joined · {}", joined.len())));
             for member in joined {
@@ -151,8 +144,6 @@ fn heading<'a>(label: String) -> Element<'a, Message> {
 struct Common {
     /// Some row has a ⋯ menu: all keep room for it, to line up.
     more: bool,
-    /// Nobody else has our level.
-    alone: bool,
 }
 
 /// A member, with their presence and role; clicking shows who they are.
@@ -168,13 +159,18 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
         Shape::Circle,
     );
     let presence = shown.presences.get(&member.id);
-    let role = role_label(member);
+    let role = member.label();
     let line = row![
         presence::with_dot(avatar, presence, AVATAR, |theme| {
             theme.extended_palette().background.weak.color
         }),
         ellipsis(name).size(13).width(Length::Fill),
-        container(text(role.clone()).size(11).style(text::secondary)).align_right(ROLE),
+        container(
+            text(role.clone().unwrap_or_default())
+                .size(11)
+                .style(text::secondary)
+        )
+        .align_right(ROLE),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -182,7 +178,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
     let opened = |menu| shown.menu == Some(&menu_of(menu));
     // An open menu shows alone, without the row's hint.
     let menu_open = opened(Menu::Role) || opened(Menu::More);
-    let who: Element<'a, Message> = if member.id == *shown.own {
+    let who: Element<'a, Message> = if member.own {
         container(line).width(Length::Fill).padding([3, 4]).into()
     } else {
         let card = button(line)
@@ -207,19 +203,15 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
     if common.more {
         base = base.push(slot(space().into()));
     }
-    let manage = &member.manage;
-    if manage.up_to.is_none() && !manage.remove && !manage.ban {
+    if !member.manageable() {
         return base.into();
     }
+    let manage = &member.manage;
     let toggle = |menu| Message::MemberMenu((!opened(menu)).then(|| menu_of(menu)));
     let chip: Element<'a, Message> = match manage.up_to {
-        Some(up_to) => {
+        Some(_) => {
             let open = opened(Menu::Role);
-            let label = if role.is_empty() {
-                "Member".into()
-            } else {
-                role
-            };
+            let label = role.unwrap_or_else(|| "Member".into());
             popover(
                 button(
                     row![
@@ -232,16 +224,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
                 .padding([1, 6])
                 .style(style::secondary_button)
                 .on_press(toggle(Menu::Role)),
-                open.then(|| {
-                    role_menu(
-                        member,
-                        name,
-                        shown.room,
-                        up_to,
-                        member.id == *shown.own,
-                        common.alone,
-                    )
-                }),
+                open.then(|| role_menu(member, shown.room)),
                 Side::Below,
                 Edge::Right,
             )
@@ -288,67 +271,34 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
     }
 }
 
-/// "Admin", "Mod", "Level 20", or nothing for a plain member.
-fn role_label(member: &Member) -> String {
-    match member.level {
-        None => "Owner".into(),
-        Some(100) => "Admin".into(),
-        Some(50) => "Mod".into(),
-        Some(level) if level == member.manage.default_level => String::new(),
-        Some(level) => format!("Level {level}"),
-    }
-}
-
-/// The roles we may give a member (`own`: ourselves, below our level), theirs
-/// ticked, and a level of our choosing. Asks first where it can't be
-/// undone: our own, or theirs as high as ours.
-fn role_menu<'a>(
-    member: &Member,
-    name: &str,
-    room: &OwnedRoomId,
-    up_to: i64,
-    own: bool,
-    alone: bool,
-) -> Element<'a, Message> {
-    let default_level = member.manage.default_level;
-    let change = |level: Option<i64>, own: bool| LevelChange {
+/// The levels we may give a member, theirs ticked, and a level of our
+/// choosing. Asks first where it can't be undone: our own, or theirs as
+/// high as ours.
+fn role_menu<'a>(member: &Member, room: &OwnedRoomId) -> Element<'a, Message> {
+    let change = |asked| LevelChange {
         room: room.clone(),
-        user: member.id.clone(),
-        name: name.to_owned(),
-        level,
-        up_to,
-        default_level,
-        own,
-        alone,
+        member: member.clone(),
+        asked,
     };
-    let mut levels = vec![("Admin", 100), ("Moderator", 50), ("Member", default_level)];
-    levels.dedup_by_key(|(_, level)| *level);
     let mut items = column![].spacing(1);
-    if let Some(level) = member
-        .level
-        .filter(|l| levels.iter().all(|(_, at)| at != l))
-    {
-        items = items.push(role_item(format!("Level {level}"), level, true, None));
-    }
-    for (label, level) in levels {
-        let current = member.level == Some(level);
-        let on_press = (!current && level <= up_to).then(|| {
-            if own || level >= up_to {
-                Message::OpenDialog(Kind::Level(change(Some(level), own)))
-            } else {
-                Message::SetLevel(room.clone(), member.id.clone(), level)
-            }
+    for choice in member.level_choices() {
+        let on_press = (!choice.current).then(|| match choice.confirmation {
+            Some(asked) => Message::OpenDialog(Kind::Level(change(Some((choice.level, asked))))),
+            None => Message::SetLevel(room.clone(), member.id.clone(), choice.level),
         });
-        if current || on_press.is_some() {
-            items = items.push(role_item(label.into(), level, current, on_press));
-        }
+        items = items.push(role_item(
+            choice.title,
+            choice.level,
+            choice.current,
+            on_press,
+        ));
     }
     items = items.push(
         button(text("Custom level…").size(13))
             .width(Length::Fill)
             .padding([4, 10])
             .style(style::list_item(false))
-            .on_press(Message::OpenDialog(Kind::Level(change(None, own)))),
+            .on_press(Message::OpenDialog(Kind::Level(change(None)))),
     );
     container(items)
         .width(MENU_WIDTH)

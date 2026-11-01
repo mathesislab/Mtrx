@@ -198,12 +198,6 @@ final class RoomInfoModel: ObservableObject {
         await call { try await $0.leave(roomId: $1) }
     }
 
-    /// Whether nobody else joined has our level (or more): stepping down,
-    /// nobody could do all we can.
-    var alone: Bool {
-        MemberRoles.alone(members ?? [], ours: userId)
-    }
-
     // MARK: Calls
 
     /// Show `update` at once, make the change, then read the settings again

@@ -69,9 +69,12 @@ import org.mtrx.app.ui.ChoiceRow
 import org.mtrx.app.ui.ConfirmDialog
 import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.SwitchRow
+import uniffi.mtrx.LevelConfirmation
 import uniffi.mtrx.Member
 import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Topic
+import uniffi.mtrx.levelConfirmation
+import uniffi.mtrx.typedLevel
 
 /** What Room info shows of a room or space, besides its settings and members. */
 data class RoomInfoHeader(
@@ -137,7 +140,7 @@ fun RoomInfoContent(
             } else {
                 settingsSection(header, settings, members?.count { !it.invited }, spaceNames, ownUserId, actions)
             }
-            membersSection(members, ownUserId, images, actions)
+            membersSection(members, images, actions)
         }
     }
 }
@@ -517,7 +520,7 @@ private fun AddToSpace(spaces: List<String>, spaceNames: Map<String, String>, on
 }
 
 /** The members: each with their role; tapped, the menu of what we may do to them. */
-fun LazyListScope.membersSection(members: List<Member>?, ownUserId: String, images: Images, actions: RoomInfoActions) {
+fun LazyListScope.membersSection(members: List<Member>?, images: Images, actions: RoomInfoActions) {
     item(key = "members-heading") {
         SectionHeading(if (members == null) "Members" else "Members · ${members.count { !it.invited }}")
     }
@@ -526,25 +529,27 @@ fun LazyListScope.membersSection(members: List<Member>?, ownUserId: String, imag
         return
     }
     items(members, key = { "member:" + it.userId }) { member ->
-        MemberRow(member, members, ownUserId, images, actions)
+        MemberRow(member, images, actions)
     }
 }
+
+/** A member's name: their display name, else their user ID. */
+fun memberName(member: Member): String = member.name?.takeIf { it.isNotBlank() } ?: member.userId
 
 /** A member: avatar, name and role; tapped, [MemberMenu] where we may manage them. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MemberRow(member: Member, members: List<Member>, ownUserId: String, images: Images, actions: RoomInfoActions) {
+fun MemberRow(member: Member, images: Images, actions: RoomInfoActions) {
     var menu by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf<MemberQuestion?>(null) }
     val name = memberName(member)
-    val own = member.userId == ownUserId
     org.mtrx.app.ui.CompactRow(
-        title = if (own) "$name (you)" else name,
+        title = if (member.own) "$name (you)" else name,
         subtitle = if (member.invited) "Invited" else member.userId.takeIf { member.name != null },
-        onClick = if (canManage(member)) ({ menu = true }) else null,
+        onClick = if (member.manageable) ({ menu = true }) else null,
         leading = { Avatar(name, member.avatarUrl, member.userId, images, size = 36.dp) },
         trailing = {
-            roleLabel(member)?.let {
+            member.label?.let {
                 Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
@@ -553,14 +558,13 @@ fun MemberRow(member: Member, members: List<Member>, ownUserId: String, images: 
         ModalBottomSheet(onDismissRequest = { menu = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             MemberMenu(
                 member,
-                own = own,
                 onChoose = { question ->
                     menu = false
-                    val level = (question as? MemberQuestion.Level)?.level
-                    val confirmation = level?.let {
-                        levelConfirmation(member, name, it, own, aloneAtOurLevel(members, ownUserId))
+                    if (question is MemberQuestion.Level && question.confirmation == null) {
+                        actions.setLevel(member.userId, question.level)
+                    } else {
+                        asking = question
                     }
-                    if (level != null && confirmation == null) actions.setLevel(member.userId, level) else asking = question
                 },
             )
         }
@@ -568,7 +572,7 @@ fun MemberRow(member: Member, members: List<Member>, ownUserId: String, images: 
     when (val question = asking) {
         null -> {}
         is MemberQuestion.Level -> {
-            val confirmation = levelConfirmation(member, name, question.level, own, aloneAtOurLevel(members, ownUserId))
+            val confirmation = question.confirmation
             ConfirmDialog(
                 title = confirmation?.title.orEmpty(),
                 message = confirmation?.message,
@@ -583,8 +587,6 @@ fun MemberRow(member: Member, members: List<Member>, ownUserId: String, images: 
         MemberQuestion.CustomLevel -> CustomLevelDialog(
             member,
             name,
-            own,
-            aloneAtOurLevel(members, ownUserId),
             onSet = { level ->
                 asking = null
                 actions.setLevel(member.userId, level)
@@ -605,7 +607,8 @@ fun MemberRow(member: Member, members: List<Member>, ownUserId: String, images: 
 
 /** What a member's menu asks next. */
 sealed interface MemberQuestion {
-    data class Level(val level: Long) : MemberQuestion
+    /** [level], asking [confirmation] first if it can't be undone. */
+    data class Level(val level: Long, val confirmation: LevelConfirmation?) : MemberQuestion
 
     data object CustomLevel : MemberQuestion
 
@@ -617,21 +620,22 @@ sealed interface MemberQuestion {
  * may change their level, Custom level…, Remove… and Ban….
  */
 @Composable
-fun MemberMenu(member: Member, own: Boolean, onChoose: (MemberQuestion) -> Unit) {
+fun MemberMenu(member: Member, onChoose: (MemberQuestion) -> Unit) {
     val name = memberName(member)
     Column(Modifier.padding(bottom = 16.dp)) {
         Text(
-            if (own) "$name (you)" else name,
+            if (member.own) "$name (you)" else name,
             Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
             style = MaterialTheme.typography.titleMedium,
         )
-        val choices = levelChoices(member)
+        val choices = member.choices
         for (choice in choices) {
             MenuLine(
-                choice.label,
+                choice.title,
+                trailing = choice.level.toString(),
                 checked = choice.current,
-                enabled = choice.enabled,
-                onClick = { onChoose(MemberQuestion.Level(choice.level)) },
+                enabled = !choice.current,
+                onClick = { onChoose(MemberQuestion.Level(choice.level, choice.confirmation)) },
             )
         }
         if (member.manage.upTo != null) MenuLine("Custom level…", onClick = { onChoose(MemberQuestion.CustomLevel) })
@@ -642,7 +646,14 @@ fun MemberMenu(member: Member, own: Boolean, onChoose: (MemberQuestion) -> Unit)
 }
 
 @Composable
-private fun MenuLine(text: String, checked: Boolean = false, enabled: Boolean = true, destructive: Boolean = false, onClick: () -> Unit) {
+private fun MenuLine(
+    text: String,
+    trailing: String? = null,
+    checked: Boolean = false,
+    enabled: Boolean = true,
+    destructive: Boolean = false,
+    onClick: () -> Unit,
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -660,19 +671,21 @@ private fun MenuLine(text: String, checked: Boolean = false, enabled: Boolean = 
                 enabled || checked -> MaterialTheme.colorScheme.onSurface
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             },
+            modifier = Modifier.weight(1f),
         )
+        trailing?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 
 /** A level of our choosing, up to what we may give; warns where it can't be undone. */
 @Composable
-private fun CustomLevelDialog(member: Member, name: String, own: Boolean, alone: Boolean, onSet: (Long) -> Unit, onDismiss: () -> Unit) {
+private fun CustomLevelDialog(member: Member, name: String, onSet: (Long) -> Unit, onDismiss: () -> Unit) {
     var text by remember { mutableStateOf(member.level?.toString().orEmpty()) }
     val upTo = member.manage.upTo ?: return
-    val level = text.trim().toLongOrNull()?.takeIf { it <= upTo }
-    val warning = level?.let { levelConfirmation(member, name, it, own, alone) }
+    val level = typedLevel(text, upTo)
+    val warning = level?.let { levelConfirmation(member, it) }
     ConfirmDialog(
-        title = if (own) "Your power level" else "Power level for $name",
+        title = if (member.own) "Your power level" else "Power level for $name",
         message = warning?.message,
         button = "Set",
         confirmEnabled = level != null && level != member.level,

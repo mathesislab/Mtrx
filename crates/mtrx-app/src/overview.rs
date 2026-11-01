@@ -431,7 +431,6 @@ impl Overview {
                 self.members.as_ref(),
                 crate::members::Shown {
                     room: &space.id,
-                    own: shown.own_user,
                     avatars: shown.avatars,
                     presences: shown.presences,
                     menu: shown.member_menu,
