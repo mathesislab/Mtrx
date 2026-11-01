@@ -10,7 +10,7 @@ use iced::{
     Alignment, Color, Element, Font, Length, Task, Theme,
     widget::{button, column, container, row, space, text, text_editor, text_input, toggler},
 };
-use mtrx_core::{CallService, LinkKind, OwnedRoomId, RoomLink, Topic, Url};
+use mtrx_core::{CallService, LinkKind, RoomLink, Topic, Url};
 
 use crate::{
     app,
@@ -138,14 +138,10 @@ impl Panel {
     /// header.
     pub fn view<'a>(
         &'a self,
-        room: &OwnedRoomId,
         topic: &Topic,
         services: &'a [CallService],
+        message: impl Fn(Message) -> app::Message + Clone + 'a,
     ) -> Element<'a, app::Message> {
-        let message = {
-            let room = room.clone();
-            move |message| app::Message::Topic(room.clone(), message)
-        };
         let mut panel = match &self.editor {
             Some(editor) => {
                 let edit = message.clone();

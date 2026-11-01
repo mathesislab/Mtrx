@@ -9,12 +9,13 @@ use iced::{
     Element,
     widget::text_editor::{Content, Cursor, Position},
 };
+use mtrx_core::OwnedRoomId;
 
 use crate::{
     app,
     clipboard::Field,
     context_menu::{self, context_menu},
-    spelling,
+    room, spelling,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,9 +129,10 @@ fn owned((label, message): (&str, Message)) -> (String, Message) {
     (label.to_owned(), message)
 }
 
-/// `editor`, which is `field`, with its menu on right-click: shown while
-/// open (`menu`), Cut and Copy with text `selected`.
+/// `editor`, which is `field` in `room`, with its menu on right-click:
+/// shown while open (`menu`), Cut and Copy with text `selected`.
 pub fn with_menu<'a>(
+    room: &OwnedRoomId,
     field: Field,
     editor: impl Into<Element<'a, app::Message>>,
     menu: Option<&Menu>,
@@ -140,12 +142,16 @@ pub fn with_menu<'a>(
         context_menu::menu(
             items(menu, selected)
                 .into_iter()
-                .map(|(label, message)| (label, app::Message::EditMenu(field, message))),
+                .map(|(label, message)| (label, room::Message::EditMenu(field, message).to(room))),
         )
     });
-    context_menu(editor, menu, app::Message::EditMenu(field, Message::Open))
-        .on_dismiss(app::Message::EditMenu(field, Message::Close))
-        .into()
+    context_menu(
+        editor,
+        menu,
+        room::Message::EditMenu(field, Message::Open).to(room),
+    )
+    .on_dismiss(room::Message::EditMenu(field, Message::Close).to(room))
+    .into()
 }
 
 /// Open the system's Emoji & Symbols window, which types what is picked
@@ -171,6 +177,15 @@ mod tests {
     use iced_test::simulator::Simulator;
 
     use super::*;
+
+    fn room() -> OwnedRoomId {
+        "!room:example.org".try_into().unwrap()
+    }
+
+    /// `action` in the composer, as the app gets it.
+    fn composer(action: text_editor::Action) -> app::Message {
+        room::Message::Composer(action).to(&room())
+    }
 
     fn labels(menu: &Menu, selected: bool) -> Vec<String> {
         items(menu, selected)
@@ -232,10 +247,10 @@ mod tests {
     fn sends(open: bool, button: mouse::Button, at: (f32, f32)) -> Vec<app::Message> {
         let content = Content::<iced::Renderer>::with_text("Melt");
         let editor = iced::widget::text_editor(&content)
-            .on_action(app::Message::Composer)
+            .on_action(composer)
             .key_binding(text_editor::Binding::from_key_press);
         let menu = open.then(Menu::default);
-        let field = with_menu(Field::Edit, editor, menu.as_ref(), true);
+        let field = with_menu(&room(), Field::Edit, editor, menu.as_ref(), true);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
@@ -247,15 +262,15 @@ mod tests {
             Event::Mouse(mouse::Event::ButtonReleased(button)),
         ]);
         ui.into_messages()
-            .filter(|message| !matches!(message, app::Message::Composer(_)))
+            .filter(|message| !matches!(message, app::Message::Room(_, room::Message::Composer(_))))
             .collect()
     }
 
     #[test]
     fn a_right_click_puts_the_caret_there_then_opens_it() {
         let content = Content::<iced::Renderer>::with_text("Melt");
-        let editor = iced::widget::text_editor(&content).on_action(app::Message::Composer);
-        let field = with_menu(Field::Composer, editor, None, false);
+        let editor = iced::widget::text_editor(&content).on_action(composer);
+        let field = with_menu(&room(), Field::Composer, editor, None, false);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
@@ -270,8 +285,8 @@ mod tests {
             matches!(
                 sent[..],
                 [
-                    app::Message::Composer(text_editor::Action::Click(_)),
-                    app::Message::EditMenu(Field::Composer, Message::Open),
+                    app::Message::Room(_, room::Message::Composer(text_editor::Action::Click(_))),
+                    app::Message::Room(_, room::Message::EditMenu(Field::Composer, Message::Open)),
                 ]
             ),
             "{sent:?}"
@@ -280,23 +295,32 @@ mod tests {
 
     #[test]
     fn right_click_opens_it_and_an_item_is_chosen() {
-        use app::Message::EditMenu as Menu;
         use mouse::Button::{Left, Right};
+        use room::Message::EditMenu as Menu;
         let sent = sends(false, Right, (20.0, 10.0));
         assert!(
-            matches!(sent[..], [Menu(Field::Edit, Message::Open)]),
+            matches!(
+                sent[..],
+                [app::Message::Room(_, Menu(Field::Edit, Message::Open))]
+            ),
             "{sent:?}"
         );
         // The third entry, Paste.
         let sent = sends(true, Left, (60.0, 4.0 + 2.5 * 26.0));
         assert!(
-            matches!(sent[..], [Menu(Field::Edit, Message::Paste)]),
+            matches!(
+                sent[..],
+                [app::Message::Room(_, Menu(Field::Edit, Message::Paste))]
+            ),
             "{sent:?}"
         );
         // A click beside it closes it.
         let sent = sends(true, Left, (380.0, 280.0));
         assert!(
-            matches!(sent[..], [Menu(Field::Edit, Message::Close)]),
+            matches!(
+                sent[..],
+                [app::Message::Room(_, Menu(Field::Edit, Message::Close))]
+            ),
             "{sent:?}"
         );
     }

@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -26,7 +27,7 @@ use mtrx_core::{
 
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, PickerAt, Target, act},
-    app::Message,
+    app::{self, Shared},
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
     clipboard::{self, Copied, Field},
@@ -91,6 +92,89 @@ pub const SENDING_CLOCK: Duration = Duration::from_millis(300);
 
 /// Left edge of message text within the timeline column.
 const TEXT_INDENT: f32 = MESSAGE_PADDING + SENDER_AVATAR + GUTTER_SPACING;
+
+/// What concerns one room: built by its views, or by the tasks it started.
+/// The app gets it for a room, [`app::Message::Room`], or for the room
+/// shown, [`app::Message::Shown`].
+#[derive(Debug, Clone)]
+pub enum Message {
+    Timeline(Vec<TimelineEntry>),
+    /// The draft kept for the room just opened.
+    DraftLoaded(Option<Draft>),
+    /// Keep the draft, if it did not change since the pause (its
+    /// [`Room::draft_changes`]) began.
+    KeepDraft(u64),
+    Scrolled(Viewport),
+    Paginated(Result<(), String>),
+    Composer(text_editor::Action),
+    /// Typed with nothing focused: goes on in the composer.
+    TypeInComposer(String),
+    Send,
+    Sent(Result<(), String>),
+    /// Our message in a timeline row started sending a while ago.
+    SendingSlow(String),
+    Later(send_later::Message),
+    Act(actions::Message),
+    /// Selecting text in the timeline.
+    Select(selection::Message),
+    /// The find bar (⌘F).
+    Find(find::Message),
+    /// Scroll the timeline by this much, while dragging a selection.
+    ScrollTimeline(f32),
+    /// Page Up and Down, ⌥↑ and ⌥↓, ⌘↑ and ⌘↓ outside a field.
+    ScrollKey(Scroll),
+    /// Names of others typing.
+    Typing(Vec<String>),
+    /// Completing a mention in the composer.
+    Mention(mention::Message),
+    /// The members, and whether we may mention everyone (`@room`).
+    MembersLoaded(Result<(Vec<Member>, bool), String>),
+    Calls(calls::Message),
+    /// The topic and links, in the topic panel.
+    Topic(topic::Message),
+    Pins(pins::Message),
+    /// The files of messages being sent, uploading now.
+    Uploads(Vec<Upload>),
+    /// Close the problem the status pill shows.
+    DismissError,
+    /// Stop loading older messages to find the one gone to.
+    StopSeeking,
+    /// The cursor entered (`true`) or left a timeline event.
+    Hover(String, bool),
+    /// Scroll to a message, e.g. the original of a reply, loading older
+    /// events until it is found.
+    GoTo(OwnedEventId),
+    /// The message gone to is no longer marked.
+    Unmark(String),
+    /// Ask for files to attach to the message being written.
+    Attach,
+    /// A file was dropped onto the window: attach it to the message being
+    /// written.
+    FileDropped(PathBuf),
+    /// Files were read to attach to the message.
+    Attached(Vec<Result<Attached, String>>),
+    /// ⌘V (or ⌥⇧⌘V) in a field: read the clipboard.
+    Paste(Field, clipboard::Paste),
+    /// What the clipboard held, to paste into a field.
+    Pasted(Field, Option<clipboard::Pasted>),
+    /// The menu of a field one writes in.
+    EditMenu(Field, edit_menu::Message),
+    /// Remove an attached file, by index.
+    Unattach(usize),
+    /// The timeline loaded anew (⌘R).
+    Reloaded(Result<Shared<RoomTimeline>, String>),
+    /// The composer's emoji panel.
+    ComposerEmoji(emoji::Message),
+    /// Put an emoji into the composer.
+    InsertEmoji(String),
+}
+
+impl Message {
+    /// This message for `room`, as the app gets it.
+    pub fn to(self, room: &OwnedRoomId) -> app::Message {
+        app::Message::Room(room.clone(), self)
+    }
+}
 
 pub struct Room {
     pub id: OwnedRoomId,
@@ -427,7 +511,7 @@ impl Room {
 
     /// Render the message with the current match of the find bar, and
     /// scroll to the match.
-    pub fn show_found(&mut self) -> Task<Message> {
+    pub fn show_found(&mut self) -> Task<app::Message> {
         let Some(event) = self
             .find
             .as_ref()
@@ -635,28 +719,33 @@ impl Room {
 
     /// Move the end of the selection to the start or end (`forward`) of its
     /// line, by the layout of the text holding it.
-    pub fn extend_to_line_edge(&self, forward: bool) -> Task<Message> {
+    pub fn extend_to_line_edge(&self, forward: bool) -> Task<app::Message> {
         let Some(focus) = self.selection.as_ref().map(|s| s.focus.clone()) else {
             return Task::none();
         };
+        let room = self.id.clone();
         selectable::line_edge(focus.pos.offset, forward).and_then(move |offset| {
-            Task::done(Message::Select(selection::Message::LineMoved(
-                focus.clone(),
-                !forward,
-                Some(offset),
-            )))
+            Task::done(
+                Message::Select(selection::Message::LineMoved(
+                    focus.clone(),
+                    !forward,
+                    Some(offset),
+                ))
+                .to(&room),
+            )
         })
     }
 
     /// Move the end of the selection to the start of the first part on
     /// screen (`up`), or the end of the last.
-    pub fn extend_to_screen_edge(&self, up: bool) -> Task<Message> {
+    pub fn extend_to_screen_edge(&self, up: bool) -> Task<app::Message> {
         if self.selection.is_none() {
             return Task::none();
         }
+        let room = self.id.clone();
         self.on_screen().and_then(move |(first, last)| {
             let part = if up { first } else { last };
-            Task::done(Message::Select(selection::Message::ExtendToPart(part, up)))
+            Task::done(Message::Select(selection::Message::ExtendToPart(part, up)).to(&room))
         })
     }
 
@@ -680,16 +769,18 @@ impl Room {
 
     /// Move the end of the selection a line up or down, by the layout of
     /// the text holding it.
-    pub fn extend_line(&self, up: bool) -> Task<Message> {
+    pub fn extend_line(&self, up: bool) -> Task<app::Message> {
         let Some(focus) = self.selection.as_ref().map(|s| s.focus.clone()) else {
             return Task::none();
         };
+        let room = self.id.clone();
         selectable::line_step(focus.pos.offset, up).map(move |moved| {
             Message::Select(selection::Message::LineMoved(
                 focus.clone(),
                 up,
                 moved.flatten(),
             ))
+            .to(&room)
         })
     }
 
@@ -813,7 +904,7 @@ impl Room {
         summary: Option<&'a RoomSummary>,
         look: &Look<'a>,
         scheduled: &send_later::Pending<'a>,
-    ) -> Element<'a, Message> {
+    ) -> Element<'a, app::Message> {
         let header = self.header(summary, look);
         let rows = rows::rows(self.visible());
         let parts = rows::parts(&rows);
@@ -823,7 +914,9 @@ impl Room {
             .as_ref()
             .zip(order.as_ref())
             .and_then(|(selection, order)| Some((selection.ordered(order)?, order)));
+        let id = &self.id;
         let context = Context {
+            room: id,
             theme: &look.theme,
             own_user: look.own_user,
             math: look.math,
@@ -873,16 +966,16 @@ impl Room {
         let timeline = scrollable(container(timeline).align_bottom(Length::Shrink))
             .id(TIMELINE)
             .anchor_bottom()
-            .on_scroll(Message::Scrolled)
+            .on_scroll(|viewport| Message::Scrolled(viewport).to(id))
             .height(Length::Fill)
             .width(Length::Fill);
         // A click beside the text clears the selection; dragging one past
         // the top or bottom scrolls.
         let dragging = self.selection.as_ref().is_some_and(|s| s.dragging);
         let timeline = drag_scroll(
-            mouse_area(timeline).on_press(Message::Select(selection::Message::Clear)),
+            mouse_area(timeline).on_press(Message::Select(selection::Message::Clear).to(id)),
             dragging,
-            Message::ScrollTimeline,
+            |dy| Message::ScrollTimeline(dy).to(id),
         );
 
         let cancellable = self.compose.cancellable();
@@ -898,9 +991,9 @@ impl Room {
             )
             .style(style::editor)
             .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
-            .on_action(Message::Composer)
+            .on_action(|action| Message::Composer(action).to(id))
             .key_binding(move |press| {
-                let custom = |message| Some(text_editor::Binding::Custom(message));
+                let custom = |message: Message| Some(text_editor::Binding::Custom(message.to(id)));
                 // The window's: going to another room.
                 if sidebar::Go::from_key(&press.key, press.physical_key, press.modifiers).is_some()
                 {
@@ -949,6 +1042,7 @@ impl Room {
             )
             .max_height(200);
         let composer = edit_menu::with_menu(
+            id,
             Field::Composer,
             composer,
             self.composer_menu.as_ref(),
@@ -965,14 +1059,14 @@ impl Room {
             }))
             .padding(4)
             .style(style::list_item(false))
-            .on_press(Message::Attach),
+            .on_press(Message::Attach.to(id)),
             "Attach files (or drop them on the window)",
             Position::Top,
         );
         let toggle = emoji::toggle(
             self.composer_emoji.is_some(),
             false,
-            Message::ComposerEmoji(emoji::Message::Open),
+            Message::ComposerEmoji(emoji::Message::Open).to(id),
         );
         // The attached files sit inside the field, above the text.
         let mut composer = stack![
@@ -984,24 +1078,26 @@ impl Room {
         ];
         if !self.attachments.is_empty() {
             composer = composer.push(
-                container(media::attached_view(&self.attachments, Message::Unattach))
-                    .padding(Padding::new(8.0).right(COMPOSER_INSET)),
+                container(media::attached_view(&self.attachments, |index| {
+                    Message::Unattach(index).to(id)
+                }))
+                .padding(Padding::new(8.0).right(COMPOSER_INSET)),
             );
         }
         let panel = self.composer_emoji.as_ref().map(|panel| {
             panel.view(
                 look.frequent_emoji,
-                Message::InsertEmoji,
-                Message::ComposerEmoji,
+                |emoji| Message::InsertEmoji(emoji).to(id),
+                |message| Message::ComposerEmoji(message).to(id),
             )
         });
         let composer = popover(composer, panel, Side::Above, Edge::Right)
-            .on_dismiss(Message::ComposerEmoji(emoji::Message::Close))
+            .on_dismiss(Message::ComposerEmoji(emoji::Message::Close).to(id))
             .click_through();
         let selected = self.completion.as_ref().map_or(0, |c| c.selected);
-        let completion = completing.then(|| mention::view(&candidates, selected, look.avatars));
+        let completion = completing.then(|| mention::view(id, &candidates, selected, look.avatars));
         let composer = popover(composer, completion, Side::Above, Edge::Left)
-            .on_dismiss(Message::Mention(mention::Message::Close))
+            .on_dismiss(Message::Mention(mention::Message::Close).to(id))
             .click_through();
         let composer_empty = self.composer.text().trim().is_empty() && self.attachments.is_empty();
         let send = hint(
@@ -1010,7 +1106,7 @@ impl Room {
             }))
             .padding([9, 12])
             .style(style::primary_button)
-            .on_press_maybe((!composer_empty).then_some(Message::Send)),
+            .on_press_maybe((!composer_empty).then(|| Message::Send.to(id))),
             "Send (Enter)",
             Position::Top,
         );
@@ -1027,12 +1123,12 @@ impl Room {
             }))
             .padding([9, 9])
             .style(style::secondary_button)
-            .on_press_maybe((!picking).then_some(Message::Later(send_later::Message::Open))),
+            .on_press_maybe((!picking).then(|| Message::Later(send_later::Message::Open).to(id))),
             "Send later: pick a time",
             Position::Top,
         );
         let picker = if self.later.rescheduling.is_none() {
-            send_later::picker(&self.later, !composer_empty, scheduled.now)
+            send_later::picker(id, &self.later, !composer_empty, scheduled.now)
         } else {
             None
         };
@@ -1042,7 +1138,7 @@ impl Room {
             Side::Above,
             Edge::Right,
         )
-        .on_dismiss(Message::Later(send_later::Message::Close));
+        .on_dismiss(Message::Later(send_later::Message::Close).to(id));
 
         // Bars above and below the composer come and go inside columns that
         // are always there: widgets keep their state by position, so the
@@ -1050,6 +1146,7 @@ impl Room {
         let mut above = column![].spacing(6);
         if !scheduled.messages.is_empty() {
             above = above.push(send_later::queue(
+                id,
                 scheduled,
                 &self.later,
                 self.editing.as_ref(),
@@ -1057,7 +1154,7 @@ impl Room {
             ));
         }
         above = above.push(actions::typing(&self.typing));
-        if let Some(bar) = self.compose.bar() {
+        if let Some(bar) = self.compose.bar(id) {
             above = above.push(bar);
         }
         let bottom = column![
@@ -1070,15 +1167,15 @@ impl Room {
         // Always there, so the timeline and composer keep their state.
         let mut find_bar = column![];
         if let Some(find) = &self.find {
-            find_bar = find_bar.push(find.view(Message::Find));
+            find_bar = find_bar.push(find.view(|m| m).map(|m| Message::Find(m).to(id)));
             find_bar = find_bar.push(rule::horizontal(1));
         }
         // What the room waits on, or what failed, over the timeline's
         // bottom left.
-        let timeline: Element<'a, Message> = match self.status() {
+        let timeline: Element<'a, app::Message> = match self.status() {
             Some(status) => stack![
                 timeline,
-                container(status::view(&status))
+                container(status::view(id, &status))
                     .align_left(Length::Fill)
                     .align_bottom(Length::Fill)
                     .padding(Padding::new(8.0).left(TIMELINE_PADDING + MESSAGE_PADDING)),
@@ -1113,7 +1210,7 @@ impl Room {
         &'a self,
         summary: Option<&'a RoomSummary>,
         look: &Look<'a>,
-    ) -> Element<'a, Message> {
+    ) -> Element<'a, app::Message> {
         let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
         let topic = Topic::parse(self.topic.shown(summary.and_then(|s| s.topic.as_deref())));
@@ -1130,11 +1227,11 @@ impl Room {
             Some(RoomKind::Direct) => "Who this is",
             _ => "Room settings and address",
         };
-        let opens_info = |content: Element<'a, Message>| {
+        let opens_info = |content: Element<'a, app::Message>| {
             hint(
                 mouse_area(content)
                     .interaction(mouse::Interaction::Pointer)
-                    .on_press(Message::ShowInfo(info.clone())),
+                    .on_press(app::Message::ShowInfo(info.clone())),
                 about_tip,
                 Position::Bottom,
             )
@@ -1196,7 +1293,7 @@ impl Room {
             title = title.push(
                 mouse_area(line)
                     .interaction(mouse::Interaction::Pointer)
-                    .on_press(Message::Topic(self.id.clone(), topic::Message::Toggle)),
+                    .on_press(Message::Topic(topic::Message::Toggle).to(&self.id)),
             );
         }
         let avatar = avatars.view(
@@ -1226,7 +1323,7 @@ impl Room {
                     button(text("Members").size(13))
                         .padding([5, 10])
                         .style(style::list_item(look.show_members))
-                        .on_press(Message::ToggleMembers),
+                        .on_press(app::Message::ToggleMembers),
                     members_tip,
                     Position::Bottom,
                 ),
@@ -1241,7 +1338,7 @@ impl Room {
                     }))
                     .padding([5, 8])
                     .style(style::list_item(false))
-                    .on_press(Message::ShowInfo(info::Target::Room(self.id.clone()))),
+                    .on_press(app::Message::ShowInfo(info::Target::Room(self.id.clone()))),
                     "Room settings: name, notifications, favourite",
                     Position::Bottom,
                 ),
@@ -1254,8 +1351,10 @@ impl Room {
         // The topic in full and its links, or their editor, dropping over
         // the timeline below the room's picture.
         let panel = self.topic.open.then(|| {
-            let mut content =
-                column![self.topic.view(&self.id, &topic, look.call_services)].spacing(14);
+            let topic = self.topic.view(&topic, look.call_services, move |message| {
+                Message::Topic(message).to(&self.id)
+            });
+            let mut content = column![topic].spacing(14);
             // Not while the topic is edited.
             if self.topic.editor.is_none() {
                 content = content.push(self.pins.view(&self.id, pinned));
@@ -1267,7 +1366,7 @@ impl Room {
         });
         popover(header, panel, Side::Below, Edge::Left)
             .share_of_anchor(TOPIC_SHARE, TIMELINE_PADDING + MESSAGE_PADDING)
-            .on_dismiss(Message::Topic(self.id.clone(), topic::Message::Dismiss))
+            .on_dismiss(Message::Topic(topic::Message::Dismiss).to(&self.id))
             .into()
     }
 }
@@ -1298,6 +1397,8 @@ pub struct Look<'a> {
 
 /// What rendering an event needs besides the event.
 struct Context<'a, 'b> {
+    /// The room the event is in.
+    room: &'b OwnedRoomId,
     theme: &'b Theme,
     /// Us, whose mentions stand out.
     own_user: &'b UserId,
@@ -1341,8 +1442,8 @@ struct Context<'a, 'b> {
 
 impl<'a> Context<'a, '_> {
     /// How the text of part `key` ([`rows::Part::key`]) is selected.
-    fn select(&self, key: &str) -> message::Select<'a, Message> {
-        let id = key.to_owned();
+    fn select(&self, key: &str) -> message::Select<'a, app::Message> {
+        let (id, room) = (key.to_owned(), self.room.clone());
         message::Select {
             range: (self.selected).and_then(|(bounds, order)| bounds.in_message(*order.get(key)?)),
             focus: (self.focus)
@@ -1350,7 +1451,7 @@ impl<'a> Context<'a, '_> {
                 .map(|focus| focus.pos),
             dragging: self.dragging,
             on_gesture: Rc::new(move |gesture| {
-                Message::Select(selection::Message::Gesture(id.clone(), gesture))
+                Message::Select(selection::Message::Gesture(id.clone(), gesture)).to(&room)
             }),
             found: (self.found).map_or_else(Vec::new, |find| find.in_message(key)),
         }
@@ -1361,7 +1462,7 @@ fn event_view<'a>(
     event: &'a Event,
     texts: &[Part<'a>],
     context: &Context<'a, '_>,
-) -> Element<'a, Message> {
+) -> Element<'a, app::Message> {
     let Context {
         theme,
         math,
@@ -1388,17 +1489,20 @@ fn event_view<'a>(
     let mut as_text = false;
     let select = || context.select(&event.id);
     let links = || {
-        let id = event.id.clone();
+        let (id, room) = (event.id.clone(), context.room.clone());
         message::Links {
-            open: Message::LinkClicked,
+            open: app::Message::LinkClicked,
             menu: Rc::new(move |url| {
-                act(actions::Message::OpenMenu(id.clone(), MenuAt::Link(url)))
+                act(
+                    &room,
+                    actions::Message::OpenMenu(id.clone(), MenuAt::Link(url)),
+                )
             }),
         }
     };
-    let body: Element<'a, Message> = match &event.content {
+    let body: Element<'a, app::Message> = match &event.content {
         EventContent::Message(m) => {
-            let content: Element<'a, Message> = match (m.kind, m.document.has_math()) {
+            let content: Element<'a, app::Message> = match (m.kind, m.document.has_math()) {
                 (MessageKind::Text | MessageKind::Notice | MessageKind::Emote, true) => {
                     match math.get(&Math::key(&m.document, params)) {
                         Some(Rendered::Image {
@@ -1448,6 +1552,7 @@ fn event_view<'a>(
                 }
                 (kind, _) => match &m.media {
                     Some(file) => media::view(
+                        context.room,
                         file,
                         &m.body,
                         context.previews,
@@ -1465,6 +1570,7 @@ fn event_view<'a>(
             });
             if let Some((part, reply)) = reply {
                 parts = parts.push(actions::quote(
+                    context.room,
                     reply,
                     &part.units(&Shown::default()),
                     context.select(&part.key),
@@ -1480,12 +1586,19 @@ fn event_view<'a>(
             }
             if !m.reactions.is_empty() {
                 let picker = (picking == Some(PickerAt::Reactions)).then(|| {
-                    actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji)
+                    actions::picker(
+                        context.room,
+                        event,
+                        &m.reactions,
+                        context.frequent_emoji,
+                        context.emoji,
+                    )
                 });
                 let listed = (context.reactors)
                     .filter(|(id, _)| *id == event.id)
                     .map(|(_, key)| key);
                 parts = parts.push(actions::reactions(
+                    context.room,
                     event,
                     &m.reactions,
                     listed,
@@ -1522,7 +1635,7 @@ fn event_view<'a>(
         .editing
         .filter(|e| e.target == Editing::Sent(event.key.clone()));
     item = item.push(match edit {
-        Some(edit) => edit.view(context.frequent_emoji),
+        Some(edit) => edit.view(context.room, context.frequent_emoji),
         None => body,
     });
     let message = match &event.content {
@@ -1536,28 +1649,28 @@ fn event_view<'a>(
     });
     let pin = (event.event_id.as_ref())
         .filter(|_| context.can_pin)
-        .map(|id| pins::menu_item(id, context.pinned.contains(id)));
+        .map(|id| pins::menu_item(context.room, id, context.pinned.contains(id)));
     let menu_items = message
         .map(|m| {
-            let mut items = message_menu::items(m, math_shown, in_selection);
+            let mut items = message_menu::items(context.room, m, math_shown, in_selection);
             items.extend(pin);
             items
         })
         .filter(|items| !items.is_empty());
     let menu_view = |at| match menu_at {
-        Some(MenuAt::Link(url)) if at == MenuAt::Cursor => {
-            Some(message_menu::view(message_menu::link_items(url)))
-        }
+        Some(MenuAt::Link(url)) if at == MenuAt::Cursor => Some(message_menu::view(
+            message_menu::link_items(context.room, url),
+        )),
         Some(open) if *open == at => menu_items.clone().map(message_menu::view),
         _ => None,
     };
     if context.confirm_delete == Some(event.id.as_str()) {
-        item = item.push(actions::confirm_delete(event));
+        item = item.push(actions::confirm_delete(context.room, event));
     }
 
     // The avatar starts a group; follow-ups show their time there on hover.
     let hovered = context.hovered == Some(event.id.as_str());
-    let gutter: Element<'a, Message> = if with_header {
+    let gutter: Element<'a, app::Message> = if with_header {
         mouse_area(context.avatars.view(
             event.sender.as_str(),
             &display_name(event),
@@ -1597,16 +1710,18 @@ fn event_view<'a>(
     // sit in the free margin at the bottom right, so neither ever changes
     // the row's height.
     let listed = context.readers == Some(event.id.as_str());
-    let markers = actions::read_markers(event, context.avatars, listed).or_else(|| {
-        actions::send_status(
-            event,
-            actions::Status {
-                newest: context.newest_own == Some(event.id.as_str()),
-                slow: context.sending.shows_clock(&event.id),
-                open: context.unsent == Some(event.id.as_str()),
-            },
-        )
-    });
+    let markers =
+        actions::read_markers(context.room, event, context.avatars, listed).or_else(|| {
+            actions::send_status(
+                context.room,
+                event,
+                actions::Status {
+                    newest: context.newest_own == Some(event.id.as_str()),
+                    slow: context.sending.shows_clock(&event.id),
+                    open: context.unsent == Some(event.id.as_str()),
+                },
+            )
+        });
     let markers = markers.map(|markers| {
         container(markers)
             .align_right(Length::Fill)
@@ -1616,7 +1731,7 @@ fn event_view<'a>(
     });
     // Actions float over the top right of a hovered message, above the
     // markers of a short one.
-    let toolbar: Option<Element<'a, Message>> = match message {
+    let toolbar: Option<Element<'a, app::Message>> = match message {
         // Also while its reaction window is open.
         Some(m)
             if (hovered
@@ -1629,21 +1744,34 @@ fn event_view<'a>(
             let target = Target::of(event, display_name(event), preview);
             let edit_text = Some(m.body.clone());
             let picker = (picking == Some(PickerAt::Toolbar)).then(|| {
-                actions::picker(event, &m.reactions, context.frequent_emoji, context.emoji)
+                actions::picker(
+                    context.room,
+                    event,
+                    &m.reactions,
+                    context.frequent_emoji,
+                    context.emoji,
+                )
             });
             let menu = menu_items
                 .is_some()
                 .then(|| actions::Menu(menu_view(MenuAt::Toolbar)));
             Some(
-                container(actions::toolbar(event, target, edit_text, picker, menu))
-                    .align_right(Length::Fill)
-                    .padding(Padding::ZERO.top(1.0).right(8.0))
-                    .into(),
+                container(actions::toolbar(
+                    context.room,
+                    event,
+                    target,
+                    edit_text,
+                    picker,
+                    menu,
+                ))
+                .align_right(Length::Fill)
+                .padding(Padding::ZERO.top(1.0).right(8.0))
+                .into(),
             )
         }
         _ => None,
     };
-    let row: Element<'a, Message> = if markers.is_none() && toolbar.is_none() {
+    let row: Element<'a, app::Message> = if markers.is_none() && toolbar.is_none() {
         row.into()
     } else {
         stack![row]
@@ -1651,20 +1779,23 @@ fn event_view<'a>(
             .into()
     };
     // Right-click opens the menu where the cursor is.
-    let row: Element<'a, Message> = if menu_items.is_some() {
+    let row: Element<'a, app::Message> = if menu_items.is_some() {
         context_menu(
             row,
             menu_view(MenuAt::Cursor),
-            act(actions::Message::OpenMenu(event.id.clone(), MenuAt::Cursor)),
+            act(
+                context.room,
+                actions::Message::OpenMenu(event.id.clone(), MenuAt::Cursor),
+            ),
         )
-        .on_dismiss(act(actions::Message::CloseMenu))
+        .on_dismiss(act(context.room, actions::Message::CloseMenu))
         .into()
     } else {
         row
     };
     let row = mouse_area(row)
-        .on_enter(Message::Hover(event.id.clone(), true))
-        .on_exit(Message::Hover(event.id.clone(), false));
+        .on_enter(Message::Hover(event.id.clone(), true).to(context.room))
+        .on_exit(Message::Hover(event.id.clone(), false).to(context.room));
     // Found by `on_screen`.
     let row = container(row).id(row_id(&event.id));
     if with_header {
@@ -1733,7 +1864,7 @@ fn row_id(event: &str) -> Id {
 }
 
 /// Scroll the timeline to show the row of message `id` in the middle.
-pub fn scroll_to_row(id: &str) -> Task<Message> {
+pub fn scroll_to_row(id: &str) -> Task<app::Message> {
     iced::advanced::widget::operate(FindRow {
         row: row_id(id),
         view: None,
@@ -1768,7 +1899,7 @@ pub enum Scroll {
 const PAGE: f32 = 0.9;
 
 /// Scroll the timeline.
-pub fn scroll(scroll: Scroll) -> Task<Message> {
+pub fn scroll(scroll: Scroll) -> Task<app::Message> {
     iced::advanced::widget::operate(ScrollTimeline(scroll)).discard()
 }
 
@@ -1869,7 +2000,7 @@ fn centred(view: Rectangle, content: f32, target: Rectangle) -> f32 {
 
 /// Scroll the timeline to the current match of the find bar, in message
 /// `event`, unless it is in view: to the middle, as browsers do.
-fn scroll_to_found(event: &str) -> Task<Message> {
+fn scroll_to_found(event: &str) -> Task<app::Message> {
     iced::advanced::widget::operate(FindFound {
         row: row_id(event),
         view: None,
@@ -2028,7 +2159,7 @@ fn sender_line<'a>(
     event: &Event,
     part: &Part<'_>,
     context: &Context<'a, '_>,
-) -> Element<'a, Message> {
+) -> Element<'a, app::Message> {
     let units = part.units(&Shown::default());
     let select = context.select(&part.key);
     let open = sender_info(event);
@@ -2076,8 +2207,8 @@ fn mentioned(
 }
 
 /// Opens the sender's info card.
-fn sender_info(event: &Event) -> Message {
-    Message::ShowInfo(info::sender(
+fn sender_info(event: &Event) -> app::Message {
+    app::Message::ShowInfo(info::sender(
         event.sender.clone(),
         event.sender_name.clone(),
         event.sender_avatar.clone(),
@@ -2085,7 +2216,7 @@ fn sender_info(event: &Event) -> Message {
 }
 
 /// A muted line in the text column, e.g. "Loading…".
-fn notice<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Message> {
+fn notice<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, app::Message> {
     container(text(content).size(12).style(text::secondary))
         .padding(Padding::new(4.0).left(TEXT_INDENT))
         .into()
@@ -2096,7 +2227,7 @@ fn muted<'a>(
     part: &Part<'_>,
     size: f32,
     context: &Context<'a, '_>,
-) -> selectable::Selectable<'a, Message> {
+) -> selectable::Selectable<'a, app::Message> {
     let line = part.units(&Shown::default()).remove(0).text;
     let len = line.len();
     let unit = selectable(vec![span(line)], 0)
@@ -2106,7 +2237,7 @@ fn muted<'a>(
 }
 
 /// A row of one muted line in the text column, e.g. for state events.
-fn line<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a, Message> {
+fn line<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a, app::Message> {
     let Some(part) = parts.first() else {
         return space().into();
     };
@@ -2117,7 +2248,7 @@ fn line<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a, Messag
 }
 
 /// The date between two days' messages, centred on a line.
-fn day_divider<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a, Message> {
+fn day_divider<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a, app::Message> {
     let Some(part) = parts.first() else {
         return space().into();
     };

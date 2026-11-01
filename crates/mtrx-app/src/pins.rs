@@ -16,7 +16,7 @@ use crate::{
     ellipsis::ellipsis,
     fonts,
     hint::{Position, hint},
-    icons, style,
+    icons, room, style,
 };
 
 #[derive(Debug, Clone)]
@@ -111,7 +111,7 @@ impl Pins {
             .width(Length::Fill)
             .padding([4, 8])
             .style(style::list_item(false))
-            .on_press(app::Message::Pins(room.clone(), Message::GoTo(id.clone())));
+            .on_press(room::Message::Pins(Message::GoTo(id.clone())).to(room));
             let mut line = row![go].spacing(4).align_y(Alignment::Center);
             if can_pin {
                 line = line.push(hint(
@@ -125,7 +125,7 @@ impl Pins {
                     }))
                     .padding(6)
                     .style(style::text_button)
-                    .on_press(app::Message::Act(actions::Message::Pin(id, false))),
+                    .on_press(actions::act(room, actions::Message::Pin(id, false))),
                     "Unpin",
                     Position::Top,
                 ));
@@ -163,12 +163,12 @@ fn preview(event: &Event) -> String {
     }
 }
 
-/// Pin or Unpin, for a message's menu.
-pub fn menu_item(event: &OwnedEventId, pinned: bool) -> (String, actions::Message) {
+/// Pin or Unpin, for the menu of a message in `room`.
+pub fn menu_item(room: &OwnedRoomId, event: &OwnedEventId, pinned: bool) -> (String, app::Message) {
     let label = if pinned { "Unpin" } else { "Pin" };
     (
         label.to_owned(),
-        actions::Message::Pin(event.clone(), !pinned),
+        actions::act(room, actions::Message::Pin(event.clone(), !pinned)),
     )
 }
 
@@ -188,10 +188,11 @@ mod tests {
     #[test]
     fn pin_or_unpin() {
         let id: OwnedEventId = "$a:x".try_into().unwrap();
-        assert_eq!(menu_item(&id, false).0, "Pin");
+        let room: OwnedRoomId = "!r:x".try_into().unwrap();
+        assert_eq!(menu_item(&room, &id, false).0, "Pin");
         assert!(matches!(
-            menu_item(&id, true).1,
-            actions::Message::Pin(_, false)
+            menu_item(&room, &id, true).1,
+            app::Message::Room(_, room::Message::Act(actions::Message::Pin(_, false)))
         ));
     }
 }

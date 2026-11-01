@@ -52,8 +52,8 @@ async fn user(prefix: &str, dir: &TempDir) -> (String, Session) {
 }
 
 /// A member of a room, for mentions.
-fn person(id: &str, name: &str, role: mtrx_core::Role) -> Member {
-    Member {
+fn person(id: &str, name: &str, role: mtrx_core::Role) -> mtrx_core::Member {
+    mtrx_core::Member {
         id: OwnedUserId::try_from(id).unwrap(),
         name: Some(name.into()),
         avatar: None,
@@ -280,15 +280,15 @@ fn find_keys() {
     let command = keyboard::Modifiers::COMMAND;
     assert!(matches!(
         key("f", command),
-        Some(Message::Find(find::Message::Open))
+        Some(Message::Shown(room::Message::Find(find::Message::Open)))
     ));
     assert!(matches!(
         key("g", command),
-        Some(Message::Find(find::Message::Next))
+        Some(Message::Shown(room::Message::Find(find::Message::Next)))
     ));
     assert!(matches!(
         key("g", command | keyboard::Modifiers::SHIFT),
-        Some(Message::Find(find::Message::Previous))
+        Some(Message::Shown(room::Message::Find(find::Message::Previous)))
     ));
     assert!(key("f", keyboard::Modifiers::empty()).is_none());
 }
@@ -926,7 +926,7 @@ async fn main_screen_with_math() {
             reply.preview = Some("Morning! Draft of the ice flux section is up. ".repeat(12));
             let original = reply.event_id.clone();
             let row = room_row(&room.entries, &original);
-            let _ = app.update(Message::GoTo(original));
+            let _ = app.update(Message::Shown(room::Message::GoTo(original)));
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
             };
@@ -1040,25 +1040,34 @@ async fn main_screen_with_math() {
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(
             mode == Mode::Light
-                || messages
-                    .iter()
-                    .any(|m| matches!(m, Message::Calls(_, calls::Message::Close))),
+                || messages.iter().any(|m| matches!(
+                    m,
+                    Message::Room(_, room::Message::Calls(calls::Message::Close))
+                )),
             "{messages:?}"
         );
         assert!(
             messages.iter().all(|m| matches!(
                 m,
-                Message::Calls(_, calls::Message::Close)
-                    | Message::Topic(_, topic::Message::Dismiss)
-                    | Message::Act(actions::Message::CloseReaders | actions::Message::ClosePicker)
+                Message::Room(
+                    _,
+                    room::Message::Calls(calls::Message::Close)
+                        | room::Message::Topic(topic::Message::Dismiss)
+                        | room::Message::Act(
+                            actions::Message::CloseReaders | actions::Message::ClosePicker
+                        )
+                )
             )),
             "{messages:?}"
         );
         if mode == Mode::Light {
             assert!(
-                messages
-                    .iter()
-                    .any(|m| matches!(m, Message::Act(actions::Message::CloseReaders))),
+                messages.iter().any(|m| {
+                    matches!(
+                        m,
+                        Message::Room(_, room::Message::Act(actions::Message::CloseReaders))
+                    )
+                }),
                 "{messages:?}"
             );
             if let Screen::Main(main) = &mut app.screen {
@@ -1082,8 +1091,10 @@ async fn main_screen_with_math() {
         if let Screen::Main(main) = &mut app.screen {
             main.pane.room_mut().unwrap().selection = None;
         }
-        let _ = app.update(Message::Find(find::Message::Open));
-        let _ = app.update(Message::Find(find::Message::Query("FLUX".into())));
+        let _ = app.update(Message::Shown(room::Message::Find(find::Message::Open)));
+        let _ = app.update(Message::Shown(room::Message::Find(find::Message::Query(
+            "FLUX".into(),
+        ))));
         let found = |app: &App| {
             let Screen::Main(main) = &app.screen else {
                 unreachable!()
@@ -1397,16 +1408,19 @@ async fn send_later_bar() {
     };
     let outside = messages(iced::Point::new(700.0, 150.0));
     assert!(
-        outside
-            .iter()
-            .any(|m| matches!(m, Message::ComposerEmoji(emoji::Message::Close))),
+        outside.iter().any(|m| {
+            matches!(
+                m,
+                Message::Room(_, room::Message::ComposerEmoji(emoji::Message::Close))
+            )
+        }),
         "{outside:?}"
     );
     let on_crab = messages(iced::Point::new(782.0, 447.0));
     assert!(
         on_crab
             .iter()
-            .any(|m| matches!(m, Message::InsertEmoji(e) if e == "🦀")),
+            .any(|m| matches!(m, Message::Room(_, room::Message::InsertEmoji(e)) if e == "🦀")),
         "{on_crab:?}"
     );
     if let Screen::Main(main) = &mut app.screen
@@ -1460,8 +1474,12 @@ async fn send_later_bar() {
         ));
     }
     snapshot(&app, "composer-mention");
-    let _ = app.update(Message::Mention(mention::Message::Down));
-    let _ = app.update(Message::Mention(mention::Message::Choose));
+    let _ = app.update(Message::Shown(room::Message::Mention(
+        mention::Message::Down,
+    )));
+    let _ = app.update(Message::Shown(room::Message::Mention(
+        mention::Message::Choose,
+    )));
     if let Screen::Main(main) = &mut app.screen
         && let Some(open) = main.pane.room_mut()
     {
@@ -2904,7 +2922,10 @@ async fn composer_scrolls_alone() {
             "round {round}"
         );
         for message in messages {
-            assert!(matches!(message, Message::Composer(_)), "{message:?}");
+            assert!(
+                matches!(message, Message::Room(_, room::Message::Composer(_))),
+                "{message:?}"
+            );
             let _ = app.update(message);
         }
     }
@@ -3020,9 +3041,11 @@ async fn drafts_stay_in_their_room() {
             }
             _ => None,
         });
-    let _ = app.update(Message::Act(actions::Message::Reply(target.unwrap())));
-    let paused = app.update(Message::Composer(text_editor::Action::Edit(
-        text_editor::Edit::Paste(Arc::new("Yes, see you".into())),
+    let _ = app.update(Message::Shown(room::Message::Act(actions::Message::Reply(
+        target.unwrap(),
+    ))));
+    let paused = app.update(Message::Shown(room::Message::Composer(
+        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Yes, see you".into()))),
     )));
     for message in messages_of(paused).await {
         let _ = messages_of(app.update(message)).await;
@@ -3034,8 +3057,8 @@ async fn drafts_stay_in_their_room() {
     assert_eq!(alice.draft(&a).await.unwrap(), Some(kept.clone()));
 
     // More written, then another room opened at once: kept as it was.
-    let _ = app.update(Message::Composer(text_editor::Action::Edit(
-        text_editor::Edit::Paste(Arc::new(" there".into())),
+    let _ = app.update(Message::Shown(room::Message::Composer(
+        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(" there".into()))),
     )));
     let before = app.room_draft();
     let other = Room::new(b.clone(), Arc::new(alice.timeline(&b).await.unwrap()));
@@ -3082,7 +3105,8 @@ async fn typing_while_a_room_opens_goes_nowhere() {
 
     let opened = messages_of(app.update(Message::OpenRoom(b.clone()))).await;
     assert!(matches!(pane(&app), Pane::Opening(id) if *id == b));
-    let _ = messages_of(app.update(Message::TypeInComposer("x".into()))).await;
+    let _ =
+        messages_of(app.update(Message::Shown(room::Message::TypeInComposer("x".into())))).await;
     for message in opened {
         let _ = app.update(message);
     }
@@ -3130,4 +3154,46 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
         pane(&app),
         Pane::Invite { id, answering: false } if *id == invite
     ));
+}
+
+/// What finishes for a room after another opened stays with it: a message
+/// scheduled there leaves the other's composer alone, and its failures do
+/// not show in the other.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn results_stay_with_their_room() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("results", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let mut main = Main::new(Arc::new(alice));
+    main.verified = Some(true);
+    let mut open = Room::new(a.clone(), timeline);
+    open.restore_draft(None);
+    open.set_composer(typed("Later, in a"));
+    main.pane = Pane::Open(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
+    let later = send_later::Message::At(in_an_hour);
+    let scheduled = app.update(room::Message::Later(later).to(&a));
+    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+        let _ = app.update(message);
+    }
+    open_room(&mut app).set_composer(typed("Draft in b"));
+    for message in messages_of(scheduled).await {
+        let _ = app.update(message);
+    }
+    let failed = actions::Message::Done(Err("Could not react".into()));
+    let _ = app.update(room::Message::Act(failed).to(&a));
+
+    let open = open_room(&mut app);
+    assert_eq!(open.id, b);
+    assert_eq!(open.composer.text().trim_end(), "Draft in b");
+    assert_eq!(open.error, None);
 }

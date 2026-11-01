@@ -237,7 +237,13 @@ fn shift_and_arrows_move_the_end_of_the_selection() {
     assert_shortcuts(
         cases
             .into_iter()
-            .map(|(key, modifiers, message)| (key, modifiers, Message::Select(message)))
+            .map(|(key, modifiers, message)| {
+                (
+                    key,
+                    modifiers,
+                    Message::Shown(room::Message::Select(message)),
+                )
+            })
             .collect(),
     );
 }
@@ -291,7 +297,13 @@ fn page_keys_and_arrows_scroll_the_timeline() {
     assert_shortcuts(
         cases
             .into_iter()
-            .map(|(key, modifiers, scroll)| (key, modifiers, Message::ScrollKey(scroll)))
+            .map(|(key, modifiers, scroll)| {
+                (
+                    key,
+                    modifiers,
+                    Message::Shown(room::Message::ScrollKey(scroll)),
+                )
+            })
             .collect(),
     );
 }
@@ -436,7 +448,12 @@ async fn keys_go_to_other_rooms_from_the_composer() {
     for (key, modifiers) in keys {
         let (statuses, messages) = ui.messages(&[press(key.clone(), modifiers)]);
         assert_eq!(statuses, [Status::Ignored], "{key:?}");
-        let typing = |m: &Message| matches!(m, Message::Composer(text_editor::Action::Edit(_)));
+        let typing = |m: &Message| {
+            matches!(
+                m,
+                Message::Room(_, room::Message::Composer(text_editor::Action::Edit(_)))
+            )
+        };
         assert!(!messages.iter().any(typing), "{key:?}");
         // Opening it (its tasks are not run: rooms load their timeline by
         // a subscription, which this window has not).
@@ -461,7 +478,12 @@ fn characters_typed_with_nothing_focused_go_to_the_composer() {
             shortcuts(press(key, modifiers), status, window::Id::unique())
         )
     };
-    let to_composer = |text: &str| format!("{:?}", Some(Message::TypeInComposer(text.into())));
+    let to_composer = |text: &str| {
+        format!(
+            "{:?}",
+            Some(Message::Shown(room::Message::TypeInComposer(text.into())))
+        )
+    };
     assert_eq!(
         typed("h", Modifiers::empty(), Status::Ignored),
         to_composer("h")
@@ -661,7 +683,9 @@ impl Ui {
             mouse::Button::Left,
         ))]);
         // The app listens for the release while a selection is dragged.
-        messages.push(Message::Select(selection::Message::End));
+        messages.push(Message::Shown(room::Message::Select(
+            selection::Message::End,
+        )));
         for message in messages {
             self.update(message);
         }
@@ -753,6 +777,6 @@ async fn shortcuts_type_nothing_in_fields() {
     // Typing still types, also with ⌥.
     assert_eq!(
         typed(&mut ui, "é", Modifiers::ALT),
-        "[Composer(Edit(Insert('é')))]"
+        format!("[Room({open:?}, Composer(Edit(Insert('é'))))]")
     );
 }

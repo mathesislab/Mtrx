@@ -16,7 +16,7 @@ use iced::{
     },
     window,
 };
-use mtrx_core::{Attachment, Media, MediaKind, MediaRef, Session};
+use mtrx_core::{Attachment, Media, MediaKind, MediaRef, OwnedRoomId, Session};
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -26,8 +26,18 @@ use crate::{
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint},
-    icons, message_menu, pdf, style,
+    icons, message_menu, pdf, room, style,
 };
+
+/// Where saving or copying a file was asked from, to show there how it
+/// went.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Origin {
+    /// The image or PDF viewer.
+    Viewer,
+    /// A message's file in the room.
+    Room(OwnedRoomId),
+}
 
 /// Largest size of an image in the timeline, in logical pixels.
 const MAX_INLINE: Size = Size::new(360.0, 300.0);
@@ -242,19 +252,21 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
 /// A message's file: an image (a placeholder until loaded), else a card;
 /// a PDF's card opens the viewer once known to be readable. `body` shows
 /// below it if it is a caption rather than the filename.
-/// A message's file; an image has a download button beside it while the
-/// message is `hovered`.
+/// A message's file in `room`; an image has a download button beside it
+/// while the message is `hovered`.
 pub fn view<'a>(
+    room: &OwnedRoomId,
     media: &'a Media,
     body: &'a str,
     previews: &Previews,
     hovered: bool,
 ) -> Element<'a, Message> {
+    let from = Origin::Room(room.clone());
     let content = match media.kind {
         MediaKind::Image if !previews.failed(&media.source) => {
             let picture = inline_image(media, previews.ready(&media.source));
             if hovered {
-                row![picture, save_button(media)]
+                row![picture, save_button(media, from)]
                     .spacing(8)
                     .align_y(Alignment::End)
                     .into()
@@ -264,18 +276,21 @@ pub fn view<'a>(
         }
         _ if pdf::is_pdf(media) => {
             if !previewed(media) {
-                card(media, None, Some("Too large to preview here"))
+                card(media, from, None, Some("Too large to preview here"))
             } else {
                 match previews.readable(&media.source) {
-                    Some(true) => card(media, Some(Message::OpenPdf(media.clone())), None),
-                    Some(false) => {
-                        card(media, None, Some("Preview not available for this document"))
-                    }
-                    None => card(media, None, None),
+                    Some(true) => card(media, from, Some(Message::OpenPdf(media.clone())), None),
+                    Some(false) => card(
+                        media,
+                        from,
+                        None,
+                        Some("Preview not available for this document"),
+                    ),
+                    None => card(media, from, None, None),
                 }
             }
         }
-        _ => card(media, None, None),
+        _ => card(media, from, None, None),
     };
     if body == media.filename {
         content
@@ -313,6 +328,7 @@ fn placeholder<'a>(size: Size) -> Element<'a, Message> {
 /// button; clicking it sends `open` if given.
 fn card<'a>(
     media: &'a Media,
+    from: Origin,
     open: Option<Message>,
     note: Option<&'a str>,
 ) -> Element<'a, Message> {
@@ -333,7 +349,7 @@ fn card<'a>(
         ]
         .spacing(1)
         .width(Length::Fill),
-        save_button(media),
+        save_button(media, from),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -355,7 +371,8 @@ fn card<'a>(
     container(card).max_width(460).into()
 }
 
-pub fn save_button<'a>(media: &Media) -> Element<'a, Message> {
+/// Saves the file, saying how it went where asked `from`.
+pub fn save_button<'a>(media: &Media, from: Origin) -> Element<'a, Message> {
     hint(
         button(icons::download(18.0, |theme| {
             theme
@@ -367,7 +384,7 @@ pub fn save_button<'a>(media: &Media) -> Element<'a, Message> {
         }))
         .padding([6, 8])
         .style(style::secondary_button)
-        .on_press(Message::SaveMedia(media.clone())),
+        .on_press(Message::SaveMedia(media.clone(), from)),
         "Save to your computer",
         Position::Top,
     )
@@ -496,9 +513,9 @@ impl Viewer {
                     .into(),
                 None => placeholder(size),
             };
-            let menu = self
-                .menu
-                .then(|| message_menu::view(message_menu::media_items(&self.media)));
+            let menu = self.menu.then(|| {
+                message_menu::view(message_menu::media_items(&self.media, Origin::Viewer))
+            });
             let shown = context_menu(shown, menu, Message::ViewerMenu(true))
                 .on_dismiss(Message::ViewerMenu(false));
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);
@@ -532,7 +549,7 @@ impl Viewer {
         container(
             row![
                 name,
-                save_button(&self.media),
+                save_button(&self.media, Origin::Viewer),
                 frame::close_button(Message::CloseImage),
             ]
             .spacing(8)
@@ -710,10 +727,12 @@ pub fn attached_view<'a>(
         .into()
 }
 
-/// Files dropped onto the window.
+/// Files dropped onto the window, for the room shown.
 pub fn dropped_files() -> Subscription<Message> {
     event::listen_with(|event, _status, _window| match event {
-        iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        iced::Event::Window(window::Event::FileDropped(path)) => {
+            Some(Message::Shown(room::Message::FileDropped(path)))
+        }
         _ => None,
     })
 }
@@ -723,8 +742,6 @@ mod tests {
     use iced::advanced::{clipboard, renderer::Headless};
     use iced_runtime::user_interface::{Cache, UserInterface};
     use iced_test::simulator::{Simulator, click as left_click};
-
-    use crate::actions::Message as Act;
 
     use super::*;
 
@@ -763,7 +780,13 @@ mod tests {
         let previews = Previews::new();
         // In the timeline, the image leaves the click to its message's menu.
         let inline = context_menu(
-            view(&media, &media.filename, &previews, false),
+            view(
+                &"!room:example.org".try_into().unwrap(),
+                &media,
+                &media.filename,
+                &previews,
+                false,
+            ),
             None,
             Message::CloseImage,
         );
@@ -803,7 +826,7 @@ mod tests {
             (420.0, 285.0),
         );
         assert!(
-            matches!(&sent[..], [Message::Act(Act::CopyMediaImage(copied))] if *copied == media),
+            matches!(&sent[..], [Message::CopyImage(copied, Origin::Viewer)] if *copied == media),
             "{sent:?}"
         );
     }

@@ -18,7 +18,7 @@ use crate::{
     icons,
     popover::{Edge, Side, popover},
     reorder::{self, Reorder},
-    style, topic,
+    room, style, topic,
 };
 
 const MENU_WIDTH: f32 = 300.0;
@@ -87,7 +87,7 @@ impl RoomCalls {
     }
 
     fn message(&self, message: Message) -> app::Message {
-        app::Message::Calls(self.room.clone(), message)
+        room::Message::Calls(message).to(&self.room)
     }
 
     /// The service "Start call" uses: the space's, else the first own one.
@@ -242,7 +242,7 @@ impl RoomCalls {
                 .collect();
             let room = self.room.clone();
             menu = menu.push(reorder::list(order, rows, can_edit && many, move |m| {
-                app::Message::Calls(room.clone(), message(m))
+                room::Message::Calls(message(m)).to(&room)
             }));
         }
         if !topic.links.is_empty() {
@@ -271,7 +271,7 @@ impl RoomCalls {
                     .width(Length::Fill)
                     .padding([4, 10])
                     .style(style::list_item(false))
-                    .on_press(app::Message::Topic(self.room.clone(), topic::Message::Edit)),
+                    .on_press(room::Message::Topic(topic::Message::Edit).to(&self.room)),
             );
         }
         if let Some(error) = &self.error {

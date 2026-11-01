@@ -10,13 +10,13 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, row, text, text_editor},
 };
-use mtrx_core::{Member, UserId};
+use mtrx_core::{Member, OwnedRoomId, UserId};
 
 use crate::{
     app,
     avatar::{Avatars, Shape},
     ellipsis::ellipsis,
-    style,
+    room, style,
 };
 
 /// Candidates offered at most.
@@ -180,8 +180,10 @@ pub fn insert(content: &mut text_editor::Content, query: &Query, mention: &str) 
     content.perform(Action::Edit(Edit::Paste(Arc::new(format!("{mention} ")))));
 }
 
-/// The candidates, `selected` highlighted; a click completes with one.
+/// The candidates, `selected` highlighted; a click completes with one in
+/// `room`'s composer.
 pub fn view<'a>(
+    room: &OwnedRoomId,
     candidates: &[Candidate<'_>],
     selected: usize,
     avatars: &Avatars,
@@ -223,7 +225,7 @@ pub fn view<'a>(
         .width(Length::Fill)
         .padding([3, 6])
         .style(style::list_item(i == selected))
-        .on_press(app::Message::Mention(Message::Pick(candidate.mention())))
+        .on_press(room::Message::Mention(Message::Pick(candidate.mention())).to(room))
         .into()
     });
     container(column(rows).spacing(1))

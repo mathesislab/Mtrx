@@ -502,7 +502,10 @@ fn space_topic<'a>(
     let Some(preview) = topic::preview(&parsed, view.call_services, can_edit) else {
         return top;
     };
-    let message = |message| Message::Topic(space.clone(), message);
+    let message = {
+        let space = space.clone();
+        move |message| Message::SpaceTopic(space.clone(), message)
+    };
     let open = panel.open;
     let mut line = row![icons::chevron(11.0, open, |theme| {
         theme
@@ -531,8 +534,10 @@ fn space_topic<'a>(
     .spacing(2);
     let shown = open.then(|| {
         container(
-            scrollable(container(panel.view(space, &parsed, view.call_services)).padding(14))
-                .height(Length::Shrink),
+            scrollable(
+                container(panel.view(&parsed, view.call_services, message.clone())).padding(14),
+            )
+            .height(Length::Shrink),
         )
         .width(Length::Fill)
         .max_height(TOPIC_HEIGHT)
