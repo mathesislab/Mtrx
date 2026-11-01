@@ -181,7 +181,7 @@ final class TimelineChangesTests: XCTestCase {
         // The library's own, once it has it.
         let alice = Make.reader("alice")
         timeline.listener?.onUpdate(
-            items: [bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])])])
+            rows: [bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])])])
         await eventually { self.reactions() == [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])] }
     }
 
@@ -192,7 +192,7 @@ final class TimelineChangesTests: XCTestCase {
         // Until the library shows it, its stale state is not shown: the
         // reaction of someone else, added meanwhile, is.
         timeline.listener?.onUpdate(
-            items: [bobsMessage(reactions: [Reaction(key: "👍", count: 3, byUs: true, senders: [])])])
+            rows: [bobsMessage(reactions: [Reaction(key: "👍", count: 3, byUs: true, senders: [])])])
         await eventually { self.reactions() == [Reaction(key: "👍", count: 2, byUs: false, senders: [])] }
     }
 
