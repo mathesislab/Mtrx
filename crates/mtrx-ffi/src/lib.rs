@@ -41,6 +41,10 @@ pub use manage::{
 };
 pub use presence::{Presence, PresenceListener, PresenceState};
 pub use push::{NotificationContent, PusherInfo};
+pub use room_list::{
+    Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,
+    SpaceEntry, SpaceKey,
+};
 pub use rooms::{
     Address, DirectoryKind, DirectoryPage, DirectoryRoom, JoinAccess, Membership, NewRoom,
     RoomLink, Topic, compose_topic, parse_address, parse_topic,

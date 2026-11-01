@@ -12,10 +12,12 @@ mod categories;
 mod connection;
 mod directory;
 mod drafts;
+mod echo;
 mod emoji;
 mod encryption;
 mod error;
 mod google;
+mod lists;
 mod media;
 mod members;
 mod notes;
@@ -55,6 +57,9 @@ pub use encryption::{
 };
 pub use error::{Error, Result};
 pub use google::{Google, GoogleClient};
+pub use lists::{
+    Badges, ListSection, RoomLists, RoomSort, SectionChoice, SectionLayout, SpaceEntry, SpaceKey,
+};
 pub use media::MediaRef;
 pub use members::{
     Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,
@@ -76,9 +81,7 @@ pub use scheduled::{ScheduledFile, ScheduledMessage};
 pub use secrets::{SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
-pub use spaces::{
-    RoomsBySpace, SpaceMembers, SpaceRooms, descendants, home_rooms, space_rooms, top_level_spaces,
-};
+pub use spaces::{SpaceMembers, descendants, home_rooms, space_rooms, top_level_spaces};
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
     MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,

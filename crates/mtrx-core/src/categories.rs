@@ -7,7 +7,7 @@
 //! else sees them. Favourites and low priority are the standard Matrix room
 //! tags, shared with other clients.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 use futures_util::Stream;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId, events::macros::EventContent};
@@ -358,8 +358,16 @@ impl Session {
         self.categories.change(change).await
     }
 
-    /// Set the room's favourite or low priority tag, or remove both.
+    /// Set the room's favourite or low priority tag, or remove both. The
+    /// room list shows it at once ([`Session::room_lists`]).
     pub async fn set_room_tag(&self, room: &RoomId, tag: RoomTag) -> Result<()> {
+        self.echoes.set_tag(room, tag);
+        let result = self.save_room_tag(room, tag).await;
+        (self.echoes).tag_answered(room, tag, result.is_ok(), Instant::now());
+        result
+    }
+
+    async fn save_room_tag(&self, room: &RoomId, tag: RoomTag) -> Result<()> {
         let room = self.room(room)?;
         match tag {
             RoomTag::Favourite => room.set_is_favourite(true, None).await?,

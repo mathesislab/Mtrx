@@ -194,37 +194,38 @@ pub struct SpaceRooms {
 
 impl RoomListState {
     /// `notes`: the Notes to self's room, if any.
-    pub(crate) fn new(
-        state: &core::RoomListState,
-        by_space: core::RoomsBySpace,
-        categories: &core::RoomCategories,
-        notes: Option<&core::OwnedRoomId>,
-        drafts: &std::collections::BTreeSet<core::OwnedRoomId>,
-    ) -> Self {
+    pub(crate) fn new(lists: &core::RoomLists, notes: Option<&core::OwnedRoomId>) -> Self {
         let ids = |ids: &[core::OwnedRoomId]| ids.iter().map(ToString::to_string).collect();
-        Self {
-            rooms: state.rooms.iter().map(RoomSummary::from).collect(),
-            loaded: state.loaded,
-            spaces: by_space
-                .spaces
-                .into_iter()
-                .map(|space| {
-                    let layout = categories.layout(Some(&space.space));
-                    SpaceRooms {
-                        space_id: space.space.to_string(),
-                        room_ids: ids(&space.rooms),
-                        sections: space
-                            .sections
-                            .iter()
-                            .map(|(section, rooms)| section_of(section, layout, ids(rooms)))
+        let grouping = core::Grouping::default();
+        let mut spaces = Vec::new();
+        let mut outside = Vec::new();
+        for entry in &lists.spaces {
+            match &entry.key {
+                core::SpaceKey::Space(space) => {
+                    let key = core::SpaceKey::Space(space.clone());
+                    let layout = lists.categories.layout(Some(space));
+                    spaces.push(SpaceRooms {
+                        space_id: space.to_string(),
+                        room_ids: ids(&entry.rooms),
+                        sections: (lists.sections(&key, &grouping).iter())
+                            .map(|(section, rooms)| {
+                                let rooms = rooms.iter().map(|r| r.id.to_string()).collect();
+                                section_of(section, layout, rooms)
+                            })
                             .collect(),
-                    }
-                })
-                .collect(),
-            rooms_outside_spaces: ids(&by_space.outside),
-            notes_at_top: categories.notes_at_top(),
+                    });
+                }
+                _ => outside = ids(&entry.rooms),
+            }
+        }
+        Self {
+            rooms: lists.rooms.iter().map(RoomSummary::from).collect(),
+            loaded: lists.loaded,
+            spaces,
+            rooms_outside_spaces: outside,
+            notes_at_top: lists.notes_at_top(),
             notes_room_id: notes.map(ToString::to_string),
-            drafts: drafts.iter().map(ToString::to_string).collect(),
+            drafts: lists.drafts.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -234,22 +235,13 @@ fn section_of(
     layout: &core::Layout,
     room_ids: Vec<String>,
 ) -> RoomSection {
-    let (key, kind, name) = match section {
-        core::Section::Invites => ("invites".into(), SectionKind::Invites, String::new()),
-        core::Section::Favourites => ("favourites".into(), SectionKind::Favourites, String::new()),
-        core::Section::People => (
-            "direct_messages".into(),
-            SectionKind::DirectMessages,
-            String::new(),
-        ),
-        core::Section::Rooms => ("rooms".into(), SectionKind::Rooms, String::new()),
-        core::Section::LowPriority => (
-            "low_priority".into(),
-            SectionKind::LowPriority,
-            String::new(),
-        ),
+    let (kind, name) = match section {
+        core::Section::Invites => (SectionKind::Invites, String::new()),
+        core::Section::Favourites => (SectionKind::Favourites, String::new()),
+        core::Section::People => (SectionKind::DirectMessages, String::new()),
+        core::Section::Rooms => (SectionKind::Rooms, String::new()),
+        core::Section::LowPriority => (SectionKind::LowPriority, String::new()),
         core::Section::Category(id) => (
-            format!("category:{id}"),
             SectionKind::Category,
             layout
                 .category(id)
@@ -258,7 +250,7 @@ fn section_of(
         ),
     };
     RoomSection {
-        key,
+        key: section.key(),
         kind,
         name,
         room_ids,
@@ -737,7 +729,10 @@ fn membership_change(change: core::MembershipChange) -> MembershipChange {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        collections::{HashMap, HashSet},
+        time::Duration,
+    };
 
     use mtrx_format::Document;
 
@@ -999,28 +994,27 @@ mod tests {
             joined_members: 2,
             pinned: Vec::new(),
         };
-        let state = core::RoomListState {
-            rooms: vec![room],
-            loaded: true,
+        let space = core::RoomSummary {
+            id: "!space:example.org".try_into().unwrap(),
+            kind: core::RoomKind::Space,
+            direct_user: None,
+            ..room.clone()
         };
-        let by_space = core::RoomsBySpace {
-            spaces: vec![core::SpaceRooms {
-                space: "!space:example.org".try_into().unwrap(),
-                rooms: vec!["!room:example.org".try_into().unwrap()],
-                sections: vec![(
-                    core::Section::People,
-                    vec!["!room:example.org".try_into().unwrap()],
-                )],
-            }],
-            outside: Vec::new(),
-        };
-        let state = RoomListState::new(
-            &state,
-            by_space,
-            &Default::default(),
-            None,
-            &Default::default(),
+        let members = HashMap::from([(
+            space.id.clone(),
+            HashSet::from(["@bob:example.org".try_into().unwrap()]),
+        )]);
+        let lists = core::RoomLists::new(
+            core::RoomListState {
+                rooms: vec![room, space],
+                loaded: true,
+            },
+            Default::default(),
+            members,
+            &core::OwnedUserId::try_from("@me:example.org").unwrap(),
+            Default::default(),
         );
+        let state = RoomListState::new(&lists, None);
         assert!(state.notes_at_top && state.notes_room_id.is_none());
         assert!(state.loaded);
         let summary = &state.rooms[0];
@@ -1029,18 +1023,21 @@ mod tests {
         assert_eq!(summary.direct_user_id.as_deref(), Some("@bob:example.org"));
         assert_eq!(summary.last_activity, Some(at(5)));
         assert_eq!(summary.unread_mentions, 1);
+        let space = &state.spaces[0];
+        assert_eq!(space.space_id, "!space:example.org");
+        assert_eq!(space.room_ids, ["!room:example.org"]);
+        let direct = space
+            .sections
+            .iter()
+            .find(|s| s.kind == SectionKind::DirectMessages);
         assert_eq!(
-            state.spaces,
-            [SpaceRooms {
-                space_id: "!space:example.org".into(),
+            direct,
+            Some(&RoomSection {
+                key: "direct_messages".into(),
+                kind: SectionKind::DirectMessages,
+                name: String::new(),
                 room_ids: vec!["!room:example.org".into()],
-                sections: vec![RoomSection {
-                    key: "direct_messages".into(),
-                    kind: SectionKind::DirectMessages,
-                    name: String::new(),
-                    room_ids: vec!["!room:example.org".into()],
-                }],
-            }]
+            })
         );
     }
 
