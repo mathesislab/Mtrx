@@ -1779,6 +1779,59 @@ async fn timeline_shows_its_start() -> Result<()> {
     Ok(())
 }
 
+/// A message far back is found by loading older events; one not in the
+/// room is not, once its start is loaded.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn seeking_a_message_far_back() -> Result<()> {
+    let (name, alice) = new_user("seek").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("seek".into()),
+            ..Default::default()
+        })
+        .await?;
+    let timeline = alice.session.timeline(&room).await?;
+    let send = |text: String| {
+        let timeline = &timeline;
+        async move {
+            let pending = timeline.send_markdown(&text, None).await?;
+            anyhow::Ok(timeout("send", pending.sent()).await??)
+        }
+    };
+    let far_back = send("Far back".into()).await?;
+    for i in 0..80 {
+        send(format!("Filler {i}")).await?;
+    }
+
+    // A new device loads only the latest messages.
+    let second = login(&name).await?;
+    let list = second.session.room_list().await?;
+    wait_for("room synced", list.updates(), |s| {
+        s.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    let timeline = second.session.timeline(&room).await?;
+    assert!(!has_message(&timeline.current(), "Far back"));
+    let id = timeout("seek", timeline.seek(&far_back)).await??;
+    let found = find_message(&timeline.current(), "Far back").map(|e| e.id.clone());
+    assert_eq!(found.as_ref(), Some(&id));
+    // There now: no loading.
+    assert_eq!(timeout("item", timeline.item_of(&far_back)).await?, id);
+
+    let missing: mtrx_core::OwnedEventId =
+        format!("$missing:{}", second.session.user_id().server_name())
+            .try_into()
+            .unwrap();
+    let not_found = timeout("seek missing", timeline.seek(&missing)).await?;
+    assert!(
+        matches!(not_found, Err(mtrx_core::Error::EventNotFound)),
+        "{not_found:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn contacts_and_user_info() -> Result<()> {
@@ -2203,6 +2256,22 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     s.save_draft(&room, &Draft::default()).await?;
     assert_eq!(s.draft(&room).await?, None);
     assert!(with_drafts.next().await.unwrap().is_empty());
+
+    // Kept by a keeper, as the composer changes.
+    let keeper = s.draft_keeper(&other);
+    assert_eq!(keeper.restore().await, None);
+    let elsewhere = Draft {
+        text: "elsewhere".into(),
+        reply_to: None,
+    };
+    keeper.changed(elsewhere.clone());
+    keeper.flush().await;
+    assert_eq!(s.draft(&other).await?, Some(elsewhere.clone()));
+    assert_eq!(
+        with_drafts.next().await.unwrap(),
+        std::collections::BTreeSet::from([other.clone()])
+    );
+    assert_eq!(s.draft_keeper(&other).restore().await, Some(elsewhere));
     Ok(())
 }
 

@@ -24,6 +24,8 @@ func errorMessage(_ error: Error) -> String? {
             return reason
         case .PresenceUnavailable:
             return "This server does not share presence."
+        case .EventNotFound:
+            return "The original message was not found in the room's history"
         case .SecretStorage(let reason):
             return "The Keychain failed: \(reason)"
         }

@@ -843,19 +843,25 @@ fn rooms_made_set_up_joined_and_left() {
         text: "half a thought".into(),
         reply_to: Some("$answered:example.org".into()),
     };
-    block_on(a.session.save_draft(room.clone(), draft.clone())).unwrap();
-    assert_eq!(
-        block_on(a.session.draft(room.clone())).unwrap(),
-        Some(draft)
-    );
+    let keeper = a.session.draft_keeper(room.clone());
+    assert_eq!(block_on(keeper.restore()), None);
+    keeper.changed(draft.clone());
+    block_on(keeper.flush());
     wait_for("the room's draft", &a_updates, |s: &Arc<RoomLists>| {
         s.drafts() == [room.clone()]
     });
-    block_on(a.session.save_draft(room.clone(), Default::default())).unwrap();
-    assert_eq!(block_on(a.session.draft(room.clone())).unwrap(), None);
+    let keeper = a.session.draft_keeper(room.clone());
+    assert_eq!(block_on(keeper.restore()), Some(draft));
+    assert_eq!(block_on(keeper.restore()), None, "once");
+    keeper.changed(Default::default());
+    block_on(keeper.flush());
     wait_for("no drafts", &a_updates, |s: &Arc<RoomLists>| {
         s.drafts().is_empty()
     });
+    assert_eq!(
+        block_on(a.session.draft_keeper(room.clone()).restore()),
+        None
+    );
 
     // Its settings: ours to change; the topic with a call link.
     let settings = block_on(a.session.room_settings(room.clone())).unwrap();
@@ -1126,6 +1132,22 @@ fn reactions_replies_edits_receipts_and_typing() {
         })
     );
     let bob_question_row = find(items, "Which dataset?").unwrap().0.to_owned();
+    // Going to the message quoted: its row. One not in the room is not
+    // found, once the room's start is loaded.
+    let quoted = message(reply).reply_to.clone().unwrap().event_id;
+    assert_eq!(
+        block_on(bob_timeline.seek(quoted.clone())).unwrap(),
+        bob_question_row
+    );
+    // There now: found without loading.
+    assert_eq!(
+        block_on(bob_timeline.item_of(quoted)).unwrap(),
+        bob_question_row
+    );
+    assert!(matches!(
+        block_on(bob_timeline.seek("$missing:localhost".into())),
+        Err(MtrxError::EventNotFound)
+    ));
 
     // Reactions, counted and named on both sides, toggled on and off.
     let reactions = |items: &[TimelineRow]| {

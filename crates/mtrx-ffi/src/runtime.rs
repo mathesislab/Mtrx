@@ -4,7 +4,10 @@
 
 use std::{future::Future, sync::LazyLock};
 
-use tokio::{runtime::Runtime, task::JoinHandle};
+use tokio::{
+    runtime::{EnterGuard, Runtime},
+    task::JoinHandle,
+};
 
 static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -23,6 +26,12 @@ pub(crate) async fn run<T: Send + 'static>(future: impl Future<Output = T> + Sen
         // Never cancelled while awaited: only dropping `task` aborts it.
         Err(error) => std::panic::resume_unwind(error.into_panic()),
     }
+}
+
+/// Enter the runtime until the guard is dropped: for calls that are not
+/// async but start tasks.
+pub(crate) fn enter() -> EnterGuard<'static> {
+    RUNTIME.enter()
 }
 
 struct AbortOnDrop<T>(JoinHandle<T>);

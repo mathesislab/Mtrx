@@ -28,7 +28,7 @@ mod timeline;
 mod types;
 
 pub use client::{Mtrx, OAuthLogin};
-pub use drafts::Draft;
+pub use drafts::{Draft, DraftKeeper};
 pub use encryption::{
     DeviceInfo, EncryptionState, EncryptionStateListener, RecoveryListener, RecoveryStatus,
     RecoveryStep, Verification, VerificationEmoji, VerificationListener,
