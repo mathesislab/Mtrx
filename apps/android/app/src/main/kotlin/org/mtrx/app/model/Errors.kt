@@ -10,5 +10,6 @@ fun describe(error: MtrxException): String? = when (error) {
     is MtrxException.RoomNotFound -> "No room ${error.roomId}"
     is MtrxException.InvalidInput -> error.reason
     is MtrxException.SecretStorage -> "Secret storage: ${error.reason}"
+    is MtrxException.PresenceUnavailable -> "This server does not share presence"
     is MtrxException.Other -> error.reason
 }

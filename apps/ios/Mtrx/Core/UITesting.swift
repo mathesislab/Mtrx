@@ -150,7 +150,8 @@ private final class UITestSession: Session, @unchecked Sendable {
 
     override func startSync() async {}
     override func stopSync() async {}
-    override func setPresence(state: PresenceState, statusMessage: String?) async throws {}
+    override func presenceActivity(activity: PresenceActivity) async throws {}
+    override func setPresenceSharing(on: Bool) async throws {}
 
     override func presence(userId: String) async throws -> Presence {
         throw MtrxError.Other(reason: "No presence here")

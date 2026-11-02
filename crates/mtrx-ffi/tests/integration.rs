@@ -23,11 +23,12 @@ use mtrx_core::{
 use mtrx_ffi::{
     ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
     MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, Presence,
-    PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction, Reader, RecoveryListener,
-    RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists, RoomListsListener, RoomSort,
-    RowContent, SecretBackend, SecretError, SectionLayout, SendState, Session, SpaceKey,
-    TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, UserProfile, Verification,
-    VerificationListener, VerificationRequestListener, VerificationState,
+    PresenceActivity, PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState,
+    Reaction, Reader, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind,
+    RoomLists, RoomListsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout,
+    SendState, Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener,
+    UserProfile, Verification, VerificationListener, VerificationRequestListener,
+    VerificationState,
 };
 use tempfile::TempDir;
 
@@ -1522,15 +1523,18 @@ fn presence_is_set_read_and_followed() {
     let (alice, bob) = (sign_in(&names[0]), sign_in(&names[1]));
     let alice_id = alice.session.user_id();
 
+    // Ours from what the app does: online in the foreground.
+    block_on(alice.session.set_presence_sharing(true)).unwrap();
     block_on(
         alice
             .session
-            .set_presence(PresenceState::Online, Some("In a meeting".into())),
+            .presence_activity(PresenceActivity::Foreground),
     )
     .unwrap();
     let seen = block_on(bob.session.presence(alice_id.clone())).unwrap();
     assert_eq!(seen.state, PresenceState::Online);
-    assert_eq!(seen.status_message.as_deref(), Some("In a meeting"));
+    assert_eq!(seen.dot, Some(PresenceDot::Online));
+    assert_eq!(seen.line.as_deref(), Some("Active now"));
     assert!(
         seen.currently_active && seen.last_active.is_some(),
         "{seen:?}"
@@ -1546,23 +1550,19 @@ fn presence_is_set_read_and_followed() {
         state_of(p) == Some(PresenceState::Online)
     });
 
-    // Read again within about a minute; the library keeps Alice's presence
-    // meanwhile (Synapse drops one not refreshed for 30 s), so it changes
-    // to unavailable, not offline.
-    block_on(alice.session.set_presence(PresenceState::Unavailable, None)).unwrap();
-    let changed = wait_within(
-        Duration::from_secs(100),
-        "Alice no longer online",
-        &updates,
-        |p| state_of(p) != Some(PresenceState::Online),
-    );
-    let changed = &changed.unwrap()[&alice_id];
-    assert_eq!(changed.state, PresenceState::Unavailable);
-    assert_eq!(changed.status_message, None);
-
-    block_on(alice.session.set_presence(PresenceState::Offline, None)).unwrap();
+    // Offline in the background; the watcher reads it again within about
+    // a minute.
+    block_on(
+        alice
+            .session
+            .presence_activity(PresenceActivity::Background),
+    )
+    .unwrap();
     let seen = block_on(bob.session.presence(alice_id.clone())).unwrap();
     assert_eq!(seen.state, PresenceState::Offline);
+    wait_within(Duration::from_secs(100), "Alice offline", &updates, |p| {
+        state_of(p) == Some(PresenceState::Offline)
+    });
 
     assert!(matches!(
         block_on(bob.session.presence("alice".into())),

@@ -18,10 +18,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Access, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent, History,
-    JoinAccess, Membership, MembershipChange, NewRoom, NotifyMode, Permissions, PinsChange,
-    PresenceState, Profile, RecoveryStatus, Role, RoomKind, SecretStore, Session, TimelineEntry,
-    VerificationState,
+    Access, Activity, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent,
+    History, JoinAccess, Membership, MembershipChange, NewRoom, NotifyMode, Permissions,
+    PinsChange, PresenceState, Profile, RecoveryStatus, Role, RoomKind, SecretStore, Session,
+    TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -2105,6 +2105,16 @@ async fn presence_between_users() -> Result<()> {
         .session
         .set_presence(PresenceState::Offline, None)
         .await?;
+    let seen = bob.session.presence(&alice_id).await?;
+    assert_eq!(seen.state, PresenceState::Offline);
+
+    // Ours from the app's activity: online in the foreground, offline in
+    // the background.
+    let own = alice.session.own_presence();
+    own.activity(Activity::Foreground).await?;
+    let seen = bob.session.presence(&alice_id).await?;
+    assert_eq!(seen.state, PresenceState::Online);
+    own.activity(Activity::Background).await?;
     let seen = bob.session.presence(&alice_id).await?;
     assert_eq!(seen.state, PresenceState::Offline);
 

@@ -2,44 +2,8 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// The dot and the line under the name, per state and age.
-final class PresenceTextTests: XCTestCase {
-    private let now = Make.start
-
-    func testDots() {
-        XCTAssertEqual(PresenceText.dot(Make.presence(.online)), .online)
-        XCTAssertEqual(PresenceText.dot(Make.presence(.unavailable)), .idle)
-        XCTAssertNil(PresenceText.dot(Make.presence(.offline, lastActive: now)))
-        XCTAssertNil(PresenceText.dot(nil))
-        XCTAssertEqual(PresenceText.Dot.online.label, "Online")
-        XCTAssertEqual(PresenceText.Dot.idle.label, "Idle")
-    }
-
-    func testLines() {
-        let line = { (presence: Presence?) in PresenceText.line(presence, now: self.now, locale: Locale(identifier: "en_US")) }
-        XCTAssertEqual(line(Make.presence(.online)), "Active now")
-        XCTAssertEqual(line(Make.presence(.unavailable)), "Idle")
-        // The status message first, whatever the state.
-        XCTAssertEqual(line(Make.presence(.online, status: "Lunch")), "Lunch")
-        XCTAssertEqual(line(Make.presence(.offline, lastActive: now, status: "On holiday")), "On holiday")
-        XCTAssertEqual(line(Make.presence(.unavailable, status: "")), "Idle")
-        // Offline: when last active.
-        XCTAssertEqual(line(Make.presence(.offline, lastActive: now.addingTimeInterval(-30))), "Last active just now")
-        XCTAssertEqual(line(Make.presence(.offline, lastActive: now.addingTimeInterval(5))), "Last active just now")
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        formatter.locale = Locale(identifier: "en_US")
-        let twoHours = now.addingTimeInterval(-2 * 3600)
-        let ago = line(Make.presence(.offline, lastActive: twoHours))
-        XCTAssertEqual(ago, "Last active \(formatter.localizedString(for: twoHours, relativeTo: now))")
-        XCTAssertTrue(ago?.contains("2") == true, ago ?? "nil")
-        // Nothing to say.
-        XCTAssertNil(line(Make.presence(.offline)))
-        XCTAssertNil(line(nil))
-    }
-}
-
-/// Reading others' presence and setting ours, through the session model.
+/// Reading others' presence and telling the library what the app does,
+/// which sets ours, through the session model.
 @MainActor
 final class PresenceModelTests: XCTestCase {
     private var session: FakeSession!
@@ -58,11 +22,11 @@ final class PresenceModelTests: XCTestCase {
     }
 
     /// `sharing` nil: as never set.
-    private func start(sharing: Bool? = true, idleTime: TimeInterval = PresenceModel.idleTime) async {
+    private func start(sharing: Bool? = true) async {
         if let sharing {
             defaults.set(sharing, forKey: "sharePresence")
         }
-        model = SessionModel(session: session, defaults: defaults, idleTime: idleTime)
+        model = SessionModel(session: session, defaults: defaults)
         model.start()
         await eventually { self.session.roomListListener != nil }
     }
@@ -140,6 +104,28 @@ final class PresenceModelTests: XCTestCase {
         XCTAssertEqual(session.presenceSubscriptions[1].users, [Self.bob, Self.carol])
     }
 
+    func testSharingSyncDoesNotWaitForOurPresence() async {
+        session.ownPresenceHangs = true
+        await start()
+        model.setForeground(true)
+        await eventually { self.session.calls.count == 2 }
+        // In either order.
+        XCTAssertEqual(Set(session.calls), ["sharing true", "startSync"])
+        session.ownPresenceHangs = false
+        await eventually { self.session.calls.last == "presence foreground" }
+    }
+
+    func testNotSharingSyncWaitsUntilWeAreOffline() async throws {
+        session.ownPresenceHangs = true
+        await start(sharing: false)
+        model.setForeground(true)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(session.calls, ["sharing false"])
+        session.ownPresenceHangs = false
+        await eventually { self.session.calls.contains("startSync") }
+        XCTAssertEqual(session.calls, ["sharing false", "presence foreground", "startSync"])
+    }
+
     func testSignOutEndsTheSubscriptionAndGoesOfflineFirst() async throws {
         await start()
         model.setForeground(true)
@@ -147,7 +133,7 @@ final class PresenceModelTests: XCTestCase {
         await eventually { self.session.calls.contains("startSync") }
         try await model.logout()
         XCTAssertEqual(session.presenceSubscriptions[0].handle.cancelled, true)
-        XCTAssertEqual(session.calls.suffix(2), ["presence offline", "logout"])
+        XCTAssertEqual(session.calls.suffix(2), ["presence signOut", "logout"])
         // The preference stays.
         XCTAssertEqual(defaults.object(forKey: "sharePresence") as? Bool, true)
     }
@@ -191,7 +177,7 @@ final class PresenceModelTests: XCTestCase {
         session.presenceSubscriptions[0].listener.onUpdate(presences: [Self.bob: Make.presence(.online)])
         await eventually { self.presence.presence(of: Self.bob) != nil }
 
-        session.presenceResult = .failure(MtrxError.Other(reason: PresenceModel.unavailableReason))
+        session.presenceResult = .failure(MtrxError.PresenceUnavailable)
         await presence.refresh(Self.bob)
         await assertHidden()
     }
@@ -204,118 +190,99 @@ final class PresenceModelTests: XCTestCase {
         XCTAssertEqual(session.presenceSubscriptions.map(\.handle.cancelled), [true], file: file, line: line)
 
         await settle()
-        let set = session.presencesSet
+        let told = session.presenceCalls
         await push(rooms(extra: [Make.room("!dan", kind: .direct, name: "Dan", directUser: Self.dan)]))
         model.setForeground(false)
         model.setForeground(true)
+        presence.input()
         presence.setSharing(false)
         await settle()
         XCTAssertEqual(session.presenceSubscriptions.count, 1, file: file, line: line)
-        XCTAssertEqual(session.presencesSet, set, file: file, line: line)
+        XCTAssertEqual(session.presenceCalls, told, file: file, line: line)
     }
 
     // MARK: Ours
 
-    func testForegroundOnlineAndBackgroundOfflineBeforeSyncStops() async {
+    func testForegroundAndBackgroundBeforeSyncStops() async {
         await start()
         model.setForeground(true)
-        await eventually { self.session.calls.count == 2 }
-        XCTAssertEqual(Set(session.calls), ["presence online", "startSync"])
+        await eventually { self.session.calls.count == 3 }
+        XCTAssertEqual(session.presenceCalls, ["sharing true", "presence foreground"])
 
         model.setForeground(false)
-        await eventually { self.session.calls.count == 4 }
-        XCTAssertEqual(session.calls.suffix(2), ["presence offline", "stopSync"])
+        await eventually { self.session.calls.count == 5 }
+        XCTAssertEqual(session.calls.suffix(2), ["presence background", "stopSync"])
 
+        // "Share my presence" goes to the library once.
         model.setForeground(true)
-        await eventually { self.session.calls.count == 6 }
-        XCTAssertEqual(Set(session.calls.suffix(2)), ["presence online", "startSync"])
+        await eventually { self.session.calls.count == 7 }
+        XCTAssertEqual(session.presenceCalls.suffix(2), ["presence background", "presence foreground"])
     }
 
-    func testNotSharingGoesOfflineOnceBeforeSyncFirstStarts() async {
+    func testNotSharingIsPassedBeforeSyncFirstStarts() async {
         await start(sharing: false)
         model.setForeground(true)
-        await eventually { self.session.calls.count == 2 }
-        XCTAssertEqual(session.calls, ["presence offline", "startSync"])
-
-        model.setForeground(false)
-        model.setForeground(true)
-        await eventually { self.session.syncStarts == 2 }
-        await settle()
-        XCTAssertEqual(session.calls, ["presence offline", "startSync", "stopSync", "startSync"])
+        await eventually { self.session.calls.count == 3 }
+        XCTAssertEqual(session.calls, ["sharing false", "presence foreground", "startSync"])
     }
 
     func testSharingIsOnByDefault() async {
         await start(sharing: nil)
         XCTAssertTrue(presence.sharing)
         model.setForeground(true)
-        await eventually { self.session.presencesSet == ["online"] }
+        await eventually { self.session.presenceCalls == ["sharing true", "presence foreground"] }
     }
 
     func testTheSwitch() async {
         await start()
         model.setForeground(true)
-        await eventually { self.session.presencesSet == ["online"] }
+        await eventually { self.session.syncStarts == 1 }
         presence.setSharing(false)
-        await eventually { self.session.presencesSet == ["online", "offline"] }
+        await eventually { self.session.presenceCalls.last == "sharing false" }
         XCTAssertEqual(defaults.object(forKey: "sharePresence") as? Bool, false)
-        // Off: no lifecycle calls.
-        model.setForeground(false)
-        model.setForeground(true)
-        await eventually { self.session.syncStarts == 2 }
-        presence.input()
-        await settle()
-        XCTAssertEqual(session.presencesSet, ["online", "offline"])
-
         presence.setSharing(true)
-        await eventually { self.session.presencesSet == ["online", "offline", "online"] }
+        await eventually { self.session.presenceCalls.last == "sharing true" }
         XCTAssertEqual(defaults.object(forKey: "sharePresence") as? Bool, true)
-
-        // In the background, turning it on sets nothing until the
-        // foreground.
-        presence.setSharing(false)
-        model.setForeground(false)
+        // Unchanged: nothing to say.
         presence.setSharing(true)
-        await eventually { self.session.syncStops == 2 }
         await settle()
-        XCTAssertEqual(session.presencesSet, ["online", "offline", "online", "offline"])
-        model.setForeground(true)
-        await eventually { self.session.presencesSet.last == "online" && self.session.presencesSet.count == 5 }
+        XCTAssertEqual(session.presenceCalls.count, 4)
     }
 
-    func testIdleAfterNoInputThenOnlineAgain() async {
-        await start(idleTime: 0.2)
+    func testInputInTheForegroundIsPassedOnInOrder() async {
+        await start()
+        presence.input()
         model.setForeground(true)
-        await eventually { self.session.presencesSet == ["online"] }
-        // Input keeps us online, without calls.
-        for _ in 0..<3 {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            presence.input()
-        }
-        XCTAssertEqual(session.presencesSet, ["online"])
-        await eventually { self.session.presencesSet == ["online", "unavailable"] }
-        XCTAssertEqual(presence.own, .unavailable)
-
         presence.input()
         presence.input()
-        await eventually { self.session.presencesSet == ["online", "unavailable", "online"] }
-        await eventually { self.session.presencesSet == ["online", "unavailable", "online", "unavailable"] }
-
-        // Not in the background.
         model.setForeground(false)
         presence.input()
         await eventually { self.session.syncStops == 1 }
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        XCTAssertEqual(session.presencesSet, ["online", "unavailable", "online", "unavailable", "offline"])
+        await settle()
+        XCTAssertEqual(session.presenceCalls, [
+            "sharing true", "presence foreground", "presence input", "presence input", "presence background",
+        ])
     }
 
     func testFailuresToSetOursAreIgnored() async {
         await start()
-        session.setPresenceError = MtrxError.Other(reason: "No connection")
+        session.ownPresenceError = MtrxError.Other(reason: "No connection")
         model.setForeground(true)
         await eventually { self.session.syncStarts == 1 }
         await settle()
         XCTAssertTrue(presence.available)
         XCTAssertNil(model.error)
+    }
+
+    func testHiddenWhenSettingOursIsRefused() async {
+        await start()
+        session.ownPresenceError = MtrxError.PresenceUnavailable
+        model.setForeground(true)
+        await push(rooms())
+        await eventually { !self.presence.available }
+        // Sync starts all the same.
+        await eventually { self.session.syncStarts == 1 }
+        XCTAssertTrue(session.presenceSubscriptions.allSatisfy(\.handle.cancelled))
     }
 
     /// Let tasks started on the main actor run.

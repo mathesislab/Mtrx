@@ -1,6 +1,5 @@
 package org.mtrx.app.ui
 
-import android.text.format.DateUtils
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -37,11 +36,3 @@ fun dayLabel(date: LocalDate, today: LocalDate): String = when {
     date.year == today.year -> date.format(longDay)
     else -> date.format(longDate)
 }
-
-/** How long before [now] [at] was, abbreviated, e.g. "2 hr. ago" (the locale's words). */
-fun timeAgo(at: Instant, now: Instant): String = DateUtils.getRelativeTimeSpanString(
-    at.toEpochMilli(),
-    now.toEpochMilli(),
-    DateUtils.MINUTE_IN_MILLIS,
-    DateUtils.FORMAT_ABBREV_RELATIVE,
-).toString()

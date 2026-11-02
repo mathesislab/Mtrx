@@ -111,7 +111,7 @@ mod tests {
             describe(user, &online, now),
             "user:         @alice:example.org\n\
              state:        online\n\
-             last active:  2 h ago\n\
+             last active:  2 hr ago\n\
              status:       In a meeting\n"
         );
         let active = Presence {

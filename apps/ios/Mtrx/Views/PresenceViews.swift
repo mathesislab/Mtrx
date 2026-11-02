@@ -9,7 +9,7 @@ extension View {
         -> some View
     {
         overlay(alignment: .bottomTrailing) {
-            if let dot = PresenceText.dot(presence) {
+            if let dot = presence?.dot {
                 let outer = size + 4
                 // The dot's centre on the circle, 45° below its right.
                 let offset = outer / 2 - avatar / 2 * (1 - 1 / 2.squareRoot())
@@ -19,7 +19,7 @@ extension View {
                     .padding(2)
                     .background(ring, in: Circle())
                     .offset(x: offset, y: offset)
-                    .accessibilityLabel(dot.label)
+                    .accessibilityLabel(presenceDotLabel(dot: dot))
             }
         }
     }
@@ -34,7 +34,7 @@ struct PresenceLine: View {
     var body: some View {
         // Ages update each minute.
         TimelineView(.everyMinute) { context in
-            if let line = PresenceText.line(presence, now: context.date) {
+            if let presence, let line = presenceLine(presence: presence, now: context.date) {
                 Text(line)
                     .font(font)
                     .foregroundStyle(.secondary)

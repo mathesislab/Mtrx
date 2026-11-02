@@ -71,7 +71,10 @@ pub use notifications::Notification;
 pub use people::{Contact, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
 pub use pins::PinsChange;
-pub use presence::{Presence, PresenceState, PresenceWatcher, describe_last_active};
+pub use presence::{
+    Activity, IDLE_AFTER, OwnPresence, Presence, PresenceDot, PresenceState, PresenceWatcher,
+    describe_last_active,
+};
 pub use profile::Profile;
 pub use push::{HttpPusher, PushNotification, PusherInfo};
 pub use room_colours::RoomListColours;

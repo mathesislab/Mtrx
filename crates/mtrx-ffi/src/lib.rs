@@ -39,7 +39,10 @@ pub use manage::{
     Access, Banned, History, LevelChoice, LevelConfirmation, Manage, Member, NotifyMode,
     Permissions, Role, RoomSettings, SpaceLink, level_confirmation, role_level, typed_level,
 };
-pub use presence::{Presence, PresenceListener, PresenceState};
+pub use presence::{
+    Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,
+    presence_line,
+};
 pub use push::{NotificationContent, PusherInfo};
 pub use room_list::{
     Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,
