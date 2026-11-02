@@ -120,9 +120,9 @@ final class PinnedModel: ObservableObject {
         do {
             let timeline = try await session.pinnedTimeline(roomId: roomId)
             self.timeline = timeline
-            let feed = Feed<[TimelineItem]>()
-            subscriptions.add(timeline.subscribe(listener: feed), feed) { [weak self] items in
-                self?.apply(items)
+            let feed = Feed<[TimelineRow]>()
+            subscriptions.add(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
+                self?.apply(rows)
             }
         } catch {
             self.error = errorMessage(error)
@@ -130,13 +130,13 @@ final class PinnedModel: ObservableObject {
         }
     }
 
-    func apply(_ items: [TimelineItem]) {
+    func apply(_ rows: [TimelineRow]) {
         loading = false
-        pins = items.compactMap { item in
-            guard case .event(let event) = item.content, case .message(let message) = event.content else {
+        pins = rows.compactMap { row in
+            guard let event = row.messageRow?.event, case .message(let message) = event.content else {
                 return nil
             }
-            return Pin(id: item.id, eventId: event.eventId, sender: event.displayName, text: message.summary)
+            return Pin(id: row.id, eventId: event.eventId, sender: event.displayName, text: message.summary)
         }
     }
 }

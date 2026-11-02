@@ -25,8 +25,8 @@ use mtrx_ffi::{
     MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, Presence,
     PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction, Reader, RecoveryListener,
     RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists, RoomListsListener, RoomSort,
-    SecretBackend, SecretError, SectionLayout, SendState, Session, SpaceKey, TimelineEvent,
-    TimelineItem, TimelineItemContent, TimelineListener, TypingListener, UserProfile, Verification,
+    RowContent, SecretBackend, SecretError, SectionLayout, SendState, Session, SpaceKey,
+    TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, UserProfile, Verification,
     VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
@@ -79,8 +79,8 @@ fn listed(lists: &RoomLists, key: SpaceKey) -> Vec<String> {
         .collect()
 }
 
-impl TimelineListener for Forward<Vec<TimelineItem>> {
-    fn on_update(&self, items: Vec<TimelineItem>) {
+impl TimelineRowsListener for Forward<Vec<TimelineRow>> {
+    fn on_update(&self, items: Vec<TimelineRow>) {
         self.send(items);
     }
 }
@@ -157,9 +157,9 @@ fn wait_within<T>(
     }
 }
 
-fn message_body(item: &TimelineItem) -> Option<&str> {
+fn message_body(item: &TimelineRow) -> Option<&str> {
     match &item.content {
-        TimelineItemContent::Event { event } => match &event.content {
+        RowContent::Message { event, .. } => match &event.content {
             EventContent::Message { message } => Some(&message.body),
             _ => None,
         },
@@ -237,11 +237,11 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
 
     let timeline = block_on(session.timeline(room_id.clone())).unwrap();
     let (items, item_updates) = forward();
-    let _timeline_handle = timeline.subscribe(items);
+    let _timeline_handle = timeline.subscribe_rows(items);
     block_on(timeline.paginate_back(20)).unwrap();
     let with_image = wait_for("the image", &item_updates, |items| {
         items.iter().any(|item| match &item.content {
-            TimelineItemContent::Event { event } => matches!(
+            RowContent::Message { event, .. } => matches!(
                 &event.content,
                 EventContent::Message { message } if message.media.is_some()
             ),
@@ -251,7 +251,7 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
     let media = with_image
         .iter()
         .find_map(|item| match &item.content {
-            TimelineItemContent::Event { event } => match &event.content {
+            RowContent::Message { event, .. } => match &event.content {
                 EventContent::Message { message } => message.media.clone(),
                 _ => None,
             },
@@ -274,7 +274,7 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
     let items = wait_for("our message, sent", &item_updates, |items| {
         items.iter().any(|item| {
             message_body(item) == Some("hello world")
-                && matches!(&item.content, TimelineItemContent::Event { event }
+                && matches!(&item.content, RowContent::Message { event, .. }
                     if event.own && event.event_id.is_some())
         })
     });
@@ -363,19 +363,19 @@ fn wait_for_encrypted_room(session: &Session, room_id: &str) {
 fn send(session: &Session, room_id: &str, text: &str) {
     let timeline = block_on(session.timeline(room_id.into())).unwrap();
     let (items, updates) = forward();
-    let _handle = timeline.subscribe(items);
+    let _handle = timeline.subscribe_rows(items);
     block_on(timeline.send_text(text.into())).unwrap();
-    wait_for("sent", &updates, |items: &Vec<TimelineItem>| {
+    wait_for("sent", &updates, |items: &Vec<TimelineRow>| {
         items.iter().any(|item| {
             message_body(item) == Some(text)
-                && matches!(&item.content, TimelineItemContent::Event { event }
+                && matches!(&item.content, RowContent::Message { event, .. }
                     if event.event_id.is_some())
         })
     });
 }
 
-fn is_undecryptable(item: &TimelineItem) -> bool {
-    matches!(&item.content, TimelineItemContent::Event { event }
+fn is_undecryptable(item: &TimelineRow) -> bool {
+    matches!(&item.content, RowContent::Message { event, .. }
         if event.content == EventContent::UnableToDecrypt && event.utd_cause.is_some())
 }
 
@@ -454,7 +454,7 @@ fn recovery_key_decrypts_history_on_a_new_device() {
     );
     let timeline = block_on(second.session.timeline(room_id.clone())).unwrap();
     let (items, item_updates) = forward();
-    let _timeline_handle = timeline.subscribe(items);
+    let _timeline_handle = timeline.subscribe_rows(items);
     paginate_to_start(&timeline);
     wait_for("an undecryptable message", &item_updates, |items| {
         items.iter().any(is_undecryptable)
@@ -539,7 +539,7 @@ fn emoji_verification_between_two_devices() {
     wait_for_encrypted_room(&new.session, &room_id);
     let timeline = block_on(new.session.timeline(room_id)).unwrap();
     let (items, item_updates) = forward();
-    let _timeline_handle = timeline.subscribe(items);
+    let _timeline_handle = timeline.subscribe_rows(items);
     paginate_to_start(&timeline);
     wait_for("an undecryptable message", &item_updates, |items| {
         items.iter().any(is_undecryptable)
@@ -962,8 +962,8 @@ fn red_dot_png() -> Vec<u8> {
 
 /// A timeline's items as its listener gets them, and the latest.
 struct Items {
-    updates: mpsc::Receiver<Vec<TimelineItem>>,
-    latest: Vec<TimelineItem>,
+    updates: mpsc::Receiver<Vec<TimelineRow>>,
+    latest: Vec<TimelineRow>,
     _handle: Arc<mtrx_ffi::TaskHandle>,
 }
 
@@ -971,14 +971,14 @@ impl Items {
     fn follow(timeline: &mtrx_ffi::Timeline) -> Self {
         let (items, updates) = forward();
         Self {
-            _handle: timeline.subscribe(items),
+            _handle: timeline.subscribe_rows(items),
             updates,
             latest: Vec::new(),
         }
     }
 
     /// Wait until the items match `pred` (maybe they do already).
-    fn wait(&mut self, what: &str, pred: impl Fn(&[TimelineItem]) -> bool) -> &[TimelineItem] {
+    fn wait(&mut self, what: &str, pred: impl Fn(&[TimelineRow]) -> bool) -> &[TimelineRow] {
         if !pred(&self.latest) {
             self.latest = wait_for(what, &self.updates, |items| pred(items));
         }
@@ -987,9 +987,9 @@ impl Items {
 }
 
 /// The row (its ID) and event of the message whose text is `body`.
-fn find<'a>(items: &'a [TimelineItem], body: &str) -> Option<(&'a str, &'a TimelineEvent)> {
+fn find<'a>(items: &'a [TimelineRow], body: &str) -> Option<(&'a str, &'a TimelineEvent)> {
     items.iter().find_map(|item| match &item.content {
-        TimelineItemContent::Event { event } if message_body(item) == Some(body) => {
+        RowContent::Message { event, .. } if message_body(item) == Some(body) => {
             Some((item.id.as_str(), event))
         }
         _ => None,
@@ -1004,7 +1004,7 @@ fn message(event: &TimelineEvent) -> &Message {
 }
 
 /// The message with `body`, sent (with an event ID).
-fn sent<'a>(items: &'a [TimelineItem], body: &str) -> Option<(&'a str, &'a TimelineEvent)> {
+fn sent<'a>(items: &'a [TimelineRow], body: &str) -> Option<(&'a str, &'a TimelineEvent)> {
     find(items, body).filter(|(_, event)| event.event_id.is_some())
 }
 
@@ -1127,7 +1127,7 @@ fn reactions_replies_edits_receipts_and_typing() {
     let bob_question_row = find(items, "Which dataset?").unwrap().0.to_owned();
 
     // Reactions, counted and named on both sides, toggled on and off.
-    let reactions = |items: &[TimelineItem]| {
+    let reactions = |items: &[TimelineRow]| {
         find(items, "Which dataset?").map(|(_, e)| message(e).reactions.clone())
     };
     let thumbs = |count, by_us, senders: &[&Reader]| {
@@ -1181,7 +1181,7 @@ fn reactions_replies_edits_receipts_and_typing() {
     bob_items.wait("Bob sees it deleted", |i| {
         i.iter().any(|item| {
             item.id == bob_reply_row
-                && matches!(&item.content, TimelineItemContent::Event { event }
+                && matches!(&item.content, RowContent::Message { event, .. }
                     if event.content == EventContent::Redacted)
         })
     });
@@ -1202,11 +1202,11 @@ fn reactions_replies_edits_receipts_and_typing() {
     // name.
     block_on(alice_timeline.send_text("Thanks".into())).unwrap();
     bob_items.wait("Bob gets the thanks", |i| sent(i, "Thanks").is_some());
-    let read_by_bob = |items: &[TimelineItem]| -> Vec<String> {
+    let read_by_bob = |items: &[TimelineRow]| -> Vec<String> {
         items
             .iter()
             .filter(|item| {
-                matches!(&item.content, TimelineItemContent::Event { event }
+                matches!(&item.content, RowContent::Message { event, .. }
                 if event.read_by.contains(&bob_reader))
             })
             .map(|item| item.id.clone())
@@ -1233,7 +1233,7 @@ fn failed_sends_are_retried_or_discarded() {
 
     // The server refuses events over 64 KiB, whatever we try.
     let too_long = "x".repeat(70_000);
-    let failed = |i: &[TimelineItem]| {
+    let failed = |i: &[TimelineRow]| {
         find(i, &too_long).is_some_and(|(_, e)| matches!(e.send_state, SendState::Failed { .. }))
     };
     block_on(timeline.send_text(too_long.clone())).unwrap();
@@ -1407,9 +1407,9 @@ fn pushers_are_set_listed_and_deleted() {
 
 /// The sent message whose text ends with `tail`: the timeline shows a
 /// mention as the person's name, not the `@user:server` typed.
-fn sent_ending<'a>(items: &'a [TimelineItem], tail: &str) -> Option<&'a TimelineEvent> {
+fn sent_ending<'a>(items: &'a [TimelineRow], tail: &str) -> Option<&'a TimelineEvent> {
     items.iter().find_map(|item| match &item.content {
-        TimelineItemContent::Event { event }
+        RowContent::Message { event, .. }
             if event.event_id.is_some()
                 && message_body(item).is_some_and(|b| b.ends_with(tail)) =>
         {

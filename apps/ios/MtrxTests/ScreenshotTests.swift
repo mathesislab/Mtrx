@@ -89,7 +89,7 @@ final class ScreenshotTests: XCTestCase {
     }
 
     func testARoomWithItsTopicLine() async throws {
-        session.fakeTimeline.initialItems = Screens.timeline
+        session.fakeTimeline.initialRows = Screens.timeline
         model.tab = .rooms
         model.roomsPath = ["!ice"]
         try await snap("05-room", wait: 2, HomeView())
@@ -118,7 +118,7 @@ final class ScreenshotTests: XCTestCase {
 
     /// The draft left in the room is back, with the message it answers.
     func testARoomWithItsDraft() async throws {
-        session.fakeTimeline.initialItems = Screens.timeline
+        session.fakeTimeline.initialRows = Screens.timeline
         session.drafts["!ice"] = Draft(text: "I'll add them to the paper's figures", replyTo: "$2")
         model.tab = .rooms
         model.roomsPath = ["!ice"]
@@ -133,7 +133,7 @@ final class ScreenshotTests: XCTestCase {
         model.tab = .rooms
         model.roomsPath = []
         try await snap("14b-large-rooms", large: true, HomeView())
-        session.fakeTimeline.initialItems = Screens.timeline
+        session.fakeTimeline.initialRows = Screens.timeline
         model.roomsPath = ["!ice"]
         try await snap("14c-large-room", large: true, wait: 2, HomeView())
         session.settings = Screens.settings
@@ -145,7 +145,7 @@ final class ScreenshotTests: XCTestCase {
     // MARK: A room's topic and info
 
     func testTopicPanel() async throws {
-        session.fakePinned.initialItems = Array(Screens.timeline.suffix(2))
+        session.fakePinned.initialRows = Array(Screens.timeline.suffix(2))
         let info = model.info(for: Screens.ice)
         await info.loadSettings()
         let pinned = PinnedModel(session: session, roomId: "!ice")
@@ -336,19 +336,20 @@ private enum Screens {
         drafts: ["!ann", "!reading", "!paper"], favourites: ["!ice"], lowPriority: ["!old"],
         categories: [TestCategory(space: "!polar", id: "papers", name: "Papers", rooms: ["!paper"])])
 
-    static var timeline: [TimelineItem] {
+    static var timeline: [TimelineRow] {
         let start = now.addingTimeInterval(-3_600)
         func at(_ minutes: Double) -> Double { start.timeIntervalSince(Make.start) / 60 + minutes }
         return [
-            TimelineItem(id: "d", content: .dayDivider(date: start)),
-            Make.item(
+            TimelineRow(id: "d", content: .day(date: start)),
+            Make.row(
                 "1", Make.event("ann", Make.text("Morning! The new ice sheet runs are in."), at: at(0), eventId: "$1")),
-            Make.item(
+            Make.row(
                 "2",
                 Make.event(
                     "ann", Make.text("Plots at https://example.org/runs"), at: at(1), eventId: "$2",
-                    readBy: [Make.reader("bob")])),
-            Make.item(
+                    readBy: [Make.reader("bob")]),
+                firstInGroup: false),
+            Make.row(
                 "3",
                 Make.event(
                     "me",
@@ -356,9 +357,9 @@ private enum Screens {
                         "Great, looking now.",
                         reactions: [Reaction(key: "👍", count: 2, byUs: false, senders: [])]),
                     at: at(5), own: true, eventId: "$3")),
-            Make.item("x", Make.event("me", .redacted, at: at(6), own: true, eventId: "$x")),
-            Make.item("u", Make.event("me", .unableToDecrypt, at: at(7), own: true, eventId: "$u")),
-            Make.item(
+            Make.row("x", Make.event("me", .redacted, at: at(6), own: true, eventId: "$x"), firstInGroup: false),
+            Make.row("u", Make.event("me", .unableToDecrypt, at: at(7), own: true, eventId: "$u"), firstInGroup: false),
+            Make.row(
                 "q",
                 Make.event(
                     "me",
@@ -368,8 +369,9 @@ private enum Screens {
                         replyTo: ReplyQuote(
                             eventId: "$2", state: .loaded, senderId: "@ann:example.org", senderName: "Ann",
                             kind: .text, body: "Plots at https://example.org/runs")),
-                    at: at(8), own: true, eventId: "$q")),
-            Make.item(
+                    at: at(8), own: true, eventId: "$q"),
+                firstInGroup: false),
+            Make.row(
                 "n",
                 Make.event(
                     "me",
@@ -377,11 +379,14 @@ private enum Screens {
                         message: Message(
                             kind: .notice, body: "Runs archived.", edited: false, media: nil, reactions: [],
                             replyTo: nil, rawBody: "")),
-                    at: at(9), own: true, eventId: "$n")),
-            Make.item("o", Make.event("me", .other(description: "poll"), at: at(10), own: true, eventId: "$o")),
-            Make.item(
+                    at: at(9), own: true, eventId: "$n"),
+                firstInGroup: false),
+            Make.row(
+                "o", Make.event("me", .other(description: "poll"), at: at(10), own: true, eventId: "$o"),
+                firstInGroup: false),
+            Make.row(
                 "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
-            Make.item(
+            Make.row(
                 "p2",
                 Make.event(
                     "me", Make.text("Agenda: runs, the paper, fieldwork."), at: at(22), own: true, eventId: "$p2")),

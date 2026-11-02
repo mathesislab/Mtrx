@@ -32,11 +32,11 @@ import uniffi.mtrx.EventContent
 import uniffi.mtrx.Mtrx
 import uniffi.mtrx.RoomLists
 import uniffi.mtrx.RoomListsListener
+import uniffi.mtrx.RowContent
 import uniffi.mtrx.SecretBackend
 import uniffi.mtrx.Session
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
-import uniffi.mtrx.TimelineListener
+import uniffi.mtrx.TimelineRow
+import uniffi.mtrx.TimelineRowsListener
 
 /**
  * Push notifications end to end (docs/mobile.md, section 10), against the
@@ -177,16 +177,16 @@ class PushEndToEndTest {
     /** Send [text] in [roomId] and return its event ID, found by [shown] in the sender's timeline. */
     private suspend fun send(session: Session, roomId: String, text: String, shown: String): String {
         val timeline = session.timeline(roomId)
-        val latest = AtomicReference<List<TimelineItem>>(emptyList())
-        val subscription = timeline.subscribe(object : TimelineListener {
-            override fun onUpdate(items: List<TimelineItem>) {
-                latest.set(items)
+        val latest = AtomicReference<List<TimelineRow>>(emptyList())
+        val subscription = timeline.subscribeRows(object : TimelineRowsListener {
+            override fun onUpdate(rows: List<TimelineRow>) {
+                latest.set(rows)
             }
         })
         timeline.sendText(text)
         val eventId = waitFor("the sent event's ID") {
-            latest.get().firstNotNullOfOrNull { item ->
-                val event = (item.content as? TimelineItemContent.Event)?.event ?: return@firstNotNullOfOrNull null
+            latest.get().firstNotNullOfOrNull { row ->
+                val event = (row.content as? RowContent.Message)?.event ?: return@firstNotNullOfOrNull null
                 val message = (event.content as? EventContent.Message)?.message ?: return@firstNotNullOfOrNull null
                 if (event.own && message.body.contains(shown)) event.eventId else null
             }

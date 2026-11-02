@@ -52,7 +52,7 @@ pub use rooms::{
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
 pub use session::{ConnectionListener, Session};
-pub use timeline::{Timeline, TimelineListener, TypingListener};
+pub use timeline::{Timeline, TimelineRowsListener, TypingListener};
 pub use types::*;
 
 /// Where the server sends the browser back after a browser sign-in, e.g.

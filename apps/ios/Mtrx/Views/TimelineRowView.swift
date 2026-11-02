@@ -48,8 +48,10 @@ struct TimelineRowView: View, Equatable {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
-        case .message(let message):
-            MessageView(id: row.id, row: message, highlighted: highlighted, actions: actions)
+        case .message:
+            if let message = row.messageRow {
+                MessageView(id: row.id, row: message, highlighted: highlighted, actions: actions)
+            }
         }
     }
 
@@ -205,7 +207,7 @@ struct MessageView: View {
         case .other(let description):
             bubble(Text("sent a \(description)").italic(), quote: nil, muted: true)
         case .membership, .displayNameChange, .otherState:
-            // Folded into summaries by `TimelineRows`.
+            // Folded into summaries by the library.
             EmptyView()
         }
     }

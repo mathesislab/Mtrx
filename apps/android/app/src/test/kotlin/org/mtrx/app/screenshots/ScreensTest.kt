@@ -33,7 +33,7 @@ import org.mtrx.app.ui.ShowSheetContent
 import org.mtrx.app.timeline.RoomHeader
 import org.mtrx.app.timeline.TimelineContent
 import org.mtrx.app.timeline.TimelineState
-import org.mtrx.app.timeline.timelineRows
+import org.mtrx.app.timeline.shownRows
 import org.mtrx.app.ui.ChatList
 import org.mtrx.app.ui.HomeFrame
 import org.mtrx.app.ui.HomeTab
@@ -322,16 +322,14 @@ private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
         TimelineContent(
             iceRoomHeader,
             TimelineState(
-                rows = timelineRows(conversation),
+                rows = shownRows(conversation),
                 draft = "Thanks Ana, looking at them now",
                 typing = listOf("Bob Berg"),
                 canEditTopic = true,
-                canPin = true,
-                pinned = timelineRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
+                pinned = shownRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
             ),
             NoTimelineActions,
             images,
-            keysArriving = false,
             presence = null,
             // Everywhere else: Bob's 2, Papers' 1, Teaching's 5, Model code's 4.
             backCount = 12,
@@ -353,10 +351,9 @@ private fun SharedRooms(shared: List<RoomGroup>) {
     HomeFrame(HomeTab.Chats, badges, onTab = {}, showTopBar = false) {
         TimelineContent(
             RoomHeader(name = "Bob Berg", avatarUrl = null, seed = bob, person = bob),
-            TimelineState(rows = timelineRows(conversation), shared = shared),
+            TimelineState(rows = shownRows(conversation), shared = shared),
             NoTimelineActions,
             images,
-            keysArriving = false,
             presence = null,
             // Everywhere else: the rooms' 13.
             backCount = 13,

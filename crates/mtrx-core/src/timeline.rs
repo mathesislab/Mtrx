@@ -45,7 +45,9 @@ use tracing::warn;
 use crate::{
     Error, PinsChange, Result, Session, calls,
     media::{self, MediaRef},
-    pins, room_links, system_time,
+    pins, room_links,
+    rows::{self, Row, RowContext},
+    system_time,
 };
 use mtrx_format::{Document, Mention, MentionTarget, markdown_to_matrix};
 
@@ -361,11 +363,15 @@ pub struct RoomTimeline {
     send_lock: Arc<Mutex<()>>,
     entries: watch::Receiver<Vec<TimelineEntry>>,
     task: JoinHandle<()>,
+    /// What the rows depend on besides the entries.
+    context: watch::Receiver<RowContext>,
+    context_task: JoinHandle<()>,
 }
 
 impl Drop for RoomTimeline {
     fn drop(&mut self) {
         self.task.abort();
+        self.context_task.abort();
     }
 }
 
@@ -382,6 +388,30 @@ impl RoomTimeline {
     /// The current entries, then every change.
     pub fn updates(&self) -> impl Stream<Item = Vec<TimelineEntry>> + use<> {
         WatchStream::new(self.entries.clone())
+    }
+
+    /// The rows showing the entries now (see [`rows::rows`]), oldest first.
+    pub fn current_rows(&self) -> Vec<Row> {
+        rows::rows(&self.entries.borrow(), &self.context.borrow())
+    }
+
+    /// The current rows, then after every change: of the entries, the
+    /// pinned messages, whether we may pin, and whether keys are arriving.
+    pub fn rows(&self) -> impl Stream<Item = Arc<Vec<Row>>> + use<> {
+        let (mut entries, context) = (self.entries.clone(), self.context.clone());
+        entries.mark_changed();
+        stream::unfold(
+            (entries, context),
+            |(mut entries, mut context)| async move {
+                tokio::select! {
+                    changed = entries.changed() => changed.ok()?,
+                    // Once it ended, the context stays as it is.
+                    Ok(()) = context.changed() => {}
+                }
+                let rows = rows::rows(&entries.borrow_and_update(), &context.borrow_and_update());
+                Some((Arc::new(rows), (entries, context)))
+            },
+        )
     }
 
     /// The files being uploaded for messages sent here from now on, after
@@ -921,13 +951,55 @@ impl Session {
                 }
             }
         });
+        let room = timeline.room().clone();
+        let keys_arriving = (self.encryption_state().await).is_ok_and(|state| state.keys_arriving);
+        let (context_tx, context) = watch::channel(row_context(&room, keys_arriving).await);
+        let keys = self.encryption_states().map(|state| state.keys_arriving);
+        let context_task = tokio::spawn(follow_row_context(room, keys, context_tx));
         RoomTimeline {
             room_id: room_id.to_owned(),
             timeline,
             send_lock: self.send_lock.clone(),
             entries,
             task,
+            context,
+            context_task,
         }
+    }
+}
+
+/// What `room`'s rows depend on besides its entries, now.
+async fn row_context(room: &Room, keys_arriving: bool) -> RowContext {
+    RowContext {
+        direct: room.is_direct().await.unwrap_or(false),
+        keys_arriving,
+        can_pin: pins::can_pin(room).await.unwrap_or(false),
+        pinned: room.pinned_event_ids().unwrap_or_default(),
+    }
+}
+
+/// Keep `context` up to date as `room` changes (its pinned messages, power
+/// levels, being a direct chat) and as keys start or stop arriving.
+async fn follow_row_context(
+    room: Room,
+    keys_arriving: impl Stream<Item = bool>,
+    context: watch::Sender<RowContext>,
+) {
+    let mut info = room.subscribe_info();
+    let mut keys_arriving = std::pin::pin!(keys_arriving);
+    let mut arriving = context.borrow().keys_arriving;
+    loop {
+        tokio::select! {
+            Some(_) = info.next() => {}
+            Some(now) = keys_arriving.next() => arriving = now,
+            else => return,
+        }
+        let now = row_context(&room, arriving).await;
+        context.send_if_modified(|current| {
+            let changed = *current != now;
+            *current = now;
+            changed
+        });
     }
 }
 
