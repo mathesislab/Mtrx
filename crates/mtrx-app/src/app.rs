@@ -3304,10 +3304,10 @@ impl App {
             return Task::none();
         };
         // A call moved to the top becomes the room's: the topic changes.
-        let synced = (main.lists.rooms.iter())
+        let listed = (main.lists.rooms.iter())
             .find(|r| r.id == id)
             .and_then(|r| r.topic.as_deref());
-        let shown = Topic::parse(room.topic.shown(synced));
+        let shown = Topic::parse(listed.unwrap_or_default());
         let topic = topic::moved(shown, calls, moved).to_topic();
         save_topic(
             &main.session,
@@ -3330,14 +3330,14 @@ impl App {
         if let topic::Message::Edit = message {
             main.popup.take_if(|popup| matches!(popup, Popup::Calls(_)));
         }
-        let synced = (main.lists.rooms.iter())
+        let listed = (main.lists.rooms.iter())
             .find(|r| r.id == id)
             .and_then(|r| r.topic.as_deref());
         topic_update(
             &main.session,
             &mut room.topic,
             id.clone(),
-            synced,
+            listed,
             message,
             move |message| room::Message::Topic(message).to(&id),
         )
@@ -3351,14 +3351,14 @@ impl App {
         if main.space.as_ref() != Some(&space) {
             return Task::none();
         }
-        let synced = (main.lists.rooms.iter())
+        let listed = (main.lists.rooms.iter())
             .find(|r| r.id == space)
             .and_then(|r| r.topic.as_deref());
         topic_update(
             &main.session,
             &mut main.space_topic,
             space.clone(),
-            synced,
+            listed,
             message,
             move |message| Message::SpaceTopic(space.clone(), message),
         )
@@ -5102,12 +5102,12 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
 /// Load the room's members, for its member list and mentions, and whether
 /// we may mention everyone.
 /// A message to `panel`, the topic panel of room or space `room` with
-/// topic `synced` in the room list, answered with `reply`.
+/// topic `listed` in the room list, answered with `reply`.
 fn topic_update(
     session: &Arc<Session>,
     panel: &mut topic::Panel,
     room: OwnedRoomId,
-    synced: Option<&str>,
+    listed: Option<&str>,
     message: topic::Message,
     reply: impl Fn(topic::Message) -> Message + Clone + Send + 'static,
 ) -> Task<Message> {
@@ -5118,12 +5118,11 @@ fn topic_update(
         let topic = editor.topic();
         return save_topic(session, panel, room, topic, reply);
     }
-    let shown = panel.shown(synced).to_owned();
     let opening = matches!(message, topic::Message::Toggle) && !panel.open;
     // Not known when it was asked (the room's permissions not synced yet):
     // asked again as the panel opens.
     let ask = opening && panel.can_edit.is_none();
-    let task = panel.update(message, &shown).map(reply.clone());
+    let task = (panel.update(message, listed.unwrap_or_default())).map(reply.clone());
     if ask {
         Task::batch([task, load_can_edit_topic(session, room, reply)])
     } else {
@@ -5131,8 +5130,8 @@ fn topic_update(
     }
 }
 
-/// Save `topic` as `room`'s, shown in its topic `panel` until the room list
-/// has it; `reply` says how it went.
+/// Save `topic` as `room`'s, which the room list shows at once; its topic
+/// `panel` says it is saving, and `reply` how it went.
 fn save_topic(
     session: &Arc<Session>,
     panel: &mut topic::Panel,
@@ -5140,7 +5139,7 @@ fn save_topic(
     topic: String,
     reply: impl FnOnce(topic::Message) -> Message + Send + 'static,
 ) -> Task<Message> {
-    panel.save(topic.clone());
+    panel.save();
     let session = session.clone();
     Task::perform(
         async move {

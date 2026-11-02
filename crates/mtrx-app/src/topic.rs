@@ -4,7 +4,7 @@
 //! the text and a list of links, or the whole topic as text, as other apps
 //! show it.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iced::{
     Alignment, Color, Element, Font, Length, Task, Theme,
@@ -24,9 +24,6 @@ use crate::{
     selection, spelling, style,
 };
 
-/// How long a saved topic shows before the room list has it (sync lags
-/// behind the server's answer).
-const TOPIC_SYNC: Duration = Duration::from_secs(10);
 /// How long Cancel and Save stand out after a click outside the editor.
 const NUDGE: Duration = Duration::from_millis(1500);
 
@@ -49,8 +46,8 @@ pub enum Message {
     CanEdit(Option<bool>),
 }
 
-/// The topic panel, dropping below the room header: open or not, the topic's
-/// editor, and a topic saved but not synced yet.
+/// The topic panel, dropping below the room header: open or not, and the
+/// topic's editor. A topic saved shows in the room list at once.
 #[derive(Default)]
 pub struct Panel {
     pub open: bool,
@@ -58,27 +55,15 @@ pub struct Panel {
     pub can_edit: Option<bool>,
     pub saving: bool,
     pub error: Option<String>,
-    saved: Option<(String, Instant)>,
     /// Cancel and Save stand out, after the click outside numbered so.
     nudge: (u32, bool),
 }
 
 impl Panel {
-    /// The topic to show: the one just saved until the room list has it,
-    /// else `synced`.
-    pub fn shown<'a>(&'a self, synced: Option<&'a str>) -> &'a str {
-        let synced = synced.unwrap_or_default();
-        match &self.saved {
-            Some((saved, at)) if saved != synced && at.elapsed() < TOPIC_SYNC => saved,
-            _ => synced,
-        }
-    }
-
-    /// `topic` is being saved; shown until synced.
-    pub fn save(&mut self, topic: String) {
+    /// The topic is being saved.
+    pub fn save(&mut self) {
         self.saving = true;
         self.error = None;
-        self.saved = Some((topic, Instant::now()));
     }
 
     pub fn update(&mut self, message: Message, topic: &str) -> Task<Message> {
@@ -124,7 +109,6 @@ impl Panel {
             }
             Message::Saved(Err(e)) => {
                 self.saving = false;
-                self.saved = None;
                 self.error = Some(e);
             }
             Message::CanEdit(can) => self.can_edit = can,
@@ -764,17 +748,6 @@ mod tests {
         );
         assert_eq!(preview("", true).as_deref(), Some("Add a topic"));
         assert_eq!(preview("", false), None);
-    }
-
-    #[test]
-    fn shows_a_saved_topic_until_synced() {
-        let mut panel = Panel::default();
-        assert_eq!(panel.shown(Some("old")), "old");
-        panel.save("new".into());
-        assert_eq!(panel.shown(Some("old")), "new");
-        assert_eq!(panel.shown(Some("new")), "new");
-        let _ = panel.update(Message::Saved(Err("no".into())), "old");
-        assert_eq!(panel.shown(Some("old")), "old");
     }
 
     #[test]
