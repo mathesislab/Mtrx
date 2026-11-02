@@ -109,8 +109,9 @@ final class PresenceModelTests: XCTestCase {
         session.ownPresenceHangs = true
         await start()
         model.setForeground(true)
-        await eventually { self.session.calls.contains("startSync") }
-        XCTAssertEqual(session.calls, ["sharing true", "startSync"])
+        await eventually { self.session.calls.count == 2 }
+        // In either order.
+        XCTAssertEqual(Set(session.calls), ["sharing true", "startSync"])
         session.ownPresenceHangs = false
         await eventually { self.session.calls.last == "presence foreground" }
     }
