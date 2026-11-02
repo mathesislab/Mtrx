@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeDistributors
 import org.mtrx.app.FakeMtrx
+import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.FakeNotifier
 import org.mtrx.app.FakePushStore
 import org.mtrx.app.FakeSession
@@ -20,7 +21,6 @@ import org.mtrx.app.pushRegistration
 import org.mtrx.app.summary
 import org.mtrx.app.testAccount
 import uniffi.mtrx.MtrxException
-import uniffi.mtrx.RoomListState
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AccountTest {
@@ -51,9 +51,9 @@ class AccountTest {
         val session = FakeSession()
         val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
-        assertFalse(account.rooms.value.loaded)
-        session.roomListListener!!.onUpdate(RoomListState(rooms = emptyList(), loaded = true))
-        assertTrue(account.rooms.value.loaded)
+        assertFalse(account.rooms.value.loaded())
+        session.roomListListener!!.onUpdate(FakeRoomLists())
+        assertTrue(account.rooms.value.loaded())
     }
 
     @Test
@@ -217,9 +217,9 @@ class AccountTest {
         )
         account.start()
         val listener = session.roomListListener!!
-        listener.onUpdate(RoomListState(rooms = listOf(summary("!a:x", unread = 2), summary("!b:x", unread = 1)), loaded = true))
+        listener.onUpdate(FakeRoomLists(rooms = listOf(summary("!a:x", unread = 2), summary("!b:x", unread = 1))))
         assertTrue(notifications.cleared.isEmpty())
-        listener.onUpdate(RoomListState(rooms = listOf(summary("!a:x"), summary("!b:x", unread = 1)), loaded = true))
+        listener.onUpdate(FakeRoomLists(rooms = listOf(summary("!a:x"), summary("!b:x", unread = 1))))
         assertEquals(listOf("!a:x"), notifications.cleared)
     }
 

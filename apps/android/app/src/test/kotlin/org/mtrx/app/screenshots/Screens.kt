@@ -11,8 +11,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.FakeSession
 import org.mtrx.app.directoryRoom
+import org.mtrx.app.listSection
 import org.mtrx.app.member
 import org.mtrx.app.messageRow
 import org.mtrx.app.model.Images
@@ -25,6 +27,7 @@ import org.mtrx.app.rooms.RoomInfoHeader
 import org.mtrx.app.summary
 import org.mtrx.app.timeline.TimelineActions
 import uniffi.mtrx.Access
+import uniffi.mtrx.Badges
 import uniffi.mtrx.Banned
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.History
@@ -43,9 +46,9 @@ import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomLink
 import uniffi.mtrx.SendState
 import uniffi.mtrx.SpaceLink
-import uniffi.mtrx.RoomSection
-import uniffi.mtrx.SectionKind
-import uniffi.mtrx.SpaceRooms
+import uniffi.mtrx.SectionChoice
+import uniffi.mtrx.SpaceEntry
+import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.Topic
@@ -83,46 +86,79 @@ val iceTopic = Topic(
     ),
 )
 
-val rooms = uniffi.mtrx.RoomListState(
-    rooms = listOf(
-        summary("!with-bob:example.org", RoomKind.DIRECT, unread = 2, directUserId = "@bob:example.org", name = "Bob Berg", lastActivity = at(10, 42)),
-        summary(ICE, unread = 3, name = "Ice sheets", lastActivity = at(10, 30), topic = iceTopic.text, parents = listOf(TEAM), pinned = listOf("\$p1", "\$p2")),
-        summary("!with-carol:example.org", RoomKind.DIRECT, invited = true, directUserId = "@carol:example.org", name = "Carol Chen"),
-        summary(SEA, name = "Sea ice", lastActivity = at(9, 5), topic = "Sea ice and the ocean", parents = listOf(TEAM)),
-        summary(PAPERS, unread = 1, mentions = 1, name = "Papers", lastActivity = at(17, 20, daysAgo = 1), parents = listOf(TEAM)),
-        summary(WORKSHOP, invited = true, name = "Workshop 2027"),
-        summary("!notes:example.org", RoomKind.DIRECT, directUserId = ME, name = "Notes to self", lastActivity = at(8, 0, daysAgo = 2)),
-        summary(TEACHING, unread = 5, name = "Teaching", lastActivity = at(14, 0, daysAgo = 3), parents = listOf(OUTREACH)),
-        summary(LOOSE, name = "Coffee", lastActivity = at(12, 0, daysAgo = 9)),
-        summary(TEAM, RoomKind.SPACE, name = "Ice team"),
-        summary(OUTREACH, RoomKind.SPACE, name = "Outreach"),
-        summary("!with-dan:example.org", RoomKind.DIRECT, directUserId = "@dan:example.org", name = "Dan Dahl", lastActivity = at(16, 0, daysAgo = 4)),
-        summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = "Radargrams from the traverse", parents = listOf(TEAM)),
-        summary(CODE, unread = 4, name = "Model code", lastActivity = at(11, 0, daysAgo = 1), parents = listOf(TEAM)),
-        summary(ARCHIVE, name = "Archive 2025", lastActivity = at(9, 0, daysAgo = 40), parents = listOf(TEAM)),
-        summary(SUMMIT, invited = true, name = "Ice summit 2027"),
-    ),
-    loaded = true,
+/** The rooms, most recently active first. */
+val roomList = listOf(
+    summary("!with-bob:example.org", RoomKind.DIRECT, unread = 2, directUserId = "@bob:example.org", name = "Bob Berg", lastActivity = at(10, 42)),
+    summary(ICE, unread = 3, name = "Ice sheets", lastActivity = at(10, 30), topic = iceTopic.text, parents = listOf(TEAM), pinned = listOf("\$p1", "\$p2")),
+    summary("!with-carol:example.org", RoomKind.DIRECT, invited = true, directUserId = "@carol:example.org", name = "Carol Chen"),
+    summary(SEA, name = "Sea ice", lastActivity = at(9, 5), topic = "Sea ice and the ocean", parents = listOf(TEAM)),
+    summary(PAPERS, unread = 1, mentions = 1, name = "Papers", lastActivity = at(17, 20, daysAgo = 1), parents = listOf(TEAM)),
+    summary(WORKSHOP, invited = true, name = "Workshop 2027"),
+    summary("!notes:example.org", RoomKind.DIRECT, directUserId = ME, name = "Notes to self", lastActivity = at(8, 0, daysAgo = 2)),
+    summary(TEACHING, unread = 5, name = "Teaching", lastActivity = at(14, 0, daysAgo = 3), parents = listOf(OUTREACH)),
+    summary(LOOSE, name = "Coffee", lastActivity = at(12, 0, daysAgo = 9)),
+    summary(TEAM, RoomKind.SPACE, name = "Ice team"),
+    summary(OUTREACH, RoomKind.SPACE, name = "Outreach"),
+    summary("!with-dan:example.org", RoomKind.DIRECT, directUserId = "@dan:example.org", name = "Dan Dahl", lastActivity = at(16, 0, daysAgo = 4)),
+    summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = "Radargrams from the traverse", parents = listOf(TEAM)),
+    summary(CODE, unread = 4, name = "Model code", lastActivity = at(11, 0, daysAgo = 1), parents = listOf(TEAM)),
+    summary(ARCHIVE, name = "Archive 2025", lastActivity = at(9, 0, daysAgo = 40), parents = listOf(TEAM)),
+    summary(SUMMIT, invited = true, name = "Ice summit 2027"),
+)
+
+fun listed(id: String) = roomList.first { it.id == id }
+
+const val BOB_CHAT = "!with-bob:example.org"
+const val DAN_CHAT = "!with-dan:example.org"
+const val NOTES = "!notes:example.org"
+
+/** Ice team's sections as the library gives them, Rooms folded. */
+val teamSections = listOf(
+    listSection("invites", "Invites", listOf(listed(SUMMIT))),
+    listSection("direct_messages", "Direct messages", listOf(listed(BOB_CHAT), listed(DAN_CHAT))),
+    listSection("favourites", "Favourites", listOf(listed(ICE))),
+    listSection("category:field", "Field work", listOf(listed(SEA), listed(RADAR))),
+    listSection("rooms", "Rooms", listOf(listed(PAPERS), listed(CODE)), folded = true),
+    listSection("low_priority", "Low priority", listOf(listed(ARCHIVE))),
+)
+
+/**
+ * The lists as the library gives them: the Notes to self at the top, Bob
+ * in both spaces and Dan in Ice team; the Rooms tab's groups newest first,
+ * Outreach folded.
+ */
+val rooms = FakeRoomLists(
+    rooms = roomList,
+    chats = listOf(listed(BOB_CHAT), listed("!with-carol:example.org"), listed(DAN_CHAT)),
+    notes = listed(NOTES),
     spaces = listOf(
-        SpaceRooms(
-            spaceId = TEAM,
-            roomIds = listOf("!with-bob:example.org", ICE, SEA, PAPERS, "!notes:example.org", RADAR, CODE, ARCHIVE, SUMMIT, "!with-dan:example.org"),
-            sections = listOf(
-                RoomSection("invites", SectionKind.INVITES, "", listOf(SUMMIT)),
-                RoomSection("direct_messages", SectionKind.DIRECT_MESSAGES, "", listOf("!with-bob:example.org", "!notes:example.org", "!with-dan:example.org")),
-                RoomSection("favourites", SectionKind.FAVOURITES, "", listOf(ICE)),
-                RoomSection("category:field", SectionKind.CATEGORY, "Field work", listOf(SEA, RADAR)),
-                RoomSection("rooms", SectionKind.ROOMS, "", listOf(PAPERS, CODE)),
-                RoomSection("low_priority", SectionKind.LOW_PRIORITY, "", listOf(ARCHIVE)),
-            ),
-        ),
-        SpaceRooms(spaceId = OUTREACH, roomIds = listOf("!with-bob:example.org", PAPERS, TEACHING, "!notes:example.org")),
+        SpaceEntry(SpaceKey.Space(TEAM), listed(TEAM), true),
+        SpaceEntry(SpaceKey.Space(OUTREACH), listed(OUTREACH), true),
+        SpaceEntry(SpaceKey.Outside, null, false),
     ),
-    roomsOutsideSpaces = listOf(WORKSHOP, LOOSE),
-    notesAtTop = true,
-    notesRoomId = "!notes:example.org",
+    sections = teamSections,
+    // Low priority hidden.
+    choices = teamSections.map { SectionChoice(it.key, it.title, it.key != "low_priority", it.rooms.size.toULong()) },
+    groups = listOf(
+        listSection("home", "Home", listOf(listed(LOOSE), listed(WORKSHOP))),
+        listSection(TEAM, "Ice team", listOf(ICE, SEA, PAPERS, RADAR, CODE, ARCHIVE, SUMMIT).map(::listed), space = TEAM),
+        listSection(OUTREACH, "Outreach", listOf(listed(PAPERS), listed(TEACHING)), folded = true, space = OUTREACH),
+    ),
+    chatSpaces = mapOf(BOB_CHAT to listOf("Ice team", "Outreach"), DAN_CHAT to listOf("Ice team")),
     // A pencil on their rows: with and without unread messages.
-    drafts = listOf("!with-bob:example.org", "!with-dan:example.org", ICE, SEA, LOOSE),
+    drafts = listOf(BOB_CHAT, DAN_CHAT, ICE, SEA, LOOSE),
+    // Bob's 2; Ice sheets' 3, Papers' 1, Teaching's 5 and Model code's 4, all in spaces.
+    badges = Badges(chats = 2uL, rooms = 13uL, spaces = 13uL),
+)
+
+/** The rooms shared with Bob: Coffee at Home, four rooms in Ice team, Papers again in Outreach. */
+val sharedWithBob = FakeRoomLists(
+    rooms = roomList,
+    groups = listOf(
+        listSection("home", "Home", listOf(listed(LOOSE))),
+        listSection(TEAM, "Ice team", listOf(ICE, SEA, PAPERS, CODE).map(::listed), space = TEAM),
+        listSection(OUTREACH, "Outreach", listOf(listed(PAPERS)), space = OUTREACH),
+    ),
 )
 
 /** A message by [sender] ([name]) at [time]; the [first] of a group unless said otherwise. */

@@ -30,8 +30,8 @@ import org.junit.runner.RunWith
 import org.mtrx.app.model.AccountState
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Mtrx
-import uniffi.mtrx.RoomListListener
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomLists
+import uniffi.mtrx.RoomListsListener
 import uniffi.mtrx.RowContent
 import uniffi.mtrx.SecretBackend
 import uniffi.mtrx.Session
@@ -79,9 +79,9 @@ class PushEndToEndTest {
         val aliceMtrx = Mtrx(File(dir, "data").path, File(dir, "cache").path, MemorySecrets())
         val aliceSession = aliceMtrx.login(HOMESERVER, alice, PASSWORD)
         aliceSession.startSync()
-        val aliceRooms = AtomicReference<RoomListState?>(null)
-        val aliceRoomList = aliceSession.subscribeRoomList(object : RoomListListener {
-            override fun onUpdate(state: RoomListState) = aliceRooms.set(state)
+        val aliceRooms = AtomicReference<RoomLists?>(null)
+        val aliceRoomList = aliceSession.subscribeRoomLists(object : RoomListsListener {
+            override fun onUpdate(lists: RoomLists) = aliceRooms.set(lists)
         })
 
         // The room, encrypted, made over HTTP (the bindings make no rooms).
@@ -105,10 +105,10 @@ class PushEndToEndTest {
         ).getString("room_id")
         post("/_matrix/client/v3/join/${URLEncoder.encode(roomId, "UTF-8")}", loginToken(bob), JSONObject())
         waitUntil("Alice to see the room encrypted with Bob in it") {
-            aliceRooms.get()?.rooms?.any { it.id == roomId && it.encrypted && it.joinedMembers == 2uL } == true
+            aliceRooms.get()?.rooms()?.any { it.id == roomId && it.encrypted && it.joinedMembers == 2uL } == true
         }
         waitUntil("Bob's app to see the room") {
-            account.rooms.value.rooms.any { it.id == roomId && !it.invited && it.encrypted }
+            account.rooms.value.rooms().any { it.id == roomId && !it.invited && it.encrypted }
         }
 
         // The pusher, as the app sets it for a new endpoint.

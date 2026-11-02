@@ -148,7 +148,7 @@ final class FakeVerification: Verification, @unchecked Sendable {
 
 final class FakeSession: Session, @unchecked Sendable {
     let fakeTimeline = FakeTimeline(noHandle: .init())
-    var roomListListener: RoomListListener?
+    var roomListListener: RoomListsListener?
     var connectionListener: ConnectionListener?
     var verificationRequestListener: VerificationRequestListener?
     var syncStarts = 0
@@ -205,7 +205,7 @@ final class FakeSession: Session, @unchecked Sendable {
         fakeTimeline
     }
 
-    override func subscribeRoomList(listener: RoomListListener) async throws -> TaskHandle {
+    override func subscribeRoomLists(listener: RoomListsListener) async throws -> TaskHandle {
         roomListListener = listener
         return FakeTaskHandle(noHandle: .init())
     }
@@ -629,15 +629,6 @@ enum Make {
             manageable: upTo != nil || remove || ban)
     }
 
-    /// A section of a space's list; `key` as the library makes them.
-    static func section(_ kind: SectionKind, _ roomIds: [String], name: String = "", key: String? = nil) -> RoomSection {
-        let keys: [SectionKind: String] = [
-            .invites: "invites", .favourites: "favourites", .directMessages: "direct_messages", .rooms: "rooms",
-            .lowPriority: "low_priority", .category: "category:\(name.lowercased())",
-        ]
-        return RoomSection(key: key ?? keys[kind]!, kind: kind, name: name, roomIds: roomIds)
-    }
-
     static func directoryRoom(
         _ id: String, name: String? = nil, access: JoinAccess = .public, membership: Membership? = nil,
         space: Bool = false, members: UInt64 = 5, topic: String? = nil, role: Role? = nil, children: UInt64 = 0
@@ -648,30 +639,40 @@ enum Make {
             suggested: false)
     }
 
-    /// The rooms by space as the library's integration test makes them, most
-    /// recently active first: spaces Team and Other; Lab in Team, Deep in
-    /// Team's nested space Sub; Loose in no space; a direct chat with Bob, a
-    /// member of Team (unread); invites to Offer, in Team, and from Carol,
-    /// in no space, to a direct chat and Party. Loose is unread.
-    static func roomsBySpace(loaded: Bool = true) -> RoomListState {
-        RoomListState(
-            rooms: [
-                room("!carol", kind: .direct, invited: true, name: "Carol", directUser: "@carol:example.org"),
-                room("!party", invited: true, name: "Party"),
-                room("!offer", invited: true, name: "Offer"),
-                room("!bob", kind: .direct, name: "Bob", unread: 2, directUser: "@bob:example.org"),
-                room("!loose", name: "Loose", unread: 1),
-                room("!deep", name: "Deep"),
-                room("!sub", kind: .space, name: "Sub"),
-                room("!lab", name: "Lab"),
-                room("!team", kind: .space, name: "Team"),
-                room("!other", kind: .space, name: "Other"),
-            ],
-            loaded: loaded,
-            spaces: [
-                SpaceRooms(spaceId: "!team", roomIds: ["!offer", "!bob", "!deep", "!lab"]),
-                SpaceRooms(spaceId: "!other", roomIds: []),
-            ],
-            roomsOutsideSpaces: ["!party", "!loose"])
+    /// The library's lists of `rooms` (most recently active first), with
+    /// the members of the spaces by space ID; the rooms tagged by ID.
+    static func lists(
+        _ rooms: [RoomSummary], loaded: Bool = true, notesAtTop: Bool = true, members: [String: [String]] = [:],
+        drafts: [String] = [], favourites: [String] = [], lowPriority: [String] = [],
+        categories: [TestCategory] = []
+    ) -> RoomLists {
+        // The rooms are made up valid.
+        try! RoomLists(
+            rooms: rooms, loaded: loaded, ownUserId: "@me:example.org", notesAtTop: notesAtTop,
+            spaceMembers: members, drafts: drafts, favourites: favourites, lowPriority: lowPriority,
+            categories: categories)
+    }
+
+    /// The rooms of the library's integration test, most recently active
+    /// first: spaces Team and Other; Lab in Team, Deep in Team's nested
+    /// space Sub; Loose in no space; a direct chat with Bob, a member of Team
+    /// (unread); invites to Offer, in Team, and from Carol, in no space, to a
+    /// direct chat and Party. Loose is unread.
+    static let roomsBySpaceRooms = [
+        room("!carol", kind: .direct, invited: true, name: "Carol", directUser: "@carol:example.org"),
+        room("!party", invited: true, name: "Party"),
+        room("!offer", invited: true, name: "Offer", parents: ["!team"]),
+        room("!bob", kind: .direct, name: "Bob", unread: 2, directUser: "@bob:example.org"),
+        room("!loose", name: "Loose", unread: 1),
+        room("!deep", name: "Deep", parents: ["!sub"]),
+        room("!sub", kind: .space, name: "Sub", parents: ["!team"]),
+        room("!lab", name: "Lab", parents: ["!team"]),
+        room("!team", kind: .space, name: "Team"),
+        room("!other", kind: .space, name: "Other"),
+    ]
+
+    /// Those rooms' lists, Bob's chat in Team; `extra` rooms last.
+    static func roomsBySpace(loaded: Bool = true, extra: [RoomSummary] = []) -> RoomLists {
+        lists(roomsBySpaceRooms + extra, loaded: loaded, members: ["!team": ["@bob:example.org", "@me:example.org"]])
     }
 }

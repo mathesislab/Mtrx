@@ -38,8 +38,7 @@ class PersonInfoTest {
 
     @Test
     fun headerNamesThePersonOfADirectChatOnly() {
-        val state = SpacesFixture.state()
-        fun person(id: String) = roomHeader(id, state.rooms.first { it.id == id }, FakeSession.USER_ID).person
+        fun person(id: String) = roomHeader(id, SpacesFixture.room(id), FakeSession.USER_ID).person
         assertEquals(bob, header.person)
         assertNull("the Notes to self", person(SpacesFixture.NOTES))
         assertNull("a room", person(SpacesFixture.LAB))

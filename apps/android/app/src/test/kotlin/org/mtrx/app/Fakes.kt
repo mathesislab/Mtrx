@@ -20,7 +20,6 @@ import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.RoomSortStore
 import org.mtrx.app.model.SelectedSpaceStore
 import org.mtrx.app.model.SharePresenceStore
-import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
 import uniffi.mtrx.Access
@@ -65,12 +64,18 @@ import uniffi.mtrx.RecoveryListener
 import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
 import uniffi.mtrx.RoomKind
-import uniffi.mtrx.RoomListListener
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.Badges
+import uniffi.mtrx.ListSection
+import uniffi.mtrx.RoomLists
+import uniffi.mtrx.RoomListsListener
+import uniffi.mtrx.RoomSort as LibrarySort
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.RowContent
+import uniffi.mtrx.SectionChoice
+import uniffi.mtrx.SectionLayout
+import uniffi.mtrx.SpaceEntry
+import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.SendState
-import uniffi.mtrx.SpaceRooms
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
@@ -103,7 +108,7 @@ class FakeSession : Session(NoHandle) {
     var loggedOut = false
     var logoutError: MtrxException? = null
     val handles = mutableListOf<FakeHandle>()
-    var roomListListener: RoomListListener? = null
+    var roomListListener: RoomListsListener? = null
 
     var encryption = EncryptionState(deviceVerified = false, recovery = RecoveryStatus.INCOMPLETE)
     var encryptionAsks = 0
@@ -212,7 +217,7 @@ class FakeSession : Session(NoHandle) {
 
     override fun subscribeConnection(listener: ConnectionListener): TaskHandle = FakeHandle().also { handles += it }
 
-    override suspend fun subscribeRoomList(listener: RoomListListener): TaskHandle {
+    override suspend fun subscribeRoomLists(listener: RoomListsListener): TaskHandle {
         roomListListener = listener
         return FakeHandle().also { handles += it }
     }
@@ -583,10 +588,10 @@ class FakeVerification(private val otherUser: String) : Verification(NoHandle) {
 }
 
 /** The app's preferences, in memory: one instance across "launches". */
-class FakeSpaceStore(var saved: SpaceEntry? = null) : SelectedSpaceStore {
-    override suspend fun load(): SpaceEntry? = saved
+class FakeSpaceStore(var saved: SpaceKey? = null) : SelectedSpaceStore {
+    override suspend fun load(): SpaceKey? = saved
 
-    override suspend fun save(entry: SpaceEntry?) {
+    override suspend fun save(entry: SpaceKey?) {
         saved = entry
     }
 }
@@ -844,6 +849,82 @@ fun actionsOf(event: TimelineEvent): List<MessageAction> = buildList {
 }
 
 /**
+ * The library's room lists, canned: the answers a test needs, whatever it
+ * asks (the rules are the library's, tested there). [sections] for any
+ * space's list, [choices] its Show sheet's, [groups] the Rooms tab's.
+ */
+class FakeRoomLists(
+    private val rooms: List<RoomSummary> = emptyList(),
+    private val loaded: Boolean = true,
+    private val chats: List<RoomSummary> = emptyList(),
+    private val notes: RoomSummary? = null,
+    private val spaces: List<SpaceEntry> = emptyList(),
+    private val sections: List<ListSection> = emptyList(),
+    private val choices: List<SectionChoice> = emptyList(),
+    private val groups: List<ListSection> = emptyList(),
+    private val chatSpaces: Map<String, List<String>> = emptyMap(),
+    private val firstSpaces: Map<String, RoomSummary> = emptyMap(),
+    private val drafts: List<String> = emptyList(),
+    private val badges: Badges = Badges(0uL, 0uL, 0uL),
+    private val notesAtTop: Boolean = true,
+) : RoomLists(NoHandle) {
+    override fun badges() = badges
+
+    override fun chatSpaces(chatId: String) = chatSpaces[chatId].orEmpty()
+
+    override fun chats() = chats
+
+    override fun drafts() = drafts
+
+    override fun firstSpaceOf(roomId: String) = firstSpaces[roomId]
+
+    override fun loaded() = loaded
+
+    override fun notes() = notes
+
+    override fun notesAtTop() = notesAtTop
+
+    override fun room(roomId: String) = rooms.firstOrNull { it.id == roomId }
+
+    override fun roomGroups(among: List<String>?, folded: List<String>) = groups
+
+    override fun rooms() = rooms
+
+    override fun search(key: SpaceKey?, filter: String) = emptyList<RoomSummary>()
+
+    override fun searchSpaces(filter: String) = spaces
+
+    override fun sectionChoices(key: SpaceKey, layout: SectionLayout) = choices
+
+    override fun space(key: SpaceKey) = spaces.firstOrNull { it.key == key }
+
+    override fun spaceList(key: SpaceKey, layout: SectionLayout, sort: LibrarySort, filter: String) = sections
+
+    override fun spaces() = spaces
+
+    override fun topLevelSpaces() = spaces.mapNotNull { it.space }
+
+    override fun unreadBesides(roomId: String) = 0uL
+}
+
+/** A section of a list, or a group of the Rooms tab ([space]). */
+fun listSection(
+    key: String,
+    title: String,
+    rooms: List<RoomSummary>,
+    folded: Boolean = false,
+    space: String? = null,
+) = ListSection(
+    key = key,
+    title = title,
+    rooms = rooms,
+    folded = folded,
+    unread = rooms.sumOf { it.unreadMessages },
+    mentions = rooms.any { it.unreadMentions > 0uL },
+    space = space,
+)
+
+/**
  * The rooms by space as in the library's integration test, most recently
  * active first: spaces Team and Other; Lab and, through the nested space
  * Sub, Deep in Team; an invite to Offer in Team; a direct chat with Bob, a
@@ -863,26 +944,34 @@ object SpacesFixture {
     const val PARTY = "!party:x"
     const val NOTES = "!notes:x"
 
-    fun state(loaded: Boolean = true): RoomListState = RoomListState(
-        rooms = listOf(
-            summary(WITH_CAROL, RoomKind.DIRECT, invited = true, directUserId = "@carol:x"),
-            summary(WITH_BOB, RoomKind.DIRECT, unread = 2, directUserId = "@bob:x"),
-            summary(OFFER, invited = true),
-            summary(LAB, unread = 1),
-            summary(DEEP),
-            summary(PARTY, invited = true),
-            summary(NOTES, RoomKind.DIRECT, directUserId = FakeSession.USER_ID),
-            summary(LOOSE),
-            summary(SUB, RoomKind.SPACE),
-            summary(OTHER, RoomKind.SPACE),
-            summary(TEAM, RoomKind.SPACE),
-        ),
+    val rooms = listOf(
+        summary(WITH_CAROL, RoomKind.DIRECT, invited = true, directUserId = "@carol:x"),
+        summary(WITH_BOB, RoomKind.DIRECT, unread = 2, directUserId = "@bob:x"),
+        summary(OFFER, invited = true),
+        summary(LAB, unread = 1),
+        summary(DEEP),
+        summary(PARTY, invited = true),
+        summary(NOTES, RoomKind.DIRECT, directUserId = FakeSession.USER_ID),
+        summary(LOOSE),
+        summary(SUB, RoomKind.SPACE),
+        summary(OTHER, RoomKind.SPACE),
+        summary(TEAM, RoomKind.SPACE),
+    )
+
+    fun room(id: String) = rooms.first { it.id == id }
+
+    /** The lists as the library gives them: Other and Team, then Home; [drafts] room IDs. */
+    fun lists(loaded: Boolean = true, drafts: List<String> = emptyList()) = FakeRoomLists(
+        rooms = rooms,
         loaded = loaded,
+        chats = listOf(room(WITH_CAROL), room(WITH_BOB)),
+        notes = room(NOTES),
         spaces = listOf(
-            SpaceRooms(spaceId = OTHER, roomIds = listOf(NOTES)),
-            SpaceRooms(spaceId = TEAM, roomIds = listOf(WITH_BOB, OFFER, LAB, DEEP, NOTES)),
+            SpaceEntry(SpaceKey.Space(OTHER), room(OTHER), false),
+            SpaceEntry(SpaceKey.Space(TEAM), room(TEAM), true),
+            SpaceEntry(SpaceKey.Outside, null, false),
         ),
-        roomsOutsideSpaces = listOf(PARTY, LOOSE),
+        drafts = drafts,
     )
 }
 

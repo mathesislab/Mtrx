@@ -35,8 +35,8 @@ final class Feed<Value: Sendable>: @unchecked Sendable {
     }
 }
 
-extension Feed: RoomListListener where Value == RoomListState {
-    func onUpdate(state: RoomListState) { send(state) }
+extension Feed: RoomListsListener where Value == RoomLists {
+    func onUpdate(lists: RoomLists) { send(lists) }
 }
 
 extension Feed: ConnectionListener where Value == ConnectionState {

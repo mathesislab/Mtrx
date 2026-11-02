@@ -2,29 +2,6 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// The tabs' badges and the back button's number.
-final class UnreadCountsTests: XCTestCase {
-    /// Lab (3 unread) and Deep (4) are in Team, Loose (1) in no space; the
-    /// chat with Bob (5), in Team too, and the space itself count as no
-    /// room; Bob and the Notes to self (6) as chats.
-    func testBadges() {
-        let lists = RoomLists(
-            RoomListState(
-                rooms: [
-                    Make.room("!lab", unread: 3), Make.room("!deep", unread: 4), Make.room("!loose", unread: 1),
-                    Make.room("!bob", kind: .direct, unread: 5), Make.room("!team", kind: .space, unread: 7),
-                    Make.room("!notes", kind: .direct, unread: 6),
-                ],
-                loaded: true, spaces: [SpaceRooms(spaceId: "!team", roomIds: ["!lab", "!deep", "!bob"])],
-                roomsOutsideSpaces: ["!loose"], notesAtTop: true, notesRoomId: "!notes"))
-        XCTAssertEqual(lists.chatsUnread, 11)
-        XCTAssertEqual(lists.roomsUnread, 8)
-        XCTAssertEqual(lists.spacesUnread, 7)
-        XCTAssertEqual(lists.unread(besides: "!lab"), 16)
-        XCTAssertEqual(lists.unread(besides: "!bob"), 14)
-    }
-}
-
 @MainActor
 final class NavigationTests: XCTestCase {
     private var defaults: UserDefaults!
@@ -48,9 +25,9 @@ final class NavigationTests: XCTestCase {
         return model
     }
 
-    private func send(_ state: RoomListState, to model: SessionModel) async {
-        session.roomListListener?.onUpdate(state: state)
-        await eventually { model.lists == RoomLists(state) && model.loaded == state.loaded }
+    private func send(_ lists: RoomLists, to model: SessionModel) async {
+        session.roomListListener?.onUpdate(lists: lists)
+        await eventually { model.lists === lists }
     }
 
     /// Not on the last room, as before: the rooms opened lately are no
@@ -74,10 +51,10 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(model.chatsPath, ["!bob"])
         model.open("!team")
         XCTAssertEqual(model.tab, .spaces)
-        XCTAssertEqual(model.spacesPath, [.space("!team")])
+        XCTAssertEqual(model.spacesPath, [.space(id: "!team")])
         // Not in the list yet: as said.
         model.open("!new", kind: .space)
-        XCTAssertEqual(model.selectedSpace, .space("!new"))
+        XCTAssertEqual(model.selectedSpace, .space(id: "!new"))
     }
 
     func testTappingTheRoomsTabAgainGoesToItsList() async {
@@ -99,7 +76,7 @@ final class NavigationTests: XCTestCase {
         model.expect("!new")
         model.open("!new", kind: .space)
         await send(Make.roomsBySpace(), to: model)
-        XCTAssertEqual(model.selectedSpace, .space("!new"))
+        XCTAssertEqual(model.selectedSpace, .space(id: "!new"))
     }
 
     func testAcceptingAnInviteOpensTheRoom() async throws {

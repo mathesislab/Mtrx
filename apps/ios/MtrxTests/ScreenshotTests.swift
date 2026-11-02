@@ -22,7 +22,7 @@ final class ScreenshotTests: XCTestCase {
         model = SessionModel(session: session, defaults: defaults)
         model.start()
         await eventually { self.session.roomListListener != nil }
-        session.roomListListener?.onUpdate(state: Screens.rooms)
+        session.roomListListener?.onUpdate(lists: Screens.rooms)
         await eventually { self.model.loaded }
         app = AppModel(core: FakeMtrx(noHandle: .init()), browser: FakeBrowser())
     }
@@ -46,21 +46,22 @@ final class ScreenshotTests: XCTestCase {
         try await snap("02-spaces", HomeView())
     }
 
-    /// Every kind of section, Rooms folded with its unread badge, and the
-    /// Notes to self at the top.
+    /// Invites, direct messages and rooms, Rooms folded with its unread
+    /// badge, and the Notes to self at the top.
     func testASpacesRooms() async throws {
         model.tab = .spaces
-        model.selectSpace(.space("!polar"))
-        model.sectionLayouts.change(.space("!polar")) { $0.toggleFold("rooms") }
+        model.selectSpace(.space(id: "!polar"))
+        model.sectionLayouts.change(.space(id: "!polar")) { $0.toggleFold("rooms") }
         try await snap("03-space-rooms", HomeView())
     }
 
     /// Low priority hidden, Rooms moved first.
     func testShowSheet() async throws {
-        let polar = try XCTUnwrap(model.lists.space(.space("!polar")))
-        model.sectionLayouts.change(.space("!polar")) {
+        let polar = try XCTUnwrap(model.lists.space(key: .space(id: "!polar")))
+        let keys = model.lists.sectionChoices(key: polar.key, layout: SectionLayout().library).map(\.key)
+        model.sectionLayouts.change(polar.key) {
             $0.setShown("low_priority", false)
-            $0.move(polar.sections.map(\.key), from: [4], to: 0)
+            $0.move(keys, from: [keys.firstIndex(of: "rooms")!], to: 0)
         }
         try await snap("03b-show-sheet", ShowSheet(item: polar))
     }
@@ -298,8 +299,9 @@ private enum Screens {
         "!polar", kind: .space, name: "Polar lab", topic: "The polar group: rooms for projects and talk.",
         members: 12)
 
-    static let rooms = RoomListState(
-        rooms: [
+    /// Ann and Bob are in the Polar lab, Ann in Teaching too.
+    static let rooms = Make.lists(
+        [
             ice,
             Make.room(
                 "!sea", name: "Sea ice", unread: 3, lastActivity: now.addingTimeInterval(-600), parents: ["!polar"]),
@@ -330,23 +332,9 @@ private enum Screens {
             Make.room("!teach", kind: .space, name: "Teaching"),
             polar,
         ],
-        loaded: true,
-        spaces: [
-            SpaceRooms(
-                spaceId: "!polar",
-                roomIds: ["!ice", "!sea", "!ann", "!models", "!paper", "!old", "!join", "!bob"],
-                sections: [
-                    Make.section(.invites, ["!join"]),
-                    Make.section(.directMessages, ["!ann", "!bob"]),
-                    Make.section(.favourites, ["!ice"]),
-                    Make.section(.category, ["!paper"], name: "Papers"),
-                    Make.section(.rooms, ["!sea", "!models"]),
-                    Make.section(.lowPriority, ["!old"]),
-                ]),
-            SpaceRooms(spaceId: "!teach", roomIds: ["!ann", "!reading"]),
-        ],
-        roomsOutsideSpaces: ["!party"], notesAtTop: true, notesRoomId: "!notes",
-        drafts: ["!ann", "!reading", "!paper"])
+        members: ["!polar": ["@ann:example.org", "@bob:example.org"], "!teach": ["@ann:example.org"]],
+        drafts: ["!ann", "!reading", "!paper"], favourites: ["!ice"], lowPriority: ["!old"],
+        categories: [TestCategory(space: "!polar", id: "papers", name: "Papers", rooms: ["!paper"])])
 
     static var timeline: [TimelineRow] {
         let start = now.addingTimeInterval(-3_600)

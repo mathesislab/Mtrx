@@ -10,7 +10,7 @@ struct PersonInfoView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let spaces = session.lists.topLevelSpaces
+        let spaces = session.lists.topLevelSpaces()
         NavigationStack {
             List {
                 Section {

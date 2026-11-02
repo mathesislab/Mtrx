@@ -10,8 +10,6 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import org.mtrx.app.rooms.ShownSection
-import org.mtrx.app.rooms.SectionedList
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,13 +40,16 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import java.time.LocalDate
 import org.mtrx.app.model.Images
-import org.mtrx.app.model.SpaceEntry
+import org.mtrx.app.model.saved
 import org.mtrx.app.rooms.RoomGroup
-import org.mtrx.app.rooms.SpaceRow
+import org.mtrx.app.rooms.name
 import org.mtrx.app.rooms.unreadBadge
+import uniffi.mtrx.ListSection
 import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomSummary
+import uniffi.mtrx.SpaceEntry
+import uniffi.mtrx.SpaceKey
 
 // The lists of the home's tabs, in compact rows (#47): without a model, for
 // the screens and their screenshot tests.
@@ -112,33 +113,34 @@ private fun LazyListScope.notesRow(
 /** The spaces page: [rows], [selected] highlighted, a dot where unread. */
 @Composable
 fun SpaceList(
-    rows: List<SpaceRow>,
-    selected: SpaceEntry?,
+    rows: List<SpaceEntry>,
+    selected: SpaceKey?,
     loaded: Boolean,
     images: Images,
-    onSelect: (SpaceEntry) -> Unit,
+    onSelect: (SpaceKey) -> Unit,
     state: LazyListState = rememberLazyListState(),
 ) {
     when {
         rows.isEmpty() && !loaded -> Loading()
         rows.isEmpty() -> Empty("No spaces")
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            items(rows, key = { it.entry.key }) { row ->
-                SpaceRowItem(row, row.entry == selected, images, onClick = { onSelect(row.entry) })
+            items(rows, key = { it.key.saved }) { row ->
+                SpaceRowItem(row, row.key == selected, images, onClick = { onSelect(row.key) })
             }
         }
     }
 }
 
 /**
- * A space's rooms page: the Notes to self at the top where pinned there,
- * then the sections shown, in order; a section's heading folds it
- * ([onFold] with its key), and a folded one shows its unread count. A
+ * A space's rooms page: the Notes to self at the top where pinned there
+ * ([notes]), then the [sections] shown, in order; a section's heading folds
+ * it ([onFold] with its key), and a folded one shows its unread count. A
  * pencil on the rooms with a draft ([drafts]).
  */
 @Composable
 fun SpaceRoomsList(
-    list: SectionedList,
+    notes: RoomSummary?,
+    sections: List<ListSection>,
     loaded: Boolean,
     images: Images,
     today: LocalDate,
@@ -147,12 +149,13 @@ fun SpaceRoomsList(
     drafts: Set<String> = emptySet(),
     state: LazyListState = rememberLazyListState(),
 ) {
+    val empty = notes == null && sections.isEmpty()
     when {
-        list.isEmpty && !loaded -> Loading()
-        list.isEmpty -> Empty("No rooms")
+        empty && !loaded -> Loading()
+        empty -> Empty("No rooms")
         else -> LazyColumn(Modifier.fillMaxSize(), state = state) {
-            notesRow(list.notes, images, today, drafts, onOpenRoom)
-            for (section in list.sections) section(section, images, today, drafts, onOpenRoom, onFold)
+            notesRow(notes, images, today, drafts, onOpenRoom)
+            for (section in sections) section(section, images, today, drafts, onOpenRoom, onFold)
         }
     }
 }
@@ -268,7 +271,7 @@ private fun GroupHeading(group: RoomGroup, images: Images, onOpen: (() -> Unit)?
 }
 
 private fun LazyListScope.section(
-    section: ShownSection,
+    section: ListSection,
     images: Images,
     today: LocalDate,
     drafts: Set<String>,
@@ -286,7 +289,7 @@ private fun LazyListScope.section(
 
 /** A section's heading: a caret (down while unfolded), its title, and while folded its unread count. */
 @Composable
-private fun SectionHeading(section: ShownSection, onClick: () -> Unit) {
+private fun SectionHeading(section: ListSection, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -309,12 +312,12 @@ private fun SectionHeading(section: ShownSection, onClick: () -> Unit) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (section.folded && section.unread > 0) UnreadBadge(section.unread, section.mentions)
+        if (section.folded && section.unread > 0uL) UnreadBadge(section.unread.toLong(), section.mentions)
     }
 }
 
 @Composable
-private fun SpaceRowItem(row: SpaceRow, selected: Boolean, images: Images, onClick: () -> Unit) {
+private fun SpaceRowItem(row: SpaceEntry, selected: Boolean, images: Images, onClick: () -> Unit) {
     val shape = RoundedCornerShape(8.dp)
     CompactRow(
         title = row.name,

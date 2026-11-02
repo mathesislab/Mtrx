@@ -118,153 +118,6 @@ impl From<core::UserSummary> for UserProfile {
     }
 }
 
-/// The room list: every joined and invited room (spaces too), most recently
-/// active first, and the rooms by space as the desktop shows them.
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct RoomListState {
-    pub rooms: Vec<RoomSummary>,
-    /// Synced with the server since the list was created. Before that,
-    /// `rooms` may be a stale cache, or empty on the first sign-in.
-    pub loaded: bool,
-    /// The desktop's space column: joined spaces in no joined space, in the
-    /// order of `rooms`, each with the rooms it lists.
-    #[uniffi(default)]
-    pub spaces: Vec<SpaceRooms>,
-    /// IDs of the rooms no space lists, in the order of `rooms`: rooms and
-    /// invites to spaces; no direct chats, no joined spaces.
-    #[uniffi(default)]
-    pub rooms_outside_spaces: Vec<String>,
-    /// The Notes to self stay at the top of the Chats tab and of each
-    /// space's list (one choice for all the user's devices; set with
-    /// `Session.setNotesAtTop`).
-    #[uniffi(default = true)]
-    pub notes_at_top: bool,
-    /// The Notes to self's room, if there is one.
-    #[uniffi(default)]
-    pub notes_room_id: Option<String>,
-    /// IDs of the rooms with a draft on this device (`Session.saveDraft`),
-    /// marked with a pencil.
-    #[uniffi(default)]
-    pub drafts: Vec<String>,
-}
-
-/// What a section of a space's list holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum SectionKind {
-    Invites,
-    Favourites,
-    /// One of the user's categories (made on the desktop).
-    Category,
-    /// Direct chats not in a category: "Direct messages".
-    DirectMessages,
-    /// Rooms not in a category.
-    Rooms,
-    LowPriority,
-}
-
-/// A section of a space's list, as the desktop arranges it.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct RoomSection {
-    /// Stable across updates and devices: "invites", "favourites",
-    /// "direct_messages", "rooms", "low_priority", or "category:<id>"; for
-    /// remembering which sections are shown and folded.
-    pub key: String,
-    pub kind: SectionKind,
-    /// A category's name; empty for the others, which the app names.
-    pub name: String,
-    /// In the order to show them.
-    pub room_ids: Vec<String>,
-}
-
-/// A top-level space and what it lists.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct SpaceRooms {
-    /// Its `RoomSummary.id`.
-    pub space_id: String,
-    /// IDs of the rooms it lists, in the order of `RoomListState.rooms`:
-    /// rooms below it (through nested spaces, which are not listed
-    /// themselves), invites to rooms and spaces below it, direct chats with
-    /// its joined members, and rooms put into its categories on the desktop.
-    pub room_ids: Vec<String>,
-    /// The same rooms in the desktop's sections, in its order: every
-    /// built-in section (even empty) and the space's categories.
-    #[uniffi(default)]
-    pub sections: Vec<RoomSection>,
-}
-
-impl RoomListState {
-    /// `notes`: the Notes to self's room, if any.
-    pub(crate) fn new(
-        state: &core::RoomListState,
-        by_space: core::RoomsBySpace,
-        categories: &core::RoomCategories,
-        notes: Option<&core::OwnedRoomId>,
-        drafts: &std::collections::BTreeSet<core::OwnedRoomId>,
-    ) -> Self {
-        let ids = |ids: &[core::OwnedRoomId]| ids.iter().map(ToString::to_string).collect();
-        Self {
-            rooms: state.rooms.iter().map(RoomSummary::from).collect(),
-            loaded: state.loaded,
-            spaces: by_space
-                .spaces
-                .into_iter()
-                .map(|space| {
-                    let layout = categories.layout(Some(&space.space));
-                    SpaceRooms {
-                        space_id: space.space.to_string(),
-                        room_ids: ids(&space.rooms),
-                        sections: space
-                            .sections
-                            .iter()
-                            .map(|(section, rooms)| section_of(section, layout, ids(rooms)))
-                            .collect(),
-                    }
-                })
-                .collect(),
-            rooms_outside_spaces: ids(&by_space.outside),
-            notes_at_top: categories.notes_at_top(),
-            notes_room_id: notes.map(ToString::to_string),
-            drafts: drafts.iter().map(ToString::to_string).collect(),
-        }
-    }
-}
-
-fn section_of(
-    section: &core::Section,
-    layout: &core::Layout,
-    room_ids: Vec<String>,
-) -> RoomSection {
-    let (key, kind, name) = match section {
-        core::Section::Invites => ("invites".into(), SectionKind::Invites, String::new()),
-        core::Section::Favourites => ("favourites".into(), SectionKind::Favourites, String::new()),
-        core::Section::People => (
-            "direct_messages".into(),
-            SectionKind::DirectMessages,
-            String::new(),
-        ),
-        core::Section::Rooms => ("rooms".into(), SectionKind::Rooms, String::new()),
-        core::Section::LowPriority => (
-            "low_priority".into(),
-            SectionKind::LowPriority,
-            String::new(),
-        ),
-        core::Section::Category(id) => (
-            format!("category:{id}"),
-            SectionKind::Category,
-            layout
-                .category(id)
-                .map(|c| c.name.clone())
-                .unwrap_or_default(),
-        ),
-    };
-    RoomSection {
-        key,
-        kind,
-        name,
-        room_ids,
-    }
-}
-
 /// One row of a timeline as shown: messages grouped by sender, runs of state
 /// events in one line.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -1080,49 +933,14 @@ mod tests {
             joined_members: 2,
             pinned: Vec::new(),
         };
-        let state = core::RoomListState {
-            rooms: vec![room],
-            loaded: true,
-        };
-        let by_space = core::RoomsBySpace {
-            spaces: vec![core::SpaceRooms {
-                space: "!space:example.org".try_into().unwrap(),
-                rooms: vec!["!room:example.org".try_into().unwrap()],
-                sections: vec![(
-                    core::Section::People,
-                    vec!["!room:example.org".try_into().unwrap()],
-                )],
-            }],
-            outside: Vec::new(),
-        };
-        let state = RoomListState::new(
-            &state,
-            by_space,
-            &Default::default(),
-            None,
-            &Default::default(),
-        );
-        assert!(state.notes_at_top && state.notes_room_id.is_none());
-        assert!(state.loaded);
-        let summary = &state.rooms[0];
+        let summary = RoomSummary::from(&room);
         assert_eq!(summary.id, "!room:example.org");
         assert_eq!(summary.kind, RoomKind::Direct);
         assert_eq!(summary.direct_user_id.as_deref(), Some("@bob:example.org"));
         assert_eq!(summary.last_activity, Some(at(5)));
         assert_eq!(summary.unread_mentions, 1);
-        assert_eq!(
-            state.spaces,
-            [SpaceRooms {
-                space_id: "!space:example.org".into(),
-                room_ids: vec!["!room:example.org".into()],
-                sections: vec![RoomSection {
-                    key: "direct_messages".into(),
-                    kind: SectionKind::DirectMessages,
-                    name: String::new(),
-                    room_ids: vec!["!room:example.org".into()],
-                }],
-            }]
-        );
+        // Back, for the apps' tests.
+        assert_eq!(core::RoomSummary::try_from(&summary).unwrap(), room);
     }
 
     #[test]

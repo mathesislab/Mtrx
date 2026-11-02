@@ -41,8 +41,6 @@ import org.mtrx.app.rooms.RoomInfoHeader
 import org.mtrx.app.rooms.RoomInfoModel
 import org.mtrx.app.rooms.SpaceOverviewContent
 import org.mtrx.app.rooms.SpaceOverviewModel
-import org.mtrx.app.rooms.roomSpace
-import org.mtrx.app.rooms.topLevelSpaces
 import org.mtrx.app.settings.AskNotificationPermissionOnce
 import org.mtrx.app.settings.RecoveryScreen
 import org.mtrx.app.settings.SessionInfo
@@ -53,7 +51,7 @@ import org.mtrx.app.timeline.TimelineViewModel
 import org.mtrx.app.timeline.roomHeader
 import uniffi.mtrx.DirectoryRoom
 import uniffi.mtrx.RoomKind
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.parseAddress
 import uniffi.mtrx.composeTopic
 import uniffi.mtrx.parseTopic
@@ -91,7 +89,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
     }
     // A room from another screen: back to the home, where it opens.
     val openRoom: (String) -> Unit = { roomId ->
-        home.open(roomId, rooms.rooms.firstOrNull { it.id == roomId })
+        home.open(roomId, rooms.room(roomId))
         nav.popBackStack(HOME, inclusive = false)
     }
     // The verification screen shows the account's verification of the moment:
@@ -208,7 +206,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
             val error by model.error.collectAsStateWithLifecycle()
             NewRoomContent(
                 space = space,
-                parentName = parent?.let { id -> rooms.rooms.firstOrNull { it.id == id }?.name },
+                parentName = parent?.let { id -> rooms.room(id)?.name },
                 form = form,
                 offersOwners = offersOwners,
                 creating = creating,
@@ -244,7 +242,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
 }
 
 /** The rooms the room list has us in (not invited). */
-private fun joinedIds(rooms: RoomListState): Set<String> = rooms.rooms.filter { !it.invited }.map { it.id }.toSet()
+private fun joinedIds(rooms: RoomListsInterface): Set<String> = rooms.rooms().filter { !it.invited }.map { it.id }.toSet()
 
 /** Rows of rooms to join: a joined space opens its overview, a room on the home. */
 private fun rowActions(
@@ -263,7 +261,7 @@ private fun rowActions(
 )
 
 /** The names of the rooms and spaces, by ID. */
-private fun names(rooms: RoomListState): Map<String, String> = rooms.rooms.associate { it.id to it.name }
+private fun names(rooms: RoomListsInterface): Map<String, String> = rooms.rooms().associate { it.id to it.name }
 
 /**
  * A room in a tab: its timeline (opened while it shows, its draft kept on
@@ -275,7 +273,7 @@ private fun RoomPane(
     account: Account,
     signedIn: AccountState.SignedIn,
     info: SessionInfo,
-    rooms: RoomListState,
+    rooms: RoomListsInterface,
     roomId: String,
     backCount: Long,
     onBack: () -> Unit,
@@ -284,7 +282,7 @@ private fun RoomPane(
     openSpace: (String) -> Unit,
     onRoomInfo: () -> Unit,
 ) {
-    val room = rooms.rooms.firstOrNull { it.id == roomId }
+    val room = rooms.room(roomId)
     if (room?.invited == true) {
         var busy by remember(roomId) { mutableStateOf(false) }
         InviteContent(
@@ -328,12 +326,12 @@ private fun RoomPane(
             onDispose { account.roomClosed(roomId) }
         }
         val presences by signedIn.presence.presences.collectAsStateWithLifecycle()
-        val header = remember(room, info.userId, rooms) { roomHeader(roomId, room, info.userId, ::parseTopic, roomSpace(rooms, roomId)) }
+        val header = remember(room, info.userId, rooms) { roomHeader(roomId, room, info.userId, ::parseTopic, rooms.firstSpaceOf(roomId)) }
         TimelineScreen(
             header,
             viewModel,
             signedIn.images,
-            spaces = remember(rooms) { topLevelSpaces(rooms) },
+            spaces = remember(rooms) { rooms.topLevelSpaces() },
             rooms = rooms,
             presences = presences,
             refreshPresence = signedIn.presence::refresh,
@@ -353,7 +351,7 @@ private fun InfoScreen(
     account: Account,
     signedIn: AccountState.SignedIn,
     info: SessionInfo,
-    rooms: RoomListState,
+    rooms: RoomListsInterface,
     model: RoomInfoModel,
     nav: NavHostController,
     openLink: (String) -> Unit,
@@ -362,7 +360,7 @@ private fun InfoScreen(
     val members by model.members.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
-    val room = rooms.rooms.firstOrNull { it.id == model.roomId }
+    val room = rooms.room(model.roomId)
     val header = infoHeader(model.roomId, room)
     var leaving by remember { mutableStateOf(false) }
     RoomInfoContent(
@@ -393,7 +391,7 @@ private fun OverviewScreen(
     account: Account,
     signedIn: AccountState.SignedIn,
     info: SessionInfo,
-    rooms: RoomListState,
+    rooms: RoomListsInterface,
     model: RoomInfoModel,
     overview: SpaceOverviewModel,
     nav: NavHostController,
@@ -409,7 +407,7 @@ private fun OverviewScreen(
     val failed by overview.failed.collectAsStateWithLifecycle()
     val pending by overview.pending.collectAsStateWithLifecycle()
     val overviewError by overview.error.collectAsStateWithLifecycle()
-    val space = rooms.rooms.firstOrNull { it.id == model.roomId }
+    val space = rooms.room(model.roomId)
     val header = infoHeader(model.roomId, space)
     var leaving by remember { mutableStateOf(false) }
     SpaceOverviewContent(

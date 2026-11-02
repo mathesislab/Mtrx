@@ -72,15 +72,14 @@ final class PresenceModelTests: XCTestCase {
     private static let dan = "@dan:example.org"
 
     /// The integration test's rooms, with the Notes to self.
-    private func rooms(loaded: Bool = true, extra: [RoomSummary] = []) -> RoomListState {
-        var state = Make.roomsBySpace(loaded: loaded)
-        state.rooms += [Make.room("!notes", kind: .direct, name: "Notes", directUser: "@me:example.org")] + extra
-        return state
+    private func rooms(loaded: Bool = true, extra: [RoomSummary] = []) -> RoomLists {
+        let notes = Make.room("!notes", kind: .direct, name: "Notes", directUser: "@me:example.org")
+        return Make.roomsBySpace(loaded: loaded, extra: [notes] + extra)
     }
 
-    private func push(_ state: RoomListState) async {
-        session.roomListListener?.onUpdate(state: state)
-        await eventually { self.model.rooms == state.rooms && self.model.loaded == state.loaded }
+    private func push(_ lists: RoomLists) async {
+        session.roomListListener?.onUpdate(lists: lists)
+        await eventually { self.model.lists === lists }
     }
 
     // MARK: Others
@@ -96,10 +95,10 @@ final class PresenceModelTests: XCTestCase {
         XCTAssertEqual(session.presenceSubscriptions.map(\.users), [[Self.bob, Self.carol]])
 
         // Other changes keep the subscription.
-        var changed = rooms()
-        changed.rooms[3].unreadMessages = 5
-        changed.rooms.removeAll { $0.id == "!lab" }
-        await push(changed)
+        var changed = Make.roomsBySpaceRooms + [Make.room("!notes", kind: .direct, directUser: "@me:example.org")]
+        changed[3].unreadMessages = 5
+        changed.removeAll { $0.id == "!lab" }
+        await push(Make.lists(changed, members: ["!team": [Self.bob]]))
         XCTAssertEqual(session.presenceSubscriptions.count, 1)
 
         // A new direct chat: subscribed anew, the old one cancelled.

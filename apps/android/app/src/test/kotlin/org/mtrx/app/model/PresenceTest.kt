@@ -16,6 +16,7 @@ import org.junit.Test
 import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeSharePresenceStore
+import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.SpacesFixture
 import org.mtrx.app.makePresence
 import org.mtrx.app.settings.sharePresenceFootnote
@@ -24,7 +25,7 @@ import org.mtrx.app.testAccount
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.PresenceState
 import uniffi.mtrx.RoomKind
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomLists
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PresenceTest {
@@ -81,20 +82,20 @@ class PresenceTest {
 
     private fun TestScope.settle() = advanceTimeBy(PresenceModel.FOLLOW_DEBOUNCE_MS + 1)
 
-    private fun FakeSession.rooms(state: RoomListState) = roomListListener!!.onUpdate(state)
+    private fun FakeSession.rooms(lists: RoomLists) = roomListListener!!.onUpdate(lists)
 
-    private fun withDan(state: RoomListState) =
-        state.copy(rooms = state.rooms + summary("!with-dan:x", RoomKind.DIRECT, directUserId = "@dan:x"))
+    private fun withDan(lists: RoomLists) =
+        FakeRoomLists(rooms = lists.rooms() + summary("!with-dan:x", RoomKind.DIRECT, directUserId = "@dan:x"))
 
     @Test
     fun theDirectChatsPeopleAreReadOnceTheRoomListIsLoaded() = runTest {
         val session = FakeSession()
         signedIn(session)
-        session.rooms(SpacesFixture.state(loaded = false))
+        session.rooms(SpacesFixture.lists(loaded = false))
         settle()
         assertTrue(session.presenceSubscriptions.isEmpty())
 
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         // Not the Notes to self; the invite to a direct chat too.
         assertEquals(listOf(listOf("@bob:x", "@carol:x")), session.presenceSubscriptions.map { it.first })
@@ -104,14 +105,14 @@ class PresenceTest {
     fun theSubscriptionIsReplacedOnlyWhenThePeopleChange() = runTest {
         val session = FakeSession()
         signedIn(session)
-        val fixture = SpacesFixture.state()
+        val fixture = SpacesFixture.lists()
         session.rooms(fixture)
         settle()
         val first = session.presenceSubscriptions.single().second
 
         // Other changes (an unread count, a room) keep it.
-        session.rooms(fixture.copy(rooms = fixture.rooms.map { if (it.id == SpacesFixture.WITH_BOB) it.copy(unreadMessages = 9uL) else it }))
-        session.rooms(fixture.copy(rooms = fixture.rooms + summary("!new-room:x")))
+        session.rooms(FakeRoomLists(rooms = fixture.rooms().map { if (it.id == SpacesFixture.WITH_BOB) it.copy(unreadMessages = 9uL) else it }))
+        session.rooms(FakeRoomLists(rooms = fixture.rooms() + summary("!new-room:x")))
         settle()
         assertEquals(1, session.presenceSubscriptions.size)
 
@@ -127,16 +128,16 @@ class PresenceTest {
     fun changesInABurstSubscribeOnceForWhereTheySettle() = runTest {
         val session = FakeSession()
         signedIn(session)
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
-        session.rooms(withDan(SpacesFixture.state()))
+        session.rooms(withDan(SpacesFixture.lists()))
         advanceTimeBy(PresenceModel.FOLLOW_DEBOUNCE_MS / 2)
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         // Back where it was: nothing to replace.
         assertEquals(1, session.presenceSubscriptions.size)
 
-        session.rooms(withDan(SpacesFixture.state()))
+        session.rooms(withDan(SpacesFixture.lists()))
         advanceTimeBy(PresenceModel.FOLLOW_DEBOUNCE_MS / 2)
         assertEquals(1, session.presenceSubscriptions.size)
         settle()
@@ -147,7 +148,7 @@ class PresenceTest {
     fun presencesArriveInTheMapAndTheSheetReadsAFresherOne() = runTest {
         val session = FakeSession()
         val account = signedIn(session)
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         val bob = makePresence(PresenceState.ONLINE)
         session.presenceListener!!.onUpdate(mapOf("@bob:x" to bob))
@@ -170,7 +171,7 @@ class PresenceTest {
     fun readingStopsInTheBackgroundAndAtSignOut() = runTest {
         val session = FakeSession()
         val account = signedIn(session)
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         val first = session.presenceSubscriptions.single().second
 
@@ -184,7 +185,7 @@ class PresenceTest {
         account.signOut()
         assertTrue(session.presenceSubscriptions.all { it.second.cancelled })
         // Nothing more after sign-out.
-        session.rooms(withDan(SpacesFixture.state()))
+        session.rooms(withDan(SpacesFixture.lists()))
         settle()
         assertEquals(2, session.presenceSubscriptions.size)
     }
@@ -274,7 +275,7 @@ class PresenceTest {
         account.input()
         assertEquals(listOf(PresenceState.OFFLINE), session.presenceSets)
         // Others' presence is still read.
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         assertEquals(1, session.presenceSubscriptions.size)
     }
@@ -325,7 +326,7 @@ class PresenceTest {
     fun onUnavailablePresenceIsHiddenForTheSession() = runTest {
         val session = FakeSession()
         val account = signedIn(session)
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         session.presenceListener!!.onUpdate(mapOf("@bob:x" to makePresence(PresenceState.ONLINE)))
 
@@ -337,7 +338,7 @@ class PresenceTest {
         // Nothing read or set after.
         session.presenceListener!!.onUpdate(mapOf("@bob:x" to makePresence(PresenceState.ONLINE)))
         assertTrue(account.sessionPresence.presences.value.isEmpty())
-        session.rooms(withDan(SpacesFixture.state()))
+        session.rooms(withDan(SpacesFixture.lists()))
         settle()
         account.sessionPresence.refresh("@bob:x")
         account.setForeground(false)
@@ -353,7 +354,7 @@ class PresenceTest {
     fun theServersErrorHidesPresenceToo() = runTest {
         val session = FakeSession()
         val account = signedIn(session)
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         session.presenceError = MtrxException.Other(PRESENCE_UNAVAILABLE)
         account.sessionPresence.refresh("@bob:x")
@@ -375,7 +376,7 @@ class PresenceTest {
         val account = testAccount(mtrx, CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         account.setForeground(true)
-        session.rooms(SpacesFixture.state())
+        session.rooms(SpacesFixture.lists())
         settle()
         session.presenceListener!!.onUnavailable()
         assertFalse(account.sessionPresence.available.value)

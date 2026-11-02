@@ -63,7 +63,7 @@ struct RoomView: View {
                         }
                         withAnimation(.easeOut(duration: 0.2)) { showsShared.toggle() }
                     }
-                } else if room.kind == .room, let space = session.lists.firstSpace(of: room.id) {
+                } else if let space = session.lists.firstSpaceOf(roomId: room.id) {
                     SpaceButton(space: space) { session.open(space.id) }
                 }
             }
@@ -290,7 +290,7 @@ struct SharedRoomsPanel: View {
         Group {
             if let shared {
                 RoomList(
-                    sections: session.lists.roomGroups(among: shared), searching: false, banner: false,
+                    sections: session.lists.roomGroups(among: shared.sorted(), folded: []), searching: false, banner: false,
                     openSettings: {}, opensInRooms: true, openSpace: { session.open($0) }
                 ) {
                     Text("No rooms shared with \(name)")
