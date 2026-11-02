@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use mtrx_core::{self as core, RoomTimeline};
+use mtrx_core::{self as core, OwnedEventId, RoomTimeline};
 
 use crate::{
     MtrxError, TaskHandle, TimelineRow,
@@ -79,6 +79,27 @@ impl Timeline {
     pub async fn paginate_back(&self, events: u16) -> Result<bool, MtrxError> {
         let timeline = self.core();
         run(async move { Ok(timeline.paginate_back(events).await?) }).await
+    }
+
+    /// Load older events until the message `event_id` is in the timeline
+    /// (e.g. the original of a reply), the room's start, or 20 pages of 50
+    /// events; returns its row's `TimelineRow.id`, to scroll to once the
+    /// rows have it. [`MtrxError::EventNotFound`] if it is not there.
+    /// Cancelling the call stops looking.
+    pub async fn seek(&self, event_id: String) -> Result<String, MtrxError> {
+        let event = OwnedEventId::try_from(event_id).map_err(MtrxError::invalid)?;
+        let timeline = self.core();
+        run(async move { Ok(timeline.seek(&event).await?) }).await
+    }
+
+    /// Wait, without loading anything, until the message `event_id` is in
+    /// the timeline (e.g. the one a restored draft answers); returns its
+    /// row's `TimelineRow.id`, to find once the rows have it. Cancelling
+    /// the call stops waiting.
+    pub async fn item_of(&self, event_id: String) -> Result<String, MtrxError> {
+        let event = OwnedEventId::try_from(event_id).map_err(MtrxError::invalid)?;
+        let timeline = self.core();
+        run(async move { Ok(timeline.item_of(&event).await) }).await
     }
 
     /// Send a message written in Markdown. It shows in the timeline at once,

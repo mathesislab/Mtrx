@@ -23,6 +23,10 @@ pub enum MtrxError {
     /// The server does not share presence: hide it for the session.
     #[error("This server does not share presence")]
     PresenceUnavailable,
+    /// A message looked for is not in the timeline, nor in the older
+    /// events loaded for it ([`crate::Timeline::seek`]).
+    #[error("The original message was not found in the room's history")]
+    EventNotFound,
     /// Anything else, e.g. the server is unreachable or refused the password.
     #[error("{reason}")]
     Other { reason: String },
@@ -47,6 +51,7 @@ impl From<mtrx_core::Error> for MtrxError {
             Error::SecretStorage(reason) => Self::SecretStorage { reason },
             error @ Error::InvalidRecoveryKey => Self::invalid(error),
             Error::PresenceUnavailable(_) => Self::PresenceUnavailable,
+            Error::EventNotFound => Self::EventNotFound,
             error => Self::Other {
                 reason: error.to_string(),
             },
@@ -100,6 +105,10 @@ mod tests {
                 "[403 / M_FORBIDDEN] off".into()
             )),
             MtrxError::PresenceUnavailable
+        ));
+        assert!(matches!(
+            convert(mtrx_core::Error::EventNotFound),
+            MtrxError::EventNotFound
         ));
         assert!(matches!(
             convert(mtrx_core::Error::Timeline("nothing to send".into())),

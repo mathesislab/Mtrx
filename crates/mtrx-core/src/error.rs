@@ -26,6 +26,10 @@ pub enum Error {
     RoomList(String),
     #[error("timeline: {0}")]
     Timeline(String),
+    /// A message looked for is not in the timeline, nor in the older
+    /// events loaded for it (see [`crate::RoomTimeline::seek`]).
+    #[error("The original message was not found in the room's history")]
+    EventNotFound,
     #[error("verification: {0}")]
     Verification(String),
     /// Not a recovery key (mistyped), or not the one of this account's

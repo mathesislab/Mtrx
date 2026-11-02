@@ -126,14 +126,14 @@ class RoomsTabTest {
     }
 
     @Test
-    fun aLeftRoomLosesItsDraft() = runTest {
+    fun aLeftRoomKeepsItsDraft() = runTest {
         val session = FakeSession()
         val account = testAccount(FakeMtrx(restored = session), scope())
         account.start()
         session.drafts[LAB] = Draft("half a thought", null)
         account.leave(LAB, "lab")
         assertEquals(listOf("leave $LAB"), session.roomCalls)
-        assertFalse(LAB in session.drafts)
+        assertEquals(Draft("half a thought", null), session.drafts[LAB])
     }
 
     @Test

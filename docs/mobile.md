@@ -69,6 +69,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
 - `Session`: `userId`, `deviceId`, `homeserver`; `startSync`, `stopSync`,
   `reconnect`; `connection()`, `subscribeConnection(listener)`;
   `subscribeRoomList(listener)`; `timeline(roomId) -> Timeline`;
+  `draftKeeper(roomId) -> DraftKeeper`;
   `avatar(mxcUri, size) -> Data`, `mediaPreview(media) -> Data`,
   `mediaFile(media) -> path`; `logout`, `forget`. Encryption (section 6):
   `encryptionState()`, `subscribeEncryptionState(listener)` (section 9),
@@ -86,11 +87,18 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
   `confirm()`, `mismatch()`, `cancel()`.
 - `Timeline`: `roomId`, `subscribeRows(listener)`, `paginateBack(events)`,
-  `sendText(markdown)`, `markRead`. Messages (section 8), each taking the
+  `seek(eventId) -> itemId` (loads older events until the message is
+  there; `MtrxError.EventNotFound` if not), `itemOf(eventId) -> itemId`
+  (waits, without loading, until the message is there), `sendText(markdown)`,
+  `markRead`. Messages (section 8), each taking the
   row's `TimelineRow.id`: `reply(itemId, markdown)`, `edit(itemId,
   markdown)`, `react(itemId, key)` (adds ours, or removes it),
   `delete(itemId)` (redacts), `retry(itemId)`, `discard(itemId)`; and
   `setTyping(typing)`, `subscribeTyping(listener)`.
+- `DraftKeeper`: a room's draft, kept on the device. `restore() -> Draft?`
+  (once), `changed(draft)` after every change of the composer (saved
+  after a 1.5 s pause), `flush()` when leaving the room or going to the
+  background.
 - Listeners (implemented by the apps): `RoomListListener.onUpdate(RoomListState)`,
   `TimelineRowsListener.onUpdate([TimelineRow])`,
   `TypingListener.onUpdate([String])` (names; on every change only),
@@ -324,9 +332,9 @@ apps/ios/
   the sender and three lines inside the bubble (above an image, in a
   bubble of its own); a file's kind and name as "Image: cat.png"; tapping
   a loaded one scrolls to the original and marks it for 2 s, after
-  `paginateBack(50)` as needed (the model checks each new item list; at
-  the start it waits for the items with the start before saying it is
-  not found). Read receipts: 16 pt avatars at the row's right, three
+  `seek(eventId)` loaded older events as needed (scrolled once the rows
+  have the row it returns; a second tap while it looks is ignored). Read
+  receipts: 16 pt avatars at the row's right, three
   then "+N"; tap lists them. "(edited)" follows the text.
 - Composer: a bar "Replying to <name>" with the first line, or "Editing"
   (the field holds `rawBody`; the draft from before comes back after);
@@ -337,9 +345,14 @@ apps/ios/
   typing…", more "Anna, Ben and N others…". `subscribeTyping` runs
   while the room is on screen.
 - Actions (`react`, `delete`, `retry`, `discard`) run in tasks the model
-  creates; sending, replying and editing in `send()`. Back-paginations
-  are chained, so loading older messages and looking for a quote do not
-  overlap.
+  creates; sending, replying and editing in `send()`. The library runs
+  back-paginations one at a time, so loading older messages and looking
+  for a quote do not overlap.
+- Drafts: the room's `DraftKeeper` restores the draft when the room
+  opens (put in the composer only if it is empty; its reply once
+  `itemOf` found the message and the rows have it), hears every change
+  (during an edit, the draft from before it), and flushes when the room
+  disappears, after sending, and when the app leaves the foreground.
 - Presence (section 11): `PresenceModel`, owned by `SessionModel` and an
   environment object of its own. `SessionModel.setForeground` (from the
   scene phase) runs the lifecycle: in the foreground `presenceActivity(
@@ -632,10 +645,11 @@ and tested by CI only; no Android SDK is used locally.
     latest rows; sends and actions run in a scope of the model's own, not
     `viewModelScope`, which leaving the room cancels (a cancelled call
     aborts the library's task); the timeline is closed once the last
-    typing notice is sent. Going to a quote's original pages back 50
-    events at a time, at most 20 times, looking in each new list; after
-    the room's start or the last page it waits up to two seconds for
-    their items before saying it was not found. Encryption: the banner over
+    typing notice is sent. Going to a quote's original calls `seek` (a
+    new tap replaces the one under way) and scrolls once the rows have
+    the row it returns. The room's `DraftKeeper` restores the draft (its
+    reply found with `itemOf`), hears each change of the draft and flushes when the room is left, on send and when the app
+    stops; leaving a room (the membership) keeps its draft. Encryption: the banner over
     Chats and Spaces (opens the Settings tab); the Settings tab with the
     account and "Encryption" (status lines, "Enter recovery key", "Verify
     with another device", or the note that another device is needed); the
@@ -1009,12 +1023,11 @@ fetches the original, also when it is far back; the quote updates by
 itself). `failed`: "Could not load the message", not tappable. Tapping a
 loaded quote goes to the original, as the desktop does: find the row whose
 `event.eventId == quote.eventId`; if it is there, scroll to it and
-highlight it for two seconds; if not, call `paginateBack(50)` and look
-again in each new item list (not only when the call returns: the items
-arrive separately), up to 20 calls, until found. Stop with "The original
-message was not found in the room's history" when `paginateBack` returned
-`true` (the room's start) and the items after it lack it, or after 20
-calls. Keep this in the timeline model; show a spinner while loading.
+highlight it for two seconds; if not, `seek(eventId)` loads older events
+(up to 20 pages of 50, or to the room's start) and returns the row's ID,
+to scroll to once the rows have it (they arrive separately). It fails
+with `EventNotFound`, "The original message was not found in the room's
+history". Show a spinner while it looks; cancelling the call stops it.
 
 **Composer.**
 - Reply: a bar above the field, "Replying to <name>" and the first line of
@@ -1052,8 +1065,8 @@ build unchanged. Fakes of `Timeline` subclass it (`init(noHandle:)` /
 `subscribeTyping` to keep the listener and call it. Worth testing in the
 models: which menu entries show for own, others', failed and unsent
 messages; reply and edit state in the composer;
-the quote jump (found at once, after paginating, at the room's start, after
-20 calls); typing line texts; reader overflow ("+N").
+the quote jump (found at once, after `seek`, not found); typing line
+texts; reader overflow ("+N").
 
 ## 9. Stage 4: polish
 

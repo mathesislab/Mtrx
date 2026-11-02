@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use eyeball_im::Vector;
@@ -356,11 +356,20 @@ pub enum MembershipChange {
     Other,
 }
 
+/// Older events loaded at most by [`RoomTimeline::seek`]: pages, and
+/// events per page.
+pub const SEEK_PAGES: usize = 20;
+pub const SEEK_PAGE: u16 = 50;
+/// How long [`RoomTimeline::seek`] waits for the entries of its last page.
+const SEEK_SETTLE: Duration = Duration::from_secs(2);
+
 /// A room's timeline, kept up to date while it is alive.
 pub struct RoomTimeline {
     room_id: OwnedRoomId,
     timeline: Arc<Timeline>,
     send_lock: Arc<Mutex<()>>,
+    /// Back-paginations run one at a time.
+    pagination: Mutex<()>,
     entries: watch::Receiver<Vec<TimelineEntry>>,
     task: JoinHandle<()>,
     /// What the rows depend on besides the entries.
@@ -455,13 +464,59 @@ impl RoomTimeline {
             .filter_map(std::future::ready))
     }
 
-    /// Load up to `events` older events. Returns `true` once the start of the
-    /// room is reached.
+    /// Load up to `events` older events, after the loading under way.
+    /// Returns `true` once the start of the room is reached.
     pub async fn paginate_back(&self, events: u16) -> Result<bool> {
+        let _turn = self.pagination.lock().await;
         self.timeline
             .paginate_backwards(events)
             .await
             .map_err(timeline_error)
+    }
+
+    /// Load older events until `event` is in the timeline, the room's start
+    /// is reached, or [`SEEK_PAGES`] pages of [`SEEK_PAGE`] events were
+    /// loaded: e.g. to go to the original of a reply. Returns its entry's
+    /// [`Event::id`]; [`Error::EventNotFound`] if it is not there. Dropping
+    /// the future stops looking.
+    pub async fn seek(&self, event: &EventId) -> Result<String> {
+        let load = async {
+            for _ in 0..SEEK_PAGES {
+                if self.paginate_back(SEEK_PAGE).await? {
+                    break;
+                }
+            }
+            // The entries of the last page arrive apart from the call.
+            tokio::time::sleep(SEEK_SETTLE).await;
+            Err::<String, _>(Error::EventNotFound)
+        };
+        tokio::select! {
+            biased;
+            id = self.item_of(event) => Ok(id),
+            not_found = load => not_found,
+        }
+    }
+
+    /// Wait, without loading anything, until `event` is in the timeline:
+    /// e.g. the message a restored draft answers. Returns its entry's
+    /// [`Event::id`].
+    pub async fn item_of(&self, event: &EventId) -> String {
+        let mut entries = self.entries.clone();
+        loop {
+            let found = (entries.borrow_and_update().iter()).find_map(|entry| match entry {
+                TimelineEntry::Event(e) if e.event_id.as_deref() == Some(event) => {
+                    Some(e.id.clone())
+                }
+                _ => None,
+            });
+            if let Some(id) = found {
+                return id;
+            }
+            if entries.changed().await.is_err() {
+                // The timeline stopped: it never comes.
+                return std::future::pending().await;
+            }
+        }
     }
 
     /// Queue a message written in Markdown, with `$…$` / `$$…$$` math. Its local echo shows as
@@ -960,6 +1015,7 @@ impl Session {
             room_id: room_id.to_owned(),
             timeline,
             send_lock: self.send_lock.clone(),
+            pagination: Mutex::default(),
             entries,
             task,
             context,

@@ -170,7 +170,8 @@ async fn room_with(prefix: &str, messages: &[&str]) -> (Ui, TempDir) {
     while !timeline.paginate_back(50).await.unwrap() {}
     let mut main = Main::new(Arc::new(alice));
     main.verified = Some(true);
-    let mut open = Room::new(room, timeline.clone());
+    let drafts = main.session.draft_keeper(&room);
+    let mut open = Room::new(room, timeline.clone(), drafts);
     show(&mut open, timeline.current());
     main.pane = Pane::Open(open);
     (Ui::new(app(Screen::Main(Box::new(main)), Mode::Light)), dir)
@@ -460,7 +461,8 @@ async fn keys_go_to_other_rooms_from_the_composer() {
             "{key:?}"
         );
         // Open again for the next key.
-        ui.main().pane = Pane::Open(Room::new(open.clone(), timeline.clone()));
+        let drafts = ui.main().session.draft_keeper(&open);
+        ui.main().pane = Pane::Open(Room::new(open.clone(), timeline.clone(), drafts));
     }
 }
 

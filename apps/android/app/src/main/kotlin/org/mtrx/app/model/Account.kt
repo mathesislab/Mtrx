@@ -19,7 +19,6 @@ import org.mtrx.app.rooms.SpaceChildrenCache
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
-import uniffi.mtrx.Draft
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.MtrxException
@@ -248,24 +247,15 @@ class Account(
     }
 
     /**
-     * Leave [roomId], or decline its invite: its draft goes. [onDone] says
-     * whether it worked (errors go to [messages]).
+     * Leave [roomId], or decline its invite; its draft stays on this device.
+     * [onDone] says whether it worked (errors go to [messages]).
      */
     fun leave(roomId: String, name: String, onDone: (Boolean) -> Unit = {}): Job = membership(onDone) {
         try {
             it.leave(roomId)
-            clearDraft(it, roomId)
             null
         } catch (e: MtrxException) {
             "Could not leave $name: ${describe(e)}"
-        }
-    }
-
-    private suspend fun clearDraft(current: Session, roomId: String) {
-        try {
-            current.saveDraft(roomId, Draft("", null))
-        } catch (e: MtrxException) {
-            // Only on this device, and the room is no longer listed.
         }
     }
 

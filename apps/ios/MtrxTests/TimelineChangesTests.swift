@@ -18,9 +18,13 @@ final class TimelineChangesTests: XCTestCase {
 
     private var timeline: FakeTimeline { session.fakeTimeline }
 
-    /// Saved a minute after typing stops, unless said otherwise.
-    private func open(_ room: RoomSummary, draftDelay: TimeInterval = 60) -> TimelineModel {
-        TimelineModel(session: session, room: room, draftDelay: draftDelay)
+    private func open(_ room: RoomSummary) -> TimelineModel {
+        TimelineModel(session: session, room: room)
+    }
+
+    /// What the model told the room's keeper is written, last.
+    private func written(_ id: String = "!room:example.org") -> Draft? {
+        session.keepers[id]?.changes.last
     }
 
     /// The room opened again, with its draft.
@@ -60,14 +64,10 @@ final class TimelineChangesTests: XCTestCase {
         XCTAssertEqual(otherBack.draft, "Elsewhere")
     }
 
-    func testSavedOnceTypingStops() async {
-        let model = open(Make.room("!typed:example.org"), draftDelay: 0.05)
-        await model.open()
+    func testEachChangeGoesToTheKeeper() async {
         model.draft = "H"
         model.draft = "Hi"
-        await eventually { self.session.drafts["!typed:example.org"] == Draft(text: "Hi") }
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(session.savedDrafts.map(\.draft.text), ["Hi"])
+        XCTAssertEqual(session.keepers[roomId]?.changes.map(\.text), ["H", "Hi"])
     }
 
     func testSavedWhenTheAppLeavesTheForeground() async {
@@ -76,22 +76,10 @@ final class TimelineChangesTests: XCTestCase {
         await eventually { self.session.drafts[self.roomId] == Draft(text: "Half written") }
     }
 
-    func testUnchangedIsNotSavedAgain() async {
-        session.drafts[roomId] = Draft(text: "Half written")
-        let model = await reopen()
-        await model.saveDraft().value
-        model.setVisible(false)
-        await model.saveDraft().value
-        XCTAssertTrue(session.savedDrafts.isEmpty)
-    }
-
-    func testNothingSavedBeforeTheDraftIsRead() async {
+    func testWhatWasWrittenBeforeTheDraftIsReadStays() async {
         session.drafts[roomId] = Draft(text: "Half written")
         let model = open(Make.room(roomId))
         model.draft = "Other"
-        await model.saveDraft().value
-        XCTAssertTrue(session.savedDrafts.isEmpty)
-        // What was written meanwhile stays.
         await model.open()
         XCTAssertEqual(model.draft, "Other")
     }
@@ -112,6 +100,7 @@ final class TimelineChangesTests: XCTestCase {
         model.setVisible(false)
         await eventually { self.session.drafts[self.roomId] == Draft(text: "Sure", replyTo: "$b") }
         timeline.initialRows = [bobsMessage()]
+        timeline.found = ["$b": "b"]
         let back = await reopen()
         await eventually { back.compose != nil }
         XCTAssertEqual(back.compose, .reply(ComposeTarget(itemId: "b", eventId: "$b", sender: "Bob", preview: "Lunch?")))
@@ -120,6 +109,8 @@ final class TimelineChangesTests: XCTestCase {
 
     func testTheReplyIsBackOnceItsMessageLoads() async {
         session.drafts[roomId] = Draft(text: "Sure", replyTo: "$b")
+        // The library finds it before the rows have it.
+        timeline.found = ["$b": "b"]
         let back = await reopen()
         XCTAssertEqual(back.draft, "Sure")
         XCTAssertNil(back.compose)
@@ -139,8 +130,8 @@ final class TimelineChangesTests: XCTestCase {
 
     func testASentDraftIsCleared() async {
         model.draft = "Hello"
-        await model.saveDraft().value
-        XCTAssertEqual(session.drafts[roomId], Draft(text: "Hello"))
+        model.setVisible(false)
+        await eventually { self.session.drafts[self.roomId] == Draft(text: "Hello") }
         await model.send()
         await eventually { self.session.drafts[self.roomId] == nil }
         let back = await reopen()
@@ -152,22 +143,13 @@ final class TimelineChangesTests: XCTestCase {
         model.draft = "Half written"
         model.startEdit("o")
         model.draft = "Mine, changed"
-        await model.saveDraft().value
-        XCTAssertEqual(session.drafts[roomId], Draft(text: "Half written"))
+        XCTAssertEqual(written(), Draft(text: "Half written"))
         // Leaving drops the edit.
         model.setVisible(false)
+        await eventually { self.session.drafts[self.roomId] == Draft(text: "Half written") }
         let back = await reopen()
         XCTAssertEqual(back.draft, "Half written")
         XCTAssertNil(back.compose)
-    }
-
-    func testAFailedSaveIsTriedAgain() async {
-        session.draftError = MtrxError.Other(reason: "Store locked")
-        model.draft = "Hello"
-        await model.saveDraft().value
-        session.draftError = nil
-        await model.saveDraft().value
-        XCTAssertEqual(session.drafts[roomId], Draft(text: "Hello"))
     }
 
     // MARK: Reactions

@@ -27,6 +27,13 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     /// Called with the number of each `paginateBack` call (from 1), e.g. to
     /// give the listener older rows.
     var onPaginate: ((Int) -> Void)?
+    /// The row `seek` and `itemOf` find for each event ID; others are not
+    /// found (`itemOf` waits until cancelled).
+    var found: [String: String] = [:]
+    var seeks: [String] = []
+    /// Called with each `seek`'s event ID, e.g. to give the listener the
+    /// older rows.
+    var onSeek: ((String) -> Void)?
     var markedRead = 0
     var replies: [(itemId: String, text: String)] = []
     var edits: [(itemId: String, text: String)] = []
@@ -101,8 +108,55 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
         return pages.isEmpty ? true : pages.removeFirst()
     }
 
+    override func seek(eventId: String) async throws -> String {
+        seeks.append(eventId)
+        onSeek?(eventId)
+        guard let row = found[eventId] else { throw MtrxError.EventNotFound }
+        return row
+    }
+
+    override func itemOf(eventId: String) async throws -> String {
+        if let row = found[eventId] { return row }
+        while !Task.isCancelled { try? await Task.sleep(nanoseconds: 100_000_000) }
+        throw CancellationError()
+    }
+
     override func markRead() async throws {
         markedRead += 1
+    }
+}
+
+/// A room's draft keeper over the session's drafts: the one left there,
+/// once; the draft as last written, kept on `flush()`. The rules of when
+/// to save are the library's, tested there.
+final class FakeDraftKeeper: DraftKeeper, @unchecked Sendable {
+    private let lock = NSLock()
+    private var restored = false
+    private var written: [Draft] = []
+    var load: @Sendable () -> Draft? = { nil }
+    var keep: @Sendable (Draft) -> Void = { _ in }
+
+    /// Each draft the model said is written, in order.
+    var changes: [Draft] {
+        lock.withLock { written }
+    }
+
+    override func restore() async -> Draft? {
+        let first = lock.withLock {
+            defer { restored = true }
+            return !restored
+        }
+        return first ? load() : nil
+    }
+
+    override func changed(draft: Draft) {
+        lock.withLock { written.append(draft) }
+    }
+
+    override func flush() async {
+        if let last = changes.last {
+            keep(last)
+        }
     }
 }
 
@@ -305,8 +359,6 @@ final class FakeSession: Session, @unchecked Sendable {
     // Saved off the main actor (the model's tasks call the library from
     // there) while the tests read them: behind the lock.
     private var draftStore: [String: Draft] = [:]
-    private var draftSaves: [(roomId: String, draft: Draft)] = []
-    private var draftFailure: Error?
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
@@ -320,27 +372,18 @@ final class FakeSession: Session, @unchecked Sendable {
         set { locked { draftStore = newValue } }
     }
 
-    /// Each `saveDraft`, in order.
-    var savedDrafts: [(roomId: String, draft: Draft)] {
-        locked { draftSaves }
-    }
+    /// The last keeper made for each room.
+    private(set) var keepers: [String: FakeDraftKeeper] = [:]
 
-    var draftError: Error? {
-        get { locked { draftFailure } }
-        set { locked { draftFailure = newValue } }
-    }
-
-    override func draft(roomId: String) async throws -> Draft? {
-        drafts[roomId]
-    }
-
-    override func saveDraft(roomId: String, draft: Draft) async throws {
-        try locked { () throws -> Void in
-            if let draftFailure { throw draftFailure }
-            draftSaves.append((roomId, draft))
+    override func draftKeeper(roomId: String) -> DraftKeeper {
+        let keeper = FakeDraftKeeper(noHandle: .init())
+        keeper.load = { [weak self] in self?.drafts[roomId] }
+        keeper.keep = { [weak self] draft in
             let empty = draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.replyTo == nil
-            draftStore[roomId] = empty ? nil : draft
+            self?.drafts[roomId] = empty ? nil : draft
         }
+        keepers[roomId] = keeper
+        return keeper
     }
 
     // MARK: Rooms: settings, members, pins, joining, making

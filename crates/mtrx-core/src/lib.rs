@@ -51,7 +51,7 @@ pub use directory::{
     DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, JoinAccess, Membership,
     parse_address,
 };
-pub use drafts::Draft;
+pub use drafts::{DRAFT_PAUSE, Draft, DraftKeeper};
 pub use encryption::{
     DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,
     VerificationState,
@@ -89,8 +89,8 @@ pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use spaces::{descendants, top_level_spaces};
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
-    MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SendState, TimelineEntry,
-    Upload, UtdCause, mention_targets,
+    MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SEEK_PAGE, SEEK_PAGES,
+    SendState, TimelineEntry, Upload, UtdCause, mention_targets,
 };
 
 pub use url::Url;

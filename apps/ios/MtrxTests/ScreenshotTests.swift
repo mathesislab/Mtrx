@@ -120,6 +120,7 @@ final class ScreenshotTests: XCTestCase {
     func testARoomWithItsDraft() async throws {
         session.fakeTimeline.initialRows = Screens.timeline
         session.drafts["!ice"] = Draft(text: "I'll add them to the paper's figures", replyTo: "$2")
+        session.fakeTimeline.found = ["$2": "2"]
         model.tab = .rooms
         model.roomsPath = ["!ice"]
         try await snap("05b-room-draft", wait: 2, HomeView())
