@@ -56,7 +56,7 @@ final class SessionModelTests: XCTestCase {
     func testSyncAndTheRoomListDoNotAskForTheEncryptionState() async {
         model.setForeground(true)
         await eventually { self.session.syncStarts == 1 }
-        session.roomListListener?.onUpdate(state: RoomListState(rooms: [Make.room("!a")], loaded: true))
+        session.roomListListener?.onUpdate(lists: Make.lists([Make.room("!a")]))
         await eventually { self.model.rooms.count == 1 }
         model.setForeground(false)
         model.setForeground(true)
@@ -69,33 +69,6 @@ final class SessionModelTests: XCTestCase {
         XCTAssertEqual(session.encryptionSubscription?.cancelled, false)
         try await model.logout()
         XCTAssertEqual(session.encryptionSubscription?.cancelled, true)
-    }
-
-    func testOpenTimelinesFollowKeysArriving() async {
-        let timeline = model.timeline(for: Make.room("!room:example.org"))
-        await timeline.open()
-        session.fakeTimeline.listener?.onUpdate(items: [Make.item("1", Make.event("alice", .unableToDecrypt))])
-        await eventually { self.undecryptableText(timeline) == "Could not decrypt this message." }
-
-        session.encryptionListener?.onUpdate(
-            state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: true))
-        await eventually { self.undecryptableText(timeline) == "Decrypting…" }
-        session.encryptionListener?.onUpdate(
-            state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: false))
-        await eventually { self.undecryptableText(timeline) == "Could not decrypt this message." }
-
-        // A timeline opened while keys arrive says so at once.
-        session.encryptionListener?.onUpdate(
-            state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: true))
-        await eventually { self.model.encryption?.keysArriving == true }
-        let later = model.timeline(for: Make.room("!room:example.org"))
-        later.apply([Make.item("1", Make.event("alice", .unableToDecrypt))])
-        XCTAssertEqual(undecryptableText(later), "Decrypting…")
-    }
-
-    private func undecryptableText(_ timeline: TimelineModel) -> String? {
-        guard case .message(let row) = timeline.rows.first?.content else { return nil }
-        return row.undecryptableText
     }
 
     func testVerifiesWithAnotherDevice() async {

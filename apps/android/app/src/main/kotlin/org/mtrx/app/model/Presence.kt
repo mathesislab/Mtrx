@@ -22,7 +22,7 @@ import uniffi.mtrx.Presence
 import uniffi.mtrx.PresenceActivity
 import uniffi.mtrx.PresenceListener
 import uniffi.mtrx.RoomKind
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
@@ -31,9 +31,9 @@ import uniffi.mtrx.TaskHandle
 fun directPerson(room: RoomSummary, ownUserId: String): String? =
     room.takeIf { it.kind == RoomKind.DIRECT }?.directUserId?.takeIf { it != ownUserId }
 
-/** The people of [state]'s direct chats, whose presence is read. */
-fun directPeople(state: RoomListState, ownUserId: String): Set<String> =
-    state.rooms.mapNotNullTo(mutableSetOf()) { directPerson(it, ownUserId) }
+/** The people of the direct chats in [lists], whose presence is read. */
+fun directPeople(lists: RoomListsInterface, ownUserId: String): Set<String> =
+    lists.rooms().mapNotNullTo(mutableSetOf()) { directPerson(it, ownUserId) }
 
 /** Where "Share my presence" is kept across launches. */
 interface SharePresenceStore {
@@ -91,7 +91,7 @@ class SharePresence(private val store: SharePresenceStore, private val scope: Co
 class PresenceModel(
     private val session: Session,
     private val ownUserId: String,
-    rooms: StateFlow<RoomListState>,
+    rooms: StateFlow<RoomListsInterface>,
     private val sharing: SharePresence,
     parent: CoroutineScope,
     private val log: Logger,
@@ -122,7 +122,7 @@ class PresenceModel(
 
     init {
         scope.launch {
-            rooms.filter { it.loaded }
+            rooms.filter { it.loaded() }
                 .map { directPeople(it, ownUserId) }
                 .distinctUntilChanged()
                 // Room lists come in bursts at first: subscribe for where they settle.

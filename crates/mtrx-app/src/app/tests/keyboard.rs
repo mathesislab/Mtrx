@@ -171,24 +171,16 @@ async fn room_with(prefix: &str, messages: &[&str]) -> (Ui, TempDir) {
     let mut main = Main::new(Arc::new(alice));
     main.verified = Some(true);
     let mut open = Room::new(room, timeline.clone());
-    open.entries = timeline.current();
-    with_start(&mut open.entries);
+    show(&mut open, timeline.current());
     main.pane = Pane::Open(open);
     (Ui::new(app(Screen::Main(Box::new(main)), Mode::Light)), dir)
 }
 
 /// [`Event::id`] of the message with `body`.
 fn row_of(room: &Room, body: &str) -> String {
-    room.entries
-        .iter()
-        .find_map(|entry| match entry {
-            TimelineEntry::Event(event)
-                if matches!(&event.content, EventContent::Message(m) if m.body == body) =>
-            {
-                Some(event.id.clone())
-            }
-            _ => None,
-        })
+    (room.rows.iter().filter_map(Row::event))
+        .find(|event| matches!(&event.content, EventContent::Message(m) if m.body == body))
+        .map(|event| event.id.clone())
         .unwrap_or_else(|| panic!("no message {body:?}"))
 }
 
@@ -435,7 +427,10 @@ async fn keys_go_to_other_rooms_from_the_composer() {
     let open = ui.room().id.clone();
     let timeline = ui.room().timeline.clone();
     let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
-    ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
+    ui.main().show_rooms(RoomListState {
+        rooms: vec![summary(&other, "other"), summary(&open, "open")],
+        loaded: false,
+    });
     ui.run(iced::widget::operation::focus(room::COMPOSER));
 
     let keys = [
@@ -732,12 +727,9 @@ async fn enter_sends_only_from_the_composer() {
     assert_eq!(ui.room().composer.text(), "Draft");
 
     // Replying, Esc with nothing focused cancels the reply.
-    let hello = ui.room().entries.iter().find_map(|entry| match entry {
-        TimelineEntry::Event(event) if event.event_id.is_some() => {
-            crate::actions::Target::of(event, "alice".into(), "Hello".into())
-        }
-        _ => None,
-    });
+    let hello = (ui.room().rows.iter().filter_map(Row::event))
+        .find(|event| event.event_id.is_some())
+        .and_then(|event| crate::actions::Target::of(event, "alice".into(), "Hello".into()));
     ui.room().compose = Compose::Reply(hello.expect("a message"));
     ui.press(Key::Named(Named::Escape), Modifiers::empty());
     assert!(!ui.room().compose.cancellable());
@@ -756,7 +748,10 @@ async fn shortcuts_type_nothing_in_fields() {
     let (mut ui, _dir) = room_with("search", &[]).await;
     let open = ui.room().id.clone();
     let other: OwnedRoomId = "!other:localhost".try_into().unwrap();
-    ui.main().rooms.rooms = vec![summary(&other, "other"), summary(&open, "open")];
+    ui.main().show_rooms(RoomListState {
+        rooms: vec![summary(&other, "other"), summary(&open, "open")],
+        loaded: false,
+    });
     let typed = |ui: &mut Ui, key: &str, modifiers| {
         let (_, messages) = ui.messages(&[press(Key::Character(key.into()), modifiers)]);
         format!("{messages:?}")

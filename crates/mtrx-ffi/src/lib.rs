@@ -44,14 +44,18 @@ pub use presence::{
     presence_line,
 };
 pub use push::{NotificationContent, PusherInfo};
+pub use room_list::{
+    Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,
+    SpaceEntry, SpaceKey,
+};
 pub use rooms::{
     Address, DirectoryKind, DirectoryPage, DirectoryRoom, JoinAccess, Membership, NewRoom,
     RoomLink, Topic, compose_topic, parse_address, parse_topic,
 };
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
-pub use session::{ConnectionListener, RoomListListener, Session};
-pub use timeline::{Timeline, TimelineListener, TypingListener};
+pub use session::{ConnectionListener, Session};
+pub use timeline::{Timeline, TimelineRowsListener, TypingListener};
 pub use types::*;
 
 /// Where the server sends the browser back after a browser sign-in, e.g.

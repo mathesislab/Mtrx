@@ -68,7 +68,7 @@ fun SettingsContent(
         Line("Device", info.deviceId)
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Room list")
-        RoomListSettings(rooms.notesAtTop, onNotesAtTop = { account.setNotesAtTop(it) })
+        RoomListSettings(rooms.notesAtTop(), onNotesAtTop = { account.setNotesAtTop(it) })
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Notifications")
         NotificationsSection(push)

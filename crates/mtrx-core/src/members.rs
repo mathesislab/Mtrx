@@ -113,13 +113,7 @@ impl Session {
     /// The IDs of the joined members. Loads the member list from the server
     /// if it is not complete yet.
     pub async fn joined_member_ids(&self, room_id: &RoomId) -> Result<HashSet<OwnedUserId>> {
-        let room = self.room(room_id)?;
-        Ok(room
-            .members(RoomMemberships::JOIN)
-            .await?
-            .iter()
-            .map(|member| member.user_id().to_owned())
-            .collect())
+        crate::lists::joined_member_ids(&self.client, room_id).await
     }
 
     /// Remove someone from a room (kick), or also keep them out (ban).

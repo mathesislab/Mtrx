@@ -4,84 +4,18 @@
 //! both go through here, so the text copied is the text shown. See
 //! `docs/text-selection.md`.
 
-use std::{
-    collections::HashMap,
-    time::{Duration, SystemTime},
-};
+use std::{collections::HashMap, time::SystemTime};
 
 use chrono::{DateTime, Local};
 use iced::advanced::widget::Id;
-use mtrx_core::{Event, EventContent, MessageKind, Reply, TimelineEntry};
+use mtrx_core::{Event, EventContent, MessageKind, Reply, Row};
 use mtrx_format::{Block, Document, Inline};
 
 use crate::{
     clipboard::Copied,
-    message, room,
+    message,
     selection::{Bounds, Pos, Shown, Unit, units_text},
 };
-
-/// A message this soon after the one before, by the same sender, goes
-/// under the same name.
-const GROUP_GAP: Duration = Duration::from_secs(5 * 60);
-
-/// A row of the timeline.
-pub enum Row<'a> {
-    /// An event; with `header`, its sender's name and time above it.
-    Event {
-        event: &'a Event,
-        header: bool,
-    },
-    /// Consecutive state events (joins, settings), in one line.
-    State(Vec<&'a Event>),
-    Day(SystemTime),
-    Start,
-}
-
-/// The rows showing `entries`.
-pub fn rows(entries: &[TimelineEntry]) -> Vec<Row<'_>> {
-    let mut rows = Vec::new();
-    let mut previous: Option<&Event> = None;
-    let mut state: Vec<&Event> = Vec::new();
-    for entry in entries {
-        if let TimelineEntry::Event(event) = entry
-            && event.is_state()
-        {
-            state.push(event);
-            continue;
-        }
-        if !state.is_empty() {
-            rows.push(Row::State(std::mem::take(&mut state)));
-            previous = None;
-        }
-        match entry {
-            TimelineEntry::Event(event) => {
-                let grouped = previous.is_some_and(|p| {
-                    p.sender == event.sender
-                        && event
-                            .timestamp
-                            .duration_since(p.timestamp)
-                            .unwrap_or_default()
-                            < GROUP_GAP
-                });
-                rows.push(Row::Event {
-                    event,
-                    header: !grouped,
-                });
-                previous = matches!(event.content, EventContent::Message(_)).then_some(event);
-            }
-            TimelineEntry::DayDivider(day) => {
-                rows.push(Row::Day(*day));
-                previous = None;
-            }
-            TimelineEntry::Start => rows.push(Row::Start),
-            TimelineEntry::ReadMarker => {}
-        }
-    }
-    if !state.is_empty() {
-        rows.push(Row::State(state));
-    }
-    rows
-}
 
 /// A part of a row whose text can be selected.
 pub struct Part<'a> {
@@ -104,86 +38,73 @@ pub enum Text<'a> {
     Line(String),
 }
 
-impl<'a> Row<'a> {
-    /// Its parts, in reading order.
-    pub fn parts(&self) -> Vec<Part<'a>> {
-        let line = |key: String, line: String| Part {
-            key,
-            text: Text::Line(line),
-        };
-        match self {
-            Row::Event { event, header } => {
-                let mut parts = Vec::new();
-                if *header {
-                    parts.push(Part {
-                        key: format!("{}/sender", event.id),
-                        text: Text::Sender(event),
-                    });
-                }
-                match &event.content {
-                    EventContent::Message(m) => {
-                        if let Some(reply) = &m.in_reply_to {
-                            parts.push(Part {
-                                key: reply_key(&event.id),
-                                text: Text::Reply(reply),
-                            });
-                        }
-                        if matches!(
-                            m.kind,
-                            MessageKind::Text | MessageKind::Notice | MessageKind::Emote
-                        ) {
-                            parts.push(Part {
-                                key: event.id.clone(),
-                                text: Text::Message(&m.document),
-                            });
-                        }
+/// The parts of `row`, in reading order. A message's sender heads its
+/// group.
+pub fn row_parts(row: &Row) -> Vec<Part<'_>> {
+    let line = |key: String, line: String| Part {
+        key,
+        text: Text::Line(line),
+    };
+    match row {
+        Row::Message(message) => {
+            let event = &message.event;
+            let mut parts = Vec::new();
+            if message.first_in_group {
+                parts.push(Part {
+                    key: format!("{}/sender", event.id),
+                    text: Text::Sender(event),
+                });
+            }
+            match &event.content {
+                EventContent::Message(m) => {
+                    if let Some(reply) = &m.in_reply_to {
+                        parts.push(Part {
+                            key: reply_key(&event.id),
+                            text: Text::Reply(reply),
+                        });
                     }
-                    content => {
-                        parts.extend(placeholder(content).map(|l| line(event.id.clone(), l)))
+                    if matches!(
+                        m.kind,
+                        MessageKind::Text | MessageKind::Notice | MessageKind::Emote
+                    ) {
+                        parts.push(Part {
+                            key: event.id.clone(),
+                            text: Text::Message(&m.document),
+                        });
                     }
                 }
-                parts
+                content => parts.extend(
+                    placeholder(content, message.decrypting).map(|l| line(event.id.clone(), l)),
+                ),
             }
-            Row::State(events) => {
-                let summary = room::state_summary(events);
-                // None for nothing worth a line, e.g. a topic set again.
-                (!summary.is_empty())
-                    .then(|| line(format!("{}/state", events[0].id), summary))
-                    .into_iter()
-                    .collect()
-            }
-            Row::Day(day) => {
-                let since = day
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default();
-                let day: DateTime<Local> = (*day).into();
-                vec![line(
-                    format!("day/{}", since.as_secs()),
-                    day.format("%A, %e %B %Y").to_string(),
-                )]
-            }
-            Row::Start => vec![line(
-                "start".into(),
-                "This is the start of the room.".into(),
-            )],
+            parts
         }
-    }
-
-    /// The event it shows, if it does.
-    fn event(&self) -> Option<&'a Event> {
-        match self {
-            Row::Event { event, .. } => Some(event),
-            _ => None,
+        Row::Summary { id, text } => vec![line(format!("{id}/state"), text.clone())],
+        Row::Day(day) => {
+            let since = day
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default();
+            let day: DateTime<Local> = (*day).into();
+            vec![line(
+                format!("day/{}", since.as_secs()),
+                day.format("%A, %e %B %Y").to_string(),
+            )]
         }
+        Row::Start => vec![line(
+            "start".into(),
+            "This is the start of the room.".into(),
+        )],
+        // A divider, without text to select.
+        Row::ReadMarker => Vec::new(),
     }
 }
 
-/// The line shown in place of a message that is not one, if it is shown.
-fn placeholder(content: &EventContent) -> Option<String> {
+/// The line shown in place of a message that is not one, if it is shown;
+/// an undecryptable one may still be `decrypting`.
+fn placeholder(content: &EventContent, decrypting: bool) -> Option<String> {
     match content {
-        EventContent::UnableToDecrypt => {
-            Some("Unable to decrypt this message (waiting for keys)".into())
-        }
+        EventContent::UnableToDecrypt if decrypting => Some("Decrypting…".into()),
+        EventContent::UnableToDecrypt => Some("Could not decrypt this message.".into()),
         EventContent::Redacted => Some("Message deleted".into()),
         EventContent::Other { description } => Some(format!("sent a {description}")),
         _ => None,
@@ -227,8 +148,8 @@ impl Part<'_> {
 }
 
 /// The parts of each of `rows`.
-pub fn parts<'a>(rows: &[Row<'a>]) -> Vec<Vec<Part<'a>>> {
-    rows.iter().map(Row::parts).collect()
+pub fn parts(rows: &[Row]) -> Vec<Vec<Part<'_>>> {
+    rows.iter().map(row_parts).collect()
 }
 
 /// The parts of all rows (see [`parts`]) in reading order, each with its
@@ -268,7 +189,7 @@ impl Part<'_> {
 /// messages, each sender's name and time go before their messages, unless
 /// their name is in it already.
 pub fn copied(
-    rows: &[Row<'_>],
+    rows: &[Row],
     parts: &[Vec<Part<'_>>],
     bounds: Bounds,
     shown: &Shown,
@@ -339,7 +260,9 @@ pub fn time(event: &Event) -> String {
 
 #[cfg(test)]
 mod tests {
-    use mtrx_core::{MembershipChange, OwnedUserId};
+    use std::time::Duration;
+
+    use mtrx_core::{MembershipChange, OwnedUserId, RowContext, TimelineEntry};
 
     use super::*;
     use crate::selection::{Point, Pos, Selection};
@@ -392,6 +315,10 @@ mod tests {
             TimelineEntry::Event(message("$e", "alice", 20, "Fourth")),
         ]
         .into()
+    }
+
+    fn rows(entries: &[TimelineEntry]) -> Vec<Row> {
+        mtrx_core::rows(entries, &RowContext::default())
     }
 
     fn pos(unit: usize, offset: usize) -> Pos {
@@ -449,6 +376,22 @@ mod tests {
         };
         assert_eq!(line("$s/state"), "dave joined");
         assert_eq!(line("$d"), "Message deleted");
+    }
+
+    #[test]
+    fn the_read_marker_has_no_text_and_starts_a_group() {
+        let entries = [
+            TimelineEntry::Event(message("$a", "alice", 0, "First")),
+            TimelineEntry::ReadMarker,
+            TimelineEntry::Event(message("$b", "alice", 1, "Second")),
+        ];
+        let rows = rows(&entries);
+        let parts = parts(&rows);
+        assert!(parts[1].is_empty());
+        let keys: Vec<_> = (in_order(&parts).iter())
+            .map(|(_, part)| part.key.as_str())
+            .collect();
+        assert_eq!(keys, ["$a/sender", "$a", "$b/sender", "$b"]);
     }
 
     #[test]

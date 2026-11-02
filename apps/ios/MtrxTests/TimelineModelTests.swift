@@ -9,19 +9,19 @@ final class TimelineModelTests: XCTestCase {
 
     override func setUp() async throws {
         session = FakeSession(noHandle: .init())
-        model = TimelineModel(session: session, room: Make.room("!room:example.org"), keysArriving: Make.noKeysArriving)
+        model = TimelineModel(session: session, room: Make.room("!room:example.org"))
         await model.open()
     }
 
     func testShowsTheListenersItems() async {
         XCTAssertFalse(model.opening)
-        session.fakeTimeline.listener?.onUpdate(items: [Make.item("1", Make.event("alice", Make.text("Hi")))])
+        session.fakeTimeline.listener?.onUpdate(rows: [Make.row("1", Make.event("alice", Make.text("Hi")))])
         await eventually { self.model.rows.map(\.id) == ["1"] }
     }
 
     func testMarksReadWhenVisible() async {
         model.setVisible(true)
-        session.fakeTimeline.listener?.onUpdate(items: [Make.item("1", Make.event("alice", Make.text("Hi")))])
+        session.fakeTimeline.listener?.onUpdate(rows: [Make.row("1", Make.event("alice", Make.text("Hi")))])
         await eventually { self.session.fakeTimeline.markedRead == 1 }
     }
 
@@ -67,7 +67,7 @@ final class TimelineModelTests: XCTestCase {
     }
 
     func testNoButtonWhileOpening() async {
-        let opening = TimelineModel(session: session, room: Make.room("!other:example.org"), keysArriving: Make.noKeysArriving)
+        let opening = TimelineModel(session: session, room: Make.room("!other:example.org"))
         opening.scrolled(distanceFromBottom: 300)
         XCTAssertFalse(opening.showsScrollToBottom)
         await opening.open()
@@ -79,13 +79,13 @@ final class TimelineModelTests: XCTestCase {
     private var timeline: FakeTimeline { session.fakeTimeline }
 
     /// Show `items` and wait until the model has them.
-    private func show(_ items: [TimelineItem]) async {
-        timeline.listener?.onUpdate(items: items)
-        await eventually { self.model.rows.count == TimelineRows.build(items, showSenders: true).count }
+    private func show(_ items: [TimelineRow]) async {
+        timeline.listener?.onUpdate(rows: items)
+        await eventually { self.model.rows.count == items.count }
     }
 
-    private let bobsMessage = Make.item("b", Make.event("bob", Make.text("Lunch?\nAt noon"), eventId: "$b"))
-    private let ourMessage = Make.item(
+    private let bobsMessage = Make.row("b", Make.event("bob", Make.text("Lunch?\nAt noon"), eventId: "$b"))
+    private let ourMessage = Make.row(
         "o", Make.event("me", Make.text("Hello world", rawBody: "Hello *world*"), own: true, eventId: "$o", editable: true))
 
     func testRepliesWithTheDraft() async {
@@ -203,8 +203,8 @@ final class TimelineModelTests: XCTestCase {
 
     // MARK: Going to a quoted message
 
-    private let start = TimelineItem(id: "s", content: .start)
-    private let reply = Make.item(
+    private let start = TimelineRow(id: "s", content: .start)
+    private let reply = Make.row(
         "r",
         Make.event(
             "bob",
@@ -229,7 +229,7 @@ final class TimelineModelTests: XCTestCase {
         timeline.pages = Array(repeating: false, count: 30)
         timeline.onPaginate = { [timeline, ourMessage, reply] call in
             if call == 3 {
-                timeline.listener?.onUpdate(items: [ourMessage, reply])
+                timeline.listener?.onUpdate(rows: [ourMessage, reply])
             }
         }
         await model.goTo(eventId: "$o")
@@ -246,7 +246,7 @@ final class TimelineModelTests: XCTestCase {
         timeline.pages = [false, true]
         timeline.onPaginate = { [timeline, start, reply] call in
             if call == 2 {
-                timeline.listener?.onUpdate(items: [start, reply])
+                timeline.listener?.onUpdate(rows: [start, reply])
             }
         }
         await model.goTo(eventId: "$o")

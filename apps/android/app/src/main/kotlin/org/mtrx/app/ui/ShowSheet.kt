@@ -37,7 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlin.math.roundToInt
-import org.mtrx.app.rooms.SectionChoice
+import uniffi.mtrx.SectionChoice
 
 /** What the Show sheet does, by section key and position. */
 class ShowActions(
@@ -60,7 +60,8 @@ private val ROW_HEIGHT = 52.dp
 
 /**
  * Which sections [spaceName]'s list shows, on this phone: a tick for each,
- * Show all and Hide all, and a handle to drag a section to its place.
+ * with its number of rooms, Show all and Hide all, and a handle to drag a
+ * section to its place.
  */
 @Composable
 fun ShowSheetContent(spaceName: String, choices: List<SectionChoice>, actions: ShowActions) {
@@ -123,6 +124,11 @@ fun ShowSheetContent(spaceName: String, choices: List<SectionChoice>, actions: S
                         style = MaterialTheme.typography.bodyLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        choice.rooms.toString(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Icon(
                         MtrxIcons.DragHandle,

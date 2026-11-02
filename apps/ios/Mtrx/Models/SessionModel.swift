@@ -19,11 +19,13 @@ final class SessionModel: ObservableObject {
     /// Synced with the server since start; before, `rooms` may be a stale
     /// cache, or empty on the first sign-in.
     @Published private(set) var loaded = false
-    /// The chats, and the rooms by space.
-    @Published private(set) var lists = RoomLists()
+    /// The chats, and the rooms by space, as the library lists them.
+    @Published private(set) var lists = RoomLists.empty()
+    /// The rooms with a draft on this device.
+    @Published private(set) var drafts: Set<String> = []
     /// The Spaces tab's selected space, whose rooms it shows, remembered
     /// across launches (until sign-out).
-    @Published private(set) var selectedSpace: SpaceEntry?
+    @Published private(set) var selectedSpace: SpaceKey?
     /// The tab shown.
     @Published var tab = HomeTab.chats
     /// The chats opened over the Chats tab's list.
@@ -66,10 +68,6 @@ final class SessionModel: ObservableObject {
     private var layoutChanges: AnyCancellable?
 
     private let subscriptions = Subscriptions()
-    /// The room list as last given.
-    private var listState: RoomListState?
-    /// Notes at the top as just chosen here, until the room list has it.
-    @Published private var notesAtTopSaving: Bool?
     /// The app is in the foreground: sync runs.
     private var foreground = false
     /// Sync has started once.
@@ -92,10 +90,10 @@ final class SessionModel: ObservableObject {
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
-        roomSort = defaults.string(forKey: Self.roomSortKey).flatMap(RoomSort.init(rawValue:)) ?? .listOrder
+        roomSort = defaults.string(forKey: Self.roomSortKey).flatMap(RoomSort.init(saved:)) ?? .listOrder
         // Opens on the space's rooms, until the room list says it is gone.
         if let saved = defaults.string(forKey: Self.selectedSpaceKey) {
-            selectedSpace = SpaceEntry(saved: saved)
+            selectedSpace = SpaceKey(saved: saved)
         }
         sectionLayouts = SectionLayouts(defaults: defaults)
         foldedGroups = Set(defaults.stringArray(forKey: Self.foldedGroupsKey) ?? [])
@@ -118,13 +116,13 @@ final class SessionModel: ObservableObject {
         subscriptions.add(session.subscribeEncryptionState(listener: encryption), encryption) { [weak self] in
             self?.encryption = $0
         }
-        let roomList = Feed<RoomListState>()
+        let roomLists = Feed<RoomLists>()
         let session = self.session
         subscriptions.add(Task { [weak self] in
             do {
-                let handle = try await session.subscribeRoomList(listener: roomList)
-                self?.subscriptions.add(handle, roomList) { [weak self] state in
-                    self?.apply(state)
+                let handle = try await session.subscribeRoomLists(listener: roomLists)
+                self?.subscriptions.add(handle, roomLists) { [weak self] lists in
+                    self?.apply(lists)
                 }
             } catch {
                 self?.error = errorMessage(error)
@@ -137,26 +135,16 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    private func apply(_ state: RoomListState) {
-        listState = state
-        rooms = state.rooms
-        loaded = state.loaded
-        // A choice made here shows until the list has it.
-        if notesAtTopSaving == state.notesAtTop {
-            notesAtTopSaving = nil
-        }
-        if let notesAtTop = notesAtTopSaving {
-            var state = state
-            state.notesAtTop = notesAtTop
-            lists = RoomLists(state)
-        } else {
-            lists = RoomLists(state)
-        }
-        expecting = expecting.filter { lists.byId[$0]?.invited ?? true }
-        guard state.loaded else { return }
-        // The first states may be a cache: rooms may come with sync.
-        presence.follow(lists.chats)
-        if let selectedSpace, lists.space(selectedSpace) == nil, !isExpected(selectedSpace) {
+    private func apply(_ lists: RoomLists) {
+        rooms = lists.rooms()
+        loaded = lists.loaded()
+        drafts = Set(lists.drafts())
+        self.lists = lists
+        expecting = expecting.filter { lists.room(roomId: $0)?.invited ?? true }
+        guard loaded else { return }
+        // The first lists may be from a cache: rooms may come with sync.
+        presence.follow(lists.chats())
+        if let selectedSpace, lists.space(key: selectedSpace) == nil, !isExpected(selectedSpace) {
             selectSpace(nil)
         }
     }
@@ -164,28 +152,24 @@ final class SessionModel: ObservableObject {
     /// The Notes to self stays at the top of Chats and of every space (for
     /// all the user's devices).
     var notesAtTop: Bool {
-        notesAtTopSaving ?? listState?.notesAtTop ?? true
+        lists.notesAtTop()
     }
 
-    /// Keep the Notes to self at the top, or not: shown so at once, until
-    /// the room list has it (or it failed, with why).
+    /// Keep the Notes to self at the top, or not: the library shows it so
+    /// at once (if it fails, with why).
     @discardableResult
     func setNotesAtTop(_ on: Bool) -> Task<Void, Never> {
-        notesAtTopSaving = on
-        if let listState { apply(listState) }
         let session = self.session
         return Task {
             do {
                 try await session.setNotesAtTop(on: on)
             } catch {
                 self.error = errorMessage(error)
-                notesAtTopSaving = nil
-                if let listState { apply(listState) }
             }
         }
     }
 
-    private func isExpected(_ entry: SpaceEntry) -> Bool {
+    private func isExpected(_ entry: SpaceKey) -> Bool {
         if case .space(let id) = entry { return expecting.contains(id) }
         return false
     }
@@ -284,7 +268,7 @@ final class SessionModel: ObservableObject {
 
     /// Show `entry`'s rooms (and remember it), or the spaces with none
     /// selected.
-    func selectSpace(_ entry: SpaceEntry?) {
+    func selectSpace(_ entry: SpaceKey?) {
         selectedSpace = entry
         if let entry {
             defaults.set(entry.saved, forKey: Self.selectedSpaceKey)
@@ -294,7 +278,7 @@ final class SessionModel: ObservableObject {
     }
 
     /// The Spaces tab's pages over its list: the selected space's rooms.
-    var spacesPath: [SpaceEntry] {
+    var spacesPath: [SpaceKey] {
         get { selectedSpace.map { [$0] } ?? [] }
         set { selectSpace(newValue.last) }
     }
@@ -317,12 +301,12 @@ final class SessionModel: ObservableObject {
     /// tab, over its list; a chat in the Chats tab; a space's rooms in the
     /// Spaces tab. `kind` for one not in the room list yet.
     func open(_ id: String, kind: RoomKind? = nil) {
-        switch kind ?? lists.byId[id]?.kind {
+        switch kind ?? lists.room(roomId: id)?.kind {
         case .direct:
             chatsPath = [id]
             tab = .chats
         case .space:
-            selectSpace(.space(id))
+            selectSpace(.space(id: id))
             tab = .spaces
         case .room, nil:
             roomsPath = [id]
@@ -334,7 +318,7 @@ final class SessionModel: ObservableObject {
     func left(_ id: String) {
         roomsPath.removeAll { $0 == id }
         chatsPath.removeAll { $0 == id }
-        if selectedSpace == .space(id) {
+        if selectedSpace == .space(id: id) {
             selectSpace(nil)
         }
         expecting.remove(id)
@@ -365,27 +349,24 @@ final class SessionModel: ObservableObject {
     }
 
     /// The Chats tab's badge: unread messages in the direct chats.
-    var chatsBadge: Int { lists.chatsUnread }
+    var chatsBadge: Int { Int(clamping: lists.badges().chats) }
 
-    /// The Rooms tab's badge: unread messages in the rooms.
-    var roomsBadge: Int { lists.roomsUnread }
+    /// The Rooms tab's badge: unread messages in the joined rooms.
+    var roomsBadge: Int { Int(clamping: lists.badges().rooms) }
 
-    /// The Spaces tab's badge: unread messages in the rooms in spaces.
-    var spacesBadge: Int { lists.spacesUnread }
+    /// The Spaces tab's badge: unread messages in the joined rooms in
+    /// spaces.
+    var spacesBadge: Int { Int(clamping: lists.badges().spaces) }
 
     /// The number on a room's or chat's back button: unread messages in
-    /// the other rooms and direct chats.
+    /// the other joined rooms and direct chats.
     func backBadge(besides id: String) -> Int {
-        lists.unread(besides: id)
+        Int(clamping: lists.unreadBesides(roomId: id))
     }
 
     /// The Rooms tab's groups, folded as on this phone.
     var roomGroups: [ListSection] {
-        lists.roomGroups().map { group in
-            var group = group
-            group.folded = foldedGroups.contains(group.key)
-            return group
-        }
+        lists.roomGroups(among: nil, folded: foldedGroups.sorted())
     }
 
     /// Fold or unfold the Rooms tab's group with this key, and remember it.
@@ -401,21 +382,15 @@ final class SessionModel: ObservableObject {
     /// Order the spaces' rooms by `sort`, from now on.
     func setRoomSort(_ sort: RoomSort) {
         roomSort = sort
-        defaults.set(sort.rawValue, forKey: Self.roomSortKey)
+        defaults.set(sort.saved, forKey: Self.roomSortKey)
     }
 
     func timeline(for room: RoomSummary) -> TimelineModel {
-        TimelineModel(session: session, room: room, keysArriving: keysArriving)
+        TimelineModel(session: session, room: room)
     }
 
     func info(for room: RoomSummary) -> RoomInfoModel {
         RoomInfoModel(session: session, roomId: room.id, userId: userId)
-    }
-
-    /// Message keys are arriving from the backup, now and on every change:
-    /// undecryptable messages say they are being decrypted meanwhile.
-    var keysArriving: AnyPublisher<Bool, Never> {
-        $encryption.map { $0?.keysArriving ?? false }.removeDuplicates().eraseToAnyPublisher()
     }
 
     /// Sign out on the server and delete the account's data here.

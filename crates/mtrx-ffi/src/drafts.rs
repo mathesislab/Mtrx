@@ -30,7 +30,7 @@ impl Session {
     }
 
     /// Keep a room's draft (when leaving it, or the app going to the
-    /// background); an empty one (sent) clears it. `RoomListState.drafts`
+    /// background); an empty one (sent) clears it. `RoomLists.drafts()`
     /// follows.
     pub async fn save_draft(&self, room_id: String, draft: Draft) -> Result<(), MtrxError> {
         let room = crate::error::room_id(&room_id)?;

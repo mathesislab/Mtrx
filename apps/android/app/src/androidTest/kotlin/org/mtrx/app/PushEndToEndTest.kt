@@ -30,13 +30,13 @@ import org.junit.runner.RunWith
 import org.mtrx.app.model.AccountState
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Mtrx
-import uniffi.mtrx.RoomListListener
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomLists
+import uniffi.mtrx.RoomListsListener
+import uniffi.mtrx.RowContent
 import uniffi.mtrx.SecretBackend
 import uniffi.mtrx.Session
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
-import uniffi.mtrx.TimelineListener
+import uniffi.mtrx.TimelineRow
+import uniffi.mtrx.TimelineRowsListener
 
 /**
  * Push notifications end to end (docs/mobile.md, section 10), against the
@@ -79,9 +79,9 @@ class PushEndToEndTest {
         val aliceMtrx = Mtrx(File(dir, "data").path, File(dir, "cache").path, MemorySecrets())
         val aliceSession = aliceMtrx.login(HOMESERVER, alice, PASSWORD)
         aliceSession.startSync()
-        val aliceRooms = AtomicReference<RoomListState?>(null)
-        val aliceRoomList = aliceSession.subscribeRoomList(object : RoomListListener {
-            override fun onUpdate(state: RoomListState) = aliceRooms.set(state)
+        val aliceRooms = AtomicReference<RoomLists?>(null)
+        val aliceRoomList = aliceSession.subscribeRoomLists(object : RoomListsListener {
+            override fun onUpdate(lists: RoomLists) = aliceRooms.set(lists)
         })
 
         // The room, encrypted, made over HTTP (the bindings make no rooms).
@@ -105,10 +105,10 @@ class PushEndToEndTest {
         ).getString("room_id")
         post("/_matrix/client/v3/join/${URLEncoder.encode(roomId, "UTF-8")}", loginToken(bob), JSONObject())
         waitUntil("Alice to see the room encrypted with Bob in it") {
-            aliceRooms.get()?.rooms?.any { it.id == roomId && it.encrypted && it.joinedMembers == 2uL } == true
+            aliceRooms.get()?.rooms()?.any { it.id == roomId && it.encrypted && it.joinedMembers == 2uL } == true
         }
         waitUntil("Bob's app to see the room") {
-            account.rooms.value.rooms.any { it.id == roomId && !it.invited && it.encrypted }
+            account.rooms.value.rooms().any { it.id == roomId && !it.invited && it.encrypted }
         }
 
         // The pusher, as the app sets it for a new endpoint.
@@ -177,16 +177,16 @@ class PushEndToEndTest {
     /** Send [text] in [roomId] and return its event ID, found by [shown] in the sender's timeline. */
     private suspend fun send(session: Session, roomId: String, text: String, shown: String): String {
         val timeline = session.timeline(roomId)
-        val latest = AtomicReference<List<TimelineItem>>(emptyList())
-        val subscription = timeline.subscribe(object : TimelineListener {
-            override fun onUpdate(items: List<TimelineItem>) {
-                latest.set(items)
+        val latest = AtomicReference<List<TimelineRow>>(emptyList())
+        val subscription = timeline.subscribeRows(object : TimelineRowsListener {
+            override fun onUpdate(rows: List<TimelineRow>) {
+                latest.set(rows)
             }
         })
         timeline.sendText(text)
         val eventId = waitFor("the sent event's ID") {
-            latest.get().firstNotNullOfOrNull { item ->
-                val event = (item.content as? TimelineItemContent.Event)?.event ?: return@firstNotNullOfOrNull null
+            latest.get().firstNotNullOfOrNull { row ->
+                val event = (row.content as? RowContent.Message)?.event ?: return@firstNotNullOfOrNull null
                 val message = (event.content as? EventContent.Message)?.message ?: return@firstNotNullOfOrNull null
                 if (event.own && message.body.contains(shown)) event.eventId else null
             }

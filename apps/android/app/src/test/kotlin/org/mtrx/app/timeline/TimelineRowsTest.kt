@@ -10,72 +10,48 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.eventItem
 import org.mtrx.app.messageEvent
-import org.mtrx.app.stateEvent
 import org.mtrx.app.textEvent
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
-import uniffi.mtrx.MembershipChange
 import uniffi.mtrx.Message
+import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Reaction
 import uniffi.mtrx.Reader
 import uniffi.mtrx.ReplyQuote
+import uniffi.mtrx.RowContent
 import uniffi.mtrx.SendState
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
+import uniffi.mtrx.TimelineRow as LibraryRow
 
 class TimelineRowsTest {
     private val alice = "@alice:example.org"
     private val bob = "@bob:example.org"
+    private val me = "@me:example.org"
 
     @Test
-    fun groupsMessagesBySender() {
-        val rows = timelineRows(
+    fun showsTheLibrarysRows() {
+        val rows = shownRows(
             listOf(
-                TimelineItem("start", TimelineItemContent.Start),
-                TimelineItem("day-0", TimelineItemContent.DayDivider(Instant.EPOCH)),
+                LibraryRow("start", RowContent.Start),
+                LibraryRow("day-0", RowContent.Day(Instant.EPOCH)),
                 textEvent("1", alice, "hi"),
-                textEvent("2", alice, "there"),
-                textEvent("3", bob, "hello"),
-                TimelineItem("read-marker", TimelineItemContent.ReadMarker),
-                textEvent("4", bob, "again"),
-                textEvent("5", "@me:example.org", "mine", own = true),
-                textEvent("6", bob, "back"),
+                LibraryRow("read-marker", RowContent.ReadMarker),
+                LibraryRow("j", RowContent.Summary("bob joined")),
+                textEvent("2", "@me:example.org", "mine", own = true),
             ),
             ZoneOffset.UTC,
         )
-        assertEquals(listOf("start", "day-0", "1", "2", "3", "read-marker", "4", "5", "6"), rows.map { it.id })
+        assertEquals(listOf("start", "day-0", "1", "read-marker", "j", "2"), rows.map { it.id })
         assertEquals(LocalDate.of(1970, 1, 1), (rows[1] as DayRow).date)
-        val senders = rows.filterIsInstance<EventRow>().map { it.id to it.showSender }
-        // The read marker does not start a group; our own messages show no sender.
-        assertEquals(
-            listOf("1" to true, "2" to false, "3" to true, "4" to false, "5" to false, "6" to true),
-            senders,
-        )
-        assertEquals("6", latestEventId(rows))
-    }
-
-    @Test
-    fun stateEventsShareALine() {
-        val rows = timelineRows(
-            listOf(
-                stateEvent("c", alice, EventContent.OtherState("m.room.create")),
-                stateEvent("n", alice, EventContent.OtherState("m.room.name")),
-                stateEvent("i", alice, EventContent.Membership(bob, "Bob", MembershipChange.INVITED)),
-                stateEvent("j", bob, EventContent.Membership(bob, "Bob", MembershipChange.JOINED)),
-                textEvent("m", bob, "hi"),
-                stateEvent("t", bob, EventContent.OtherState("m.room.topic")),
-            ),
-        )
-        assertEquals(listOf("c", "m", "t"), rows.map { it.id })
-        assertEquals(
-            "alice created and configured the room · alice invited Bob · Bob joined",
-            (rows[0] as StateRow).text,
-        )
-        assertEquals("bob changed the topic", (rows[2] as StateRow).text)
-        assertEquals(true, (rows[1] as EventRow).showSender)
+        assertEquals("bob joined", (rows[4] as StateRow).text)
+        val alices = rows[2] as EventRow
+        assertTrue(alices.showSender && alices.avatarColumn)
+        assertEquals(listOf(MessageAction.REACT, MessageAction.REPLY, MessageAction.COPY, MessageAction.SELECT_TEXT), alices.actions)
+        // Our own messages show no sender.
+        assertFalse((rows[5] as EventRow).showSender)
+        assertEquals("2", latestEventId(rows))
     }
 
     @Test
@@ -84,14 +60,12 @@ class TimelineRowsTest {
         assertEquals("alice", localpart("alice"))
     }
 
-    private val me = "@me:example.org"
-
     private fun reader(userId: String, name: String? = null) = Reader(userId = userId, name = name, avatarUrl = null)
 
     private fun text(body: String, edited: Boolean = false, reactions: List<Reaction> = emptyList(), replyTo: ReplyQuote? = null) =
         Message(kind = MessageKind.TEXT, body = body, edited = edited, media = null, reactions = reactions, replyTo = replyTo, rawBody = body)
 
-    private fun row(item: TimelineItem): EventRow = timelineRows(listOf(item)).single() as EventRow
+    private fun row(row: LibraryRow): EventRow = shownRows(listOf(row)).single() as EventRow
 
     private fun quoted(state: QuoteState, kind: MessageKind? = null, body: String? = null) = ReplyQuote(
         eventId = "\$original",
@@ -150,53 +124,17 @@ class TimelineRowsTest {
     }
 
     @Test
-    fun swipingRepliesToSentMessagesOnly() {
-        val me = "@me:x"
-        assertTrue(row(textEvent("1", "@bob:x", "hi")).canReply)
-        assertTrue(row(messageEvent("2", me, text("mine"), own = true)).canReply)
+    fun swipingRepliesWhereTheMenuDoes() {
+        assertTrue(row(textEvent("1", bob, "hi")).canReply)
         assertFalse(
             "not sent yet",
             row(messageEvent("3", me, text("on its way"), own = true, eventId = null, sendState = SendState.Sending)).canReply,
         )
-        assertFalse(
-            "failed",
-            row(messageEvent("4", me, text("refused"), own = true, eventId = null, sendState = SendState.Failed("too large"))).canReply,
-        )
-        assertFalse("deleted", row(eventItem("5", "@bob:x", EventContent.Redacted)).canReply)
-        assertFalse("undecryptable", row(eventItem("6", "@bob:x", EventContent.UnableToDecrypt)).canReply)
+        assertFalse("deleted", row(eventItem("5", bob, EventContent.Redacted)).canReply)
     }
 
     @Test
-    fun theMenuOffersWhatApplies() {
-        val all = MessageAction.entries
-        fun actions(item: TimelineItem) = row(item).actions.toList()
-
-        // Others' message: no edit or delete.
-        assertEquals(
-            listOf(MessageAction.REACT, MessageAction.REPLY, MessageAction.COPY, MessageAction.SELECT_TEXT),
-            actions(textEvent("1", bob, "hi")),
-        )
-        // Ours, sent, in the menu's order.
-        assertEquals(
-            all - MessageAction.PIN - MessageAction.UNPIN - MessageAction.RETRY - MessageAction.DISCARD,
-            actions(messageEvent("2", me, text("mine"), own = true, editable = true)),
-        )
-        // Not sent yet: no reacting, replying or deleting.
-        assertEquals(
-            listOf(MessageAction.COPY, MessageAction.SELECT_TEXT, MessageAction.EDIT),
-            actions(messageEvent("3", me, text("on its way"), own = true, eventId = null, sendState = SendState.Sending, editable = true)),
-        )
-        // Refused: retry or discard.
-        assertEquals(
-            listOf(MessageAction.COPY, MessageAction.SELECT_TEXT, MessageAction.RETRY, MessageAction.DISCARD),
-            actions(messageEvent("4", me, text("refused"), own = true, eventId = null, sendState = SendState.Failed("too large"))),
-        )
-        // Deleted: nothing, ours or not.
-        assertEquals(emptyList<MessageAction>(), actions(eventItem("5", me, EventContent.Redacted, own = true)))
-        assertEquals(emptyList<MessageAction>(), actions(eventItem("6", bob, EventContent.Redacted)))
-        // Undecryptable, ours: only deleting.
-        assertEquals(listOf(MessageAction.DELETE), actions(eventItem("7", me, EventContent.UnableToDecrypt, own = true)))
-        // An image without a caption: nothing to copy.
+    fun anImageWithoutACaptionPreviewsAsItsName() {
         val image = Message(
             kind = MessageKind.IMAGE,
             body = "ice.png",
@@ -204,17 +142,15 @@ class TimelineRowsTest {
             media = Media(MediaKind.IMAGE, "ice.png", null, "image/png", 800u, 600u, "{}"),
         )
         val imageRow = row(messageEvent("8", bob, image))
-        assertEquals(listOf(MessageAction.REACT, MessageAction.REPLY), imageRow.actions.toList())
-        assertNull(imageRow.text)
+        assertNull(messageText(image))
         assertEquals("Image · ice.png", preview(imageRow))
     }
 
     @Test
     fun undecryptableRowSaysDecryptingWhileKeysArrive() {
-        val row = timelineRows(listOf(eventItem("1", bob, EventContent.UnableToDecrypt))).single()
-        assertTrue(row is EventRow)
-        // The row stays; its text follows the state.
-        assertEquals("Decrypting…", undecryptableText(keysArriving = true))
-        assertEquals("Could not decrypt this message.", undecryptableText(keysArriving = false))
+        val undecryptable = eventItem("1", bob, EventContent.UnableToDecrypt)
+        assertEquals("Could not decrypt this message.", row(undecryptable).undecryptableText)
+        val content = undecryptable.content as RowContent.Message
+        assertEquals("Decrypting…", row(LibraryRow("1", content.copy(decrypting = true))).undecryptableText)
     }
 }

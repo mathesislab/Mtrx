@@ -2,19 +2,12 @@
 //! priority, and the order of its sections, by dragging rooms between
 //! sections and sections to other places, or through menus.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 use iced::{Point, Subscription, Task, event, mouse};
 use mtrx_core::{
-    AtHome, Grouping, OwnedRoomId, OwnedUserId, RoomCategories, RoomSummary, RoomTag, Section,
-    Session, Sort, SpaceMembers, home_rooms, space_rooms,
+    AtHome, Grouping, OwnedRoomId, RoomCategories, RoomSummary, RoomTag, Section, Session, Sort,
 };
-
-use tracing::warn;
 
 use crate::app::{self, Popup};
 
@@ -22,15 +15,10 @@ use crate::app::{self, Popup};
 pub const NAME_INPUT: &str = "category-name";
 /// How far the cursor moves before a press on a room becomes a drag.
 const DRAG_THRESHOLD: f32 = 5.0;
-/// How long a saved tag may still differ from the room list (sync lags
-/// behind the server's answer).
-const TAG_SYNC: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Categories(RoomCategories),
-    /// The joined members of a space that had this many.
-    SpaceMembers(OwnedRoomId, u64, Result<HashSet<OwnedUserId>, String>),
     /// The cursor entered (`true`) or left a room row.
     Row(OwnedRoomId, bool),
     /// The cursor entered or left a section's grip, which drags it.
@@ -71,7 +59,6 @@ pub enum Message {
     AtHome(AtHome),
     /// The Notes to self at the top, from the settings.
     NotesAtTop(bool),
-    TagSaved(OwnedRoomId, Result<(), String>),
     Saved(Result<(), String>),
 }
 
@@ -138,20 +125,9 @@ impl CategoryEdit {
     }
 }
 
-struct PendingTag {
-    tag: RoomTag,
-    previous: RoomTag,
-    saved: Option<Instant>,
-}
-
 #[derive(Default)]
 pub struct Arrange {
     pub categories: RoomCategories,
-    /// Tags set here that the room list does not show yet.
-    pending_tags: HashMap<OwnedRoomId, PendingTag>,
-    /// Joined members of the top-level spaces, for the direct chats listed
-    /// in them.
-    pub space_members: SpaceMembers,
     /// The room row or section grip under the cursor.
     pub hovered: Option<Dragged>,
     /// The section whose grip shows.
@@ -167,7 +143,7 @@ pub struct Arrange {
 pub struct Context<'a> {
     pub session: &'a Arc<Session>,
     pub space: Option<&'a OwnedRoomId>,
-    pub rooms: &'a mut [RoomSummary],
+    pub rooms: &'a [RoomSummary],
     pub grouping: Grouping,
     /// The window's popup, where the room list's menus open.
     pub popup: &'a mut Option<Popup>,
@@ -202,77 +178,6 @@ impl Arrange {
         }
     }
 
-    /// What `space` lists, or Home for `None`, in the order of `rooms`: the
-    /// room list's rooms, what its search finds and what lights the space
-    /// bar's dot. A space whose members are not loaded yet lists no direct
-    /// chats; Home lists the rooms of spaces as [`AtHome`] says.
-    pub fn listed<'a>(
-        &self,
-        rooms: &'a [RoomSummary],
-        space: Option<&OwnedRoomId>,
-        grouping: &Grouping,
-    ) -> Vec<&'a RoomSummary> {
-        match space {
-            None => home_rooms(rooms, &self.categories, grouping),
-            Some(space) => space_rooms(
-                rooms,
-                space,
-                self.space_members.get(space),
-                self.categories.layout(Some(space)),
-            ),
-        }
-    }
-
-    /// Load the members of the top-level spaces that appeared or whose
-    /// number of members changed, for their direct chats.
-    pub fn load_space_members(
-        &mut self,
-        session: &Arc<Session>,
-        rooms: &[RoomSummary],
-    ) -> Task<app::Message> {
-        Task::batch(
-            self.space_members
-                .due(rooms)
-                .into_iter()
-                .map(|(space, count)| {
-                    let session = session.clone();
-                    Task::perform(
-                        {
-                            let space = space.clone();
-                            async move {
-                                session
-                                    .joined_member_ids(&space)
-                                    .await
-                                    .map_err(|e| e.to_string())
-                            }
-                        },
-                        move |result| {
-                            app::Message::Arrange(Message::SpaceMembers(
-                                space.clone(),
-                                count,
-                                result,
-                            ))
-                        },
-                    )
-                }),
-        )
-    }
-
-    /// Keep tags set here until the room list shows them.
-    pub fn rooms_updated(&mut self, rooms: &mut [RoomSummary]) {
-        self.pending_tags.retain(|id, pending| {
-            let Some(room) = rooms.iter_mut().find(|r| &r.id == id) else {
-                return false;
-            };
-            let synced =
-                room.tag == pending.tag || pending.saved.is_some_and(|at| at.elapsed() > TAG_SYNC);
-            if !synced {
-                room.tag = pending.tag;
-            }
-            !synced
-        });
-    }
-
     /// Stop a drag or naming a category; false if neither went on.
     pub fn escape(&mut self) -> bool {
         let open = self.drag.is_some() || self.naming.is_some();
@@ -289,12 +194,6 @@ impl Arrange {
         let category_menu = |popup: &mut Popup| matches!(popup, Popup::CategoryMenu(_));
         match message {
             Message::Categories(categories) => self.categories = categories,
-            Message::SpaceMembers(space, count, Ok(joined)) => {
-                self.space_members.loaded(space, count, joined);
-            }
-            Message::SpaceMembers(space, _, Err(e)) => {
-                warn!(%space, "could not load the space's members: {e}");
-            }
             Message::Row(room, entered) => self.hover(Dragged::Room(room), entered),
             Message::Grip(section, entered) => self.hover(Dragged::Section(section), entered),
             Message::SectionHovered(section, true) => self.section_hovered = Some(section),
@@ -378,10 +277,10 @@ impl Arrange {
             }
             Message::Tag(room, tag) => {
                 context.popup.take_if(room_menu);
-                let Some(summary) = context.rooms.iter_mut().find(|r| r.id == room) else {
+                let Some(summary) = context.rooms.iter().find(|r| r.id == room) else {
                     return Task::none();
                 };
-                return self.set_tag(summary, tag, context.session);
+                return set_tag(summary, tag, context.session);
             }
             Message::SaveCategory(edit) => {
                 let Context {
@@ -399,12 +298,9 @@ impl Arrange {
                     .cloned()
                     .collect();
                 // Rooms put into it are tagged as if dragged there.
-                let mut tasks: Vec<_> = (rooms.iter_mut())
+                let mut tasks: Vec<_> = (rooms.iter())
                     .filter(|r| placed.contains(&r.id))
-                    .map(|summary| {
-                        let tag = tag_elsewhere(summary.tag, grouping);
-                        self.set_tag(summary, tag, session)
-                    })
+                    .map(|summary| set_tag(summary, tag_elsewhere(summary.tag, grouping), session))
                     .collect();
                 tasks.push(self.change(session, move |c| edit.apply(c)));
                 return Task::batch(tasks);
@@ -466,19 +362,6 @@ impl Arrange {
             Message::NotesAtTop(on) => {
                 return self.change(context.session, move |c| c.notes_at_top = Some(on));
             }
-            Message::TagSaved(room, Ok(())) => {
-                if let Some(pending) = self.pending_tags.get_mut(&room) {
-                    pending.saved = Some(Instant::now());
-                }
-            }
-            Message::TagSaved(room, Err(e)) => {
-                if let Some(pending) = self.pending_tags.remove(&room)
-                    && let Some(summary) = context.rooms.iter_mut().find(|r| r.id == room)
-                {
-                    summary.tag = pending.previous;
-                }
-                return failed(e);
-            }
             Message::Saved(Ok(())) => {}
             Message::Saved(Err(e)) => return failed(e),
         }
@@ -500,7 +383,7 @@ impl Arrange {
             grouping,
             ..
         } = context;
-        let Some(summary) = rooms.iter_mut().find(|r| r.id == room) else {
+        let Some(summary) = rooms.iter().find(|r| r.id == room) else {
             return Task::none();
         };
         let category = match &section {
@@ -509,7 +392,7 @@ impl Arrange {
             _ => None,
         };
         let tag = tag_in(&section, summary.tag, grouping);
-        let mut tasks = vec![self.set_tag(summary, tag, session)];
+        let mut tasks = vec![set_tag(summary, tag, session)];
         let layout = self.categories.layout(space.map(|s| s.as_ref()));
         if layout.category_of(&room).map(|c| &c.id) != category.as_ref() {
             let space = space.cloned();
@@ -519,41 +402,6 @@ impl Arrange {
             }));
         }
         Task::batch(tasks)
-    }
-
-    /// Tag a room here at once, and save it.
-    fn set_tag(
-        &mut self,
-        summary: &mut RoomSummary,
-        tag: RoomTag,
-        session: &Arc<Session>,
-    ) -> Task<app::Message> {
-        if tag == summary.tag {
-            return Task::none();
-        }
-        let room = summary.id.clone();
-        self.pending_tags.insert(
-            room.clone(),
-            PendingTag {
-                tag,
-                previous: summary.tag,
-                saved: None,
-            },
-        );
-        summary.tag = tag;
-        let session = session.clone();
-        Task::perform(
-            {
-                let room = room.clone();
-                async move {
-                    session
-                        .set_room_tag(&room, tag)
-                        .await
-                        .map_err(|e| e.to_string())
-                }
-            },
-            move |result| app::Message::Arrange(Message::TagSaved(room.clone(), result)),
-        )
     }
 
     /// Change the categories here at once, and save them.
@@ -587,6 +435,23 @@ impl Arrange {
             None => Subscription::none(),
         }
     }
+}
+
+/// Tag a room; the room list shows it at once.
+fn set_tag(summary: &RoomSummary, tag: RoomTag, session: &Arc<Session>) -> Task<app::Message> {
+    if tag == summary.tag {
+        return Task::none();
+    }
+    let (session, room) = (session.clone(), summary.id.clone());
+    Task::perform(
+        async move {
+            session
+                .set_room_tag(&room, tag)
+                .await
+                .map_err(|e| e.to_string())
+        },
+        |result| app::Message::Arrange(Message::Saved(result)),
+    )
 }
 
 /// The tag of a room with `tag` moved into `section`.

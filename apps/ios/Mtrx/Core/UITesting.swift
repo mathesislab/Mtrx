@@ -59,7 +59,7 @@ private final class UITestSession: Session, @unchecked Sendable {
     private let lock = NSLock()
     private var drafts: [String: Draft] = [:]
     private var timelines: [String: UITestTimeline] = [:]
-    private var listener: RoomListListener?
+    private var listener: RoomListsListener?
     /// The rooms, in any order.
     private var rooms = [
         UITestSession.room(UITesting.lab, "Lab"),
@@ -91,12 +91,12 @@ private final class UITestSession: Session, @unchecked Sendable {
         UITestHandle(noHandle: .init())
     }
 
-    override func subscribeRoomList(listener: RoomListListener) async throws -> TaskHandle {
-        let state = lock.withLock {
+    override func subscribeRoomLists(listener: RoomListsListener) async throws -> TaskHandle {
+        let lists = lock.withLock {
             self.listener = listener
-            return listState()
+            return roomLists()
         }
-        listener.onUpdate(state: state)
+        listener.onUpdate(lists: lists)
         if UITesting.arrivalsInPapers {
             let papers = timeline(UITesting.papers)
             Task {
@@ -109,26 +109,25 @@ private final class UITestSession: Session, @unchecked Sendable {
         return UITestHandle(noHandle: .init())
     }
 
-    /// The list as the library gives it: most recently active first, each
-    /// space's rooms and the rooms in no space in that order.
-    private func listState() -> RoomListState {
+    /// The lists as the library makes them from the rooms, most recently
+    /// active first.
+    private func roomLists() -> RoomLists {
         let ordered = rooms.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
-        let ids = { (keep: (RoomSummary) -> Bool) in ordered.filter(keep).map(\.id) }
-        return RoomListState(
-            rooms: ordered, loaded: true,
-            spaces: [SpaceRooms(spaceId: UITesting.team, roomIds: ids { $0.parents.contains(UITesting.team) })],
-            roomsOutsideSpaces: ids { $0.parents.isEmpty && $0.kind == .room })
+        // The rooms are made up valid.
+        return try! RoomLists(
+            rooms: ordered, loaded: true, ownUserId: userId(), notesAtTop: true, spaceMembers: [:], drafts: [],
+            favourites: [], lowPriority: [], categories: [])
     }
 
     /// A message was sent or arrived in room `id`: it moves up the list.
     fileprivate func active(_ id: String) {
-        let (state, listener) = lock.withLock {
+        let (lists, listener) = lock.withLock {
             if let at = rooms.firstIndex(where: { $0.id == id }) {
                 rooms[at].lastActivity = Date()
             }
-            return (listState(), self.listener)
+            return (roomLists(), self.listener)
         }
-        listener?.onUpdate(state: state)
+        listener?.onUpdate(lists: lists)
     }
 
     private static func room(
@@ -175,8 +174,6 @@ private final class UITestSession: Session, @unchecked Sendable {
 
     override func timeline(roomId: String) async throws -> Timeline { timeline(roomId) }
 
-    override func canPin(roomId: String) async throws -> Bool { false }
-
     override func roomSettings(roomId: String) async throws -> RoomSettings {
         throw MtrxError.Other(reason: "No settings here")
     }
@@ -198,13 +195,13 @@ private final class UITestSession: Session, @unchecked Sendable {
 private final class UITestTimeline: Timeline, @unchecked Sendable {
     private let lock = NSLock()
     private var room = UITesting.lab
-    private var items: [TimelineItem] = []
+    private var items: [TimelineRow] = []
     private weak var session: UITestSession?
-    private var listener: TimelineListener?
+    private var listener: TimelineRowsListener?
     private var sent = 0
     private var arrived = 0
     /// Not loaded yet (`-ui-testing-history`), oldest first.
-    private var older: [TimelineItem] = []
+    private var older: [TimelineRow] = []
 
     /// Room `room`'s messages; called once, before use.
     func fill(room: String, name: String, session: UITestSession) {
@@ -225,12 +222,12 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     }
 
     /// `lines`: message `i`'s.
-    private static func history(_ word: String, lines: (Int) -> Int = { 1 + $0 * 5 % 7 }) -> [TimelineItem] {
+    private static func history(_ word: String, lines: (Int) -> Int = { 1 + $0 * 5 % 7 }) -> [TimelineRow] {
         let start = Date().addingTimeInterval(-3_600)
-        var items = [TimelineItem(id: "day", content: .dayDivider(date: start))]
+        var items = [TimelineRow(id: "day", content: .day(date: start))]
         for i in 0..<30 {
             if i == 28 {
-                items.append(TimelineItem(id: "read-marker", content: .readMarker))
+                items.append(TimelineRow(id: "read-marker", content: .readMarker))
             }
             let text = Array(repeating: "\(word) \(i), a line of it.", count: lines(i)).joined(separator: "\n")
             items.append(message("m\(i)", text, own: i % 3 == 0, at: start.addingTimeInterval(Double(i) * 60)))
@@ -241,33 +238,54 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
         return items
     }
 
-    private static func message(_ id: String, _ text: String, own: Bool, at: Date, sent: Bool = true) -> TimelineItem {
+    private static func message(_ id: String, _ text: String, own: Bool, at: Date, sent: Bool = true) -> TimelineRow {
         let message = Message(
             kind: .text, body: text, edited: false, media: nil, reactions: [], replyTo: nil, rawBody: text)
         let event = TimelineEvent(
             eventId: sent ? "$\(id)" : nil, senderId: own ? "@me:example.org" : "@ann:example.org",
             senderName: own ? "Me" : "Ann", senderAvatarUrl: nil, timestamp: at, own: own,
             content: .message(message: message), sendState: sent ? .sent : .sending, editable: own)
-        return TimelineItem(id: id, content: .event(event: event))
+        return row(id, event)
     }
 
-    /// Change the items and give them to the listener.
-    private func change(_ change: (inout [TimelineItem]) -> Void) {
+    /// The row of `event`, a group of its own, with what the library offers
+    /// for it.
+    private static func row(_ id: String, _ event: TimelineEvent) -> TimelineRow {
+        let sent = event.eventId != nil
+        var actions: [MessageAction] = []
+        if case .message = event.content {
+            actions += (sent ? [.react, .reply] : []) + [.copy, .selectText]
+        }
+        if event.editable {
+            actions.append(.edit)
+        }
+        if event.own && sent && event.content != .redacted {
+            actions.append(.delete)
+        }
+        return TimelineRow(
+            id: id,
+            content: .message(
+                event: event, firstInGroup: true, showSender: !event.own, avatarColumn: !event.own,
+                decrypting: false, actions: actions))
+    }
+
+    /// Change the rows and give them to the listener.
+    private func change(_ change: (inout [TimelineRow]) -> Void) {
         let (items, listener) = lock.withLock {
             change(&self.items)
             return (self.items, self.listener)
         }
-        listener?.onUpdate(items: items)
+        listener?.onUpdate(rows: items)
     }
 
     override func roomId() -> String { lock.withLock { room } }
 
-    override func subscribe(listener: TimelineListener) -> TaskHandle {
+    override func subscribeRows(listener: TimelineRowsListener) -> TaskHandle {
         let items = lock.withLock {
             self.listener = listener
             return self.items
         }
-        listener.onUpdate(items: items)
+        listener.onUpdate(rows: items)
         if UITesting.arrivals {
             Task { [weak self] in
                 while let self {
@@ -315,11 +333,11 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     override func delete(itemId: String) async throws {
         change { items in
             guard let at = items.firstIndex(where: { $0.id == itemId }),
-                case .event(var event) = items[at].content
+                var event = items[at].messageRow?.event
             else { return }
             event.content = .redacted
             event.editable = false
-            items[at] = TimelineItem(id: itemId, content: .event(event: event))
+            items[at] = Self.row(itemId, event)
         }
     }
 

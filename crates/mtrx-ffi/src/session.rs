@@ -13,15 +13,9 @@ use mtrx_core::{self as core, OwnedMxcUri, OwnedRoomId, OwnedUserId};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ConnectionState, Media, MtrxError, RoomListState, TaskHandle, Timeline, UserProfile, room_list,
+    ConnectionState, Media, MtrxError, TaskHandle, Timeline, UserProfile,
     runtime::{InRuntime, run},
 };
-
-/// Receives the room list: all of it, now and after every change.
-#[uniffi::export(with_foreign)]
-pub trait RoomListListener: Send + Sync {
-    fn on_update(&self, state: RoomListState);
-}
 
 /// Receives the connection state, now and after every change.
 #[uniffi::export(with_foreign)]
@@ -96,23 +90,6 @@ impl Session {
                 listener.on_update(connection.into());
             }
         })
-    }
-
-    /// Call `listener` with the room list, now and on every change. It
-    /// fills while sync runs; spaces list their direct chats once their
-    /// members are loaded, in a later update.
-    pub async fn subscribe_room_list(
-        &self,
-        listener: Arc<dyn RoomListListener>,
-    ) -> Result<Arc<TaskHandle>, MtrxError> {
-        let session = self.core();
-        run(async move {
-            let list = session.room_list().await?;
-            Ok(TaskHandle::spawn(room_list::follow(
-                session, list, listener,
-            )))
-        })
-        .await
     }
 
     /// The live timeline of a room (`RoomSummary.id`).

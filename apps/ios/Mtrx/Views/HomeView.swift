@@ -87,12 +87,17 @@ struct ChatsTab: View {
         let searching = !search.isEmpty
         // The Notes to self at the top, unless searching: then among the
         // chats found.
-        let chats = searching ? RoomLists.search(lists.chats + [lists.notes].compactMap { $0 }, search) : lists.chats
+        let chats = searching ? lists.search(key: nil, filter: search) : lists.chats()
+        let chatsSection = ListSection(
+            key: "chats", title: "", rooms: chats, folded: false, unread: 0, mentions: false, space: nil)
         NavigationStack(path: $session.chatsPath) {
-            RoomList(sections: [ListSection(key: "chats", title: nil, rooms: chats)],
-                     notes: searching ? nil : lists.notes, searching: searching, openSettings: openSettings,
+            RoomList(sections: [chatsSection],
+                     notes: searching ? nil : lists.notes(), searching: searching, openSettings: openSettings,
                      presence: presence.presence(of:),
-                     subline: { lists.chatSpaces[$0.id]?.joined(separator: ", ") }) {
+                     subline: { room in
+                         let spaces = lists.chatSpaces(chatId: room.id)
+                         return spaces.isEmpty ? nil : spaces.joined(separator: ", ")
+                     }) {
                 ListPlaceholder(loaded: session.loaded, empty: "No chats yet")
             }
             .navigationTitle("Chats")
@@ -143,7 +148,7 @@ struct SpacesTab: View {
                         AddMenu(space: nil, sheet: $sheet)
                     }
                 }
-                .navigationDestination(for: SpaceEntry.self) { entry in
+                .navigationDestination(for: SpaceKey.self) { entry in
                     SpaceRoomsPage(entry: entry, sheet: $sheet, openSettings: openSettings)
                 }
         }
@@ -219,8 +224,8 @@ struct SpacesList: View {
             if search.isEmpty {
                 EncryptionBannerRow(open: openSettings)
             }
-            ForEach(RoomLists.search(session.lists.spaces, search)) { item in
-                NavigationLink(value: item.entry) {
+            ForEach(session.lists.searchSpaces(filter: search)) { item in
+                NavigationLink(value: item.key) {
                     SpaceRow(item: item)
                 }
                 .compactRow()
@@ -228,7 +233,7 @@ struct SpacesList: View {
         }
         .listStyle(.plain)
         .overlay {
-            if session.lists.spaces.isEmpty {
+            if session.lists.spaces().isEmpty {
                 ListPlaceholder(loaded: session.loaded, empty: "No rooms yet")
             }
         }
@@ -242,21 +247,21 @@ struct SpacesList: View {
 /// it shows the space's overview.
 struct SpaceRoomsPage: View {
     @EnvironmentObject private var session: SessionModel
-    let entry: SpaceEntry
+    let entry: SpaceKey
     @Binding var sheet: SpacesSheet?
     let openSettings: () -> Void
     @State private var search = ""
     @State private var overview = false
     @State private var showing = false
 
-    private var item: SpaceItem? { session.lists.space(entry) }
+    private var item: SpaceEntry? { session.lists.space(key: entry) }
 
     var body: some View {
-        let sections = item.map {
-            session.lists.sections(
-                of: $0, layout: session.sectionLayouts[entry], sort: session.roomSort, search: search)
+        let sections = item.map { _ in
+            session.lists.spaceList(
+                key: entry, layout: session.sectionLayouts[entry].library, sort: session.roomSort, filter: search)
         } ?? []
-        RoomList(sections: sections, notes: search.isEmpty ? session.lists.notes : nil,
+        RoomList(sections: sections, notes: search.isEmpty ? session.lists.notes() : nil,
                  searching: !search.isEmpty, openSettings: openSettings, opensInRooms: true,
                  fold: { key in session.sectionLayouts.change(entry) { $0.toggleFold(key) } }) {
             if item != nil {
@@ -314,7 +319,7 @@ struct SpaceRoomsPage: View {
 /// A space's picture and name, with a dot while any of its rooms has unread
 /// messages.
 private struct SpaceRow: View {
-    let item: SpaceItem
+    let item: SpaceEntry
     @RowAvatarSize private var avatarSize: CGFloat
 
     var body: some View {
@@ -432,8 +437,8 @@ struct RoomList<Empty: View>: View {
             // Headings are rows of their own, not the list's section
             // headers, whose spacing is not ours to set.
             ForEach(sections) { section in
-                if let title = section.title {
-                    SectionHeading(section: section, title: title, action: headingAction(section))
+                if !section.title.isEmpty {
+                    SectionHeading(section: section, title: section.title, action: headingAction(section))
                         .listRowInsets(EdgeInsets(top: 8, leading: 14, bottom: 3, trailing: 14))
                         .listRowSeparator(.hidden)
                 }
@@ -492,7 +497,7 @@ struct RoomList<Empty: View>: View {
 
     private func row(_ room: RoomSummary) -> RoomRow {
         RoomRow(
-            room: room, presence: presence(room), draft: session.lists.drafts.contains(room.id),
+            room: room, presence: presence(room), draft: session.drafts.contains(room.id),
             subline: subline(room))
     }
 }
@@ -588,16 +593,16 @@ struct SectionHeading: View {
             }
             Spacer(minLength: 8)
             let unread = section.unread
-            if showsUnread && unread.count > 0 {
-                Text(unread.count > 999 ? "999+" : String(unread.count))
+            if showsUnread && unread > 0 {
+                Text(unread > 999 ? "999+" : String(unread))
                     .font(.caption2.weight(.semibold))
                     .monospacedDigit()
                     .foregroundColor(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .frame(minWidth: 18)
-                    .background(unread.mentions ? Color.red : Color.accentColor, in: Capsule())
-                    .accessibilityLabel("\(unread.count) unread")
+                    .background(section.mentions ? Color.red : Color.accentColor, in: Capsule())
+                    .accessibilityLabel("\(unread) unread")
             }
         }
         .foregroundStyle(.secondary)

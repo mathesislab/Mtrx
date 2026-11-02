@@ -4,17 +4,16 @@ import java.time.LocalDate
 import java.time.ZoneId
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.MediaKind
-import uniffi.mtrx.MembershipChange
 import uniffi.mtrx.Message
+import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Reaction
 import uniffi.mtrx.Reader
 import uniffi.mtrx.ReplyQuote
-import uniffi.mtrx.SendState
+import uniffi.mtrx.RowContent
 import uniffi.mtrx.TimelineEvent
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
+import uniffi.mtrx.TimelineRow as LibraryRow
 
 /** A row of the timeline screen; [id] is stable (list identity). */
 sealed interface TimelineRow {
@@ -30,10 +29,20 @@ data class DayRow(override val id: String, val date: LocalDate) : TimelineRow
 data class ReadMarkerRow(override val id: String) : TimelineRow
 
 /**
- * A message, or a deleted or undecryptable one; [showSender] starts a group.
- * Actions on it take [id] (`TimelineItem.id`).
+ * A message, or a deleted or undecryptable one, as the library gives it:
+ * [showSender] (name and avatar) at the first of a group by someone else
+ * outside direct chats, [avatarColumn] for others' outside direct chats,
+ * [decrypting] while its key may still arrive, and [actions] in the menu's
+ * order. Actions on it take [id] (`TimelineRow.id`).
  */
-data class EventRow(override val id: String, val event: TimelineEvent, val showSender: Boolean) : TimelineRow {
+data class EventRow(
+    override val id: String,
+    val event: TimelineEvent,
+    val showSender: Boolean,
+    val avatarColumn: Boolean,
+    val decrypting: Boolean,
+    val actions: List<MessageAction>,
+) : TimelineRow {
     /** The message; null if deleted, undecryptable or not a message. */
     val message: Message? get() = (event.content as? EventContent.Message)?.message
 
@@ -48,83 +57,34 @@ data class EventRow(override val id: String, val event: TimelineEvent, val showS
     /** Who read up to here. */
     val readers: Readers get() = Readers(event.readBy)
 
-    /** The text to copy or select: a file's caption, not its name; null without one. */
-    val text: String? get() = message?.let(::messageText)
-
-    /** What holding the message offers, in the menu's order. */
-    val actions: Set<MessageAction> get() = messageActions(this)
-
     /** Swiping it left replies, as Reply in its menu: a sent message. */
     val canReply: Boolean get() = MessageAction.REPLY in actions
+
+    /** What it says in place of a message without its key. */
+    val undecryptableText: String
+        get() = if (decrypting) "Decrypting…" else "Could not decrypt this message."
 }
 
-/** What holding a message offers. */
-enum class MessageAction(val label: String) {
-    REACT("React"),
-    REPLY("Reply"),
-    COPY("Copy"),
-    SELECT_TEXT("Select text"),
-    EDIT("Edit"),
-    PIN("Pin"),
-    UNPIN("Unpin"),
-    DELETE("Delete"),
-    RETRY("Retry"),
-    DISCARD("Discard"),
-}
-
-/**
- * Only what applies: React and Reply once the message is sent (has an event
- * ID), Copy and Select text with a text, Edit when the library allows it,
- * Delete for our own sent ones, Retry and Discard after a failed send.
- */
-fun messageActions(row: EventRow): Set<MessageAction> {
-    val event = row.event
-    val sent = event.eventId != null
-    return buildSet {
-        if (row.message != null && sent) {
-            add(MessageAction.REACT)
-            add(MessageAction.REPLY)
-        }
-        if (row.text != null) {
-            add(MessageAction.COPY)
-            add(MessageAction.SELECT_TEXT)
-        }
-        if (event.editable) add(MessageAction.EDIT)
-        if (event.own && sent && event.content !is EventContent.Redacted) add(MessageAction.DELETE)
-        if (event.sendState is SendState.Failed) {
-            add(MessageAction.RETRY)
-            add(MessageAction.DISCARD)
-        }
+/** A menu's name for the action. */
+val MessageAction.label: String
+    get() = when (this) {
+        MessageAction.REACT -> "React"
+        MessageAction.REPLY -> "Reply"
+        MessageAction.COPY -> "Copy"
+        MessageAction.SELECT_TEXT -> "Select text"
+        MessageAction.EDIT -> "Edit"
+        MessageAction.PIN -> "Pin"
+        MessageAction.UNPIN -> "Unpin"
+        MessageAction.DELETE -> "Delete"
+        MessageAction.RETRY -> "Retry"
+        MessageAction.DISCARD -> "Discard"
     }
-}
-
-/**
- * The menu of a held message: [EventRow.actions], and Pin or Unpin (by its
- * event ID, in [pinned]) for a sent message where we [canPin]; in the
- * menu's order.
- */
-fun menuActions(row: EventRow, canPin: Boolean, pinned: List<String>): Set<MessageAction> {
-    val eventId = row.event.eventId
-    val pin = when {
-        !canPin || eventId == null || row.message == null -> null
-        eventId in pinned -> MessageAction.UNPIN
-        else -> MessageAction.PIN
-    }
-    return (row.actions + listOfNotNull(pin)).sortedBy { it.ordinal }.toSet()
-}
 
 /** A message's text; an image's or file's body is its name unless it has a caption. */
 fun messageText(message: Message): String? {
     val media = message.media
     return message.body.takeIf { it.isNotBlank() && (media == null || it != media.filename) }
 }
-
-/**
- * What a message without its key says: while keys arrive from the backup
- * ([uniffi.mtrx.EncryptionState.keysArriving]) it may still decrypt.
- */
-fun undecryptableText(keysArriving: Boolean): String =
-    if (keysArriving) "Decrypting…" else "Could not decrypt this message."
 
 /** The emoji offered first for a reaction. */
 val COMMON_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🎉")
@@ -196,50 +156,22 @@ fun personName(reader: Reader): String = reader.name ?: localpart(reader.userId)
 /** Consecutive state events (joins, renames, …) in one line. */
 data class StateRow(override val id: String, val text: String) : TimelineRow
 
-/** The library's items (oldest first) as rows, oldest first. */
-fun timelineRows(items: List<TimelineItem>, zone: ZoneId = ZoneId.systemDefault()): List<TimelineRow> {
-    val rows = ArrayList<TimelineRow>(items.size)
-    val run = mutableListOf<Pair<String, TimelineEvent>>()
-    var previousSender: String? = null
-
-    fun flushRun() {
-        if (run.isEmpty()) return
-        val text = stateSummary(run.map { it.second })
-        if (text.isNotEmpty()) rows += StateRow(run.first().first, text)
-        run.clear()
+/** The library's rows (oldest first), each as the screen shows it; days in [zone]. */
+fun shownRows(rows: List<LibraryRow>, zone: ZoneId = ZoneId.systemDefault()): List<TimelineRow> = rows.map { row ->
+    when (val content = row.content) {
+        RowContent.Start -> StartRow(row.id)
+        is RowContent.Day -> DayRow(row.id, content.date.atZone(zone).toLocalDate())
+        RowContent.ReadMarker -> ReadMarkerRow(row.id)
+        is RowContent.Summary -> StateRow(row.id, content.text)
+        is RowContent.Message -> EventRow(
+            row.id,
+            content.event,
+            showSender = content.showSender,
+            avatarColumn = content.avatarColumn,
+            decrypting = content.decrypting,
+            actions = content.actions,
+        )
     }
-
-    for (item in items) {
-        when (val content = item.content) {
-            is TimelineItemContent.Event -> {
-                val event = content.event
-                if (isState(event.content)) {
-                    run += item.id to event
-                    previousSender = null
-                } else {
-                    flushRun()
-                    rows += EventRow(item.id, event, showSender = !event.own && event.senderId != previousSender)
-                    previousSender = event.senderId
-                }
-            }
-            is TimelineItemContent.DayDivider -> {
-                flushRun()
-                rows += DayRow(item.id, content.date.atZone(zone).toLocalDate())
-                previousSender = null
-            }
-            is TimelineItemContent.ReadMarker -> {
-                flushRun()
-                rows += ReadMarkerRow(item.id)
-            }
-            is TimelineItemContent.Start -> {
-                flushRun()
-                rows += StartRow(item.id)
-                previousSender = null
-            }
-        }
-    }
-    flushRun()
-    return rows
 }
 
 /** The newest message's row, to mark as read. */
@@ -250,66 +182,3 @@ fun displayName(event: TimelineEvent): String = event.senderName ?: localpart(ev
 
 /** `alice` of `@alice:example.org`. */
 fun localpart(userId: String): String = userId.removePrefix("@").substringBefore(':')
-
-private fun isState(content: EventContent): Boolean =
-    content is EventContent.Membership || content is EventContent.DisplayNameChange || content is EventContent.OtherState
-
-/**
- * One line for a run of state events, as on the desktop: "alice created and
- * configured the room · alice invited bob · bob joined".
- */
-fun stateSummary(events: List<TimelineEvent>): String {
-    val creators = events.filter {
-        val content = it.content
-        content is EventContent.OtherState && content.eventType == "m.room.create"
-    }.map { it.senderId }.toSet()
-    val parts = mutableListOf<String>()
-    val joined = mutableListOf<String>()
-    val left = mutableListOf<String>()
-    for (event in events) {
-        val name = displayName(event)
-        val part: String? = when (val content = event.content) {
-            is EventContent.OtherState -> when {
-                content.eventType == "m.room.create" -> "$name created and configured the room"
-                // Initial settings belong to "created and configured".
-                event.senderId in creators -> null
-                content.eventType == "m.room.name" -> "$name renamed the room"
-                content.eventType == "m.room.topic" -> "$name changed the topic"
-                content.eventType == "m.room.avatar" -> "$name changed the room picture"
-                content.eventType == "m.room.pinned_events" -> "$name changed the pinned messages"
-                else -> "$name changed the room settings"
-            }
-            is EventContent.Membership -> {
-                val target = content.name ?: localpart(content.userId)
-                when (content.change) {
-                    MembershipChange.JOINED, MembershipChange.INVITATION_ACCEPTED -> {
-                        if (content.userId !in creators && target !in joined) joined += target
-                        null
-                    }
-                    MembershipChange.LEFT -> {
-                        left += target
-                        null
-                    }
-                    MembershipChange.INVITED -> "$name invited $target"
-                    MembershipChange.INVITATION_REJECTED -> "$target declined the invite"
-                    MembershipChange.INVITATION_REVOKED -> "$name withdrew the invite for $target"
-                    MembershipChange.KICKED -> "$name removed $target"
-                    MembershipChange.BANNED -> "$name banned $target"
-                    MembershipChange.UNBANNED -> "$name unbanned $target"
-                    MembershipChange.KNOCKED -> "$target asked to join"
-                    MembershipChange.OTHER -> null
-                }
-            }
-            is EventContent.DisplayNameChange -> {
-                val user = localpart(content.userId)
-                val newName = content.newName
-                if (newName != null) "$user is now $newName" else "$user removed their display name"
-            }
-            else -> null
-        }
-        if (part != null && parts.lastOrNull() != part) parts += part
-    }
-    if (joined.isNotEmpty()) parts += "${joined.joinToString(", ")} joined"
-    if (left.isNotEmpty()) parts += "${left.joinToString(", ")} left"
-    return parts.joinToString(" · ")
-}

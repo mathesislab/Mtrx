@@ -17,7 +17,6 @@ import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.RoomSortStore
 import org.mtrx.app.model.SelectedSpaceStore
 import org.mtrx.app.model.SharePresenceStore
-import org.mtrx.app.model.SpaceEntry
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
 import uniffi.mtrx.Access
@@ -46,6 +45,7 @@ import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Message
+import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
@@ -63,18 +63,24 @@ import uniffi.mtrx.RecoveryListener
 import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
 import uniffi.mtrx.RoomKind
-import uniffi.mtrx.RoomListListener
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.Badges
+import uniffi.mtrx.ListSection
+import uniffi.mtrx.RoomLists
+import uniffi.mtrx.RoomListsListener
+import uniffi.mtrx.RoomSort as LibrarySort
 import uniffi.mtrx.RoomSummary
+import uniffi.mtrx.RowContent
+import uniffi.mtrx.SectionChoice
+import uniffi.mtrx.SectionLayout
+import uniffi.mtrx.SpaceEntry
+import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.SendState
-import uniffi.mtrx.SpaceRooms
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineEvent
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
-import uniffi.mtrx.TimelineListener
+import uniffi.mtrx.TimelineRow
+import uniffi.mtrx.TimelineRowsListener
 import uniffi.mtrx.TypingListener
 import uniffi.mtrx.UserProfile
 import uniffi.mtrx.Verification
@@ -101,7 +107,7 @@ class FakeSession : Session(NoHandle) {
     var loggedOut = false
     var logoutError: MtrxException? = null
     val handles = mutableListOf<FakeHandle>()
-    var roomListListener: RoomListListener? = null
+    var roomListListener: RoomListsListener? = null
 
     var encryption = EncryptionState(deviceVerified = false, recovery = RecoveryStatus.INCOMPLETE)
     var encryptionAsks = 0
@@ -220,7 +226,7 @@ class FakeSession : Session(NoHandle) {
 
     override fun subscribeConnection(listener: ConnectionListener): TaskHandle = FakeHandle().also { handles += it }
 
-    override suspend fun subscribeRoomList(listener: RoomListListener): TaskHandle {
+    override suspend fun subscribeRoomLists(listener: RoomListsListener): TaskHandle {
         roomListListener = listener
         return FakeHandle().also { handles += it }
     }
@@ -313,7 +319,6 @@ class FakeSession : Session(NoHandle) {
     var settings: RoomSettings = roomSettings()
     var settingsReads = 0
     var memberList: List<Member> = emptyList()
-    var pinAllowed = false
     var pinnedRoomTimeline: FakeTimeline = FakeTimeline()
     var pinnedOpened = 0
 
@@ -340,8 +345,6 @@ class FakeSession : Session(NoHandle) {
         settingsReads++
         return settings
     }
-
-    override suspend fun canPin(roomId: String): Boolean = pinAllowed
 
     override suspend fun pinnedTimeline(roomId: String): Timeline {
         pinnedOpened++
@@ -594,10 +597,10 @@ class FakeVerification(private val otherUser: String) : Verification(NoHandle) {
 }
 
 /** The app's preferences, in memory: one instance across "launches". */
-class FakeSpaceStore(var saved: SpaceEntry? = null) : SelectedSpaceStore {
-    override suspend fun load(): SpaceEntry? = saved
+class FakeSpaceStore(var saved: SpaceKey? = null) : SelectedSpaceStore {
+    override suspend fun load(): SpaceKey? = saved
 
-    override suspend fun save(entry: SpaceEntry?) {
+    override suspend fun save(entry: SpaceKey?) {
         saved = entry
     }
 }
@@ -708,7 +711,7 @@ class FakeMtrx(private val restored: Session?) : MtrxInterface {
  * the sends and actions until completed.
  */
 class FakeTimeline : Timeline(NoHandle) {
-    var listener: TimelineListener? = null
+    var listener: TimelineRowsListener? = null
     var typingListener: TypingListener? = null
     val typingSubscription = FakeHandle()
     val sent = mutableListOf<String>()
@@ -730,7 +733,7 @@ class FakeTimeline : Timeline(NoHandle) {
 
     override fun roomId(): String = "!room:example.org"
 
-    override fun subscribe(listener: TimelineListener): TaskHandle {
+    override fun subscribeRows(listener: TimelineRowsListener): TaskHandle {
         this.listener = listener
         return FakeHandle()
     }
@@ -787,7 +790,7 @@ class FakeTimeline : Timeline(NoHandle) {
     }
 }
 
-fun textEvent(id: String, sender: String, body: String, own: Boolean = false, at: Long = 0): TimelineItem =
+fun textEvent(id: String, sender: String, body: String, own: Boolean = false, at: Long = 0): TimelineRow =
     messageEvent(id, sender, Message(kind = MessageKind.TEXT, body = body, edited = false, media = null), own = own, at = at)
 
 /** A message's row; [eventId] null while not sent. */
@@ -801,7 +804,7 @@ fun messageEvent(
     sendState: SendState = SendState.Sent,
     editable: Boolean = false,
     readBy: List<Reader> = emptyList(),
-): TimelineItem = eventItem(id, sender, EventContent.Message(message), own, at, eventId, sendState, editable, readBy)
+): TimelineRow = eventItem(id, sender, EventContent.Message(message), own, at, eventId, sendState, editable, readBy)
 
 fun eventItem(
     id: String,
@@ -813,38 +816,132 @@ fun eventItem(
     sendState: SendState = SendState.Sent,
     editable: Boolean = false,
     readBy: List<Reader> = emptyList(),
-): TimelineItem = TimelineItem(
-    id = id,
-    content = TimelineItemContent.Event(
-        TimelineEvent(
-            eventId = eventId,
-            senderId = sender,
-            senderName = null,
-            senderAvatarUrl = null,
-            timestamp = Instant.ofEpochSecond(at),
-            own = own,
-            content = content,
-            sendState = sendState,
-            editable = editable,
-            readBy = readBy,
-        ),
+): TimelineRow = messageRow(
+    id,
+    TimelineEvent(
+        eventId = eventId,
+        senderId = sender,
+        senderName = null,
+        senderAvatarUrl = null,
+        timestamp = Instant.ofEpochSecond(at),
+        own = own,
+        content = content,
+        sendState = sendState,
+        editable = editable,
+        readBy = readBy,
     ),
 )
 
-fun stateEvent(id: String, sender: String, content: EventContent): TimelineItem = TimelineItem(
-    id = id,
-    content = TimelineItemContent.Event(
-        TimelineEvent(
-            eventId = "\$$id",
-            senderId = sender,
-            senderName = null,
-            senderAvatarUrl = null,
-            timestamp = Instant.EPOCH,
-            own = false,
-            content = content,
-            sendState = SendState.Sent,
-        ),
+/**
+ * The row of [event] as the library gives it: the first of its group unless
+ * said otherwise, with [actions] (else those of a message in a room where we
+ * may not pin).
+ */
+fun messageRow(
+    id: String,
+    event: TimelineEvent,
+    firstInGroup: Boolean = true,
+    decrypting: Boolean = false,
+    actions: List<MessageAction> = actionsOf(event),
+): TimelineRow = TimelineRow(
+    id,
+    RowContent.Message(
+        event,
+        firstInGroup = firstInGroup,
+        showSender = firstInGroup && !event.own,
+        avatarColumn = !event.own,
+        decrypting = decrypting,
+        actions = actions,
     ),
+)
+
+/** What holding a message offers, as the library says. */
+fun actionsOf(event: TimelineEvent): List<MessageAction> = buildList {
+    val sent = event.eventId != null
+    val message = (event.content as? EventContent.Message)?.message
+    if (message != null) {
+        if (sent) addAll(listOf(MessageAction.REACT, MessageAction.REPLY))
+        if (message.body.isNotEmpty()) addAll(listOf(MessageAction.COPY, MessageAction.SELECT_TEXT))
+    }
+    if (event.editable) add(MessageAction.EDIT)
+    if (event.own && sent && event.content !is EventContent.Redacted) add(MessageAction.DELETE)
+    if (event.sendState is SendState.Failed) addAll(listOf(MessageAction.RETRY, MessageAction.DISCARD))
+}
+
+/**
+ * The library's room lists, canned: the answers a test needs, whatever it
+ * asks (the rules are the library's, tested there). [sections] for any
+ * space's list, [choices] its Show sheet's, [groups] the Rooms tab's.
+ */
+class FakeRoomLists(
+    private val rooms: List<RoomSummary> = emptyList(),
+    private val loaded: Boolean = true,
+    private val chats: List<RoomSummary> = emptyList(),
+    private val notes: RoomSummary? = null,
+    private val spaces: List<SpaceEntry> = emptyList(),
+    private val sections: List<ListSection> = emptyList(),
+    private val choices: List<SectionChoice> = emptyList(),
+    private val groups: List<ListSection> = emptyList(),
+    private val chatSpaces: Map<String, List<String>> = emptyMap(),
+    private val firstSpaces: Map<String, RoomSummary> = emptyMap(),
+    private val drafts: List<String> = emptyList(),
+    private val badges: Badges = Badges(0uL, 0uL, 0uL),
+    private val notesAtTop: Boolean = true,
+) : RoomLists(NoHandle) {
+    override fun badges() = badges
+
+    override fun chatSpaces(chatId: String) = chatSpaces[chatId].orEmpty()
+
+    override fun chats() = chats
+
+    override fun drafts() = drafts
+
+    override fun firstSpaceOf(roomId: String) = firstSpaces[roomId]
+
+    override fun loaded() = loaded
+
+    override fun notes() = notes
+
+    override fun notesAtTop() = notesAtTop
+
+    override fun room(roomId: String) = rooms.firstOrNull { it.id == roomId }
+
+    override fun roomGroups(among: List<String>?, folded: List<String>) = groups
+
+    override fun rooms() = rooms
+
+    override fun search(key: SpaceKey?, filter: String) = emptyList<RoomSummary>()
+
+    override fun searchSpaces(filter: String) = spaces
+
+    override fun sectionChoices(key: SpaceKey, layout: SectionLayout) = choices
+
+    override fun space(key: SpaceKey) = spaces.firstOrNull { it.key == key }
+
+    override fun spaceList(key: SpaceKey, layout: SectionLayout, sort: LibrarySort, filter: String) = sections
+
+    override fun spaces() = spaces
+
+    override fun topLevelSpaces() = spaces.mapNotNull { it.space }
+
+    override fun unreadBesides(roomId: String) = 0uL
+}
+
+/** A section of a list, or a group of the Rooms tab ([space]). */
+fun listSection(
+    key: String,
+    title: String,
+    rooms: List<RoomSummary>,
+    folded: Boolean = false,
+    space: String? = null,
+) = ListSection(
+    key = key,
+    title = title,
+    rooms = rooms,
+    folded = folded,
+    unread = rooms.sumOf { it.unreadMessages },
+    mentions = rooms.any { it.unreadMentions > 0uL },
+    space = space,
 )
 
 /**
@@ -867,26 +964,34 @@ object SpacesFixture {
     const val PARTY = "!party:x"
     const val NOTES = "!notes:x"
 
-    fun state(loaded: Boolean = true): RoomListState = RoomListState(
-        rooms = listOf(
-            summary(WITH_CAROL, RoomKind.DIRECT, invited = true, directUserId = "@carol:x"),
-            summary(WITH_BOB, RoomKind.DIRECT, unread = 2, directUserId = "@bob:x"),
-            summary(OFFER, invited = true),
-            summary(LAB, unread = 1),
-            summary(DEEP),
-            summary(PARTY, invited = true),
-            summary(NOTES, RoomKind.DIRECT, directUserId = FakeSession.USER_ID),
-            summary(LOOSE),
-            summary(SUB, RoomKind.SPACE),
-            summary(OTHER, RoomKind.SPACE),
-            summary(TEAM, RoomKind.SPACE),
-        ),
+    val rooms = listOf(
+        summary(WITH_CAROL, RoomKind.DIRECT, invited = true, directUserId = "@carol:x"),
+        summary(WITH_BOB, RoomKind.DIRECT, unread = 2, directUserId = "@bob:x"),
+        summary(OFFER, invited = true),
+        summary(LAB, unread = 1),
+        summary(DEEP),
+        summary(PARTY, invited = true),
+        summary(NOTES, RoomKind.DIRECT, directUserId = FakeSession.USER_ID),
+        summary(LOOSE),
+        summary(SUB, RoomKind.SPACE),
+        summary(OTHER, RoomKind.SPACE),
+        summary(TEAM, RoomKind.SPACE),
+    )
+
+    fun room(id: String) = rooms.first { it.id == id }
+
+    /** The lists as the library gives them: Other and Team, then Home; [drafts] room IDs. */
+    fun lists(loaded: Boolean = true, drafts: List<String> = emptyList()) = FakeRoomLists(
+        rooms = rooms,
         loaded = loaded,
+        chats = listOf(room(WITH_CAROL), room(WITH_BOB)),
+        notes = room(NOTES),
         spaces = listOf(
-            SpaceRooms(spaceId = OTHER, roomIds = listOf(NOTES)),
-            SpaceRooms(spaceId = TEAM, roomIds = listOf(WITH_BOB, OFFER, LAB, DEEP, NOTES)),
+            SpaceEntry(SpaceKey.Space(OTHER), room(OTHER), false),
+            SpaceEntry(SpaceKey.Space(TEAM), room(TEAM), true),
+            SpaceEntry(SpaceKey.Outside, null, false),
         ),
-        roomsOutsideSpaces = listOf(PARTY, LOOSE),
+        drafts = drafts,
     )
 }
 

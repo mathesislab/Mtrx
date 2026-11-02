@@ -45,17 +45,18 @@ import androidx.compose.ui.window.Dialog
 import androidx.emoji2.emojipicker.EmojiPickerView
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
+import uniffi.mtrx.MessageAction
 import uniffi.mtrx.Reader
 
 /**
  * Holding a message: the common reactions (ours marked) and "+" for the
- * full picker, then the other [actions] (from [menuActions]).
+ * full picker, then the other [actions] (the row's).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MessageMenu(
     row: EventRow,
-    actions: Set<MessageAction>,
+    actions: List<MessageAction>,
     onDismiss: () -> Unit,
     onReact: (String) -> Unit,
     onMoreReactions: () -> Unit,

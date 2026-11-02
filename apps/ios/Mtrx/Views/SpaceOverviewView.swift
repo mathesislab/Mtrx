@@ -239,7 +239,7 @@ private struct SpaceRoomsSection: View {
     }
 
     private func open(_ room: DirectoryRoom) {
-        if room.isSpace && session.lists.space(.space(room.id)) == nil {
+        if room.isSpace && session.lists.space(key: .space(id: room.id)) == nil {
             // A subspace: its own overview, over this one.
             return
         }
@@ -360,7 +360,7 @@ private struct OpensSubspace: ViewModifier {
     @EnvironmentObject private var session: SessionModel
 
     func body(content: Content) -> some View {
-        if enabled && room.isSpace && action == .open && session.lists.space(.space(room.id)) == nil
+        if enabled && room.isSpace && action == .open && session.lists.space(key: .space(id: room.id)) == nil
             && session.room(room.id) != nil
         {
             NavigationLink(value: RoomRef(id: room.id)) {

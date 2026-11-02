@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Rule
 import org.junit.Test
 import org.mtrx.app.member
-import org.mtrx.app.model.SpaceEntry
+import org.mtrx.app.model.RoomSort
 import org.mtrx.app.rooms.InviteContent
 import org.mtrx.app.rooms.JoinContent
 import org.mtrx.app.rooms.JoinResults
@@ -24,26 +24,16 @@ import org.mtrx.app.rooms.OverviewRooms
 import org.mtrx.app.rooms.RoomInfoContent
 import org.mtrx.app.rooms.SpaceOverviewContent
 import org.mtrx.app.rooms.RoomGroup
-import org.mtrx.app.rooms.chatsUnread
-import org.mtrx.app.rooms.roomGroups
-import org.mtrx.app.rooms.sharedSpaces
-import org.mtrx.app.rooms.roomsUnread
 import org.mtrx.app.rooms.SectionPrefs
-import org.mtrx.app.rooms.chatList
-import org.mtrx.app.rooms.sectionChoices
-import org.mtrx.app.rooms.spaceList
+import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.ui.RoomListSettings
 import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.ShowActions
 import org.mtrx.app.ui.ShowSheetContent
-import org.mtrx.app.rooms.spaceRows
-import org.mtrx.app.rooms.spacesUnread
-import org.mtrx.app.rooms.unreadElsewhere
-import org.mtrx.app.model.RoomSort
 import org.mtrx.app.timeline.RoomHeader
 import org.mtrx.app.timeline.TimelineContent
 import org.mtrx.app.timeline.TimelineState
-import org.mtrx.app.timeline.timelineRows
+import org.mtrx.app.timeline.shownRows
 import org.mtrx.app.ui.ChatList
 import org.mtrx.app.ui.HomeFrame
 import org.mtrx.app.ui.HomeTab
@@ -52,6 +42,7 @@ import org.mtrx.app.ui.RoomGroupsList
 import org.mtrx.app.ui.SpaceList
 import org.mtrx.app.ui.SpaceRoomsList
 import org.mtrx.app.ui.SpaceTitle
+import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.Membership
 
@@ -66,7 +57,7 @@ open class ScreensTest {
     @get:Rule
     val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(fontScale = fontScale))
 
-    private val drafts = rooms.drafts.toSet()
+    private val drafts = rooms.drafts().toSet()
 
     private fun snap(name: String, content: @Composable () -> Unit) {
         paparazzi.snapshot(name) { MtrxTheme { WithBack(content) } }
@@ -74,9 +65,9 @@ open class ScreensTest {
 
     @Test
     fun chats() = snap("chats-notes-at-top") {
-        val (notes, chats) = chatList(rooms)
+        val spaces = rooms.chats().associate { it.id to rooms.chatSpaces(it.id) }
         HomeFrame(HomeTab.Chats, badges, onTab = {}) {
-            ChatList(notes, chats, loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, spaces = sharedSpaces(rooms), drafts = drafts)
+            ChatList(rooms.notes(), rooms.chats(), loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, spaces = spaces, drafts = drafts)
         }
     }
 
@@ -93,7 +84,7 @@ open class ScreensTest {
         Surface(Modifier.fillMaxWidth()) {
             ShowSheetContent(
                 "Ice team",
-                sectionChoices(rooms, SpaceEntry.Space(TEAM), SectionPrefs(hidden = setOf("low_priority"))),
+                rooms.sectionChoices(SpaceKey.Space(TEAM), SectionPrefs(hidden = setOf("low_priority")).library),
                 ShowActions(setShown = { _, _ -> }, showAll = {}, hideAll = {}, move = { _, _ -> }),
             )
         }
@@ -102,7 +93,7 @@ open class ScreensTest {
     @Test
     fun spaces() = snap("spaces") {
         HomeFrame(HomeTab.Spaces, badges, onTab = {}) {
-            SpaceList(spaceRows(rooms), SpaceEntry.Space(TEAM), loaded = true, images, onSelect = {})
+            SpaceList(rooms.spaces(), SpaceKey.Space(TEAM), loaded = true, images, onSelect = {})
         }
     }
 
@@ -112,7 +103,8 @@ open class ScreensTest {
     fun spaceRooms() = snap("space-sections") {
         HomeFrame(HomeTab.Spaces, badges, onTab = {}, title = { SpaceTitle("Ice team", onClick = {}) }) {
             SpaceRoomsList(
-                spaceList(rooms, SpaceEntry.Space(TEAM), SectionPrefs(folded = setOf("rooms")), RoomSort.DEFAULT),
+                rooms.notes(),
+                rooms.spaceList(SpaceKey.Space(TEAM), SectionPrefs(folded = setOf("rooms")).library, RoomSort.DEFAULT.library, ""),
                 loaded = true,
                 images,
                 today,
@@ -127,7 +119,7 @@ open class ScreensTest {
     @Test
     fun roomsTab() = snap("rooms-groups") {
         HomeFrame(HomeTab.Rooms, badges, onTab = {}) {
-            RoomGroupsList(roomGroups(rooms, folded = setOf(OUTREACH)), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {}, onFold = {}, drafts = drafts)
+            RoomGroupsList(roomGroups(rooms, folded = listOf(OUTREACH)), loaded = true, images, today, onOpenRoom = {}, onOpenSpace = {}, onFold = {}, drafts = drafts)
         }
     }
 
@@ -147,9 +139,8 @@ open class ScreensTest {
     @Test
     fun topicEditor() = snap("topic-editor") { Room(editingTopic = true) }
 
-    // Coffee at Home, three rooms in Ice team, Papers again in Outreach.
     @Test
-    fun sharedRooms() = snap("shared-rooms") { SharedRooms(roomGroups(rooms, only = setOf(ICE, SEA, PAPERS, LOOSE, CODE))) }
+    fun sharedRooms() = snap("shared-rooms") { SharedRooms(roomGroups(sharedWithBob)) }
 
     @Test
     fun noSharedRooms() = snap("shared-rooms-none") { SharedRooms(emptyList()) }
@@ -267,7 +258,7 @@ open class ScreensTest {
 
     @Test
     fun invite() = snap("invite") {
-        InviteContent(rooms.rooms.first { it.id == WORKSHOP }.copy(topic = "Planning the 2027 ice sheet workshop"), images, busy = false, onAccept = {}, onDecline = {}, onBack = {})
+        InviteContent(listed(WORKSHOP).copy(topic = "Planning the 2027 ice sheet workshop"), images, busy = false, onAccept = {}, onDecline = {}, onBack = {})
     }
 }
 
@@ -310,7 +301,9 @@ open class TallScreensTest {
 }
 
 /** The tabs' unread counts. */
-private val badges = mapOf(HomeTab.Chats to chatsUnread(rooms), HomeTab.Rooms to roomsUnread(rooms), HomeTab.Spaces to spacesUnread(rooms))
+private val badges = rooms.badges().let {
+    mapOf(HomeTab.Chats to it.chats.toLong(), HomeTab.Rooms to it.rooms.toLong(), HomeTab.Spaces to it.spaces.toLong())
+}
 
 private val iceRoomHeader = RoomHeader(
     name = "Ice sheets",
@@ -319,7 +312,7 @@ private val iceRoomHeader = RoomHeader(
     person = null,
     topic = iceTopic,
     pinned = listOf("\$p1", "\$p2"),
-    space = rooms.rooms.first { it.id == TEAM },
+    space = listed(TEAM),
 )
 
 /** The Ice sheets room, as on the Rooms tab. */
@@ -329,18 +322,17 @@ private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
         TimelineContent(
             iceRoomHeader,
             TimelineState(
-                rows = timelineRows(conversation),
+                rows = shownRows(conversation),
                 draft = "Thanks Ana, looking at them now",
                 typing = listOf("Bob Berg"),
                 canEditTopic = true,
-                canPin = true,
-                pinned = timelineRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
+                pinned = shownRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
             ),
             NoTimelineActions,
             images,
-            keysArriving = false,
             presence = null,
-            backCount = unreadElsewhere(rooms, except = ICE),
+            // Everywhere else: Bob's 2, Papers' 1, Teaching's 5, Model code's 4.
+            backCount = 12,
             scrollTo = emptyFlow(),
             onBack = {},
             onRoomInfo = {},
@@ -359,12 +351,12 @@ private fun SharedRooms(shared: List<RoomGroup>) {
     HomeFrame(HomeTab.Chats, badges, onTab = {}, showTopBar = false) {
         TimelineContent(
             RoomHeader(name = "Bob Berg", avatarUrl = null, seed = bob, person = bob),
-            TimelineState(rows = timelineRows(conversation), shared = shared),
+            TimelineState(rows = shownRows(conversation), shared = shared),
             NoTimelineActions,
             images,
-            keysArriving = false,
             presence = null,
-            backCount = unreadElsewhere(rooms, except = "!with-bob:example.org"),
+            // Everywhere else: the rooms' 13.
+            backCount = 13,
             scrollTo = emptyFlow(),
             onBack = {},
             onRoomInfo = {},

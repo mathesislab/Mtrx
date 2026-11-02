@@ -3,7 +3,7 @@ package org.mtrx.app.timeline
 /** What the composer's text becomes, besides a new message: a reply or an edit. */
 sealed interface Composing {
     /**
-     * The row replied to (its `TimelineItem.id`); its sender and first line
+     * The row replied to (its `TimelineRow.id`); its sender and first line
      * in the bar; its event's ID, kept with the draft.
      */
     data class Replying(val itemId: String, val name: String, val preview: String, val eventId: String) : Composing

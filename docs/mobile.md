@@ -85,14 +85,14 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `subscribePresence(userIds, listener) -> TaskHandle`.
 - `Verification`: `otherUser()`, `accept()`, `state()`, `subscribe(listener)`,
   `confirm()`, `mismatch()`, `cancel()`.
-- `Timeline`: `roomId`, `subscribe(listener)`, `paginateBack(events)`,
+- `Timeline`: `roomId`, `subscribeRows(listener)`, `paginateBack(events)`,
   `sendText(markdown)`, `markRead`. Messages (section 8), each taking the
-  row's `TimelineItem.id`: `reply(itemId, markdown)`, `edit(itemId,
+  row's `TimelineRow.id`: `reply(itemId, markdown)`, `edit(itemId,
   markdown)`, `react(itemId, key)` (adds ours, or removes it),
   `delete(itemId)` (redacts), `retry(itemId)`, `discard(itemId)`; and
   `setTyping(typing)`, `subscribeTyping(listener)`.
 - Listeners (implemented by the apps): `RoomListListener.onUpdate(RoomListState)`,
-  `TimelineListener.onUpdate([TimelineItem])`,
+  `TimelineRowsListener.onUpdate([TimelineRow])`,
   `TypingListener.onUpdate([String])` (names; on every change only),
   `ConnectionListener.onUpdate(ConnectionState)`,
   `EncryptionStateListener.onUpdate(EncryptionState)`,
@@ -106,14 +106,15 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
 - `TaskHandle` (from each subscribe): `cancel()`, `isFinished()`; dropping
   it cancels.
 - Records: `RoomListState { rooms, loaded, spaces, roomsOutsideSpaces }`
-  (section 7), `SpaceRooms { spaceId, roomIds }`, `RoomSummary`, `TimelineItem
-  { id, content }` (`start`, `event`, `dayDivider`, `readMarker`),
+  (section 7), `SpaceRooms { spaceId, roomIds }`, `RoomSummary`, `TimelineRow
+  { id, content }` (`start`, `day`, `readMarker`, `summary(text)`, `message` with
+  its grouping, `decrypting` and `actions: [MessageAction]` in the menu's order),
   `TimelineEvent` (with `editable`, `readBy: [Reader]`), `EventContent`,
   `Message { kind, body, edited, media, reactions, replyTo, rawBody }`,
   `Reaction { key, count, byUs, senders: [Reader] }`, `Reader { userId,
   name, avatarUrl }`, `ReplyQuote { eventId, state, senderId, senderName,
   kind, body }`, `QuoteState` (`loading`, `loaded`, `failed`), `Media`,
-  `SendState` (`failed(error)`: retry or discard). `TimelineItem.id` is unique and stable (also when a
+  `SendState` (`failed(error)`: retry or discard). `TimelineRow.id` is unique and stable (also when a
   local echo becomes the server's event): use it as list identity.
   `EventContent.unableToDecrypt`: an encrypted event without its key (yet);
   `TimelineEvent.utdCause: UtdCause?` says why, as far as the SDK knows
@@ -267,8 +268,8 @@ apps/ios/
   (`MessageRow.undecryptableText`); `SessionModel.keysArriving`, a
   publisher, is handed to each `TimelineModel`, which rebuilds its rows
   when it changes, so rows on screen follow. `utdCause` is not shown.
-- Timeline: rows keyed by `TimelineItem.id`; runs of state events folded
-  into one line (as the desktop writes them); messages grouped by sender.
+- Timeline: rows keyed by `TimelineRow.id`, as the library gives them:
+  runs of state events in one line, messages grouped by sender.
   A flipped scroll view (the list and each row upside down) on every
   version, so the newest row is the lazy stack's first, where it starts.
   Anchored at the bottom instead (`defaultScrollAnchor`, as on iOS 17+
@@ -600,7 +601,7 @@ and tested by CI only; no Android SDK is used locally.
     the room does not cancel it): "Invited to <space>." and back to the
     person, or the error's reason with the list kept, both in the sheet's
     snackbar; newest at the bottom, keyed
-    by `TimelineItem.id`; day dividers, read marker, grouped bubbles, send
+    by `TimelineRow.id`; day dividers, read marker, grouped bubbles, send
     states, images, state events summarised in a line as on the desktop;
     older events near the top; marked read while the newest message
     shows; for an event without its key "Decrypting…" while
@@ -963,7 +964,7 @@ typing, and retrying a failed send. The library part is done and tested
 (section 5); everything comes in the timeline's items, whole, as before.
 
 **Rows and actions.** Every action on a message takes its row's
-`TimelineItem.id` (`itemId`), which identifies also a message not sent yet
+`TimelineRow.id` (`itemId`), which identifies also a message not sent yet
 (it has no `eventId` until then). Pass the ID of a row from the latest
 items; a row gone meanwhile (or a reply to a message not yet sent) fails
 with `MtrxError.InvalidInput`. Server failures, and `retry` of a message

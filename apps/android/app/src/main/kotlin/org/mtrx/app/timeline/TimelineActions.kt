@@ -5,7 +5,7 @@ import uniffi.mtrx.Topic
 /**
  * What the room screen asks of its model ([TimelineViewModel]); the
  * screenshot tests give one that does nothing. Rows by their
- * `TimelineItem.id`, messages by their event ID.
+ * `TimelineRow.id`, messages by their event ID.
  */
 interface TimelineActions {
     fun onNearTop(value: Boolean)

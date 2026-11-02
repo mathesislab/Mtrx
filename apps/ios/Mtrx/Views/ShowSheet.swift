@@ -5,15 +5,15 @@ import SwiftUI
 /// order, dragged; Show all and Hide all. The desktop's arrangement is not
 /// changed.
 struct ShowSheet: View {
-    let item: SpaceItem
+    let item: SpaceEntry
     @EnvironmentObject private var session: SessionModel
     @Environment(\.dismiss) private var dismiss
 
-    private var layout: SectionLayout { session.sectionLayouts[item.entry] }
-    private var keys: [String] { item.sections.map(\.key) }
+    private var layout: SectionLayout { session.sectionLayouts[item.key] }
 
     var body: some View {
-        let byKey = Dictionary(item.sections.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        let choices = session.lists.sectionChoices(key: item.key, layout: layout.library)
+        let keys = choices.map(\.key)
         NavigationStack {
             List {
                 Section {
@@ -25,10 +25,8 @@ struct ShowSheet: View {
                     .buttonStyle(.borderless)
                 }
                 Section {
-                    ForEach(layout.arranged(keys), id: \.self) { key in
-                        if let section = byKey[key] {
-                            row(section)
-                        }
+                    ForEach(choices, id: \.key) { choice in
+                        row(choice)
                     }
                     .onMove { offsets, destination in
                         change { $0.move(keys, from: offsets, to: destination) }
@@ -49,8 +47,8 @@ struct ShowSheet: View {
         .presentationDetents([.medium, .large])
     }
 
-    private func row(_ section: RoomSection) -> some View {
-        let shown = layout.shows(section.key)
+    private func row(_ section: SectionChoice) -> some View {
+        let shown = section.shown
         return Button {
             change { $0.setShown(section.key, !shown) }
         } label: {
@@ -58,19 +56,19 @@ struct ShowSheet: View {
                 Image(systemName: shown ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundColor(shown ? .accentColor : .secondary)
-                Text(RoomLists.title(section))
+                Text(section.title)
                     .foregroundColor(.primary)
                 Spacer()
-                Text(String(section.roomIds.count))
+                Text(String(section.rooms))
                     .foregroundColor(.secondary)
                     .monospacedDigit()
             }
         }
-        .accessibilityLabel(RoomLists.title(section))
+        .accessibilityLabel(section.title)
         .accessibilityValue(shown ? "Shown" : "Hidden")
     }
 
     private func change(_ change: (inout SectionLayout) -> Void) {
-        session.sectionLayouts.change(item.entry, change)
+        session.sectionLayouts.change(item.key, change)
     }
 }

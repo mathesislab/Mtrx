@@ -149,9 +149,10 @@ import org.mtrx.app.ui.timeOfDay
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
+import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.Presence
-import uniffi.mtrx.RoomListState
+import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.SendState
 import uniffi.mtrx.TimelineEvent
@@ -190,7 +191,6 @@ data class TimelineState(
     val highlighted: String? = null,
     val error: String? = null,
     val canEditTopic: Boolean = false,
-    val canPin: Boolean = false,
     /** The pinned messages while the topic panel shows; null while loading. */
     val pinned: List<EventRow>? = null,
     /** A direct chat's rooms shared with the person, by space, while their panel shows; null while loading. */
@@ -198,9 +198,8 @@ data class TimelineState(
 )
 
 /**
- * A room's timeline. [keysArriving] while message keys come from the backup
- * (undecryptable rows say they are decrypting); [spaces], the top-level
- * ones, to invite a direct chat's person to; [presences], for the header
+ * A room's timeline. [spaces], the top-level ones, to invite a direct
+ * chat's person to; [presences], for the header
  * and the person sheet, and [refreshPresence] when the sheet opens.
  * [backCount] on the back button: unread messages in the other rooms and
  * direct chats.
@@ -214,9 +213,8 @@ fun TimelineScreen(
     header: RoomHeader,
     viewModel: TimelineViewModel,
     images: Images,
-    keysArriving: Boolean,
     spaces: List<RoomSummary>,
-    rooms: RoomListState,
+    rooms: RoomListsInterface,
     presences: Map<String, Presence>,
     refreshPresence: suspend (String) -> Unit,
     backCount: Long,
@@ -236,10 +234,9 @@ fun TimelineScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val canPin by viewModel.canPin.collectAsStateWithLifecycle()
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
     val sharedIds by viewModel.sharedRooms.collectAsStateWithLifecycle()
-    val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, only = it.toSet()) } }
+    val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, among = it) } }
     // The app may be ended in the background: the draft is kept first.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(
@@ -251,7 +248,6 @@ fun TimelineScreen(
         highlighted = highlighted,
         error = error,
         canEditTopic = settings?.canChangeTopic == true,
-        canPin = canPin,
         pinned = pinned,
         shared = shared,
     )
@@ -260,7 +256,6 @@ fun TimelineScreen(
         state,
         viewModel,
         images,
-        keysArriving,
         presence = header.person?.let { presences[it] },
         backCount = backCount,
         scrollTo = viewModel.scrollTo,
@@ -292,7 +287,6 @@ fun TimelineContent(
     state: TimelineState,
     actions: TimelineActions,
     images: Images,
-    keysArriving: Boolean,
     presence: Presence?,
     backCount: Long,
     scrollTo: Flow<String>,
@@ -385,13 +379,11 @@ fun TimelineContent(
         if (atBottom && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) actions.markRead()
     }
 
-    val canPin by rememberUpdatedState(state.canPin)
-    val pinnedIds by rememberUpdatedState(header.pinned)
     val openLink by rememberUpdatedState(onOpenLink)
     val handlers = remember(actions) {
         RowHandlers(
             hold = { row ->
-                if (menuActions(row, canPin, pinnedIds).isNotEmpty()) {
+                if (row.actions.isNotEmpty()) {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     overlay = Overlay.Menu(row.id)
                 }
@@ -491,7 +483,7 @@ fun TimelineContent(
             ) {
                 items(newestFirst, key = { it.id }, contentType = { it::class }) { row ->
                     when (row) {
-                        is EventRow -> EventBubble(row, images, state.highlighted == row.id, keysArriving, handlers)
+                        is EventRow -> EventBubble(row, images, state.highlighted == row.id, handlers)
                         is StateRow -> Notice(row.text)
                         is DayRow -> DayDivider(dayLabel(row.date, today))
                         is ReadMarkerRow -> ReadMarker()
@@ -533,7 +525,7 @@ fun TimelineContent(
         null -> {}
         is Overlay.Menu -> {
             val row = rowOf(shown.rowId)
-            val menu = row?.let { menuActions(it, state.canPin, header.pinned) }.orEmpty()
+            val menu = row?.actions.orEmpty()
             if (row == null || menu.isEmpty()) {
                 LaunchedEffect(shown) { overlay = null }
             } else {
@@ -553,8 +545,8 @@ fun TimelineContent(
                                 overlay = Overlay.EmojiPicker(row.id)
                             }
                             MessageAction.REPLY -> actions.startReply(row.id)
-                            MessageAction.COPY -> row.text?.let { clipboard.setText(AnnotatedString(it)) }
-                            MessageAction.SELECT_TEXT -> row.text?.let { overlay = Overlay.SelectText(it) }
+                            MessageAction.COPY -> row.message?.let { clipboard.setText(AnnotatedString(it.body)) }
+                            MessageAction.SELECT_TEXT -> row.message?.let { overlay = Overlay.SelectText(it.body) }
                             MessageAction.EDIT -> actions.startEdit(row.id)
                             MessageAction.PIN -> row.event.eventId?.let { actions.setPinned(it, true) }
                             MessageAction.UNPIN -> row.event.eventId?.let { actions.setPinned(it, false) }
@@ -808,7 +800,7 @@ private fun Composer(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, keysArriving: Boolean, handlers: RowHandlers) {
+private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, handlers: RowHandlers) {
     val event = row.event
     val own = event.own
     val name = displayName(event)
@@ -847,7 +839,7 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
                 horizontalArrangement = if (own) Arrangement.End else Arrangement.Start,
             ) {
                 // Beside the bubble, at the first of a group.
-                if (!own) {
+                if (row.avatarColumn) {
                     if (row.showSender) {
                         Avatar(name, event.senderAvatarUrl, seed = event.senderId, images = images, size = AVATAR)
                     } else {
@@ -874,7 +866,7 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, key
                                 row.edited,
                                 name,
                                 images,
-                                keysArriving,
+                                row.undecryptableText,
                                 colors,
                                 onOpenLink = handlers.openLink,
                                 onHold = { handlers.hold(row) },
@@ -1069,7 +1061,7 @@ private fun MessageBody(
     edited: Boolean,
     name: String,
     images: Images,
-    keysArriving: Boolean,
+    undecryptableText: String,
     colors: BubbleColors,
     onOpenLink: (String) -> Unit,
     onHold: () -> Unit,
@@ -1102,7 +1094,7 @@ private fun MessageBody(
         EventContent.Redacted -> Text("Message deleted", color = secondary, fontStyle = FontStyle.Italic)
         // Turns into the message once its key arrives (recovery, verification, the backup).
         EventContent.UnableToDecrypt -> Text(
-            undecryptableText(keysArriving),
+            undecryptableText,
             color = secondary,
             fontStyle = FontStyle.Italic,
         )
