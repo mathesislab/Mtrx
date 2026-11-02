@@ -159,7 +159,8 @@ fn message_row(event: &Event, first_in_group: bool, context: &RowContext) -> Mes
 }
 
 /// What holding `event` offers: React and Reply once it is sent, Copy and
-/// Select text with a text, Edit where allowed, Pin or Unpin where we may,
+/// Select text with a text (a file's caption, not its name), Edit where
+/// allowed, Pin or Unpin where we may,
 /// Delete for our own sent ones, Retry and Discard after a refused send.
 fn actions(event: &Event, context: &RowContext) -> Vec<MessageAction> {
     let mut actions = Vec::new();
@@ -168,7 +169,12 @@ fn actions(event: &Event, context: &RowContext) -> Vec<MessageAction> {
         if sent.is_some() {
             actions.extend([MessageAction::React, MessageAction::Reply]);
         }
-        if !message.document.to_plain_text().is_empty() {
+        // A file's body is its name unless captioned.
+        let text = match &message.media {
+            Some(media) => message.body != media.filename,
+            None => !message.document.to_plain_text().is_empty(),
+        };
+        if text {
             actions.extend([MessageAction::Copy, MessageAction::SelectText]);
         }
     }
@@ -311,7 +317,7 @@ mod tests {
     use mtrx_format::Document;
 
     use super::*;
-    use crate::{EventKey, Message, MessageKind, PinsChange};
+    use crate::{EventKey, Media, MediaKind, MediaRef, Message, MessageKind, PinsChange};
 
     fn user(name: &str) -> OwnedUserId {
         format!("@{name}:example.org").try_into().unwrap()
@@ -634,20 +640,32 @@ mod tests {
             ..message("6", "me", 0)
         };
         assert_eq!(actions(undecryptable), [Delete]);
-        // An image without a caption: its name is its text.
-        let image = Event {
+        // An image: its name is no text to copy, its caption is.
+        let image = |body: &str| Event {
             content: EventContent::Message(Message {
                 kind: MessageKind::Image,
-                body: "ice.png".into(),
-                document: Document::from_plain("ice.png"),
+                body: body.into(),
+                document: Document::from_plain(body),
                 edited: false,
                 in_reply_to: None,
                 reactions: Vec::new(),
-                media: None,
+                media: Some(Media {
+                    kind: MediaKind::Image,
+                    filename: "ice.png".into(),
+                    size: None,
+                    mimetype: None,
+                    width: None,
+                    height: None,
+                    source: MediaRef::plain("mxc://x/ice"),
+                }),
             }),
             ..message("7", "bob", 0)
         };
-        assert_eq!(actions(image), [React, Reply, Copy, SelectText]);
+        assert_eq!(actions(image("ice.png")), [React, Reply]);
+        assert_eq!(
+            actions(image("The ice edge")),
+            [React, Reply, Copy, SelectText]
+        );
     }
 
     #[test]
