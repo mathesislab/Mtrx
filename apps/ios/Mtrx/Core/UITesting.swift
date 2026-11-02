@@ -10,8 +10,8 @@ import MtrxFFI
 /// the server's copy; one deleted shows as deleted. A message sent or
 /// arrived moves its room up the list, as the library orders it. With
 /// `-ui-testing-arrivals`, a message of Ann's arrives every two seconds in
-/// the open room; with `-ui-testing-arrivals-papers`, in Papers, open or
-/// not. With `-ui-testing-history`, a room opens with its newest
+/// a room from when it first opens; with `-ui-testing-arrivals-papers`, in
+/// Papers only, also once another room opens over it. With `-ui-testing-history`, a room opens with its newest
 /// messages, long ones, and its older, short ones load a moment later.
 /// The library's classes are faked as UniFFI provides for
 /// (`init(noHandle:)`, overriding what the app calls).
@@ -97,15 +97,6 @@ private final class UITestSession: Session, @unchecked Sendable {
             return roomLists()
         }
         listener.onUpdate(lists: lists)
-        if UITesting.arrivalsInPapers {
-            let papers = timeline(UITesting.papers)
-            Task {
-                while true {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    papers.arrive()
-                }
-            }
-        }
         return UITestHandle(noHandle: .init())
     }
 
@@ -199,6 +190,8 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     private var listener: TimelineRowsListener?
     private var sent = 0
     private var arrived = 0
+    /// Messages arrive (`-ui-testing-arrivals`, `-ui-testing-arrivals-papers`).
+    private var arriving = false
     /// Not loaded yet (`-ui-testing-history`), oldest first.
     private var older: [TimelineRow] = []
 
@@ -280,12 +273,15 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     override func roomId() -> String { lock.withLock { room } }
 
     override func subscribeRows(listener: TimelineRowsListener) -> TaskHandle {
-        let items = lock.withLock {
+        let (items, starts) = lock.withLock {
             self.listener = listener
-            return self.items
+            let arrives = UITesting.arrivals || (UITesting.arrivalsInPapers && room == UITesting.papers)
+            let starts = arrives && !arriving
+            arriving = arriving || arrives
+            return (self.items, starts)
         }
         listener.onUpdate(rows: items)
-        if UITesting.arrivals {
+        if starts {
             Task { [weak self] in
                 while let self {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
