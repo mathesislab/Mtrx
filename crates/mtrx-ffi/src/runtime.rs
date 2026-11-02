@@ -2,12 +2,14 @@
 //! sockets, spawned tasks), while Swift and Kotlin poll async calls on their
 //! own executors; so each call runs as a task here and is awaited there.
 
-use std::{future::Future, sync::LazyLock};
-
-use tokio::{
-    runtime::{EnterGuard, Runtime},
-    task::JoinHandle,
+use std::{
+    future::Future,
+    sync::{Arc, LazyLock},
 };
+
+use futures_util::StreamExt;
+use mtrx_core::{AbortOnDrop, Live};
+use tokio::runtime::{EnterGuard, Runtime};
 
 static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -32,14 +34,6 @@ pub(crate) async fn run<T: Send + 'static>(future: impl Future<Output = T> + Sen
 /// async but start tasks.
 pub(crate) fn enter() -> EnterGuard<'static> {
     RUNTIME.enter()
-}
-
-struct AbortOnDrop<T>(JoinHandle<T>);
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 /// Keeps `T` alive and drops it inside the runtime: Swift and Kotlin
@@ -77,11 +71,37 @@ impl<T> Drop for InRuntime<T> {
 /// Kotlin call `cancel()` or `close()`, as the garbage collector may take a
 /// while.
 #[derive(uniffi::Object)]
-pub struct TaskHandle(JoinHandle<()>);
+pub struct TaskHandle(AbortOnDrop);
 
 impl TaskHandle {
-    pub(crate) fn spawn(task: impl Future<Output = ()> + Send + 'static) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self(RUNTIME.spawn(task)))
+    pub(crate) fn spawn(task: impl Future<Output = ()> + Send + 'static) -> Arc<Self> {
+        Arc::new(Self(AbortOnDrop(RUNTIME.spawn(task))))
+    }
+}
+
+/// A subscription calling `on_update` with `live`'s value as `map` makes
+/// it, now and after every change, until cancelled or the value's task
+/// ends.
+pub(crate) fn follow<T, R: 'static>(
+    live: Live<T>,
+    map: fn(T) -> R,
+    on_update: impl Fn(R) + Send + 'static,
+) -> Arc<TaskHandle>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    TaskHandle::spawn(forward(live, map, on_update))
+}
+
+/// What [`follow`] runs, for a subscription that first has to get the
+/// value.
+pub(crate) async fn forward<T, R>(live: Live<T>, map: fn(T) -> R, on_update: impl Fn(R))
+where
+    T: Clone + Send + Sync + 'static,
+{
+    let mut updates = std::pin::pin!(live.updates());
+    while let Some(value) = updates.next().await {
+        on_update(map(value));
     }
 }
 
@@ -89,18 +109,12 @@ impl TaskHandle {
 impl TaskHandle {
     /// Stop the subscription; its listener is not called afterwards.
     pub fn cancel(&self) {
-        self.0.abort();
+        self.0.0.abort();
     }
 
     /// Whether the subscription ended (cancelled, or its source closed).
     pub fn is_finished(&self) -> bool {
-        self.0.is_finished()
-    }
-}
-
-impl Drop for TaskHandle {
-    fn drop(&mut self) {
-        self.0.abort();
+        self.0.0.is_finished()
     }
 }
 

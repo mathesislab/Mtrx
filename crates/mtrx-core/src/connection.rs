@@ -11,10 +11,9 @@ use tokio::{
     sync::{broadcast, watch},
     time::Instant,
 };
-use tokio_stream::{Stream, wrappers::WatchStream};
 use tracing::warn;
 
-use crate::{Session, session::AbortOnDrop};
+use crate::{AbortOnDrop, Live, Session};
 
 /// After an unexpected sync error, how long until sync starts again.
 const RESTART: Duration = Duration::from_secs(5);
@@ -104,9 +103,9 @@ impl Session {
         *self.connection.borrow()
     }
 
-    /// The connection, then every change.
-    pub fn connection_updates(&self) -> impl Stream<Item = Connection> + use<> {
-        WatchStream::new(self.connection.clone())
+    /// The connection, then every change, while the session lives.
+    pub fn connection_updates(&self) -> Live<Connection> {
+        Live::from_watch(self.connection.clone())
     }
 
     /// Try the server now instead of waiting for the next check.

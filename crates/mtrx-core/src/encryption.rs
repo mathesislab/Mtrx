@@ -1,7 +1,7 @@
 //! End-to-end encryption: recovery (key backup + secret storage) and
 //! interactive emoji verification between our own devices.
 
-use std::{collections::HashSet, future::ready, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::{
@@ -22,14 +22,11 @@ use matrix_sdk::{
     },
 };
 use matrix_sdk_crypto::secret_storage::DecodeError;
-use tokio::{
-    sync::{Mutex, broadcast, watch},
-    task::JoinHandle,
-};
+use tokio::sync::{Mutex, broadcast, watch};
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
-use crate::{Error, OwnedDeviceId, OwnedRoomId, OwnedUserId, Result, Session};
+use crate::{AbortOnDrop, Error, Live, OwnedDeviceId, OwnedRoomId, OwnedUserId, Result, Session};
 
 /// Whether this device can read encrypted messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,13 +86,8 @@ pub struct Verification {
     request: VerificationRequest,
     sas: Arc<Mutex<Option<SasVerification>>>,
     state: watch::Receiver<VerificationState>,
-    task: JoinHandle<()>,
-}
-
-impl Drop for Verification {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
+    /// Drives the protocol.
+    _task: AbortOnDrop,
 }
 
 impl Verification {
@@ -107,7 +99,7 @@ impl Verification {
             request,
             sas,
             state,
-            task,
+            _task: AbortOnDrop(task),
         }
     }
 
@@ -124,9 +116,10 @@ impl Verification {
         self.state.borrow().clone()
     }
 
-    /// The current state, then every change.
-    pub fn states(&self) -> impl Stream<Item = VerificationState> + use<> {
-        WatchStream::new(self.state.clone())
+    /// The state, kept up to date while the verification lives, until
+    /// [`VerificationState::Done`] or [`VerificationState::Cancelled`].
+    pub fn states(&self) -> Live<VerificationState> {
+        Live::from_watch(self.state.clone())
     }
 
     /// The emojis match.
@@ -331,11 +324,14 @@ impl Session {
         encryption_state(&self.client, &self.room_keys).await
     }
 
-    /// The encryption state now and after every change: of this device's
-    /// verification, the recovery, the key backup and the key downloads.
-    pub fn encryption_states(&self) -> impl Stream<Item = EncryptionState> + use<> {
+    /// The encryption state, once read, kept up to date while held: as this
+    /// device's verification, the recovery, the key backup and the key
+    /// downloads change. A reading that fails is tried again at the next
+    /// change.
+    pub fn encryption_states(&self) -> impl Future<Output = Live<EncryptionState>> + Send + use<> {
         let encryption = self.client.encryption();
-        let changes = stream::select_all([
+        // Followed before the first reading, so no change is missed.
+        let mut changes = stream::select_all([
             encryption.verification_state().map(|_| ()).boxed(),
             encryption.recovery().state_stream().map(|_| ()).boxed(),
             encryption.backups().state_stream().map(|_| ()).boxed(),
@@ -344,25 +340,28 @@ impl Session {
                 .boxed(),
         ]);
         let (client, room_keys) = (self.client.clone(), self.room_keys.clone());
-        stream::once(ready(()))
-            .chain(changes)
-            .then(move |()| {
-                let (client, room_keys) = (client.clone(), room_keys.clone());
-                async move { encryption_state(&client, &room_keys).await }
+        async move {
+            let first = loop {
+                if let Some(state) = read_encryption_state(&client, &room_keys).await {
+                    break state;
+                }
+                if changes.next().await.is_none() {
+                    // Nothing to read it again on.
+                    std::future::pending::<()>().await;
+                }
+            };
+            Live::spawn(first, |states| async move {
+                while changes.next().await.is_some() {
+                    if let Some(state) = read_encryption_state(&client, &room_keys).await {
+                        states.send_if_modified(|current| {
+                            let changed = *current != state;
+                            *current = state;
+                            changed
+                        });
+                    }
+                }
             })
-            .filter_map(|state| {
-                ready(
-                    state
-                        .inspect_err(|e| warn!("could not read the encryption state: {e}"))
-                        .ok(),
-                )
-            })
-            .scan(None, |last, state| {
-                let changed = *last != Some(state);
-                *last = Some(state);
-                ready(Some(changed.then_some(state)))
-            })
-            .filter_map(ready)
+        }
     }
 
     /// The account's recovery, checked now as the SDK checks it: whether it
@@ -511,6 +510,13 @@ async fn encryption_state(client: &Client, room_keys: &RoomKeys) -> Result<Encry
         recovery: recovery_status(client).await,
         keys_arriving: keys_arriving(backup, room_keys.downloading()),
     })
+}
+
+/// [`encryption_state`], or none if it could not be read.
+async fn read_encryption_state(client: &Client, room_keys: &RoomKeys) -> Option<EncryptionState> {
+    (encryption_state(client, room_keys).await)
+        .inspect_err(|e| warn!("could not read the encryption state: {e}"))
+        .ok()
 }
 
 /// While the backup is turned on (`Enabling`; `Downloading` only with the

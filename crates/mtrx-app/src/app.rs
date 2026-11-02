@@ -20,9 +20,9 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Draft, DraftKeeper, Google, Media, MediaRef, Notification,
-    OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
-    Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomLists,
+    CallService, Connection, Contact, Draft, DraftKeeper, Google, Live, Media, MediaRef,
+    Notification, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
+    OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists,
     RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
     SpaceKey, Topic, Url,
 };
@@ -96,7 +96,7 @@ pub enum Message {
     Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
     Login(login::Message),
     LoggedIn(Result<Shared<Session>, String>),
-    Ready(Result<(Shared<RoomList>, bool), String>),
+    Ready(Result<(Shared<Live<RoomListState>>, bool), String>),
     Rooms(Arc<RoomLists>),
     SelectSpace(Option<OwnedRoomId>),
     OpenRoom(OwnedRoomId),
@@ -289,7 +289,7 @@ enum Screen {
 
 struct Main {
     session: Arc<Session>,
-    room_list: Option<Arc<RoomList>>,
+    room_list: Option<Arc<Live<RoomListState>>>,
     lists: Arc<RoomLists>,
     space: Option<OwnedRoomId>,
     pane: Pane,
@@ -4264,8 +4264,10 @@ impl App {
         }));
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
-                Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
-                    .map(Message::Scheduled),
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.scheduled_updates().updates()
+                })
+                .map(Message::Scheduled),
             );
             subscriptions.push(
                 Subscription::run_with(
@@ -4301,19 +4303,21 @@ impl App {
                 }));
             }
             subscriptions.push(
-                Subscription::run_with(Shared(main.session.clone()), |s| s.0.connection_updates())
-                    .map(Message::Connection),
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.connection_updates().updates()
+                })
+                .map(Message::Connection),
             );
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
-                    s.0.room_categories_updates()
+                    s.0.room_categories_updates().updates()
                 })
                 .map(|c| Message::Arrange(arrange::Message::Categories(c))),
             );
             subscriptions.push(main.arrange.subscription());
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
-                    s.0.room_list_colours_updates()
+                    s.0.room_list_colours_updates().updates()
                 })
                 .map(Message::Colours),
             );
@@ -4336,7 +4340,7 @@ impl App {
                 subscriptions.push(
                     Subscription::run_with(
                         (Shared(main.session.clone()), Shared(list.clone())),
-                        |(session, list)| session.0.room_lists(&list.0),
+                        |(session, list)| session.0.room_lists(&list.0).updates(),
                     )
                     .map(Message::Rooms),
                 );
@@ -4347,12 +4351,14 @@ impl App {
                     |(t, _)| {
                         let id = t.0.room_id().clone();
                         t.0.typing_updates()
+                            .updates()
                             .map(move |names| room::Message::Typing(names).to(&id))
                     },
                 ));
                 subscriptions.push(Subscription::run_with(Shared(room.timeline.clone()), |t| {
                     let id = t.0.room_id().clone();
                     t.0.rows()
+                        .updates()
                         .map(move |rows| room::Message::Timeline(rows).to(&id))
                 }));
                 subscriptions.push(Subscription::run_with(
@@ -4361,7 +4367,7 @@ impl App {
                         let (timeline, id) = (t.0.clone(), t.0.room_id().clone());
                         iced::futures::stream::once(async move { timeline.uploads().await })
                             .filter_map(|uploads| async move { uploads.ok() })
-                            .flatten()
+                            .flat_map(|uploads| uploads.updates())
                             .map(move |uploads| room::Message::Uploads(uploads).to(&id))
                     },
                 ));

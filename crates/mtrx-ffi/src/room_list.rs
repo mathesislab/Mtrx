@@ -7,10 +7,12 @@ use std::{
     sync::Arc,
 };
 
-use futures_util::StreamExt;
 use mtrx_core::{self as core, OwnedRoomId, OwnedUserId};
 
-use crate::{MtrxError, RoomKind, RoomSummary, Session, TaskHandle, runtime::run};
+use crate::{
+    MtrxError, RoomKind, RoomSummary, Session, TaskHandle,
+    runtime::{follow, run},
+};
 
 /// What a room list lists.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -523,12 +525,9 @@ impl Session {
         let session = self.core();
         run(async move {
             let list = session.room_list().await?;
-            let mut lists = Box::pin(session.room_lists(&list));
-            Ok(TaskHandle::spawn(async move {
-                let _list = list;
-                while let Some(lists) = lists.next().await {
-                    listener.on_update(Arc::new(lists.into()));
-                }
+            let lists = session.room_lists(&list);
+            Ok(follow(lists, RoomLists::from, move |lists| {
+                listener.on_update(Arc::new(lists))
             }))
         })
         .await

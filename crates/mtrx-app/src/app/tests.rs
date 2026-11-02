@@ -1568,7 +1568,9 @@ async fn big_room_benchmark() {
         .await
         .unwrap();
     second.start_sync().await;
-    second.room_list().await.unwrap().wait_loaded().await;
+    (second.room_list().await.unwrap())
+        .wait_for(|s| s.loaded)
+        .await;
     second.recover(&key, |_| {}).await.unwrap();
 
     let start = std::time::Instant::now();
@@ -3462,7 +3464,7 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
     }
 
     assert_eq!(alice.draft(&a).await.unwrap(), None);
-    let drafts = alice.rooms_with_drafts_updates().next().await.unwrap();
+    let drafts = alice.rooms_with_drafts_updates().get();
     assert!(!drafts.contains(&a), "{drafts:?}");
     assert_eq!(open_room(&mut app).id, b);
 }

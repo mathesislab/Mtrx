@@ -7,7 +7,7 @@ use std::{
 };
 
 use eyeball_im::Vector;
-use futures_util::{Stream, StreamExt, pin_mut};
+use futures_util::{StreamExt, pin_mut};
 use matrix_sdk::{
     Client, Room, RoomState,
     deserialized_responses::SyncOrStrippedState,
@@ -31,12 +31,11 @@ use matrix_sdk_ui::room_list_service::{
     RoomListItem, RoomListLoadingState, RoomListService, State as ServiceState,
     filters::new_filter_non_left,
 };
-use tokio::{sync::watch, task::JoinHandle};
-use tokio_stream::wrappers::WatchStream;
+use tokio::sync::watch;
 use tracing::warn;
 
 use crate::{
-    Error, Result, RoomTag, Session,
+    Error, Live, Result, RoomTag, Session,
     permissions::{Permissions, open_power_levels_raw},
     synced, system_time,
 };
@@ -85,7 +84,7 @@ impl RoomSummary {
     }
 }
 
-/// Snapshot published by [`RoomList`].
+/// The room list now, see [`Session::room_list`].
 #[derive(Clone, Debug, Default)]
 pub struct RoomListState {
     /// Joined and invited rooms, most recently active first.
@@ -93,49 +92,6 @@ pub struct RoomListState {
     /// Synced with the server since the list was created, and every room the
     /// server reported is in `rooms`. Before that, `rooms` may be a stale cache.
     pub loaded: bool,
-}
-
-/// Keeps a [`RoomListState`] up to date while it is alive.
-pub struct RoomList {
-    state: watch::Receiver<RoomListState>,
-    task: JoinHandle<()>,
-}
-
-impl Drop for RoomList {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-impl RoomList {
-    pub(crate) async fn new(client: Client, service: Arc<RoomListService>) -> Result<Self> {
-        let (tx, state) = watch::channel(RoomListState::default());
-        let task = tokio::spawn(async move {
-            if let Err(e) = run_room_list(client, service, tx).await {
-                warn!("room list stopped: {e}");
-            }
-        });
-        Ok(Self { state, task })
-    }
-
-    pub fn current(&self) -> RoomListState {
-        self.state.borrow().clone()
-    }
-
-    /// The current state, then every change.
-    pub fn updates(&self) -> impl Stream<Item = RoomListState> + use<> {
-        WatchStream::new(self.state.clone())
-    }
-
-    /// Wait until [`RoomListState::loaded`]; requires sync to be running.
-    pub async fn wait_loaded(&self) -> RoomListState {
-        let mut state = self.state.clone();
-        match state.wait_for(|s| s.loaded).await {
-            Ok(s) => s.clone(),
-            // Task ended (error is logged); return what we have.
-            Err(_) => self.current(),
-        }
-    }
 }
 
 async fn run_room_list(
@@ -341,9 +297,15 @@ pub struct UserSummary {
 }
 
 impl Session {
-    /// A live room list. Sync must be running for it to fill.
-    pub async fn room_list(&self) -> Result<RoomList> {
-        RoomList::new(self.client.clone(), self.sync.room_list_service()).await
+    /// The joined and invited rooms, kept up to date while held. Sync must
+    /// be running for it to fill.
+    pub async fn room_list(&self) -> Result<Live<RoomListState>> {
+        let (client, service) = (self.client.clone(), self.sync.room_list_service());
+        Ok(Live::spawn(RoomListState::default(), |tx| async move {
+            if let Err(e) = run_room_list(client, service, tx).await {
+                warn!("room list stopped: {e}");
+            }
+        }))
     }
 
     /// Whether new rooms can have owners besides their creator: on room

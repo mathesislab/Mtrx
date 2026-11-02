@@ -18,6 +18,7 @@ mod encryption;
 mod error;
 mod google;
 mod lists;
+mod live;
 mod media;
 mod members;
 mod notes;
@@ -61,6 +62,7 @@ pub use google::{Google, GoogleClient};
 pub use lists::{
     Badges, ListSection, RoomLists, RoomSort, SectionChoice, SectionLayout, SpaceEntry, SpaceKey,
 };
+pub use live::{AbortOnDrop, Live};
 pub use media::MediaRef;
 pub use members::{
     Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,
@@ -80,7 +82,7 @@ pub use push::{HttpPusher, PushNotification, PusherInfo};
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
 pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, SpaceLink};
-pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
+pub use rooms::{NewRoom, RoomKind, RoomListState, RoomSummary, UserSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
 pub use secrets::{SecretBackend, SecretStore};
