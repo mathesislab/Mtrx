@@ -64,6 +64,30 @@ final class SpaceSectionsTests: XCTestCase {
             notesAtTop: notesAtTop, members: ["!team": ["@ann:example.org", "@me:example.org"]])
     }
 
+    /// Team's sections with a favourite, a category and a low priority
+    /// room: in the account's order, named, the empty ones left out.
+    func testSectionsInOrderNamedWithoutEmptyOnes() {
+        let lists = Make.lists(
+            [
+                Make.room("!ann", kind: .direct, name: "Ann", directUser: "@ann:example.org"),
+                Make.room("!ice", name: "Ice", parents: ["!team"]),
+                Make.room("!lab", name: "Lab", parents: ["!team"]),
+                Make.room("!paper", name: "Paper", parents: ["!team"]),
+                Make.room("!old", name: "Old", parents: ["!team"]),
+                Make.room("!team", kind: .space, name: "Team"),
+            ],
+            members: ["!team": ["@ann:example.org", "@me:example.org"]], favourites: ["!ice"],
+            lowPriority: ["!old"],
+            categories: [TestCategory(space: "!team", id: "a", name: "Papers", rooms: ["!paper"])])
+        let sections = lists.spaceList(
+            key: .space(id: "!team"), layout: SectionLayout().library, sort: .aToZ, filter: "")
+        XCTAssertEqual(
+            sections.map(\.title), ["Direct messages", "Favourites", "Papers", "Rooms", "Low priority"])
+        XCTAssertEqual(
+            sections.map(\.key), ["direct_messages", "favourites", "category:a", "rooms", "low_priority"])
+        XCTAssertEqual(sections.map { $0.rooms.map(\.id) }, [["!ann"], ["!ice"], ["!paper"], ["!lab"], ["!old"]])
+    }
+
     /// The phone's layout, as the library takes it: hidden and folded.
     func testTheLayoutArrangesTheList() {
         let lists = lists()

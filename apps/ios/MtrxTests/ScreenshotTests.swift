@@ -61,7 +61,7 @@ final class ScreenshotTests: XCTestCase {
         let keys = model.lists.sectionChoices(key: polar.key, layout: SectionLayout().library).map(\.key)
         model.sectionLayouts.change(polar.key) {
             $0.setShown("low_priority", false)
-            $0.move(keys, from: [3], to: 0)
+            $0.move(keys, from: [keys.firstIndex(of: "rooms")!], to: 0)
         }
         try await snap("03b-show-sheet", ShowSheet(item: polar))
     }
@@ -333,7 +333,8 @@ private enum Screens {
             polar,
         ],
         members: ["!polar": ["@ann:example.org", "@bob:example.org"], "!teach": ["@ann:example.org"]],
-        drafts: ["!ann", "!reading", "!paper"])
+        drafts: ["!ann", "!reading", "!paper"], favourites: ["!ice"], lowPriority: ["!old"],
+        categories: [TestCategory(space: "!polar", id: "papers", name: "Papers", rooms: ["!paper"])])
 
     static var timeline: [TimelineItem] {
         let start = now.addingTimeInterval(-3_600)

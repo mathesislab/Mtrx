@@ -115,7 +115,8 @@ private final class UITestSession: Session, @unchecked Sendable {
         let ordered = rooms.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
         // The rooms are made up valid.
         return try! RoomLists(
-            rooms: ordered, loaded: true, ownUserId: userId(), notesAtTop: true, spaceMembers: [:], drafts: [])
+            rooms: ordered, loaded: true, ownUserId: userId(), notesAtTop: true, spaceMembers: [:], drafts: [],
+            favourites: [], lowPriority: [], categories: [])
     }
 
     /// A message was sent or arrived in room `id`: it moves up the list.

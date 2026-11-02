@@ -97,6 +97,17 @@ pub struct SectionChoice {
     pub rooms: u64,
 }
 
+/// A category of a space's list (Home's for no `space`), for the lists
+/// made up in tests and previews.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TestCategory {
+    pub space: Option<String>,
+    /// Its section's key is "category:<id>".
+    pub id: String,
+    pub name: String,
+    pub rooms: Vec<String>,
+}
+
 /// Receives the room lists, now and after every change.
 #[uniffi::export(with_foreign)]
 pub trait RoomListsListener: Send + Sync {
@@ -146,8 +157,10 @@ impl RoomLists {
 impl RoomLists {
     /// The lists of `rooms` (with their `parents`), for tests and previews:
     /// as the library makes them, with the members of the spaces by space
-    /// ID, for their direct chats.
+    /// ID, for their direct chats; the rooms tagged `favourites` and
+    /// `low_priority` by ID, and the `categories`.
     #[uniffi::constructor]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rooms: Vec<RoomSummary>,
         loaded: bool,
@@ -155,11 +168,23 @@ impl RoomLists {
         notes_at_top: bool,
         space_members: HashMap<String, Vec<String>>,
         drafts: Vec<String>,
+        favourites: Vec<String>,
+        low_priority: Vec<String>,
+        categories: Vec<TestCategory>,
     ) -> Result<Arc<Self>, MtrxError> {
-        let rooms = rooms
-            .iter()
-            .map(core::RoomSummary::try_from)
-            .collect::<Result<_, _>>()?;
+        let rooms = (rooms.iter())
+            .map(|room| {
+                let mut summary = core::RoomSummary::try_from(room)?;
+                summary.tag = if favourites.contains(&room.id) {
+                    core::RoomTag::Favourite
+                } else if low_priority.contains(&room.id) {
+                    core::RoomTag::LowPriority
+                } else {
+                    core::RoomTag::None
+                };
+                Ok(summary)
+            })
+            .collect::<Result<_, MtrxError>>()?;
         let members = space_members
             .iter()
             .map(|(space, users)| {
@@ -174,13 +199,28 @@ impl RoomLists {
             .iter()
             .map(|id| crate::error::room_id(id))
             .collect::<Result<_, _>>()?;
-        let categories = core::RoomCategories {
+        let mut room_categories = core::RoomCategories {
             notes_at_top: Some(notes_at_top),
             ..Default::default()
         };
+        for category in categories {
+            let space = (category.space.as_deref())
+                .map(crate::error::room_id)
+                .transpose()?;
+            let rooms = (category.rooms.iter())
+                .map(|id| crate::error::room_id(id))
+                .collect::<Result<_, _>>()?;
+            let layout = room_categories.layout_mut(space.as_deref());
+            layout.categories.push(core::Category {
+                id: category.id,
+                name: category.name,
+                rooms,
+                sort: core::Sort::default(),
+            });
+        }
         let lists = core::RoomLists::new(
             core::RoomListState { rooms, loaded },
-            categories,
+            room_categories,
             members,
             &crate::error::user_id(&own_user_id)?,
             drafts,

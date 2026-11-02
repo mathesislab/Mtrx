@@ -616,15 +616,17 @@ enum Make {
     }
 
     /// The library's lists of `rooms` (most recently active first), with
-    /// the members of the spaces by space ID.
+    /// the members of the spaces by space ID; the rooms tagged by ID.
     static func lists(
         _ rooms: [RoomSummary], loaded: Bool = true, notesAtTop: Bool = true, members: [String: [String]] = [:],
-        drafts: [String] = []
+        drafts: [String] = [], favourites: [String] = [], lowPriority: [String] = [],
+        categories: [TestCategory] = []
     ) -> RoomLists {
         // The rooms are made up valid.
         try! RoomLists(
             rooms: rooms, loaded: loaded, ownUserId: "@me:example.org", notesAtTop: notesAtTop,
-            spaceMembers: members, drafts: drafts)
+            spaceMembers: members, drafts: drafts, favourites: favourites, lowPriority: lowPriority,
+            categories: categories)
     }
 
     /// The rooms of the library's integration test, most recently active
