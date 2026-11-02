@@ -130,7 +130,10 @@ class RoomModelsTest {
         model.join(lab)
         model.knock(ask)
         assertEquals(listOf("join !lab:x", "knock !ask:x"), session.roomCalls)
-        assertEquals(listOf(RowAction.OPEN, RowAction.ASKED), model.rooms.value!!.map { rowAction(it) })
+        // Asked here; joined as the room list has it (at once, the library's).
+        assertEquals(listOf(RowAction.JOIN, RowAction.ASKED), model.rooms.value!!.map { rowAction(it) })
+        val joined = setOf(lab.id)
+        assertEquals(listOf(RowAction.OPEN, RowAction.ASKED), model.rooms.value!!.map { rowAction(it, it.id in joined) })
         assertTrue(model.pending.value.isEmpty())
     }
 

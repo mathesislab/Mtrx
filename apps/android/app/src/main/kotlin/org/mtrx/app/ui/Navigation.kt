@@ -241,8 +241,9 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
     }
 }
 
-/** The rooms the room list has us in (not invited). */
-private fun joinedIds(rooms: RoomListsInterface): Set<String> = rooms.rooms().filter { !it.invited }.map { it.id }.toSet()
+/** The rooms the room list has us in (not invited), and those coming (just joined or made here). */
+private fun joinedIds(rooms: RoomListsInterface): Set<String> =
+    rooms.rooms().filter { !it.invited }.map { it.id }.toSet() + rooms.joining()
 
 /** Rows of rooms to join: a joined space opens its overview, a room on the home. */
 private fun rowActions(

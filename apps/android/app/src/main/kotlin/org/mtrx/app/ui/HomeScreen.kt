@@ -174,7 +174,7 @@ fun HomeScreen(
     BackHandler(enabled = onSpaceRooms, onBack = showSpaces)
 
     val chat = nav.chat.takeIf { nav.tab == HomeTab.Chats }
-    val room = shownRoom(list, nav.room, nav.opening).takeIf { nav.tab == HomeTab.Rooms }
+    val room = shownRoom(list, nav.room).takeIf { nav.tab == HomeTab.Rooms }
     BackHandler(enabled = chat != null) { nav.chat = null }
     BackHandler(enabled = room != null) { nav.room = null }
 

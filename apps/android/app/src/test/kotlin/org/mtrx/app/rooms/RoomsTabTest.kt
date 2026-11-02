@@ -45,8 +45,8 @@ class RoomsTabTest {
         assertNull(shownRoom(lists, TEAM))
         // Before the list is loaded.
         assertEquals(LAB, shownRoom(NoRooms, LAB))
-        // Just joined, not listed yet.
-        assertEquals("!new:x", shownRoom(lists, "!new:x", opening = "!new:x"))
+        // Just joined, not listed yet: coming, as the library says.
+        assertEquals("!new:x", shownRoom(SpacesFixture.lists(joining = listOf("!new:x")), "!new:x"))
     }
 
     // #59: on iOS an open room showed another's messages, then another's
@@ -63,7 +63,7 @@ class RoomsTabTest {
         }
         // A message arrives in Deep, then ours is sent in Lab.
         for (list in listOf(latest(DEEP, 300), latest(LAB, 400))) {
-            val shown = shownRoom(list, nav.room, nav.opening)
+            val shown = shownRoom(list, nav.room)
             assertEquals(LAB, shown)
             val header = roomHeader(LAB, shown?.let(list::room), FakeSession.USER_ID, space = list.firstSpaceOf(LAB))
             assertEquals("lab", header.name)
@@ -100,10 +100,10 @@ class RoomsTabTest {
         // An invite opens there too (its invite screen).
         nav.open(PARTY, room(PARTY))
         assertEquals(PARTY, nav.room)
-        assertNull(nav.opening)
         // A room not listed yet, just joined.
         nav.open("!new:x", null)
-        assertEquals("!new:x", nav.opening)
+        assertEquals(HomeTab.Rooms, nav.tab)
+        assertEquals("!new:x", nav.room)
     }
 
     @Test

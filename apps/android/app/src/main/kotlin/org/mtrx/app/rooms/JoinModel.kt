@@ -34,8 +34,8 @@ sealed interface JoinResults {
  * null), searched by [query] and filtered by [kind]; a pasted address or
  * link ([parseAddress], the library's) shows its preview instead. A server
  * browsed successfully is remembered (synced to our other devices). Rows
- * joined or asked to join here change in place. Methods are called on the
- * main thread.
+ * asked to join here change in place; those joined open as the room list
+ * has them, at once. Methods are called on the main thread.
  */
 class JoinModel(
     private val session: Session,
@@ -149,18 +149,19 @@ class JoinModel(
         }
     }
 
-    /** Join [room] (or accept its invite): its row becomes Open. */
-    fun join(room: DirectoryRoom) = act(room, Membership.JOINED) { session.join(room.id, room.via) }
+    /** Join [room] (or accept its invite): its row opens, as the room list has it at once. */
+    fun join(room: DirectoryRoom) = act(room, after = null) { session.join(room.id, room.via) }
 
     /** Ask to join [room]: its row becomes Asked. */
     fun knock(room: DirectoryRoom) = act(room, Membership.ASKED) { session.knock(room.id, room.via) }
 
-    private fun act(room: DirectoryRoom, after: Membership, call: suspend () -> Unit) {
+    private fun act(room: DirectoryRoom, after: Membership?, call: suspend () -> Unit) {
         if (room.id in _pending.value) return
         _pending.value += room.id
         viewModelScope.launch {
             try {
                 call()
+                if (after == null) return@launch
                 _results.value = when (val shown = _results.value) {
                     is JoinResults.Listed -> shown.copy(rooms = withMembership(shown.rooms, room.id, after))
                     is JoinResults.Preview -> if (shown.room.id == room.id) JoinResults.Preview(shown.room.copy(membership = after)) else shown
