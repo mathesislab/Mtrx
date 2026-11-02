@@ -921,6 +921,10 @@ fn rooms_made_set_up_joined_and_left() {
         block_on(b.session.join(room.clone(), vec![])).unwrap(),
         room
     );
+    // Coming until listed as joined.
+    wait_for("Bob's room joined", &b_updates, |s: &Arc<RoomLists>| {
+        s.rooms().iter().any(|r| r.id == room && !r.invited) && s.joining().is_empty()
+    });
     // They share the room now (not the space, which Bob has not joined).
     let deadline = std::time::Instant::now() + TIMEOUT;
     let shared = loop {

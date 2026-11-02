@@ -108,7 +108,6 @@ struct NewRoomView: View {
     private func create() {
         Task {
             guard let id = await model.create() else { return }
-            session.expect(id)
             dismiss()
             session.open(id, kind: model.space ? .space : .room)
         }

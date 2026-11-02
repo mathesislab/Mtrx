@@ -70,13 +70,19 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(model.tab, .rooms)
     }
 
+    /// Coming as the library says, until listed.
     func testAJustMadeSpaceIsNotLetGoBeforeItComes() async {
         let model = await launch()
         await send(Make.roomsBySpace(), to: model)
-        model.expect("!new")
         model.open("!new", kind: .space)
-        await send(Make.roomsBySpace(), to: model)
+        await send(Make.roomsBySpace(joining: ["!new"]), to: model)
         XCTAssertEqual(model.selectedSpace, .space(id: "!new"))
+        XCTAssertTrue(model.joined("!new"))
+        XCTAssertTrue(model.joined("!lab"))
+        XCTAssertFalse(model.joined("!party"))
+        // Not coming any more, nor listed: gone.
+        await send(Make.roomsBySpace(), to: model)
+        XCTAssertNil(model.selectedSpace)
     }
 
     func testAcceptingAnInviteOpensTheRoom() async throws {
@@ -86,7 +92,6 @@ final class NavigationTests: XCTestCase {
         XCTAssertEqual(session.changes, ["join !party"])
         XCTAssertEqual(model.tab, .rooms)
         XCTAssertEqual(model.roomsPath, ["!party"])
-        XCTAssertTrue(model.expecting.contains("!party"))
     }
 
     func testDecliningAnInviteLeavesIt() async throws {

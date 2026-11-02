@@ -703,17 +703,18 @@ enum Make {
     }
 
     /// The library's lists of `rooms` (most recently active first), with
-    /// the members of the spaces by space ID; the rooms tagged by ID.
+    /// the members of the spaces by space ID; the rooms tagged by ID; the
+    /// rooms joined or made here, not listed yet.
     static func lists(
         _ rooms: [RoomSummary], loaded: Bool = true, notesAtTop: Bool = true, members: [String: [String]] = [:],
         drafts: [String] = [], favourites: [String] = [], lowPriority: [String] = [],
-        categories: [TestCategory] = []
+        categories: [TestCategory] = [], joining: [String] = []
     ) -> RoomLists {
         // The rooms are made up valid.
         try! RoomLists(
             rooms: rooms, loaded: loaded, ownUserId: "@me:example.org", notesAtTop: notesAtTop,
             spaceMembers: members, drafts: drafts, favourites: favourites, lowPriority: lowPriority,
-            categories: categories)
+            categories: categories, joining: joining)
     }
 
     /// The rooms of the library's integration test, most recently active
@@ -734,8 +735,11 @@ enum Make {
         room("!other", kind: .space, name: "Other"),
     ]
 
-    /// Those rooms' lists, Bob's chat in Team; `extra` rooms last.
-    static func roomsBySpace(loaded: Bool = true, extra: [RoomSummary] = []) -> RoomLists {
-        lists(roomsBySpaceRooms + extra, loaded: loaded, members: ["!team": ["@bob:example.org", "@me:example.org"]])
+    /// Those rooms' lists, Bob's chat in Team; `extra` rooms last; rooms
+    /// `joining`, not listed yet.
+    static func roomsBySpace(loaded: Bool = true, extra: [RoomSummary] = [], joining: [String] = []) -> RoomLists {
+        lists(
+            roomsBySpaceRooms + extra, loaded: loaded, members: ["!team": ["@bob:example.org", "@me:example.org"]],
+            joining: joining)
     }
 }

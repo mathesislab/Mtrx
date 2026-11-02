@@ -928,6 +928,7 @@ class FakeRoomLists(
     private val drafts: List<String> = emptyList(),
     private val badges: Badges = Badges(0uL, 0uL, 0uL),
     private val notesAtTop: Boolean = true,
+    private val joining: List<String> = emptyList(),
 ) : RoomLists(NoHandle) {
     override fun badges() = badges
 
@@ -938,6 +939,8 @@ class FakeRoomLists(
     override fun drafts() = drafts
 
     override fun firstSpaceOf(roomId: String) = firstSpaces[roomId]
+
+    override fun joining() = joining
 
     override fun loaded() = loaded
 
@@ -1021,8 +1024,8 @@ object SpacesFixture {
 
     fun room(id: String) = rooms.first { it.id == id }
 
-    /** The lists as the library gives them: Other and Team, then Home; [drafts] room IDs. */
-    fun lists(loaded: Boolean = true, drafts: List<String> = emptyList()) = FakeRoomLists(
+    /** The lists as the library gives them: Other and Team, then Home; [drafts] and [joining] room IDs. */
+    fun lists(loaded: Boolean = true, drafts: List<String> = emptyList(), joining: List<String> = emptyList()) = FakeRoomLists(
         rooms = rooms,
         loaded = loaded,
         chats = listOf(room(WITH_CAROL), room(WITH_BOB)),
@@ -1033,6 +1036,7 @@ object SpacesFixture {
             SpaceEntry(SpaceKey.Outside, null, false),
         ),
         drafts = drafts,
+        joining = joining,
     )
 }
 

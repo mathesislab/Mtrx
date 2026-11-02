@@ -418,10 +418,10 @@ fn space_topic<'a>(
     top: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let panel = view.space_topic;
-    let synced = (view.rooms().iter())
+    let listed = (view.rooms().iter())
         .find(|r| &r.id == space)
         .and_then(|r| r.topic.as_deref());
-    let parsed = Topic::parse(panel.shown(synced));
+    let parsed = Topic::parse(listed.unwrap_or_default());
     let can_edit = panel.can_edit == Some(true);
     let Some(preview) = topic::preview(&parsed, view.call_services, can_edit) else {
         return top;

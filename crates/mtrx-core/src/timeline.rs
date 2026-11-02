@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use eyeball_im::Vector;
@@ -44,6 +44,7 @@ use tracing::warn;
 
 use crate::{
     Error, PinsChange, Result, Session, calls,
+    echo::Echoes,
     media::{self, MediaRef},
     pins, room_links,
     rows::{self, Row, RowContext},
@@ -1008,9 +1009,12 @@ impl Session {
         });
         let room = timeline.room().clone();
         let keys_arriving = (self.encryption_state().await).is_ok_and(|state| state.keys_arriving);
-        let (context_tx, context) = watch::channel(row_context(&room, keys_arriving).await);
+        let echoes = self.echoes.clone();
+        let (first, timeout) = row_context(&room, keys_arriving, &echoes).await;
+        let (context_tx, context) = watch::channel(first);
         let keys = self.encryption_states().map(|state| state.keys_arriving);
-        let context_task = tokio::spawn(follow_row_context(room, keys, context_tx));
+        let context_task =
+            tokio::spawn(follow_row_context(room, keys, echoes, timeout, context_tx));
         RoomTimeline {
             room_id: room_id.to_owned(),
             timeline,
@@ -1024,33 +1028,55 @@ impl Session {
     }
 }
 
-/// What `room`'s rows depend on besides its entries, now.
-async fn row_context(room: &Room, keys_arriving: bool) -> RowContext {
-    RowContext {
+/// What `room`'s rows depend on besides its entries, now, with the pinned
+/// messages set here until synced; and when those time out.
+async fn row_context(
+    room: &Room,
+    keys_arriving: bool,
+    echoes: &Echoes,
+) -> (RowContext, Option<Instant>) {
+    let synced = room.pinned_event_ids().unwrap_or_default();
+    let (pinned, timeout) = echoes.pinned(room.room_id(), synced, Instant::now());
+    let context = RowContext {
         direct: room.is_direct().await.unwrap_or(false),
         keys_arriving,
         can_pin: pins::can_pin(room).await.unwrap_or(false),
-        pinned: room.pinned_event_ids().unwrap_or_default(),
-    }
+        pinned,
+    };
+    (context, timeout)
 }
 
 /// Keep `context` up to date as `room` changes (its pinned messages, power
-/// levels, being a direct chat) and as keys start or stop arriving.
+/// levels, being a direct chat), as pins are set here or time out
+/// (`timeout`), and as keys start or stop arriving.
 async fn follow_row_context(
     room: Room,
     keys_arriving: impl Stream<Item = bool>,
+    echoes: Arc<Echoes>,
+    mut timeout: Option<Instant>,
     context: watch::Sender<RowContext>,
 ) {
     let mut info = room.subscribe_info();
+    let mut echoed = echoes.subscribe();
     let mut keys_arriving = std::pin::pin!(keys_arriving);
     let mut arriving = context.borrow().keys_arriving;
     loop {
+        let timed_out = async move {
+            match timeout {
+                Some(at) => tokio::time::sleep_until(at.into()).await,
+                None => std::future::pending().await,
+            }
+        };
+        // Without a timeout it waits for ever: the task ends with the
+        // timeline.
         tokio::select! {
             Some(_) = info.next() => {}
             Some(now) = keys_arriving.next() => arriving = now,
-            else => return,
+            Ok(()) = echoed.changed() => {}
+            () = timed_out => {}
         }
-        let now = row_context(&room, arriving).await;
+        let (now, next) = row_context(&room, arriving, &echoes).await;
+        timeout = next;
         context.send_if_modified(|current| {
             let changed = *current != now;
             *current = now;

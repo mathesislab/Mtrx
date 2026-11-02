@@ -122,7 +122,7 @@ struct SpaceOverviewPage: View {
                 Text(space.name)
                     .font(.title3.weight(.semibold))
                     .multilineTextAlignment(.center)
-                let topic = parseTopic(topic: info.shownTopic(space.topic))
+                let topic = parseTopic(topic: space.topic ?? "")
                 if !topic.text.isEmpty {
                     Text(Formatting.linked(topic.text))
                         .font(.callout)
@@ -211,7 +211,11 @@ private struct SpaceRoomsSection: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(model.shown, id: \.id) { room in
-                DirectoryRoomRow(room: model.shown(room), action: model.action(room), linksSubspaces: true) {
+                let joined = session.joined(room.id)
+                DirectoryRoomRow(
+                    room: model.shown(room, joined: joined), action: model.action(room, joined: joined),
+                    linksSubspaces: true
+                ) {
                     act(on: room)
                 }
             }
@@ -221,13 +225,9 @@ private struct SpaceRoomsSection: View {
     }
 
     private func act(on room: DirectoryRoom) {
-        switch model.action(room) {
+        switch model.action(room, joined: session.joined(room.id)) {
         case .join, .askToJoin:
-            Task {
-                if let id = await model.join(room) {
-                    session.expect(id)
-                }
-            }
+            Task { await model.join(room) }
         case .open:
             open(room)
         case .invited:

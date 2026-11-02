@@ -57,19 +57,24 @@ final class SpaceOverviewModelTests: XCTestCase {
         XCTAssertEqual(model.rooms.map(\.id), ["!old"])
     }
 
+    /// Joined as the room list has it (at once, the library's); asked as
+    /// asked here, until listed again.
     func testJoiningTurnsTheRowToOpen() async {
         let lab = Make.directoryRoom("!lab")
         let door = Make.directoryRoom("!door", access: .knock)
         session.children = .success([lab, door])
         let model = SpaceOverviewModel(session: session, spaceId: "!team", cache: cache)
         await model.load()
+        XCTAssertEqual(model.action(lab, joined: false), .join)
         let joined = await model.join(lab)
         XCTAssertEqual(joined, "!lab")
-        XCTAssertEqual(model.action(lab), .open)
+        XCTAssertEqual(model.action(lab, joined: true), .open)
         let asked = await model.join(door)
         XCTAssertNil(asked)
-        XCTAssertEqual(model.action(door), .asked)
+        XCTAssertEqual(model.action(door, joined: false), .asked)
         XCTAssertEqual(session.changes, ["join !lab", "knock !door"])
+        await model.load()
+        XCTAssertEqual(model.action(door, joined: false), .askToJoin)
     }
 
     func testAFailedJoinSaysWhy() async {
@@ -78,7 +83,7 @@ final class SpaceOverviewModelTests: XCTestCase {
         let joined = await model.join(Make.directoryRoom("!lab"))
         XCTAssertNil(joined)
         XCTAssertEqual(model.error, "Not allowed")
-        XCTAssertEqual(model.action(Make.directoryRoom("!lab")), .join)
+        XCTAssertEqual(model.action(Make.directoryRoom("!lab"), joined: false), .join)
     }
 }
 

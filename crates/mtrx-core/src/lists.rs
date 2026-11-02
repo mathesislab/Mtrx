@@ -117,8 +117,8 @@ pub struct SectionChoice {
 /// The room lists, from one room list and what arranges it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoomLists {
-    /// Joined and invited rooms, most recently active first; tags set here
-    /// shown at once.
+    /// Joined and invited rooms, most recently active first; tags, topics
+    /// and pinned messages set here shown at once.
     pub rooms: Vec<RoomSummary>,
     /// See [`RoomListState::loaded`].
     pub loaded: bool,
@@ -133,6 +133,9 @@ pub struct RoomLists {
     pub spaces: Vec<SpaceEntry>,
     /// The rooms with a draft on this device.
     pub drafts: BTreeSet<OwnedRoomId>,
+    /// Rooms and spaces joined or made here that `rooms` does not list as
+    /// joined yet: coming, not gone.
+    pub joining: BTreeSet<OwnedRoomId>,
     pub badges: Badges,
     /// The joined members of the top-level spaces loaded so far.
     members: HashMap<OwnedRoomId, HashSet<OwnedUserId>>,
@@ -167,6 +170,7 @@ impl RoomLists {
             chats,
             spaces: Vec::new(),
             drafts,
+            joining: BTreeSet::new(),
             badges: Badges::default(),
             members,
         };
@@ -630,8 +634,9 @@ fn search_by<T>(items: Vec<T>, filter: &str, name: impl Fn(&T) -> &str) -> Vec<T
 
 impl Session {
     /// The room lists from `list`, now and after every change of the list,
-    /// the categories, the drafts and tags set here. Spaces list their
-    /// direct chats once their members are loaded, in a later update.
+    /// the categories, the drafts and the changes made here (tags, topics,
+    /// pinned messages, rooms joined). Spaces list their direct chats once
+    /// their members are loaded, in a later update.
     pub fn room_lists(&self, list: &RoomList) -> impl Stream<Item = Arc<RoomLists>> + use<> {
         let follow = Follow {
             client: self.client.clone(),
@@ -690,7 +695,8 @@ impl Follow {
                 timeout = self.echoes.lay_over(&mut state.rooms, Instant::now());
                 let (categories, drafts) = self.current.clone();
                 let members = self.members.known().clone();
-                let lists = RoomLists::new(state, categories, members, &self.own_user, drafts);
+                let mut lists = RoomLists::new(state, categories, members, &self.own_user, drafts);
+                lists.joining = self.echoes.joining();
                 if self.sent.as_deref() != Some(&lists) {
                     let lists = Arc::new(lists);
                     self.sent = Some(lists.clone());

@@ -1186,7 +1186,7 @@ impl Room {
     ) -> Element<'a, app::Message> {
         let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
-        let topic = Topic::parse(self.topic.shown(summary.and_then(|s| s.topic.as_deref())));
+        let topic = Topic::parse(summary.and_then(|s| s.topic.as_deref()).unwrap_or_default());
         let can_edit = self.topic.can_edit == Some(true);
         // A direct chat's person, as long as their presence is known.
         let presence = summary

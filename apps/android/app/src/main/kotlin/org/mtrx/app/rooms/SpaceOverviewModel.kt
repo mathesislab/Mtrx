@@ -16,8 +16,8 @@ import uniffi.mtrx.Session
  * The Rooms tab of space [spaceId]'s overview: its rooms and subspaces as
  * its server lists them. The last list ([cache]) shows at once while it
  * updates behind; a failed update offers Try again. Joining or asking to
- * join stays on the overview, the row changing (Open, Asked). Methods are
- * called on the main thread.
+ * join stays on the overview, the row changing (Open as the room list has
+ * it, at once; Asked). Methods are called on the main thread.
  */
 class SpaceOverviewModel(
     val spaceId: String,
@@ -63,18 +63,19 @@ class SpaceOverviewModel(
         }
     }
 
-    /** Join [room] (or accept its invite): its row becomes Open. */
-    fun join(room: DirectoryRoom) = act(room, Membership.JOINED) { session.join(room.id, room.via) }
+    /** Join [room] (or accept its invite): its row opens, as the room list has it at once. */
+    fun join(room: DirectoryRoom) = act(room, after = null) { session.join(room.id, room.via) }
 
     /** Ask to join [room]: its row becomes Asked. */
     fun knock(room: DirectoryRoom) = act(room, Membership.ASKED) { session.knock(room.id, room.via) }
 
-    private fun act(room: DirectoryRoom, after: Membership, call: suspend () -> Unit) {
+    private fun act(room: DirectoryRoom, after: Membership?, call: suspend () -> Unit) {
         if (room.id in _pending.value) return
         _pending.value += room.id
         viewModelScope.launch {
             try {
                 call()
+                if (after == null) return@launch
                 val list = withMembership(_rooms.value.orEmpty(), room.id, after)
                 cache[spaceId] = list
                 _rooms.value = list

@@ -26,6 +26,8 @@ object NoRooms : RoomListsInterface {
 
     override fun firstSpaceOf(roomId: String): RoomSummary? = null
 
+    override fun joining(): List<String> = emptyList()
+
     override fun loaded() = false
 
     override fun notes(): RoomSummary? = null
@@ -84,15 +86,15 @@ const val HOME_NAME = "Home"
 
 /**
  * The room open on the Rooms tab, [roomId], while it is listed there; also
- * before the list is loaded, and while it is [opening] (just joined or
- * made) and not listed yet.
+ * before the list is loaded, and while it is coming (just joined or made
+ * here, the library's [RoomListsInterface.joining]).
  */
-fun shownRoom(lists: RoomListsInterface, roomId: String?, opening: String? = null): String? {
+fun shownRoom(lists: RoomListsInterface, roomId: String?): String? {
     if (roomId == null) return null
     val room = lists.room(roomId)
     return when {
         room != null -> roomId.takeIf { opensOnRoomsTab(room) }
-        roomId == opening || !lists.loaded() -> roomId
+        roomId in lists.joining() || !lists.loaded() -> roomId
         else -> null
     }
 }

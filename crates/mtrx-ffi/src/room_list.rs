@@ -158,7 +158,7 @@ impl RoomLists {
     /// The lists of `rooms` (with their `parents`), for tests and previews:
     /// as the library makes them, with the members of the spaces by space
     /// ID, for their direct chats; the rooms tagged `favourites` and
-    /// `low_priority` by ID, and the `categories`.
+    /// `low_priority` by ID, the `categories`, and the rooms `joining`.
     #[uniffi::constructor]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -171,6 +171,7 @@ impl RoomLists {
         favourites: Vec<String>,
         low_priority: Vec<String>,
         categories: Vec<TestCategory>,
+        joining: Vec<String>,
     ) -> Result<Arc<Self>, MtrxError> {
         let rooms = (rooms.iter())
             .map(|room| {
@@ -218,13 +219,17 @@ impl RoomLists {
                 sort: core::Sort::default(),
             });
         }
-        let lists = core::RoomLists::new(
+        let mut lists = core::RoomLists::new(
             core::RoomListState { rooms, loaded },
             room_categories,
             members,
             &crate::error::user_id(&own_user_id)?,
             drafts,
         );
+        lists.joining = joining
+            .iter()
+            .map(|id| crate::error::room_id(id))
+            .collect::<Result<_, _>>()?;
         Ok(Arc::new(Self::from(Arc::new(lists))))
     }
 
@@ -298,6 +303,12 @@ impl RoomLists {
     /// IDs of the rooms with a draft on this device, marked with a pencil.
     pub fn drafts(&self) -> Vec<String> {
         self.inner.drafts.iter().map(ToString::to_string).collect()
+    }
+
+    /// IDs of the rooms and spaces joined or made here that are not listed
+    /// as joined yet: coming, not gone.
+    pub fn joining(&self) -> Vec<String> {
+        self.inner.joining.iter().map(ToString::to_string).collect()
     }
 
     pub fn badges(&self) -> Badges {

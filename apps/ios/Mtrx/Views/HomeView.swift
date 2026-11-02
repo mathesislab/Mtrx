@@ -688,7 +688,7 @@ struct OpenRoom: View {
             RoomView(room: room, model: session.timeline(for: room), info: session.info(for: room))
         } else if let room = session.room(id) {
             InviteView(room: room)
-        } else if session.expecting.contains(id) || !session.loaded {
+        } else if session.joining.contains(id) || !session.loaded {
             ProgressView("Loading…")
         } else {
             Text("This room is not in your list.")
