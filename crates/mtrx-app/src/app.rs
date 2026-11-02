@@ -96,7 +96,7 @@ pub enum Message {
     Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
     Login(login::Message),
     LoggedIn(Result<Shared<Session>, String>),
-    Ready(Result<(Shared<Live<RoomListState>>, bool), String>),
+    Ready(Result<(Shared<Live<Arc<RoomLists>>>, bool), String>),
     Rooms(Arc<RoomLists>),
     SelectSpace(Option<OwnedRoomId>),
     OpenRoom(OwnedRoomId),
@@ -289,7 +289,7 @@ enum Screen {
 
 struct Main {
     session: Arc<Session>,
-    room_list: Option<Arc<Live<RoomListState>>>,
+    room_lists: Option<Arc<Live<Arc<RoomLists>>>>,
     lists: Arc<RoomLists>,
     space: Option<OwnedRoomId>,
     pane: Pane,
@@ -513,7 +513,7 @@ struct Notice {
 impl Main {
     fn new(session: Arc<Session>) -> Self {
         Self {
-            room_list: None,
+            room_lists: None,
             lists: Arc::new(RoomLists::new(
                 RoomListState::default(),
                 session.room_categories(),
@@ -1022,8 +1022,9 @@ impl App {
                         session.start_sync().await;
                         session.start_scheduler();
                         let list = session.room_list().await?;
+                        let lists = session.room_lists(&list);
                         let verified = session.is_device_verified().await?;
-                        Ok((Shared(Arc::new(list)), verified))
+                        Ok((Shared(Arc::new(lists)), verified))
                     },
                     |result: mtrx_core::Result<_>| {
                         Message::Ready(result.map_err(|e| e.to_string()))
@@ -1115,8 +1116,8 @@ impl App {
                     return Task::none();
                 };
                 match result {
-                    Ok((Shared(list), verified)) => {
-                        main.room_list = Some(list);
+                    Ok((Shared(lists), verified)) => {
+                        main.room_lists = Some(lists);
                         main.verified = Some(verified);
                     }
                     Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
@@ -4336,13 +4337,10 @@ impl App {
             {
                 subscriptions.push(iced::time::every(PROGRESS_TICK).map(|_| Message::Progress));
             }
-            if let Some(list) = &main.room_list {
+            if let Some(lists) = &main.room_lists {
                 subscriptions.push(
-                    Subscription::run_with(
-                        (Shared(main.session.clone()), Shared(list.clone())),
-                        |(session, list)| session.0.room_lists(&list.0).updates(),
-                    )
-                    .map(Message::Rooms),
+                    Subscription::run_with(Shared(lists.clone()), |lists| lists.0.updates())
+                        .map(Message::Rooms),
                 );
             }
             if let Some(room) = main.pane.room() {
