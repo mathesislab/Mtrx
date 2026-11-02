@@ -209,16 +209,39 @@ final class RoomUITests: XCTestCase {
         app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Arrived \(n),")).firstMatch
     }
 
-    /// The arrived message numbered highest is in view: by the time a step
-    /// is done on a slow machine, more have arrived than it expects, and
-    /// the elements' order is not the timeline's. Found again by its
-    /// number, as an element bound by index is another once more arrive.
+    /// The arrived message numbered highest is in view (hittable), once the
+    /// keyboard and the timeline have moved: within `timeout`. On a slow
+    /// machine more arrive while it is looked for, so it is looked for
+    /// again on each try.
     @MainActor
-    private func newestInView() -> Bool {
-        let newest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Arrived '")).allElementsBoundByIndex
-            .compactMap { Int($0.label.dropFirst("Arrived ".count).prefix { $0.isNumber }) }
+    private func newestInView(timeout: TimeInterval = 10) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        repeat {
+            if let newest = newestArrived(), arrived(newest).isHittable {
+                return true
+            }
+            usleep(500_000)
+        } while Date() < end
+        return false
+    }
+
+    /// The highest number of the arrived messages shown, read from one
+    /// snapshot of the app: one query, however many have arrived, and the
+    /// elements' order is not the timeline's.
+    @MainActor
+    private func newestArrived() -> Int? {
+        guard let snapshot = try? app.snapshot() else { return nil }
+        var labels: [String] = []
+        func collect(_ element: XCUIElementSnapshot) {
+            if element.elementType == .staticText {
+                labels.append(element.label)
+            }
+            element.children.forEach(collect)
+        }
+        collect(snapshot)
+        return labels.filter { $0.hasPrefix("Arrived ") }
+            .compactMap { Int($0.dropFirst("Arrived ".count).prefix { $0.isNumber }) }
             .max()
-        return newest.map { inView(arrived($0)) } ?? false
     }
 
     /// `element` is in view (hittable), once the keyboard and the timeline
