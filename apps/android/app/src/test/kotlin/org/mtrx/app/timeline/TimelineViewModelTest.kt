@@ -9,7 +9,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -311,7 +310,7 @@ class TimelineViewModelTest {
         val viewModel = viewModel()
         show(original, reply)
         viewModel.goToOriginal("\$0")
-        assertEquals(0, timeline.pages)
+        assertEquals(emptyList<String>(), timeline.seeks)
         assertEquals("0", viewModel.highlighted.value)
         assertFalse(viewModel.seeking.value)
         // Marked for two seconds.
@@ -320,61 +319,37 @@ class TimelineViewModelTest {
     }
 
     @Test
-    fun loadsOlderEventsUntilTheOriginalIsThere() = runTest {
+    fun theLibraryLoadsOlderEventsUntilTheOriginalIsThere() = runTest {
         val viewModel = viewModel()
         show(reply)
-        timeline.pagesUntilStart = 100
-        timeline.onPage = { page -> if (page == 3) show(original, reply) }
+        timeline.found["\$0"] = "0"
+        timeline.onSeek = { show(original, reply) }
         viewModel.goToOriginal("\$0")
-        assertEquals(3, timeline.pages)
+        assertEquals(listOf("\$0"), timeline.seeks)
         assertEquals("0", viewModel.highlighted.value)
         assertFalse(viewModel.seeking.value)
         assertNull(viewModel.error.value)
     }
 
     @Test
-    fun findsAnOriginalArrivingAfterThePage() = runTest {
+    fun goesToTheOriginalFoundOnceTheRowsHaveIt() = runTest {
         val viewModel = viewModel()
         show(reply)
-        // The start is reached, its items come later.
+        timeline.found["\$0"] = "0"
         viewModel.goToOriginal("\$0")
-        assertEquals(1, timeline.pages)
-        assertTrue(viewModel.seeking.value)
+        assertFalse(viewModel.seeking.value)
+        assertNull(viewModel.highlighted.value)
         show(start, original, reply)
         assertEquals("0", viewModel.highlighted.value)
-        assertFalse(viewModel.seeking.value)
     }
 
     @Test
-    fun stopsAtTheRoomsStart() = runTest {
+    fun saysWhenTheOriginalIsNotFound() = runTest {
         val viewModel = viewModel()
-        show(reply)
-        timeline.pagesUntilStart = 2
-        timeline.onPage = { page -> if (page == 2) show(start, reply) }
+        show(start, reply)
         viewModel.goToOriginal("\$0")
-        assertEquals(2, timeline.pages)
-        assertEquals(TimelineViewModel.NOT_FOUND, viewModel.error.value)
+        assertEquals("The original message was not found in the room's history", viewModel.error.value)
         assertNull(viewModel.highlighted.value)
-        assertFalse(viewModel.seeking.value)
-
-        // At the start already: no more pages.
-        viewModel.clearError()
-        viewModel.goToOriginal("\$0")
-        assertEquals(2, timeline.pages)
-        assertEquals(TimelineViewModel.NOT_FOUND, viewModel.error.value)
-    }
-
-    @Test
-    fun stopsAfterTwentyPages() = runTest {
-        val viewModel = viewModel()
-        show(reply)
-        timeline.pagesUntilStart = 100
-        viewModel.goToOriginal("\$0")
-        assertEquals(TimelineViewModel.SEEK_PAGES, timeline.pages)
-        assertTrue(viewModel.seeking.value)
-        advanceUntilIdle()
-        assertEquals(TimelineViewModel.SEEK_PAGES, timeline.pages)
-        assertEquals(TimelineViewModel.NOT_FOUND, viewModel.error.value)
         assertFalse(viewModel.seeking.value)
     }
 
@@ -394,18 +369,14 @@ class TimelineViewModelTest {
     }
 
     @Test
-    fun savedShortlyAfterTypingStopsAndClearedOnSend() = runTest {
+    fun eachChangeGoesToTheKeeperAndSendingClearsIt() = runTest {
         val viewModel = viewModel()
         viewModel.onDraft("h")
-        advanceTimeBy(TimelineViewModel.SAVE_DELAY_MILLIS - 1)
         viewModel.onDraft("hi")
-        advanceTimeBy(TimelineViewModel.SAVE_DELAY_MILLIS - 1)
-        assertTrue(session.draftSaves.isEmpty())
-        advanceTimeBy(2)
-        assertEquals(listOf(room to Draft("hi", null)), session.draftSaves)
-        // Unchanged (the app stops): not saved again.
+        assertEquals(listOf("h", "hi"), session.keepers[room]!!.changes.map { it.text })
+        // The app stops: saved at once.
         viewModel.keepDraft()
-        assertEquals(1, session.draftSaves.size)
+        assertEquals(listOf(room to Draft("hi", null)), session.draftSaves)
 
         viewModel.send()
         assertEquals(room to Draft("", null), session.draftSaves.last())
@@ -428,14 +399,13 @@ class TimelineViewModelTest {
     @Test
     fun aDraftComesBackAsAReplyOnceItsMessageIsThere() = runTest {
         session.drafts[room] = Draft("yes", "\$1")
+        // The library finds it before the rows have it.
+        timeline.found["\$1"] = "1"
         val viewModel = viewModel()
         assertEquals("yes", viewModel.draft.value)
         assertNull(viewModel.composing.value)
         show(textEvent("1", alice, "shall we?"))
         assertEquals(Composing.Replying("1", "alice", "shall we?", "\$1"), viewModel.composing.value)
-        // As it was read: not saved again.
-        viewModel.keepDraft()
-        assertTrue(session.draftSaves.isEmpty())
         viewModel.send()
         assertEquals(listOf("1" to "yes"), timeline.replies)
         assertNull(session.drafts[room])
@@ -463,7 +433,7 @@ class TimelineViewModelTest {
         viewModel.keepDraft()
         assertEquals(Draft("half", null), session.drafts[room])
         store.clear()
-        assertEquals(listOf(room to Draft("half", null)), session.draftSaves)
+        assertEquals(Draft("half", null), session.drafts[room])
         val again = open(room)
         assertEquals("half", again.draft.value)
         assertNull(again.composing.value)

@@ -3,6 +3,7 @@ package org.mtrx.app
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.awaitCancellation
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.Distributors
 import org.mtrx.app.model.GatewayDiscovery
@@ -41,6 +42,7 @@ import uniffi.mtrx.SpaceLink
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.Draft
+import uniffi.mtrx.DraftKeeper
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.EventContent
@@ -427,16 +429,16 @@ class FakeSession : Session(NoHandle) {
 
     override suspend fun setNotesAtTop(on: Boolean) = call("notes at top $on")
 
-    /** The drafts kept, by room (an empty one clears it), and each save; [draftError] fails the saves. */
+    /** The drafts kept, by room (an empty one clears it), each save, and each room's last keeper. */
     val drafts = mutableMapOf<String, Draft>()
     val draftSaves = mutableListOf<Pair<String, Draft>>()
-    var draftError: MtrxException? = null
+    val keepers = mutableMapOf<String, FakeDraftKeeper>()
 
-    override suspend fun draft(roomId: String): Draft? = drafts[roomId]
+    override fun draftKeeper(roomId: String): DraftKeeper = FakeDraftKeeper(this, roomId).also { keepers[roomId] = it }
 
-    override suspend fun saveDraft(roomId: String, draft: Draft) {
+    /** Keep [draft] for [roomId], as the library does. */
+    fun keepDraft(roomId: String, draft: Draft) {
         draftSaves += roomId to draft
-        draftError?.let { throw it }
         if (draft.text.isBlank() && draft.replyTo == null) drafts.remove(roomId) else drafts[roomId] = draft
     }
 
@@ -705,6 +707,32 @@ class FakeMtrx(private val restored: Session?) : MtrxInterface {
 }
 
 /**
+ * A room's draft keeper over [FakeSession.drafts]: the one left there, once;
+ * the draft as last written, kept on [flush]. When to save is the library's
+ * rule, tested there.
+ */
+class FakeDraftKeeper(private val session: FakeSession, private val roomId: String) : DraftKeeper(NoHandle) {
+    private var restored = false
+
+    /** Each draft the model said is written, in order. */
+    val changes = mutableListOf<Draft>()
+
+    override suspend fun restore(): Draft? {
+        if (restored) return null
+        restored = true
+        return session.drafts[roomId]
+    }
+
+    override fun changed(draft: Draft) {
+        changes += draft
+    }
+
+    override suspend fun flush() {
+        session.keepDraft(roomId, changes.lastOrNull() ?: return)
+    }
+}
+
+/**
  * A room's timeline: the test drives [listener] and [typingListener]; the
  * actions are recorded. [paginateBack] calls [onPage] with the call's number,
  * then reports the start at call [pagesUntilStart]; [gate], when set, holds
@@ -748,6 +776,19 @@ class FakeTimeline : Timeline(NoHandle) {
         onPage(pages)
         return pages >= pagesUntilStart
     }
+
+    /** The row [seek] and [itemOf] find for each event ID; others are not found ([itemOf] waits until cancelled). */
+    val found = mutableMapOf<String, String>()
+    val seeks = mutableListOf<String>()
+    var onSeek: (String) -> Unit = {}
+
+    override suspend fun seek(eventId: String): String {
+        seeks += eventId
+        onSeek(eventId)
+        return found[eventId] ?: throw MtrxException.EventNotFound()
+    }
+
+    override suspend fun itemOf(eventId: String): String = found[eventId] ?: awaitCancellation()
 
     private suspend fun action(record: () -> Unit) {
         gate?.await()
