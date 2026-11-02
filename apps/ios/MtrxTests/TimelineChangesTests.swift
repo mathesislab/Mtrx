@@ -2,8 +2,8 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// A room's draft kept on this device and back when it opens, our
-/// reactions shown at once, and pinning messages.
+/// A room's draft kept on this device and back when it opens, and pinning
+/// messages.
 @MainActor
 final class TimelineChangesTests: XCTestCase {
     private var session: FakeSession!
@@ -39,12 +39,8 @@ final class TimelineChangesTests: XCTestCase {
         await eventually { self.model.rows.count == rows.count }
     }
 
-    private func bobsMessage(reactions: [Reaction] = [], actions: [MessageAction]? = nil) -> TimelineRow {
-        Make.row("b", Make.event("bob", Make.text("Lunch?", reactions: reactions), eventId: "$b"), actions: actions)
-    }
-
-    private func reactions(_ itemId: String = "b") -> [Reaction] {
-        model.messageRow(itemId)?.reactions ?? []
+    private func bobsMessage(actions: [MessageAction]? = nil) -> TimelineRow {
+        Make.row("b", Make.event("bob", Make.text("Lunch?"), eventId: "$b"), actions: actions)
     }
 
     // MARK: Drafts
@@ -150,50 +146,6 @@ final class TimelineChangesTests: XCTestCase {
         let back = await reopen()
         XCTAssertEqual(back.draft, "Half written")
         XCTAssertNil(back.compose)
-    }
-
-    // MARK: Reactions
-
-    func testOurReactionShowsAtOnce() async {
-        await show([bobsMessage()])
-        let task = model.react("b", key: "👍")
-        XCTAssertEqual(reactions(), [Reaction(key: "👍", count: 1, byUs: true, senders: [])])
-        await task.value
-        XCTAssertEqual(timeline.reactions.map(\.key), ["👍"])
-        // The library's own, once it has it.
-        let alice = Make.reader("alice")
-        timeline.listener?.onUpdate(
-            rows: [bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])])])
-        await eventually { self.reactions() == [Reaction(key: "👍", count: 2, byUs: true, senders: [alice])] }
-    }
-
-    func testTakingOursAwayShowsAtOnce() async {
-        await show([bobsMessage(reactions: [Reaction(key: "👍", count: 2, byUs: true, senders: [])])])
-        model.react("b", key: "👍")
-        XCTAssertEqual(reactions(), [Reaction(key: "👍", count: 1, byUs: false, senders: [])])
-        // Until the library shows it, its stale state is not shown: the
-        // reaction of someone else, added meanwhile, is.
-        timeline.listener?.onUpdate(
-            rows: [bobsMessage(reactions: [Reaction(key: "👍", count: 3, byUs: true, senders: [])])])
-        await eventually { self.reactions() == [Reaction(key: "👍", count: 2, byUs: false, senders: [])] }
-    }
-
-    func testAFailedReactionIsTakenBack() async {
-        await show([bobsMessage()])
-        timeline.actionError = MtrxError.Other(reason: "No connection")
-        await model.react("b", key: "🎉").value
-        XCTAssertEqual(reactions(), [])
-        XCTAssertEqual(model.error, "No connection")
-    }
-
-    func testReactions() {
-        let ours = Reaction(key: "👍", count: 1, byUs: true, senders: [])
-        let theirs = Reaction(key: "🎉", count: 3, byUs: false, senders: [])
-        XCTAssertEqual(Reactions.setting("👍", ours: false, in: [ours, theirs]), [theirs])
-        XCTAssertEqual(
-            Reactions.setting("🎉", ours: true, in: [theirs]),
-            [Reaction(key: "🎉", count: 4, byUs: true, senders: [])])
-        XCTAssertEqual(Reactions.setting("👍", ours: true, in: [ours]), [ours])
     }
 
     // MARK: Pins

@@ -35,21 +35,18 @@ final class RoomInfoModelTests: XCTestCase {
         XCTAssertEqual(model.error, "Not allowed")
     }
 
-    func testASavedTopicShowsUntilTheListHasIt() async {
+    /// The library's room list shows it at once.
+    func testATopicIsSaved() async {
         let saved = await model.setTopic("New")
         XCTAssertTrue(saved)
         XCTAssertEqual(session.changes, ["topic New"])
-        XCTAssertEqual(model.shownTopic("Old"), "New")
-        model.topicListed("New")
-        XCTAssertEqual(model.shownTopic("New"), "New")
-        XCTAssertEqual(model.shownTopic(nil), "")
     }
 
-    func testAnUnsavedTopicIsNotShown() async {
+    func testAnUnsavedTopicSaysWhy() async {
         session.changeError = MtrxError.Other(reason: "Not allowed")
         let saved = await model.setTopic("New")
         XCTAssertFalse(saved)
-        XCTAssertEqual(model.shownTopic("Old"), "Old")
+        XCTAssertEqual(model.error, "Not allowed")
     }
 
     func testSpacesChange() async {

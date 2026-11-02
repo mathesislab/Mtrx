@@ -93,8 +93,8 @@ enum DirectoryRows {
 class JoiningModel: ObservableObject {
     /// Rooms being joined or asked to join.
     @Published private(set) var busy: Set<String> = []
-    /// Our membership as changed here, until the list is read again.
-    @Published private(set) var joined: [String: Membership] = [:]
+    /// Rooms asked to join here, until the list is read again.
+    @Published private(set) var asked: Set<String> = []
     @Published var error: String?
 
     let session: Session
@@ -103,21 +103,25 @@ class JoiningModel: ObservableObject {
         self.session = session
     }
 
-    /// `room` as shown: with our membership as changed here.
-    func shown(_ room: DirectoryRoom) -> DirectoryRoom {
-        guard let membership = joined[room.id] else { return room }
+    /// `room` as shown: `joined` as the room list has it (rooms joined here
+    /// are there at once), else asked if asked here.
+    func shown(_ room: DirectoryRoom, joined: Bool) -> DirectoryRoom {
         var room = room
-        room.membership = membership
+        if joined {
+            room.membership = .joined
+        } else if asked.contains(room.id) {
+            room.membership = .asked
+        }
         return room
     }
 
-    func action(_ room: DirectoryRoom) -> DirectoryRows.Action {
-        DirectoryRows.action(shown(room), busy: busy.contains(room.id))
+    func action(_ room: DirectoryRoom, joined: Bool) -> DirectoryRows.Action {
+        DirectoryRows.action(shown(room, joined: joined), busy: busy.contains(room.id))
     }
 
     /// The list was read again: it has our memberships.
     func relisted() {
-        joined = [:]
+        asked = []
     }
 
     /// Join `room`, or ask to (rooms that take requests). Returns the room's
@@ -131,12 +135,10 @@ class JoiningModel: ObservableObject {
         do {
             if room.access == .knock {
                 _ = try await session.knock(room: address, via: room.via)
-                joined[room.id] = .asked
+                asked.insert(room.id)
                 return nil
             }
-            let id = try await session.join(room: address, via: room.via)
-            joined[room.id] = .joined
-            return id
+            return try await session.join(room: address, via: room.via)
         } catch {
             self.error = errorMessage(error)
             return nil

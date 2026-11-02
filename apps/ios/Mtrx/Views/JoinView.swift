@@ -126,19 +126,16 @@ struct JoinView: View {
     }
 
     private func row(_ room: DirectoryRoom) -> some View {
-        DirectoryRoomRow(room: model.shown(room), action: model.action(room)) {
+        let joined = session.joined(room.id)
+        return DirectoryRoomRow(room: model.shown(room, joined: joined), action: model.action(room, joined: joined)) {
             act(on: room)
         }
     }
 
     private func act(on room: DirectoryRoom) {
-        switch model.action(room) {
+        switch model.action(room, joined: session.joined(room.id)) {
         case .join, .askToJoin:
-            Task {
-                if let id = await model.join(room) {
-                    session.expect(id)
-                }
-            }
+            Task { await model.join(room) }
         case .open:
             dismiss()
             session.open(room.id, kind: room.isSpace ? .space : .room)

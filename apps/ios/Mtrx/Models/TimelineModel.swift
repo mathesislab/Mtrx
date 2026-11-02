@@ -55,8 +55,6 @@ final class TimelineModel: ObservableObject {
 
     private let session: Session
     private let room: RoomSummary
-    /// The library's rows, as last given.
-    private var delivered: [TimelineRow] = []
     private var timeline: Timeline?
     private let subscriptions = Subscriptions()
     /// Who types, while the room is on screen.
@@ -82,9 +80,6 @@ final class TimelineModel: ObservableObject {
     /// That message's row, found by the library: answered once it is
     /// among the rows.
     private var replyRow: String?
-    /// Our reactions added or taken away here, until the library's items
-    /// show them: whether we want each one, shown so at once.
-    private var reacting: [ReactionKey: Bool] = [:]
 
     init(session: Session, room: RoomSummary) {
         self.session = session
@@ -127,14 +122,7 @@ final class TimelineModel: ObservableObject {
     }
 
     func apply(_ rows: [TimelineRow]) {
-        delivered = rows
-        // Reactions the library shows as wanted (or whose message went)
-        // are no longer ours to show.
-        reacting = reacting.filter { key, wanted in
-            guard let row = Self.messageRow(key.itemId, in: rows) else { return false }
-            return row.reactions.contains { $0.key == key.key && $0.byUs } != wanted
-        }
-        self.rows = withOurReactions(rows)
+        self.rows = rows
         if rows.contains(where: { $0.content == .start }) {
             reachedStart = true
         }
@@ -143,22 +131,6 @@ final class TimelineModel: ObservableObject {
             revealing = nil
         }
         markRead()
-    }
-
-    /// `rows` with the reactions we changed and the library does not show
-    /// yet.
-    private func withOurReactions(_ rows: [TimelineRow]) -> [TimelineRow] {
-        guard !reacting.isEmpty else { return rows }
-        return rows.map { row in
-            guard let message = row.messageRow else { return row }
-            let changes = reacting.filter { $0.key.itemId == row.id }
-            guard !changes.isEmpty else { return row }
-            var reactions = message.reactions
-            for (key, wanted) in changes {
-                reactions = Reactions.setting(key.key, ours: wanted, in: reactions)
-            }
-            return TimelineRow(id: row.id, content: message.with(reactions: reactions).content)
-        }
     }
 
     /// The timeline is on screen (or not): mark it read and show who types
@@ -391,21 +363,11 @@ final class TimelineModel: ObservableObject {
 
     // MARK: Acting on messages
 
-    /// Add our reaction `key` to row `itemId`'s message, or remove it: shown
-    /// so at once, until the library's items show it (or it failed).
+    /// Add our reaction `key` to row `itemId`'s message, or remove it: the
+    /// library's rows show it at once.
     @discardableResult
     func react(_ itemId: String, key: String) -> Task<Void, Never> {
-        guard timeline != nil, let row = messageRow(itemId) else { return act { try await $0.react(itemId: itemId, key: key) } }
-        let change = ReactionKey(itemId: itemId, key: key)
-        reacting[change] = !row.reactions.contains { $0.key == key && $0.byUs }
-        rows = withOurReactions(delivered)
-        return act {
-            try await $0.react(itemId: itemId, key: key)
-        } failed: { [weak self] in
-            guard let self else { return }
-            reacting[change] = nil
-            rows = withOurReactions(delivered)
-        }
+        act { try await $0.react(itemId: itemId, key: key) }
     }
 
     /// Pin row `itemId`'s message (`pin`), or unpin it.
@@ -442,31 +404,24 @@ final class TimelineModel: ObservableObject {
 
     /// Run `action` in a task of the model's (leaving the room does not
     /// cancel it); a failure shows as `error`.
-    private func act(
-        _ action: @escaping (Timeline) async throws -> Void, failed: @escaping @MainActor () -> Void = {}
-    ) -> Task<Void, Never> {
+    private func act(_ action: @escaping (Timeline) async throws -> Void) -> Task<Void, Never> {
         guard let timeline else { return Task {} }
         return Task {
             do {
                 try await action(timeline)
             } catch {
-                failed()
                 self.error = errorMessage(error)
             }
         }
     }
 
     func messageRow(_ itemId: String) -> MessageRow? {
-        Self.messageRow(itemId, in: rows)
+        rows.first { $0.id == itemId }?.messageRow
     }
 
     /// The row of the message with `eventId`, if loaded.
     private func eventRow(_ eventId: String) -> TimelineRow? {
         rows.first { row in row.messageRow?.event.eventId == eventId }
-    }
-
-    private static func messageRow(_ itemId: String, in rows: [TimelineRow]) -> MessageRow? {
-        rows.first { $0.id == itemId }?.messageRow
     }
 
     // MARK: Going to a quoted message
@@ -534,49 +489,6 @@ extension TimelineModel {
     struct ScrollTarget: Equatable {
         let rowId: String
         let serial: Int
-    }
-
-    /// A reaction of ours to a row's message.
-    private struct ReactionKey: Hashable {
-        let itemId: String
-        let key: String
-    }
-}
-
-/// Reactions as they are once ours changed.
-enum Reactions {
-    /// `reactions` with ours with `key` added (`ours`) or taken away; the
-    /// others' stay. A new key goes last.
-    static func setting(_ key: String, ours: Bool, in reactions: [Reaction]) -> [Reaction] {
-        var reactions = reactions
-        if let at = reactions.firstIndex(where: { $0.key == key }) {
-            var reaction = reactions[at]
-            guard reaction.byUs != ours else { return reactions }
-            reaction.byUs = ours
-            reaction.count = ours ? reaction.count + 1 : reaction.count - min(reaction.count, 1)
-            if reaction.count == 0 {
-                reactions.remove(at: at)
-            } else {
-                reactions[at] = reaction
-            }
-        } else if ours {
-            reactions.append(Reaction(key: key, count: 1, byUs: true, senders: []))
-        }
-        return reactions
-    }
-}
-
-extension MessageRow {
-    /// The same row with other reactions.
-    func with(reactions: [Reaction]) -> MessageRow {
-        var event = event
-        if case .message(var message) = event.content {
-            message.reactions = reactions
-            event.content = .message(message: message)
-        }
-        return MessageRow(
-            event: event, firstInGroup: firstInGroup, showSender: showSender, avatarColumn: avatarColumn,
-            decrypting: decrypting, actions: actions)
     }
 }
 

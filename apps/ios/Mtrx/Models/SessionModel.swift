@@ -34,9 +34,9 @@ final class SessionModel: ObservableObject {
     @Published var roomsPath: [String] = []
     /// An invite to answer, while its sheet shows.
     @Published var invite: RoomRef?
-    /// Rooms and spaces just made or joined here, not in the room list
-    /// yet: shown as coming rather than gone.
-    @Published private(set) var expecting: Set<String> = []
+    /// Rooms and spaces just made or joined here, not listed as joined
+    /// yet (the library's): shown as coming rather than gone.
+    @Published private(set) var joining: Set<String> = []
     /// The order of every space's rooms (not of the chats), remembered
     /// across launches.
     @Published private(set) var roomSort: RoomSort
@@ -139,12 +139,12 @@ final class SessionModel: ObservableObject {
         rooms = lists.rooms()
         loaded = lists.loaded()
         drafts = Set(lists.drafts())
+        joining = Set(lists.joining())
         self.lists = lists
-        expecting = expecting.filter { lists.room(roomId: $0)?.invited ?? true }
         guard loaded else { return }
         // The first lists may be from a cache: rooms may come with sync.
         presence.follow(lists.chats())
-        if let selectedSpace, lists.space(key: selectedSpace) == nil, !isExpected(selectedSpace) {
+        if let selectedSpace, lists.space(key: selectedSpace) == nil, !isJoining(selectedSpace) {
             selectSpace(nil)
         }
     }
@@ -169,13 +169,18 @@ final class SessionModel: ObservableObject {
         }
     }
 
-    private func isExpected(_ entry: SpaceKey) -> Bool {
-        if case .space(let id) = entry { return expecting.contains(id) }
+    private func isJoining(_ entry: SpaceKey) -> Bool {
+        if case .space(let id) = entry { return joining.contains(id) }
         return false
     }
 
     func room(_ id: String) -> RoomSummary? {
         rooms.first { $0.id == id }
+    }
+
+    /// We are in room `id`, as the room list has it, or it is coming.
+    func joined(_ id: String) -> Bool {
+        joining.contains(id) || room(id).map { !$0.invited } ?? false
     }
 
     /// Sync while the app is in the foreground, and set our presence;
@@ -321,19 +326,11 @@ final class SessionModel: ObservableObject {
         if selectedSpace == .space(id: id) {
             selectSpace(nil)
         }
-        expecting.remove(id)
-    }
-
-    /// A room or space made or joined here: shown as coming until the room
-    /// list has it.
-    func expect(_ id: String) {
-        expecting.insert(id)
     }
 
     /// Accept an invite: join, then open what we joined.
     func accept(_ room: RoomSummary) async throws {
         _ = try await session.join(room: room.id, via: [])
-        expect(room.id)
         open(room.id)
     }
 

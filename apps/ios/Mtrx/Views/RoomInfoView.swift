@@ -174,7 +174,7 @@ struct TopicSection: View {
     @ObservedObject var model: RoomInfoModel
 
     var body: some View {
-        let topic = parseTopic(topic: model.shownTopic(room.topic))
+        let topic = parseTopic(topic: room.topic ?? "")
         Section {
             TopicText(topic: topic)
             ForEach(Array(topic.links.enumerated()), id: \.offset) { _, link in

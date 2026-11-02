@@ -17,8 +17,6 @@ final class RoomInfoModel: ObservableObject {
     @Published private(set) var members: [Member]?
     /// Why the settings or members could not be read.
     @Published private(set) var loadError: String?
-    /// A topic saved here, shown until the room list has it.
-    @Published private(set) var savedTopic: String?
     /// A change is on its way.
     @Published private(set) var saving = false
     /// Why the last change failed.
@@ -55,28 +53,12 @@ final class RoomInfoModel: ObservableObject {
         }
     }
 
-    /// The topic to show: one saved here until the room list has it (or
-    /// another arrives), else the list's.
-    func shownTopic(_ listed: String?) -> String {
-        savedTopic ?? listed ?? ""
-    }
-
-    /// The room list's topic changed: a topic saved here is shown no more.
-    func topicListed(_ listed: String?) {
-        savedTopic = nil
-    }
-
     // MARK: Settings
 
-    /// Save `topic` (as `composeTopic` makes it). Returns whether saved.
+    /// Save `topic` (as `composeTopic` makes it): the room list shows it at
+    /// once. Returns whether saved.
     func setTopic(_ topic: String) async -> Bool {
-        let before = savedTopic
-        savedTopic = topic
-        let saved = await call { try await $0.setRoomTopic(roomId: $1, topic: topic) }
-        if !saved {
-            savedTopic = before
-        }
-        return saved
+        await call { try await $0.setRoomTopic(roomId: $1, topic: topic) }
     }
 
     @discardableResult

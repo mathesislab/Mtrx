@@ -86,7 +86,6 @@ struct RoomView: View {
                 model.leftForeground()
             }
         }
-        .onChange(of: room.topic) { info.topicListed($0) }
         .sheet(item: $sheet, onDismiss: performChosen) { sheet in
             RoomSheetView(sheet: sheet, room: room, model: model, info: info, topic: topic) { action, id in
                 chosen = (action, id)
@@ -118,9 +117,9 @@ struct RoomView: View {
         }
     }
 
-    /// The topic as shown: one just saved until the room list has it.
+    /// The topic as the room list has it, one just saved too.
     private var topic: Topic {
-        parseTopic(topic: info.shownTopic(room.topic))
+        parseTopic(topic: room.topic ?? "")
     }
 
     private var actions: RowActions {

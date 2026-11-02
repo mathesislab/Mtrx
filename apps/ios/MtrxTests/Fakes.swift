@@ -735,8 +735,11 @@ enum Make {
         room("!other", kind: .space, name: "Other"),
     ]
 
-    /// Those rooms' lists, Bob's chat in Team; `extra` rooms last.
-    static func roomsBySpace(loaded: Bool = true, extra: [RoomSummary] = []) -> RoomLists {
-        lists(roomsBySpaceRooms + extra, loaded: loaded, members: ["!team": ["@bob:example.org", "@me:example.org"]])
+    /// Those rooms' lists, Bob's chat in Team; `extra` rooms last; rooms
+    /// `joining`, not listed yet.
+    static func roomsBySpace(loaded: Bool = true, extra: [RoomSummary] = [], joining: [String] = []) -> RoomLists {
+        lists(
+            roomsBySpaceRooms + extra, loaded: loaded, members: ["!team": ["@bob:example.org", "@me:example.org"]],
+            joining: joining)
     }
 }
