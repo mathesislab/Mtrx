@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/mtrx-core",
     "crates/mtrx-format",
+    "crates/mtrx-google",
     "crates/mtrx-cli",
     "crates/mtrx-app",
     "crates/mtrx-ffi",
@@ -17,6 +18,7 @@ license = "AGPL-3.0-or-later"
 [workspace.dependencies]
 mtrx-core = { path = "crates/mtrx-core" }
 mtrx-format = { path = "crates/mtrx-format" }
+mtrx-google = { path = "crates/mtrx-google" }
 matrix-sdk = { version = "0.19.1", features = ["bundled-sqlite", "local-server"] }
 matrix-sdk-ui = "0.19.1"
 # For the types of recovery key errors, which matrix-sdk does not re-export.

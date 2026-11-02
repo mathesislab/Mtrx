@@ -83,7 +83,7 @@ pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, Space
 pub use rooms::{NewRoom, RoomKind, RoomList, RoomListState, RoomSummary, UserSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
-pub use secrets::{SecretBackend, SecretStore};
+pub use secrets::{Secret, SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use spaces::{descendants, top_level_spaces};

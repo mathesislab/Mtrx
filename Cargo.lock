@@ -5304,6 +5304,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mtrx-google"
+version = "0.5.3"
+dependencies = [
+ "base64 0.23.1",
+ "matrix-sdk",
+ "mtrx-core",
+ "rand 0.10.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "mundy"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

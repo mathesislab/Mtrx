@@ -59,7 +59,7 @@ pub trait SecretBackend: Send + Sync {
 /// A secret slot: keyring entry `name`, `file`, or the app's secret `key`,
 /// depending on the store.
 #[derive(Clone, Debug)]
-pub(crate) struct Secret {
+pub struct Secret {
     store: SecretStore,
     /// Unique across data roots. Only the OS keyring uses it.
     #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code))]
@@ -70,7 +70,7 @@ pub(crate) struct Secret {
 }
 
 impl Secret {
-    pub(crate) fn new(store: SecretStore, name: String, key: String, file: PathBuf) -> Self {
+    pub fn new(store: SecretStore, name: String, key: String, file: PathBuf) -> Self {
         Self {
             store,
             name,
@@ -79,7 +79,7 @@ impl Secret {
         }
     }
 
-    pub(crate) fn load(&self) -> Result<Option<String>> {
+    pub fn load(&self) -> Result<Option<String>> {
         match &self.store {
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             SecretStore::Keyring => self.keyring_load(),
@@ -92,7 +92,7 @@ impl Secret {
         }
     }
 
-    pub(crate) fn save(&self, value: &str) -> Result<()> {
+    pub fn save(&self, value: &str) -> Result<()> {
         match &self.store {
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             SecretStore::Keyring => self.keyring_save(value),
@@ -104,7 +104,7 @@ impl Secret {
     }
 
     /// Remove the secret; succeeds if there is none.
-    pub(crate) fn delete(&self) -> Result<()> {
+    pub fn delete(&self) -> Result<()> {
         match &self.store {
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             SecretStore::Keyring => self.keyring_delete(),
