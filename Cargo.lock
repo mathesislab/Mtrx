@@ -5169,7 +5169,7 @@ dependencies = [
 
 [[package]]
 name = "mtrx-app"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -5212,7 +5212,7 @@ dependencies = [
 
 [[package]]
 name = "mtrx-cli"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5227,7 +5227,7 @@ dependencies = [
 
 [[package]]
 name = "mtrx-core"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -5262,7 +5262,7 @@ dependencies = [
 
 [[package]]
 name = "mtrx-ffi"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "futures-executor",
  "futures-util",
@@ -5283,7 +5283,7 @@ dependencies = [
 
 [[package]]
 name = "mtrx-format"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "fxhash",
  "idna_adapter",
@@ -10959,7 +10959,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
