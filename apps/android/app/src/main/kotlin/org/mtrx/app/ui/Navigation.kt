@@ -327,14 +327,12 @@ private fun RoomPane(
             account.roomOpened(roomId)
             onDispose { account.roomClosed(roomId) }
         }
-        val encryption by account.encryption.collectAsStateWithLifecycle()
         val presences by signedIn.presence.presences.collectAsStateWithLifecycle()
         val header = remember(room, info.userId, rooms) { roomHeader(roomId, room, info.userId, ::parseTopic, roomSpace(rooms, roomId)) }
         TimelineScreen(
             header,
             viewModel,
             signedIn.images,
-            keysArriving = encryption?.keysArriving == true,
             spaces = remember(rooms) { topLevelSpaces(rooms) },
             rooms = rooms,
             presences = presences,

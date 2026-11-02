@@ -102,7 +102,7 @@ final class PersonInfoModelTests: XCTestCase {
     }
 
     func testADirectChatsHeaderOpensThePersonsSheet() async {
-        let timeline = TimelineModel(session: session, room: chat, keysArriving: Make.noKeysArriving)
+        let timeline = TimelineModel(session: session, room: chat)
         XCTAssertEqual(timeline.person, "@bob:example.org")
         session.profile = .success(UserProfile(userId: "@bob:example.org", name: "Bob Builder", avatarUrl: nil))
         timeline.showPersonInfo()
@@ -114,7 +114,7 @@ final class PersonInfoModelTests: XCTestCase {
     func testNoPersonInTheNotesToSelfOrARoom() {
         let notes = Make.room("!notes", kind: .direct, name: "Notes", directUser: "@me:example.org")
         for room in [notes, Make.room("!lab", name: "Lab")] {
-            let timeline = TimelineModel(session: session, room: room, keysArriving: Make.noKeysArriving)
+            let timeline = TimelineModel(session: session, room: room)
             XCTAssertNil(timeline.person)
             timeline.showPersonInfo()
             XCTAssertNil(timeline.personInfo)

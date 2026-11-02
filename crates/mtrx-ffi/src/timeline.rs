@@ -6,16 +6,16 @@ use futures_util::StreamExt;
 use mtrx_core::{self as core, RoomTimeline};
 
 use crate::{
-    MtrxError, TaskHandle, TimelineItem,
+    MtrxError, TaskHandle, TimelineRow,
     runtime::{InRuntime, run},
-    types::timeline_items,
 };
 
-/// Receives a timeline's items, oldest first: all of them, now and after
-/// every change.
+/// Receives a timeline's rows, oldest first: all of them, now and after
+/// every change (also of the pinned messages, whether we may pin, and
+/// whether message keys are arriving).
 #[uniffi::export(with_foreign)]
-pub trait TimelineListener: Send + Sync {
-    fn on_update(&self, items: Vec<TimelineItem>);
+pub trait TimelineRowsListener: Send + Sync {
+    fn on_update(&self, rows: Vec<TimelineRow>);
 }
 
 /// Receives the names of the others typing in a room, after every change.
@@ -26,7 +26,7 @@ pub trait TypingListener: Send + Sync {
 
 /// A room's timeline, kept up to date while the object lives and sync runs.
 ///
-/// Actions on a message take its row's `TimelineItem.id`, which also
+/// Actions on a message take its row's `TimelineRow.id`, which also
 /// identifies a message not sent yet (it has no event ID until then).
 #[derive(uniffi::Object)]
 pub struct Timeline {
@@ -44,7 +44,7 @@ impl Timeline {
         Arc::clone(&self.inner)
     }
 
-    /// The event of row `item_id` (`TimelineItem.id`), now in the timeline.
+    /// The event of row `item_id` (`TimelineRow.id`), now in the timeline.
     fn event(&self, item_id: &str) -> Result<core::Event, MtrxError> {
         self.inner
             .current()
@@ -63,13 +63,13 @@ impl Timeline {
         self.inner.room_id().to_string()
     }
 
-    /// Call `listener` with the items, now and on every change. Ends when
-    /// the timeline is dropped.
-    pub fn subscribe(&self, listener: Arc<dyn TimelineListener>) -> Arc<TaskHandle> {
-        let mut updates = Box::pin(self.inner.updates());
+    /// Call `listener` with the rows, now and on every change. Ends when the
+    /// timeline is dropped.
+    pub fn subscribe_rows(&self, listener: Arc<dyn TimelineRowsListener>) -> Arc<TaskHandle> {
+        let mut updates = Box::pin(self.inner.rows());
         TaskHandle::spawn(async move {
-            while let Some(entries) = updates.next().await {
-                listener.on_update(timeline_items(&entries));
+            while let Some(rows) = updates.next().await {
+                listener.on_update(rows.iter().map(TimelineRow::from).collect());
             }
         })
     }

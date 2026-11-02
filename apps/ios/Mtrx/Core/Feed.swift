@@ -43,8 +43,8 @@ extension Feed: ConnectionListener where Value == ConnectionState {
     func onUpdate(state: ConnectionState) { send(state) }
 }
 
-extension Feed: TimelineListener where Value == [TimelineItem] {
-    func onUpdate(items: [TimelineItem]) { send(items) }
+extension Feed: TimelineRowsListener where Value == [TimelineRow] {
+    func onUpdate(rows: [TimelineRow]) { send(rows) }
 }
 
 extension Feed: TypingListener where Value == [String] {

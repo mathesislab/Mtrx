@@ -49,6 +49,7 @@ import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Message
+import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
@@ -67,15 +68,15 @@ import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomListListener
 import uniffi.mtrx.RoomListState
 import uniffi.mtrx.RoomSummary
+import uniffi.mtrx.RowContent
 import uniffi.mtrx.SendState
 import uniffi.mtrx.SpaceRooms
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineEvent
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineItemContent
-import uniffi.mtrx.TimelineListener
+import uniffi.mtrx.TimelineRow
+import uniffi.mtrx.TimelineRowsListener
 import uniffi.mtrx.TypingListener
 import uniffi.mtrx.UserProfile
 import uniffi.mtrx.Verification
@@ -304,7 +305,6 @@ class FakeSession : Session(NoHandle) {
     var settings: RoomSettings = roomSettings()
     var settingsReads = 0
     var memberList: List<Member> = emptyList()
-    var pinAllowed = false
     var pinnedRoomTimeline: FakeTimeline = FakeTimeline()
     var pinnedOpened = 0
 
@@ -331,8 +331,6 @@ class FakeSession : Session(NoHandle) {
         settingsReads++
         return settings
     }
-
-    override suspend fun canPin(roomId: String): Boolean = pinAllowed
 
     override suspend fun pinnedTimeline(roomId: String): Timeline {
         pinnedOpened++
@@ -688,7 +686,7 @@ class FakeMtrx(private val restored: Session?) : MtrxInterface {
  * the sends and actions until completed.
  */
 class FakeTimeline : Timeline(NoHandle) {
-    var listener: TimelineListener? = null
+    var listener: TimelineRowsListener? = null
     var typingListener: TypingListener? = null
     val typingSubscription = FakeHandle()
     val sent = mutableListOf<String>()
@@ -710,7 +708,7 @@ class FakeTimeline : Timeline(NoHandle) {
 
     override fun roomId(): String = "!room:example.org"
 
-    override fun subscribe(listener: TimelineListener): TaskHandle {
+    override fun subscribeRows(listener: TimelineRowsListener): TaskHandle {
         this.listener = listener
         return FakeHandle()
     }
@@ -767,7 +765,7 @@ class FakeTimeline : Timeline(NoHandle) {
     }
 }
 
-fun textEvent(id: String, sender: String, body: String, own: Boolean = false, at: Long = 0): TimelineItem =
+fun textEvent(id: String, sender: String, body: String, own: Boolean = false, at: Long = 0): TimelineRow =
     messageEvent(id, sender, Message(kind = MessageKind.TEXT, body = body, edited = false, media = null), own = own, at = at)
 
 /** A message's row; [eventId] null while not sent. */
@@ -781,7 +779,7 @@ fun messageEvent(
     sendState: SendState = SendState.Sent,
     editable: Boolean = false,
     readBy: List<Reader> = emptyList(),
-): TimelineItem = eventItem(id, sender, EventContent.Message(message), own, at, eventId, sendState, editable, readBy)
+): TimelineRow = eventItem(id, sender, EventContent.Message(message), own, at, eventId, sendState, editable, readBy)
 
 fun eventItem(
     id: String,
@@ -793,39 +791,57 @@ fun eventItem(
     sendState: SendState = SendState.Sent,
     editable: Boolean = false,
     readBy: List<Reader> = emptyList(),
-): TimelineItem = TimelineItem(
-    id = id,
-    content = TimelineItemContent.Event(
-        TimelineEvent(
-            eventId = eventId,
-            senderId = sender,
-            senderName = null,
-            senderAvatarUrl = null,
-            timestamp = Instant.ofEpochSecond(at),
-            own = own,
-            content = content,
-            sendState = sendState,
-            editable = editable,
-            readBy = readBy,
-        ),
+): TimelineRow = messageRow(
+    id,
+    TimelineEvent(
+        eventId = eventId,
+        senderId = sender,
+        senderName = null,
+        senderAvatarUrl = null,
+        timestamp = Instant.ofEpochSecond(at),
+        own = own,
+        content = content,
+        sendState = sendState,
+        editable = editable,
+        readBy = readBy,
     ),
 )
 
-fun stateEvent(id: String, sender: String, content: EventContent): TimelineItem = TimelineItem(
-    id = id,
-    content = TimelineItemContent.Event(
-        TimelineEvent(
-            eventId = "\$$id",
-            senderId = sender,
-            senderName = null,
-            senderAvatarUrl = null,
-            timestamp = Instant.EPOCH,
-            own = false,
-            content = content,
-            sendState = SendState.Sent,
-        ),
+/**
+ * The row of [event] as the library gives it: the first of its group unless
+ * said otherwise, with [actions] (else those of a message in a room where we
+ * may not pin).
+ */
+fun messageRow(
+    id: String,
+    event: TimelineEvent,
+    firstInGroup: Boolean = true,
+    decrypting: Boolean = false,
+    actions: List<MessageAction> = actionsOf(event),
+): TimelineRow = TimelineRow(
+    id,
+    RowContent.Message(
+        event,
+        firstInGroup = firstInGroup,
+        showSender = firstInGroup && !event.own,
+        avatarColumn = !event.own,
+        decrypting = decrypting,
+        actions = actions,
     ),
 )
+
+/** What holding a message offers, as the library says. */
+fun actionsOf(event: TimelineEvent): List<MessageAction> = buildList {
+    val sent = event.eventId != null
+    val message = (event.content as? EventContent.Message)?.message
+    if (message != null) {
+        if (sent) addAll(listOf(MessageAction.REACT, MessageAction.REPLY))
+        if (message.body.isNotEmpty()) addAll(listOf(MessageAction.COPY, MessageAction.SELECT_TEXT))
+    }
+    if (event.editable) add(MessageAction.EDIT)
+    if (event.own && sent && event.content !is EventContent.Redacted) add(MessageAction.DELETE)
+    if (event.sendState is SendState.Failed) addAll(listOf(MessageAction.RETRY, MessageAction.DISCARD))
+}
 
 /**
  * The rooms by space as in the library's integration test, most recently

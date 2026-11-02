@@ -17,7 +17,7 @@ use iced::{
     keyboard::{self, Key, key::Named},
     widget::{button, container, row, space, text, text_input},
 };
-use mtrx_core::{Event as TimelineEvent, EventContent, MessageKind, TimelineEntry};
+use mtrx_core::{Event as TimelineEvent, EventContent, MessageKind, Row};
 use unicode_normalization::char::{decompose_canonical, is_combining_mark};
 
 use crate::{
@@ -76,31 +76,30 @@ pub struct Find {
 }
 
 impl Find {
-    /// Find `query` in `entries`.
-    pub fn new(query: String, entries: &[TimelineEntry]) -> Self {
+    /// Find `query` in the messages of `rows`.
+    pub fn new(query: String, rows: &[Row]) -> Self {
         let mut find = Self {
             query,
             ..Self::default()
         };
-        find.search(entries);
+        find.search(rows);
         find
     }
 
-    /// Search `entries` again, for a new query or as they changed. The
+    /// Search `rows` again, for a new query or as they changed. The
     /// current match stays, or the nearest one above it does.
-    pub fn search(&mut self, entries: &[TimelineEntry]) {
+    pub fn search(&mut self, rows: &[Row]) {
         let was = self.current().and_then(|current| {
-            let index = entries.iter().position(
-                |entry| matches!(entry, TimelineEntry::Event(e) if e.id == current.event),
-            )?;
+            let index =
+                (rows.iter()).position(|row| row.event().is_some_and(|e| e.id == current.event))?;
             Some((index, current.unit, current.range.start))
         });
         let query = fold(&self.query).0;
         // Each match with its place in the timeline, newest first.
         let mut found: Vec<((usize, usize, usize), Match)> = Vec::new();
         if !query.is_empty() {
-            for (index, entry) in entries.iter().enumerate().rev() {
-                let TimelineEntry::Event(event) = entry else {
+            for (index, row) in rows.iter().enumerate().rev() {
+                let Some(event) = row.event() else {
                     continue;
                 };
                 let Some(document) = searched(event) else {
@@ -473,14 +472,15 @@ impl<M: Clone> Widget<M, Theme, Renderer> for ShiftEnter<'_, M> {
 mod tests {
     use iced::{event::Status, keyboard::Modifiers};
     use iced_test::simulator::{Simulator, press_key};
-    use mtrx_core::OwnedUserId;
+    use mtrx_core::{OwnedUserId, TimelineEntry};
 
     use super::*;
     use crate::fonts;
 
-    fn message(id: &str, body: &str) -> TimelineEntry {
+    fn message(id: &str, body: &str) -> Row {
         let sender = OwnedUserId::try_from("@alice:example.org").unwrap();
-        TimelineEntry::Event(TimelineEvent::test_message(id, sender, body))
+        let entry = TimelineEntry::Event(TimelineEvent::test_message(id, sender, body));
+        mtrx_core::rows(&[entry], &Default::default()).remove(0)
     }
 
     fn found<'a>(text: &'a str, query: &str) -> Vec<&'a str> {

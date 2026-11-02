@@ -405,17 +405,11 @@ final class SessionModel: ObservableObject {
     }
 
     func timeline(for room: RoomSummary) -> TimelineModel {
-        TimelineModel(session: session, room: room, keysArriving: keysArriving)
+        TimelineModel(session: session, room: room)
     }
 
     func info(for room: RoomSummary) -> RoomInfoModel {
         RoomInfoModel(session: session, roomId: room.id, userId: userId)
-    }
-
-    /// Message keys are arriving from the backup, now and on every change:
-    /// undecryptable messages say they are being decrypted meanwhile.
-    var keysArriving: AnyPublisher<Bool, Never> {
-        $encryption.map { $0?.keysArriving ?? false }.removeDuplicates().eraseToAnyPublisher()
     }
 
     /// Sign out on the server and delete the account's data here.

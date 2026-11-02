@@ -33,8 +33,8 @@ import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
-import uniffi.mtrx.TimelineItem
-import uniffi.mtrx.TimelineListener
+import uniffi.mtrx.TimelineRow as LibraryRow
+import uniffi.mtrx.TimelineRowsListener
 import uniffi.mtrx.Topic
 import uniffi.mtrx.TypingListener
 import uniffi.mtrx.composeTopic as libraryComposeTopic
@@ -58,8 +58,8 @@ import uniffi.mtrx.composeTopic as libraryComposeTopic
  * is in the rows), saved [SAVE_DELAY_MILLIS] after typing stops and when
  * the room is left or the app stops ([keepDraft]), cleared on send; during
  * an edit, the text from before it. The room's settings say whether we may
- * edit its topic (saved as [composeTopic] makes it, the library's) and pin
- * messages; the pinned messages load while the topic panel shows them.
+ * edit its topic (saved as [composeTopic] makes it, the library's); the
+ * pinned messages load while the topic panel shows them.
  */
 class TimelineViewModel(
     private val roomId: String,
@@ -110,10 +110,6 @@ class TimelineViewModel(
     private val _settings = MutableStateFlow<RoomSettings?>(null)
     val settings: StateFlow<RoomSettings?> = _settings.asStateFlow()
 
-    /** We may pin and unpin messages. */
-    private val _canPin = MutableStateFlow(false)
-    val canPin: StateFlow<Boolean> = _canPin.asStateFlow()
-
     /** The pinned messages, while the topic panel shows them; null while loading. */
     private val _pinned = MutableStateFlow<List<EventRow>?>(null)
     val pinned: StateFlow<List<EventRow>?> = _pinned.asStateFlow()
@@ -160,10 +156,10 @@ class TimelineViewModel(
             try {
                 val opened = session.timeline(roomId)
                 timeline = opened
-                subscription = opened.subscribe(object : TimelineListener {
+                subscription = opened.subscribeRows(object : TimelineRowsListener {
                     // On a library thread.
-                    override fun onUpdate(items: List<TimelineItem>) {
-                        _rows.value = timelineRows(items)
+                    override fun onUpdate(rows: List<LibraryRow>) {
+                        _rows.value = shownRows(rows)
                     }
                 })
                 typingSubscription = opened.subscribeTyping(object : TypingListener {
@@ -183,7 +179,6 @@ class TimelineViewModel(
     private suspend fun loadSettings() {
         try {
             _settings.value = session.roomSettings(roomId)
-            _canPin.value = session.canPin(roomId)
         } catch (e: MtrxException) {
             // Then we may not edit; the timeline works without.
         }
@@ -219,11 +214,11 @@ class TimelineViewModel(
             try {
                 val opened = session.pinnedTimeline(roomId)
                 pinnedTimeline = opened
-                pinnedSubscription = opened.subscribe(object : TimelineListener {
+                pinnedSubscription = opened.subscribeRows(object : TimelineRowsListener {
                     // On a library thread.
-                    override fun onUpdate(items: List<TimelineItem>) {
+                    override fun onUpdate(rows: List<LibraryRow>) {
                         // None yet: still loading (the panel asks only where some are pinned).
-                        _pinned.value = timelineRows(items).filterIsInstance<EventRow>().ifEmpty { null }
+                        _pinned.value = shownRows(rows).filterIsInstance<EventRow>().ifEmpty { null }
                     }
                 })
             } catch (e: MtrxException) {
