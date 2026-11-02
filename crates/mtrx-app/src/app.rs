@@ -68,6 +68,9 @@ const PROGRESS_TICK: Duration = Duration::from_secs(1);
 /// Where cards, the join dialog and Settings start, below the window's top.
 const PANEL_TOP: f32 = 72.0;
 
+/// The room lists, kept up to date while held.
+type LiveLists = Live<Arc<RoomLists>>;
+
 /// An `Arc` that identifies by pointer: lets live core handles be used as
 /// subscription keys and carried in messages.
 pub struct Shared<T>(pub Arc<T>);
@@ -96,7 +99,7 @@ pub enum Message {
     Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
     Login(login::Message),
     LoggedIn(Result<Shared<Session>, String>),
-    Ready(Result<(Shared<Live<Arc<RoomLists>>>, bool), String>),
+    Ready(Result<(Shared<LiveLists>, bool), String>),
     Rooms(Arc<RoomLists>),
     SelectSpace(Option<OwnedRoomId>),
     OpenRoom(OwnedRoomId),
@@ -289,7 +292,7 @@ enum Screen {
 
 struct Main {
     session: Arc<Session>,
-    room_lists: Option<Arc<Live<Arc<RoomLists>>>>,
+    room_lists: Option<Arc<LiveLists>>,
     lists: Arc<RoomLists>,
     space: Option<OwnedRoomId>,
     pane: Pane,
