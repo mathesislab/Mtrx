@@ -107,7 +107,7 @@ private final class UITestSession: Session, @unchecked Sendable {
         // The rooms are made up valid.
         return try! RoomLists(
             rooms: ordered, loaded: true, ownUserId: userId(), notesAtTop: true, spaceMembers: [:], drafts: [],
-            favourites: [], lowPriority: [], categories: [])
+            favourites: [], lowPriority: [], categories: [], joining: [])
     }
 
     /// A message was sent or arrived in room `id`: it moves up the list.

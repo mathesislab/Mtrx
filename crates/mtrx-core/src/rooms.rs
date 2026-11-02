@@ -1,6 +1,10 @@
 //! Live room list (rooms, spaces, DMs) and room management.
 
-use std::{collections::HashMap, sync::Arc, time::SystemTime};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Instant, SystemTime},
+};
 
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, pin_mut};
@@ -354,6 +358,8 @@ impl Session {
             })
     }
 
+    /// Make a room or space; the room lists show it as coming
+    /// ([`crate::RoomLists::joining`]) until they list it.
     pub async fn create_room(&self, new: NewRoom) -> Result<OwnedRoomId> {
         let mut request = CreateRoomRequest::new();
         request.name = new.name;
@@ -405,6 +411,7 @@ impl Session {
             request.initial_state.push(Raw::new(&event)?.cast());
         }
         let room = self.client.create_room(request).await?.room_id().to_owned();
+        self.echoes.set_joining(&room);
         if let Some(parent) = &new.parent {
             self.add_to_space(parent, &room).await?;
         }
@@ -418,14 +425,17 @@ impl Session {
             .map(|room| room.room_id().to_owned())
     }
 
-    /// The direct chat with `user`, created if there is none. With
-    /// ourselves it is a "Notes" room only we are in.
+    /// The direct chat with `user`, created if there is none (coming in
+    /// the room lists until they list it). With ourselves it is a "Notes"
+    /// room only we are in.
     pub async fn direct_chat(&self, user: &UserId) -> Result<OwnedRoomId> {
         if let Some(room) = self.client.get_dm_room(user) {
             return Ok(room.room_id().to_owned());
         }
         if user != self.user_id() {
-            return Ok(self.client.create_dm(user).await?.room_id().to_owned());
+            let room = self.client.create_dm(user).await?.room_id().to_owned();
+            self.echoes.set_joining(&room);
+            return Ok(room);
         }
         let notes = self
             .create_room(NewRoom {
@@ -448,8 +458,16 @@ impl Session {
         Ok(())
     }
 
-    pub async fn set_room_topic(&self, room: &RoomId, topic: &str) -> Result<()> {
-        self.room(room)?.set_room_topic(topic).await?;
+    /// Set the room's topic; a blank one removes it. The room lists show it
+    /// at once ([`Session::room_lists`]).
+    pub async fn set_room_topic(&self, room_id: &RoomId, topic: &str) -> Result<()> {
+        let room = self.room(room_id)?;
+        // As the room list has it.
+        let shown = Some(topic.to_owned()).filter(|t| !t.trim().is_empty());
+        self.echoes.set_topic(room_id, shown.clone());
+        let result = room.set_room_topic(topic).await;
+        (self.echoes).topic_answered(room_id, &shown, result.is_ok(), Instant::now());
+        result?;
         Ok(())
     }
 
@@ -474,18 +492,34 @@ impl Session {
     }
 
     /// Join by room ID or alias, or accept an invite; through `via`, the
-    /// servers a space, directory or link names for it.
+    /// servers a space, directory or link names for it. The room lists show
+    /// the room as coming ([`crate::RoomLists::joining`]) until they list it
+    /// as joined: by ID from the start, by alias once joined.
     pub async fn join(&self, room: &RoomOrAliasId, via: &[OwnedServerName]) -> Result<OwnedRoomId> {
-        Ok(self
-            .client
-            .join_room_by_id_or_alias(room, via)
-            .await?
-            .room_id()
-            .to_owned())
+        let id = OwnedRoomId::try_from(room.as_str()).ok();
+        if let Some(id) = &id {
+            self.echoes.set_joining(id);
+        }
+        match self.client.join_room_by_id_or_alias(room, via).await {
+            Ok(joined) => {
+                let joined = joined.room_id().to_owned();
+                self.echoes.set_joining(&joined);
+                Ok(joined)
+            }
+            Err(e) => {
+                if let Some(id) = &id {
+                    self.echoes.drop_joining(id);
+                }
+                Err(e.into())
+            }
+        }
     }
 
+    /// Leave the room, or decline its invite; it is not coming any more.
     pub async fn leave(&self, room: &OwnedRoomId) -> Result<()> {
-        Ok(self.room(room)?.leave().await?)
+        self.room(room)?.leave().await?;
+        self.echoes.drop_joining(room);
+        Ok(())
     }
 
     pub async fn invite(&self, room: &OwnedRoomId, user: &OwnedUserId) -> Result<()> {

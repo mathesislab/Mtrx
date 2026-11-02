@@ -26,6 +26,8 @@ object NoRooms : RoomListsInterface {
 
     override fun firstSpaceOf(roomId: String): RoomSummary? = null
 
+    override fun joining(): List<String> = emptyList()
+
     override fun loaded() = false
 
     override fun notes(): RoomSummary? = null

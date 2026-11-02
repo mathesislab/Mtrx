@@ -19,9 +19,9 @@ use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
     Access, Activity, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent,
-    History, JoinAccess, Membership, MembershipChange, NewRoom, NotifyMode, Permissions,
-    PinsChange, PresenceState, Profile, RecoveryStatus, Role, RoomKind, SecretStore, Session,
-    TimelineEntry, VerificationState,
+    History, JoinAccess, Membership, MembershipChange, MessageAction, NewRoom, NotifyMode,
+    Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Role, RoomKind, SecretStore,
+    Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -2272,6 +2272,89 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
         std::collections::BTreeSet::from([other.clone()])
     );
     assert_eq!(s.draft_keeper(&other).restore().await, Some(elsewhere));
+    Ok(())
+}
+
+/// The actions the row of the message `event` offers; none without a row.
+fn actions(rows: &[mtrx_core::Row], event: &mtrx_core::OwnedEventId) -> Vec<MessageAction> {
+    (rows.iter())
+        .find_map(|row| match row {
+            mtrx_core::Row::Message(m) if m.event.event_id.as_ref() == Some(event) => {
+                Some(m.actions.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn changes_show_before_sync_brings_them() -> Result<()> {
+    let (_, alice) = new_user("echoes").await?;
+    let s = &alice.session;
+    let list = s.room_list().await?;
+    let mut lists = std::pin::pin!(s.room_lists(&list));
+    // A room made is coming until listed.
+    let room = s
+        .create_room(NewRoom {
+            name: Some("echoes".into()),
+            ..Default::default()
+        })
+        .await?;
+    wait_for("listed, no longer coming", &mut lists, |l| {
+        l.room(&room).is_some() && l.joining.is_empty()
+    })
+    .await?;
+    let timeline = s.timeline(&room).await?;
+    let plan = timeout(
+        "send",
+        timeline.send_markdown("The plan", None).await?.sent(),
+    )
+    .await??;
+    wait_for("Pin offered", timeline.rows(), |rows| {
+        actions(rows, &plan).contains(&MessageAction::Pin)
+    })
+    .await?;
+
+    // Without sync, the room list and the rows show our changes at once.
+    s.stop_sync().await;
+    s.set_room_topic(&room, "About.").await?;
+    s.set_room_tag(&room, mtrx_core::RoomTag::Favourite).await?;
+    s.set_pinned(&room, &plan, true).await?;
+    wait_for("the changes listed", &mut lists, |l| {
+        l.room(&room).is_some_and(|r| {
+            r.topic.as_deref() == Some("About.")
+                && r.tag == mtrx_core::RoomTag::Favourite
+                && r.pinned == [plan.clone()]
+        })
+    })
+    .await?;
+    wait_for("Unpin offered", timeline.rows(), |rows| {
+        actions(rows, &plan).contains(&MessageAction::Unpin)
+    })
+    .await?;
+    // So does our reaction, added and taken away: matrix-sdk-ui's own.
+    let key = find_message(&timeline.current(), "The plan")
+        .unwrap()
+        .key
+        .clone();
+    let reacted = |entries: &Vec<TimelineEntry>| {
+        find_message(entries, "The plan")
+            .is_some_and(|ev| (message(ev).reactions.iter()).any(|r| r.own && r.key == "👍"))
+    };
+    timeline.toggle_reaction(&key, "👍").await?;
+    wait_for("our reaction", timeline.updates(), reacted).await?;
+    timeline.toggle_reaction(&key, "👍").await?;
+    wait_for("taken away", timeline.updates(), |e| !reacted(e)).await?;
+
+    // Synced, as shown.
+    s.start_sync().await;
+    wait_for("synced", list.updates(), |state| {
+        (state.rooms.iter()).any(|r| {
+            r.id == room && r.topic.as_deref() == Some("About.") && r.pinned == [plan.clone()]
+        })
+    })
+    .await?;
     Ok(())
 }
 

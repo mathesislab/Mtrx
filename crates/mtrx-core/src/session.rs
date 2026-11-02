@@ -65,7 +65,7 @@ pub struct Session {
     pub(crate) colours: crate::account_data::Synced<crate::RoomListColours>,
     pub(crate) directory_servers: crate::account_data::Synced<crate::DirectoryServers>,
     pub(crate) drafts: crate::drafts::Drafts,
-    /// Tags set here, until the room list has them.
+    /// Changes made here, until the room list and timelines have them.
     pub(crate) echoes: Arc<crate::echo::Echoes>,
     pub(crate) connection: tokio::sync::watch::Receiver<crate::Connection>,
     /// Kept for the session: it follows push rule changes, so it knows a
