@@ -171,13 +171,48 @@ private final class UITestSession: Session, @unchecked Sendable {
 
     override func members(roomId: String) async throws -> [Member] { [] }
 
-    override func draft(roomId: String) async throws -> Draft? {
+    override func draftKeeper(roomId: String) -> DraftKeeper {
+        let keeper = UITestDraftKeeper(noHandle: .init())
+        keeper.keep(roomId, in: self)
+        return keeper
+    }
+
+    /// The draft kept for room `roomId`.
+    fileprivate func keptDraft(_ roomId: String) -> Draft? {
         lock.withLock { drafts[roomId] }
     }
 
-    override func saveDraft(roomId: String, draft: Draft) async throws {
+    fileprivate func keepDraft(_ draft: Draft, for roomId: String) {
         lock.withLock { drafts[roomId] = draft }
     }
+}
+
+/// A room's draft, kept in the session as it changes while the app runs.
+private final class UITestDraftKeeper: DraftKeeper, @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var session: UITestSession?
+    private var room = ""
+    private var restored = false
+
+    /// Room `room`'s keeper; called once, before use.
+    func keep(_ room: String, in session: UITestSession) {
+        self.room = room
+        self.session = session
+    }
+
+    override func restore() async -> Draft? {
+        let first = lock.withLock {
+            defer { restored = true }
+            return !restored
+        }
+        return first ? session?.keptDraft(room) : nil
+    }
+
+    override func changed(draft: Draft) {
+        session?.keepDraft(draft, for: room)
+    }
+
+    override func flush() async {}
 }
 
 /// A room's messages: Ann's and ours, of one to seven lines, the last two
@@ -340,6 +375,20 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     override func react(itemId: String, key: String) async throws {}
     override func setTyping(typing: Bool) async throws {}
     override func markRead() async throws {}
+    /// A message among the rows shown; nothing older is looked for.
+    override func seek(eventId: String) async throws -> String {
+        let row = lock.withLock { items.first { $0.messageRow?.event.eventId == eventId } }
+        guard let row else { throw MtrxError.EventNotFound }
+        return row.id
+    }
+
+    /// A message among the rows shown; for any other, waits until cancelled.
+    override func itemOf(eventId: String) async throws -> String {
+        let row = lock.withLock { items.first { $0.messageRow?.event.eventId == eventId } }
+        if let row { return row.id }
+        while !Task.isCancelled { try? await Task.sleep(nanoseconds: 100_000_000) }
+        throw CancellationError()
+    }
     /// With `-ui-testing-history`, `events` older messages a moment later.
     override func paginateBack(events: UInt16) async throws -> Bool {
         guard UITesting.history else { return true }

@@ -9,18 +9,11 @@ import MtrxFFI
 final class TimelineModel: ObservableObject {
     /// Older messages loaded per request.
     static let page: UInt16 = 40
-    /// Older events loaded per request while looking for a quoted message,
-    /// and at most how many requests.
-    static let seekPage: UInt16 = 50
-    static let seekPages = 20
-    static let notFound = "The original message was not found in the room's history"
     /// How long a message gone to stays marked.
     static let highlightTime: UInt64 = 2_000_000_000
     /// Scrolled up less than this (points), the timeline counts as at the
     /// bottom.
     static let bottomTolerance: CGFloat = 40
-    /// Typing stopped this long (seconds), the draft is saved.
-    nonisolated static let draftDelay: TimeInterval = 1.5
 
     let roomId: String
     /// The other person of a direct chat (not the Notes to self), whose
@@ -33,18 +26,18 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var reachedStart = false
     @Published private(set) var loadingOlder = false
     /// The composer's text; kept for the room on this device, with the
-    /// message it answers (`Session.saveDraft`).
+    /// message it answers (`DraftKeeper`).
     @Published var draft = "" {
         didSet {
             if draft != oldValue {
                 setTyping(!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                draftChanged()
+                drafts.changed(draft: keptDraft)
             }
         }
     }
     /// What sending the draft does instead of sending a new message.
     @Published private(set) var compose: Compose? {
-        didSet { draftChanged() }
+        didSet { drafts.changed(draft: keptDraft) }
     }
     /// The names of the others typing.
     @Published private(set) var typing: [String] = []
@@ -78,45 +71,49 @@ final class TimelineModel: ObservableObject {
     private var savedDraft: String?
     /// The last `setTyping` call: each waits for the one before.
     private var typingCall: Task<Void, Never>?
-    /// The last back-pagination: each waits for the one before.
-    private var pagination: Task<Bool, Error>?
-    private var seek: Seek?
-    /// The draft as the store has it; nil until it was read (nothing is
-    /// saved before, which would replace it), or after a save failed.
-    private var storedDraft: Draft?
-    private var draftLoaded = false
+    /// The row of the message gone to, found in older events: scrolled to
+    /// once it is among the rows.
+    private var revealing: String?
+    /// Keeps the draft on this device, saved once typing stops.
+    private let drafts: DraftKeeper
     /// The message the draft left in the room answers (its event ID), until
-    /// it is among the rows.
+    /// it is answered or another reply or edit starts.
     private var restoringReply: String?
-    /// Saves the draft once typing stopped (`draftDelay`).
-    private var draftTimer: Task<Void, Never>?
-    /// The last save: each waits for the one before.
-    private var draftSave: Task<Void, Never>?
-    private let draftDelay: TimeInterval
+    /// That message's row, found by the library: answered once it is
+    /// among the rows.
+    private var replyRow: String?
     /// Our reactions added or taken away here, until the library's items
     /// show them: whether we want each one, shown so at once.
     private var reacting: [ReactionKey: Bool] = [:]
 
-    init(session: Session, room: RoomSummary, draftDelay: TimeInterval = TimelineModel.draftDelay) {
+    init(session: Session, room: RoomSummary) {
         self.session = session
         self.room = room
-        self.draftDelay = draftDelay
+        drafts = session.draftKeeper(roomId: room.id)
         roomId = room.id
         let ours = session.userId()
         person = room.kind == .direct ? room.directUserId.flatMap { $0 == ours ? nil : $0 } : nil
     }
 
-    /// Open the timeline, with the draft left in the room.
+    /// Open the timeline, with the draft left in the room unless something
+    /// was written meanwhile: its text, and the reply once its message is
+    /// in the timeline.
     func open() async {
         guard timeline == nil else { return }
         // Before the timeline: bringing it back is not typing.
-        await restoreDraft()
+        if let left = await drafts.restore(), draft.isEmpty, compose == nil {
+            restoringReply = left.replyTo
+            draft = left.text
+        }
         do {
             let timeline = try await session.timeline(roomId: roomId)
             self.timeline = timeline
             let feed = Feed<[TimelineRow]>()
             subscriptions.add(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
                 self?.apply(rows)
+            }
+            if let eventId = restoringReply {
+                waitForReply(eventId, in: timeline)
             }
             opening = false
             watchTyping()
@@ -141,8 +138,10 @@ final class TimelineModel: ObservableObject {
         if rows.contains(where: { $0.content == .start }) {
             reachedStart = true
         }
-        restoreReply()
-        checkSeek()
+        answerReply()
+        if let row = revealing, show(row) {
+            revealing = nil
+        }
         markRead()
     }
 
@@ -173,7 +172,8 @@ final class TimelineModel: ObservableObject {
             watchingTyping = false
             typing = []
             setTyping(false)
-            saveDraft()
+            let drafts = self.drafts
+            Task { await drafts.flush() }
         }
         markRead()
     }
@@ -193,8 +193,10 @@ final class TimelineModel: ObservableObject {
         loadingOlder = true
         defer { loadingOlder = false }
         do {
-            while topVisible && !reachedStart {
-                _ = try await paginate(Self.page)
+            while let timeline, topVisible && !reachedStart {
+                if try await timeline.paginateBack(events: Self.page) {
+                    reachedStart = true
+                }
             }
         } catch {
             self.error = errorMessage(error)
@@ -249,7 +251,8 @@ final class TimelineModel: ObservableObject {
         if case .edit = compose {} else {
             draft = ""
         }
-        saveDraft()
+        let drafts = self.drafts
+        Task { await drafts.flush() }
         let left = draft
         do {
             switch compose {
@@ -321,71 +324,36 @@ final class TimelineModel: ObservableObject {
         }
     }
 
-    /// Bring back the draft left in the room, unless something was written
-    /// meanwhile: its text, and the reply once its message is among the
-    /// rows.
-    private func restoreDraft() async {
-        guard !draftLoaded else { return }
-        let left = try? await session.draft(roomId: roomId)
-        draftLoaded = true
-        storedDraft = left ?? Draft(text: "", replyTo: nil)
-        guard let left, draft.isEmpty, compose == nil else { return }
-        restoringReply = left.replyTo
-        draft = left.text
-        restoreReply()
+    /// Answer the restored draft's message once the library has it (it
+    /// loads nothing for it).
+    private func waitForReply(_ eventId: String, in timeline: Timeline) {
+        subscriptions.add(
+            Task { [weak self] in
+                guard let row = try? await timeline.itemOf(eventId: eventId),
+                    let self, restoringReply == eventId
+                else { return }
+                replyRow = row
+                answerReply()
+            })
     }
 
-    /// Reply to the restored draft's message, once it is among the rows.
-    private func restoreReply() {
-        guard let eventId = restoringReply, compose == nil, let row = eventRow(eventId),
-            let message = row.messageRow
-        else { return }
+    /// Reply to the restored draft's message, once its row is among the
+    /// rows, unless another reply or edit started.
+    private func answerReply() {
+        guard let itemId = replyRow, let message = messageRow(itemId) else { return }
+        replyRow = nil
+        guard restoringReply != nil, compose == nil else { return }
         restoringReply = nil
-        compose = .reply(ComposeTarget(itemId: row.id, row: message))
-    }
-
-    /// The draft changed: saved once typing stops.
-    private func draftChanged() {
-        draftTimer?.cancel()
-        let delay = UInt64(draftDelay * 1_000_000_000)
-        draftTimer = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
-            guard !Task.isCancelled else { return }
-            self?.saveDraft()
-        }
-    }
-
-    /// Keep the draft on this device now, if it changed (an empty one is
-    /// cleared): leaving the room, and after sending.
-    @discardableResult
-    func saveDraft() -> Task<Void, Never> {
-        draftTimer?.cancel()
-        let draft = keptDraft
-        guard draftLoaded, draft != storedDraft else { return Task {} }
-        storedDraft = draft
-        let (session, roomId, previous) = (self.session, self.roomId, draftSave)
-        let save = Task { [weak self] in
-            await previous?.value
-            do {
-                try await session.saveDraft(roomId: roomId, draft: draft)
-            } catch {
-                // Saved again on the next change.
-                if self?.storedDraft == draft {
-                    self?.storedDraft = nil
-                }
-            }
-        }
-        draftSave = save
-        return save
+        compose = .reply(ComposeTarget(itemId: itemId, row: message))
     }
 
     /// The app leaves the foreground: the draft is saved, in the time iOS
     /// grants, before it may end the app.
     func leftForeground() {
         let background = BackgroundTask(name: "Save the draft")
-        let save = saveDraft()
+        let drafts = self.drafts
         Task {
-            await save.value
+            await drafts.flush()
             background.end()
         }
     }
@@ -503,94 +471,42 @@ final class TimelineModel: ObservableObject {
 
     // MARK: Going to a quoted message
 
-    /// Scroll to the message with `eventId` and mark it, loading older
-    /// events until it is there (at most `seekPages` times, or to the
-    /// room's start).
+    /// Scroll to the message with `eventId` and mark it, once the library
+    /// loaded the older events it is in. A second call is ignored while
+    /// one is under way.
     func goTo(eventId: String) async {
-        guard timeline != nil else { return }
-        if reveal(eventId) { return }
-        guard seek == nil else { return }
-        if startLoaded {
-            error = Self.notFound
+        guard let timeline else { return }
+        if let row = eventRow(eventId) {
+            show(row.id)
             return
         }
-        seek = Seek(eventId: eventId)
+        guard !seeking else { return }
         seeking = true
+        defer { seeking = false }
         do {
-            for _ in 0..<Self.seekPages {
-                let atStart = try await paginate(Self.seekPage)
-                // The items arrive apart from the call: `apply` may have
-                // found it meanwhile.
-                guard seek?.eventId == eventId else { return }
-                if atStart {
-                    // Decided once the items with the start are here.
-                    seek?.atStart = true
-                    checkSeek()
-                    return
-                }
-            }
-            if seek?.eventId == eventId {
-                endSeek(error: reveal(eventId) ? nil : Self.notFound)
+            let row = try await timeline.seek(eventId: eventId)
+            // The rows may not have it yet.
+            if !show(row) {
+                revealing = row
             }
         } catch {
-            endSeek(error: errorMessage(error))
+            self.error = errorMessage(error)
         }
     }
 
-    /// The message looked for is in the rows (scrolled to), or cannot be.
-    private func checkSeek() {
-        guard let seek else { return }
-        if reveal(seek.eventId) {
-            endSeek(error: nil)
-        } else if seek.atStart && startLoaded {
-            endSeek(error: Self.notFound)
-        }
-    }
-
-    /// Stop looking, found or not (`error`).
-    private func endSeek(error: String?) {
-        seek = nil
-        seeking = false
-        if let error {
-            self.error = error
-        }
-    }
-
-    /// The room's start is among the rows.
-    private var startLoaded: Bool {
-        rows.first?.content == .start
-    }
-
-    /// Scroll to the row of the message with `eventId` and mark it, if it
-    /// is there.
-    private func reveal(_ eventId: String) -> Bool {
-        guard let row = eventRow(eventId) else { return false }
-        scrollTarget = ScrollTarget(rowId: row.id, serial: (scrollTarget?.serial ?? 0) + 1)
-        highlighted = row.id
+    /// Scroll to row `rowId` and mark it, if it is there.
+    @discardableResult
+    private func show(_ rowId: String) -> Bool {
+        guard rows.contains(where: { $0.id == rowId }) else { return false }
+        scrollTarget = ScrollTarget(rowId: rowId, serial: (scrollTarget?.serial ?? 0) + 1)
+        highlighted = rowId
         Task {
             try? await Task.sleep(nanoseconds: Self.highlightTime)
-            if highlighted == row.id {
+            if highlighted == rowId {
                 highlighted = nil
             }
         }
         return true
-    }
-
-    /// Load `events` older events, after any loading already asked for.
-    /// Returns whether the room's start is reached.
-    private func paginate(_ events: UInt16) async throws -> Bool {
-        guard let timeline else { return true }
-        let previous = pagination
-        let call = Task {
-            _ = try? await previous?.value
-            return try await timeline.paginateBack(events: events)
-        }
-        pagination = call
-        let atStart = try await call.value
-        if atStart {
-            reachedStart = true
-        }
-        return atStart
     }
 
     private func markRead() {
@@ -618,12 +534,6 @@ extension TimelineModel {
     struct ScrollTarget: Equatable {
         let rowId: String
         let serial: Int
-    }
-
-    private struct Seek {
-        let eventId: String
-        /// Back-pagination reached the room's start.
-        var atStart = false
     }
 
     /// A reaction of ours to a row's message.

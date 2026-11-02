@@ -220,54 +220,39 @@ final class TimelineModelTests: XCTestCase {
         await model.goTo(eventId: "$o")
         XCTAssertEqual(model.scrollTarget?.rowId, "o")
         XCTAssertEqual(model.highlighted, "o")
-        XCTAssertEqual(timeline.paginations, 0)
+        XCTAssertEqual(timeline.seeks, [])
         XCTAssertFalse(model.seeking)
     }
 
-    func testLoadsOlderMessagesUntilTheQuotedOneIsThere() async {
+    func testTheLibraryLoadsOlderMessagesUntilTheQuotedOneIsThere() async {
         await show([reply])
-        timeline.pages = Array(repeating: false, count: 30)
-        timeline.onPaginate = { [timeline, ourMessage, reply] call in
-            if call == 3 {
-                timeline.listener?.onUpdate(rows: [ourMessage, reply])
-            }
+        timeline.found = ["$o": "o"]
+        timeline.onSeek = { [timeline, ourMessage, reply] _ in
+            timeline.listener?.onUpdate(rows: [ourMessage, reply])
         }
         await model.goTo(eventId: "$o")
         await eventually { self.model.scrollTarget?.rowId == "o" }
         XCTAssertEqual(model.highlighted, "o")
-        XCTAssertGreaterThanOrEqual(timeline.paginations, 3)
-        XCTAssertLessThan(timeline.paginations, TimelineModel.seekPages)
+        XCTAssertEqual(timeline.seeks, ["$o"])
         XCTAssertFalse(model.seeking)
         XCTAssertNil(model.error)
     }
 
-    func testQuotedMessageNotFoundAtTheRoomsStart() async {
+    func testScrollsOnceTheRowsHaveTheMessageFound() async {
         await show([reply])
-        timeline.pages = [false, true]
-        timeline.onPaginate = { [timeline, start, reply] call in
-            if call == 2 {
-                timeline.listener?.onUpdate(rows: [start, reply])
-            }
-        }
+        timeline.found = ["$o": "o"]
         await model.goTo(eventId: "$o")
-        await eventually { self.model.error == TimelineModel.notFound }
-        XCTAssertEqual(timeline.paginations, 2)
-        XCTAssertFalse(model.seeking)
         XCTAssertNil(model.scrollTarget)
-
-        // The start is there: nothing more to load.
-        model.error = nil
-        await model.goTo(eventId: "$o")
-        XCTAssertEqual(model.error, TimelineModel.notFound)
-        XCTAssertEqual(timeline.paginations, 2)
+        timeline.listener?.onUpdate(rows: [ourMessage, reply])
+        await eventually { self.model.scrollTarget?.rowId == "o" }
+        XCTAssertEqual(model.highlighted, "o")
     }
 
-    func testQuotedMessageNotFoundAfterTwentyLoads() async {
-        await show([reply])
-        timeline.pages = Array(repeating: false, count: 30)
+    func testQuotedMessageNotFound() async {
+        await show([start, reply])
         await model.goTo(eventId: "$o")
-        XCTAssertEqual(timeline.paginations, TimelineModel.seekPages)
-        XCTAssertEqual(model.error, TimelineModel.notFound)
+        XCTAssertEqual(model.error, "The original message was not found in the room's history")
         XCTAssertFalse(model.seeking)
+        XCTAssertNil(model.scrollTarget)
     }
 }
