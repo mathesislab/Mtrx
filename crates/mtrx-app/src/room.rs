@@ -1598,7 +1598,6 @@ fn event_view<'a>(
         // Rendered as summaries in a row of their own (`Row::Summary`).
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
-        | EventContent::CallLink { .. }
         | EventContent::Topic { .. }
         | EventContent::Pins(_)
         | EventContent::OtherState { .. } => return space().into(),
