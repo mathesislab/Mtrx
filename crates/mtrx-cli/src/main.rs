@@ -305,7 +305,7 @@ async fn main() -> Result<()> {
             let (session, list) = synced(profile).await?;
             let id = session.find_room(&room).await?;
             let is_space = list
-                .current()
+                .get()
                 .rooms
                 .iter()
                 .any(|r| r.id == id && r.kind == RoomKind::Space);
