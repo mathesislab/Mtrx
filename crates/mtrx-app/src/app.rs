@@ -20,12 +20,13 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Draft, DraftKeeper, Google, Media, MediaRef, Notification,
+    CallService, Connection, Contact, Draft, DraftKeeper, Media, MediaRef, Notification,
     OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
     Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomLists,
     RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
     SpaceKey, Topic, Url,
 };
+use mtrx_google::Google;
 
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, PickerAt},
@@ -5335,7 +5336,7 @@ fn load_access(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
 async fn new_call_link(service: &CallService, google: &Google) -> Result<Url, String> {
     match service.kind {
         ServiceKind::GoogleMeet => google.create_meeting().await.map_err(|e| match e {
-            mtrx_core::Error::GoogleNotSignedIn => {
+            mtrx_google::Error::NotSignedIn => {
                 "Connect your Google account in Settings to create Meet links.".to_owned()
             }
             e => e.to_string(),

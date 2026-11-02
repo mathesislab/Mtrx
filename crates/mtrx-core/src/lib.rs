@@ -16,7 +16,6 @@ mod echo;
 mod emoji;
 mod encryption;
 mod error;
-mod google;
 mod lists;
 mod media;
 mod members;
@@ -57,7 +56,6 @@ pub use encryption::{
     VerificationState,
 };
 pub use error::{Error, Result};
-pub use google::{Google, GoogleClient};
 pub use lists::{
     Badges, ListSection, RoomLists, RoomSort, SectionChoice, SectionLayout, SpaceEntry, SpaceKey,
 };
