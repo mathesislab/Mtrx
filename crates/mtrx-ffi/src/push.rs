@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use mtrx_core::{self as core, OwnedRoomId, Url};
 
-use crate::{MtrxError, Session, runtime::run};
+use crate::{MtrxError, Session, User, runtime::run};
 
 /// A pusher of the account, set by this device or another.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -37,7 +37,49 @@ impl From<core::PusherInfo> for PusherInfo {
     }
 }
 
-/// What a push is about, for a local notification.
+/// A message worth telling the user about: what a push is about, for a
+/// local notification.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct Notification {
+    pub room_id: String,
+    pub event_id: String,
+    pub room_name: String,
+    /// `mxc://` URI, for `Session.avatar`.
+    #[uniffi(default)]
+    pub room_avatar_url: Option<String>,
+    /// A direct chat.
+    pub direct: bool,
+    pub sender: User,
+    /// A message's text, or what it is: "Image", "Video", "Audio", "File",
+    /// "Location", "Sticker", "Call", "Encrypted message" (no key yet),
+    /// "Invited you", "New message", "New event".
+    pub body: String,
+    /// Mentions us or matches a keyword.
+    pub highlight: bool,
+    /// The push rules ask for a sound.
+    pub noisy: bool,
+    pub timestamp: SystemTime,
+}
+
+impl From<core::Notification> for Notification {
+    fn from(n: core::Notification) -> Self {
+        Self {
+            room_id: n.room_id.to_string(),
+            event_id: n.event_id.to_string(),
+            room_name: n.room_name,
+            room_avatar_url: n.room_avatar.map(|uri| uri.to_string()),
+            direct: n.direct,
+            sender: User::from(&n.sender),
+            body: n.body,
+            highlight: n.highlight,
+            noisy: n.noisy,
+            timestamp: n.timestamp,
+        }
+    }
+}
+
+/// What a push is about, for a local notification. Replaced by
+/// [`Notification`].
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct NotificationContent {
     pub room_id: String,
@@ -62,29 +104,26 @@ pub struct NotificationContent {
     /// The push rules ask for a sound.
     pub is_noisy: bool,
     pub timestamp: SystemTime,
-    /// Post it: someone else's event that the push rules notify for.
-    /// Events they do not notify for (our own among them) come as nil
-    /// instead, so this is false only for our own event when the rules
-    /// could not be read. Check it all the same.
+    /// Always true: what should not notify comes as nil.
     pub should_notify: bool,
 }
 
-impl From<core::PushNotification> for NotificationContent {
-    fn from(n: core::PushNotification) -> Self {
+impl From<Notification> for NotificationContent {
+    fn from(n: Notification) -> Self {
         Self {
-            room_id: n.room_id.to_string(),
-            event_id: n.event_id.to_string(),
+            room_id: n.room_id,
+            event_id: n.event_id,
             room_name: n.room_name,
             room_avatar_url: n.room_avatar_url,
-            is_direct: n.is_direct,
-            sender_id: n.sender_id.to_string(),
-            sender_name: n.sender_name,
-            sender_avatar_url: n.sender_avatar_url,
+            is_direct: n.direct,
+            sender_id: n.sender.user_id,
+            sender_name: n.sender.display_name,
+            sender_avatar_url: n.sender.avatar_url,
             body: n.body,
-            is_mention: n.is_mention,
-            is_noisy: n.is_noisy,
+            is_mention: n.highlight,
+            is_noisy: n.noisy,
             timestamp: n.timestamp,
-            should_notify: n.should_notify,
+            should_notify: true,
         }
     }
 }
@@ -148,8 +187,46 @@ pub(crate) async fn notification(
     let room_id = OwnedRoomId::try_from(room_id.as_str()).map_err(MtrxError::invalid)?;
     let event_id = core::OwnedEventId::try_from(event_id.as_str()).map_err(MtrxError::invalid)?;
     run(async move {
-        let notification = core::PushNotification::fetch(&profile, &room_id, &event_id).await?;
-        Ok(notification.map(NotificationContent::from))
+        let notification = core::Notification::fetch(&profile, &room_id, &event_id).await?;
+        Ok(notification.map(|n| NotificationContent::from(Notification::from(n))))
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn a_notification_names_its_sender() {
+        let notification = Notification::from(core::Notification {
+            room_id: "!r:example.org".try_into().unwrap(),
+            event_id: "$e:example.org".try_into().unwrap(),
+            room_name: "Ice sheets".into(),
+            room_avatar: Some("mxc://example.org/ice".into()),
+            direct: false,
+            sender: core::User {
+                id: "@alice:example.org".try_into().unwrap(),
+                name: None,
+                avatar: Some("mxc://example.org/alice".into()),
+            },
+            body: "Image".into(),
+            highlight: true,
+            noisy: false,
+            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        });
+        assert_eq!(
+            notification.room_avatar_url.as_deref(),
+            Some("mxc://example.org/ice")
+        );
+        assert_eq!(notification.sender.user_id, "@alice:example.org");
+        assert_eq!(notification.sender.display_name, "alice");
+        assert_eq!(
+            notification.sender.avatar_url.as_deref(),
+            Some("mxc://example.org/alice")
+        );
+        assert!(notification.highlight && !notification.noisy);
+    }
 }

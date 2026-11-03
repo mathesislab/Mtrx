@@ -79,7 +79,7 @@ pub use presence::{
     describe_last_active,
 };
 pub use profile::Profile;
-pub use push::{HttpPusher, PushNotification, PusherInfo};
+pub use push::{HttpPusher, PusherInfo};
 pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
