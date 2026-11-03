@@ -54,7 +54,7 @@ class RoomModelsTest {
         session.memberList = listOf(member("@b:x"))
         val model = RoomInfoModel(room, session) { it.text }
         assertEquals(Access.PUBLIC, model.settings.value?.access)
-        assertEquals(listOf("@b:x"), model.members.value?.map { it.userId })
+        assertEquals(listOf("@b:x"), model.members.value?.map { it.user.userId })
     }
 
     @Test

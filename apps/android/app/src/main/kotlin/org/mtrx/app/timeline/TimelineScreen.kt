@@ -803,7 +803,7 @@ private fun Composer(
 private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, handlers: RowHandlers) {
     val event = row.event
     val own = event.own
-    val name = displayName(event)
+    val name = event.sender.displayName
     val mark by animateColorAsState(
         if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
         label = "highlight",
@@ -825,7 +825,7 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
                 name,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
-                color = identityColor(event.senderId),
+                color = identityColor(event.sender.userId),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = AVATAR + AVATAR_GAP + 4.dp, end = 48.dp, bottom = 2.dp),
@@ -841,7 +841,7 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
                 // Beside the bubble, at the first of a group.
                 if (row.avatarColumn) {
                     if (row.showSender) {
-                        Avatar(name, event.senderAvatarUrl, seed = event.senderId, images = images, size = AVATAR)
+                        Avatar(name, event.sender.avatarUrl, seed = event.sender.userId, images = images, size = AVATAR)
                     } else {
                         Spacer(Modifier.width(AVATAR))
                     }
@@ -1036,7 +1036,7 @@ private fun ReadersLine(readers: Readers, images: Images, onClick: () -> Unit, m
         verticalAlignment = Alignment.CenterVertically,
     ) {
         for (reader in readers.shown) {
-            Avatar(personName(reader), reader.avatarUrl, seed = reader.userId, images = images, size = 16.dp)
+            Avatar(reader.displayName, reader.avatarUrl, seed = reader.userId, images = images, size = 16.dp)
         }
         if (readers.more > 0) {
             Text(

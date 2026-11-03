@@ -134,7 +134,7 @@ private fun PinnedRow(row: EventRow, onPinned: (String) -> Unit) {
             .padding(vertical = 4.dp),
     ) {
         Text(
-            displayName(row.event),
+            row.event.sender.displayName,
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,

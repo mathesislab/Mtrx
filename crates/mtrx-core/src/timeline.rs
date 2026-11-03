@@ -40,7 +40,7 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    AbortOnDrop, Error, Live, PinsChange, Result, Session, calls,
+    AbortOnDrop, Error, Live, PinsChange, Result, Session, User, calls,
     echo::Echoes,
     media::{self, MediaRef},
     pins, room_links,
@@ -70,9 +70,8 @@ pub struct Event {
     /// Identifies the event for actions (reply, edit, react, delete).
     pub key: EventKey,
     pub event_id: Option<OwnedEventId>,
-    pub sender: OwnedUserId,
-    pub sender_name: Option<String>,
-    pub sender_avatar: Option<OwnedMxcUri>,
+    /// With their name and avatar once known.
+    pub sender: User,
     pub timestamp: SystemTime,
     pub own: bool,
     /// We may edit it (our own text message).
@@ -80,7 +79,8 @@ pub struct Event {
     pub content: EventContent,
     pub send_state: SendState,
     /// Others whose read receipt is on this event: they read up to here.
-    pub read_by: Vec<Reader>,
+    /// Names and avatars arrive in a later update when not yet known.
+    pub read_by: Vec<User>,
     /// Why an [`EventContent::UnableToDecrypt`] could not be decrypted, as
     /// far as known; `None` for other content.
     pub utd_cause: Option<UtdCause>,
@@ -133,15 +133,6 @@ impl From<matrix_sdk_crypto::types::events::UtdCause> for UtdCause {
     }
 }
 
-/// Someone who read up to an event, or reacted to it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Reader {
-    pub id: OwnedUserId,
-    /// Display name and avatar, once known.
-    pub name: Option<String>,
-    pub avatar: Option<OwnedMxcUri>,
-}
-
 /// Identifies a timeline event for actions on it: its event ID once the
 /// server accepted it, also while the local echo still shows; before that,
 /// the local echo's transaction ID.
@@ -192,9 +183,7 @@ impl Event {
             id: id.to_owned(),
             key: EventKey(TimelineEventItemId::TransactionId(id.into())),
             event_id: None,
-            sender,
-            sender_name: None,
-            sender_avatar: None,
+            sender: User::from(sender),
             timestamp: SystemTime::UNIX_EPOCH,
             own: false,
             editable: false,
@@ -305,8 +294,7 @@ pub enum MediaKind {
 pub struct Reply {
     pub event_id: OwnedEventId,
     /// `None` until loaded.
-    pub sender: Option<OwnedUserId>,
-    pub sender_name: Option<String>,
+    pub sender: Option<User>,
     /// Its text, shortened; `None` until loaded.
     pub preview: Option<String>,
     /// Its kind once loaded, if it is a message (not deleted, say).
@@ -323,7 +311,7 @@ pub struct Reaction {
     /// We reacted with it.
     pub own: bool,
     /// Everyone who reacted with it, us included, in the order they did.
-    pub by: Vec<Reader>,
+    pub by: Vec<User>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1278,16 +1266,18 @@ impl Converter {
                 SendState::Failed(error.to_string())
             }
         };
-        let (sender_name, sender_avatar) = match event.sender_profile() {
-            TimelineDetails::Ready(profile) => {
-                (profile.display_name.clone(), profile.avatar_url.clone())
-            }
-            _ => (None, None),
+        let sender = match event.sender_profile() {
+            TimelineDetails::Ready(profile) => User {
+                id: event.sender().to_owned(),
+                name: profile.display_name.clone(),
+                avatar: profile.avatar_url.clone(),
+            },
+            _ => User::from(event.sender().to_owned()),
         };
-        if sender_name.is_some() || sender_avatar.is_some() {
+        if sender.name.is_some() || sender.avatar.is_some() {
             self.profiles.insert(
-                event.sender().to_owned(),
-                (sender_name.clone(), sender_avatar.clone()),
+                sender.id.clone(),
+                (sender.name.clone(), sender.avatar.clone()),
             );
         }
         let own = self.own.clone();
@@ -1302,9 +1292,7 @@ impl Converter {
             id: id.to_owned(),
             key: EventKey::of(event),
             event_id: event.event_id().map(ToOwned::to_owned),
-            sender: event.sender().to_owned(),
-            sender_name,
-            sender_avatar,
+            sender,
             timestamp: system_time(event.timestamp()),
             own: event.is_own(),
             editable: event.is_editable(),
@@ -1315,7 +1303,7 @@ impl Converter {
         })
     }
 
-    fn reader(&mut self, user: &OwnedUserId) -> Reader {
+    fn reader(&mut self, user: &OwnedUserId) -> User {
         let (name, avatar) = match self.profiles.get(user) {
             Some(profile) => profile.clone(),
             None => {
@@ -1323,7 +1311,7 @@ impl Converter {
                 (None, None)
             }
         };
-        Reader {
+        User {
             id: user.clone(),
             name,
             avatar,
@@ -1336,17 +1324,20 @@ impl Converter {
         let mut out = Reply {
             event_id: reply.event_id.clone(),
             sender: None,
-            sender_name: None,
             preview: None,
             kind: None,
             failed: false,
         };
         match &reply.event {
             TimelineDetails::Ready(original) => {
-                out.sender = Some(original.sender.clone());
-                if let TimelineDetails::Ready(profile) = &original.sender_profile {
-                    out.sender_name = profile.display_name.clone();
-                }
+                out.sender = Some(match &original.sender_profile {
+                    TimelineDetails::Ready(profile) => User {
+                        id: original.sender.clone(),
+                        name: profile.display_name.clone(),
+                        avatar: profile.avatar_url.clone(),
+                    },
+                    _ => User::from(original.sender.clone()),
+                });
                 out.preview = Some(match &original.content {
                     TimelineItemContent::MsgLike(m) => match &m.kind {
                         // The formatted text, without Markdown syntax.
@@ -1501,12 +1492,8 @@ mod tests {
 
     use super::*;
 
-    fn reader(id: &str) -> Reader {
-        Reader {
-            id: id.try_into().unwrap(),
-            name: None,
-            avatar: None,
-        }
+    fn reader(id: &str) -> User {
+        User::from(OwnedUserId::try_from(id).unwrap())
     }
 
     fn event(id: &str, state: bool, readers: &[&str]) -> TimelineEntry {

@@ -17,7 +17,7 @@ import org.mtrx.app.SpacesFixture
 import org.mtrx.app.summary
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.RoomKind
-import uniffi.mtrx.UserProfile
+import uniffi.mtrx.User
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PersonInfoTest {
@@ -49,7 +49,7 @@ class PersonInfoTest {
     fun profileReplacesTheChatsNameAndAvatarOnceLoaded() = runTest {
         val gate = CompletableDeferred<Unit>()
         session.profileGate = gate
-        session.profile = UserProfile(userId = bob, name = "Bob", avatarUrl = "mxc://x/bob")
+        session.profile = User(userId = bob, name = "Bob", avatarUrl = "mxc://x/bob", displayName = "Bob")
         val model = model()
         assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/chat"), personCard(bob, header, model.profile.value))
 
@@ -59,9 +59,9 @@ class PersonInfoTest {
 
     @Test
     fun profileFillsInOnlyWhatIsSet() {
-        val noName = UserProfile(userId = bob, name = null, avatarUrl = "mxc://x/bob")
+        val noName = User(userId = bob, name = null, avatarUrl = "mxc://x/bob", displayName = "bob")
         assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/bob"), personCard(bob, header, noName))
-        val noAvatar = UserProfile(userId = bob, name = "Bob", avatarUrl = null)
+        val noAvatar = User(userId = bob, name = "Bob", avatarUrl = null, displayName = "Bob")
         assertEquals(PersonCard(bob, "Bob", "mxc://x/chat"), personCard(bob, header, noAvatar))
     }
 
@@ -120,7 +120,7 @@ class PersonInfoTest {
     fun closingStopsLoadingTheProfile() = runTest {
         val gate = CompletableDeferred<Unit>()
         session.profileGate = gate
-        session.profile = UserProfile(userId = bob, name = "Bob", avatarUrl = null)
+        session.profile = User(userId = bob, name = "Bob", avatarUrl = null, displayName = "Bob")
         val model = model()
         model.close()
         gate.complete(Unit)

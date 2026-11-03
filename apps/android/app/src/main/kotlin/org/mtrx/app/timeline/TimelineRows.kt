@@ -9,10 +9,10 @@ import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Reaction
-import uniffi.mtrx.Reader
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.RowContent
 import uniffi.mtrx.TimelineEvent
+import uniffi.mtrx.User
 import uniffi.mtrx.TimelineRow as LibraryRow
 
 /** A row of the timeline screen; [id] is stable (list identity). */
@@ -104,7 +104,7 @@ data class Quote(
 
 fun quote(reply: ReplyQuote): Quote = Quote(
     eventId = reply.eventId,
-    sender = reply.senderName ?: reply.senderId?.let(::localpart),
+    sender = reply.sender?.displayName,
     text = when (reply.state) {
         QuoteState.LOADING -> "Loading…"
         QuoteState.FAILED -> "Could not load the message"
@@ -141,17 +141,14 @@ fun preview(row: EventRow): String {
 }
 
 /** Who read up to a message: the first [MAX_SHOWN] shown, then "+[more]". */
-data class Readers(val all: List<Reader>) {
-    val shown: List<Reader> get() = all.take(MAX_SHOWN)
+data class Readers(val all: List<User>) {
+    val shown: List<User> get() = all.take(MAX_SHOWN)
     val more: Int get() = (all.size - MAX_SHOWN).coerceAtLeast(0)
 
     companion object {
         const val MAX_SHOWN = 3
     }
 }
-
-/** A reader's or reactor's name, or the localpart of their ID until it is known. */
-fun personName(reader: Reader): String = reader.name ?: localpart(reader.userId)
 
 /** Consecutive state events (joins, renames, …) in one line. */
 data class StateRow(override val id: String, val text: String) : TimelineRow
@@ -176,9 +173,3 @@ fun shownRows(rows: List<LibraryRow>, zone: ZoneId = ZoneId.systemDefault()): Li
 
 /** The newest message's row, to mark as read. */
 fun latestEventId(rows: List<TimelineRow>): String? = rows.lastOrNull { it is EventRow }?.id
-
-/** The sender's display name, or the localpart of their ID. */
-fun displayName(event: TimelineEvent): String = event.senderName ?: localpart(event.senderId)
-
-/** `alice` of `@alice:example.org`. */
-fun localpart(userId: String): String = userId.removePrefix("@").substringBefore(':')

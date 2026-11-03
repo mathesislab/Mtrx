@@ -6,18 +6,53 @@ use std::collections::HashMap;
 use matrix_sdk::{
     Room, RoomMemberships,
     ruma::{
-        OwnedRoomId, OwnedUserId, UserId,
+        OwnedMxcUri, OwnedRoomId, OwnedUserId, UserId,
         api::client::profile::{AvatarUrl, DisplayName},
     },
 };
 use tracing::warn;
 
-use crate::{Result, Session, UserSummary};
+use crate::{Result, Session};
+
+/// Someone: their user ID, with their name and picture as far as known.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct User {
+    pub id: OwnedUserId,
+    /// Display name, if they set one.
+    pub name: Option<String>,
+    pub avatar: Option<OwnedMxcUri>,
+}
+
+impl User {
+    /// Their name, else their user ID's localpart.
+    pub fn display_name(&self) -> String {
+        match self.name.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() => name.to_owned(),
+            _ => self.localpart().to_owned(),
+        }
+    }
+
+    /// `alice` of `@alice:example.org`.
+    pub fn localpart(&self) -> &str {
+        self.id.localpart()
+    }
+}
+
+/// Someone whose name and picture are not known.
+impl From<OwnedUserId> for User {
+    fn from(id: OwnedUserId) -> Self {
+        Self {
+            id,
+            name: None,
+            avatar: None,
+        }
+    }
+}
 
 /// Someone the user shares spaces, rooms or a direct chat with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Contact {
-    pub user: UserSummary,
+    pub user: User,
     /// Joined spaces both are in.
     pub spaces: Vec<OwnedRoomId>,
     /// Joined rooms (not spaces) both are in, direct chats included.
@@ -36,7 +71,7 @@ impl Contact {
 /// Who someone is, for their info card.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UserInfo {
-    pub user: UserSummary,
+    pub user: User,
     /// Spaces and rooms shared with them, as far as known.
     pub shared: Vec<OwnedRoomId>,
 }
@@ -70,7 +105,7 @@ impl Session {
                 let contact = contacts
                     .entry(member.user_id().to_owned())
                     .or_insert_with(|| Contact {
-                        user: UserSummary {
+                        user: User {
                             id: member.user_id().to_owned(),
                             name: member.display_name().map(ToOwned::to_owned),
                             avatar: member.avatar_url().map(ToOwned::to_owned),
@@ -96,9 +131,9 @@ impl Session {
     }
 
     /// A user's name and picture from their profile on the server.
-    pub async fn user_profile(&self, user: &UserId) -> Result<UserSummary> {
+    pub async fn user_profile(&self, user: &UserId) -> Result<User> {
         let profile = self.client.account().fetch_user_profile_of(user).await?;
-        Ok(UserSummary {
+        Ok(User {
             id: user.to_owned(),
             name: profile.get_static::<DisplayName>().ok().flatten(),
             avatar: profile.get_static::<AvatarUrl>().ok().flatten(),
@@ -109,11 +144,7 @@ impl Session {
     pub async fn user_info(&self, user: &UserId) -> Result<UserInfo> {
         let user = self.user_profile(user).await.unwrap_or_else(|e| {
             warn!("could not load the profile of {user}: {e}");
-            UserSummary {
-                id: user.to_owned(),
-                name: None,
-                avatar: None,
-            }
+            User::from(user.to_owned())
         });
         let shared = self.shared_rooms(&user.id).await;
         Ok(UserInfo { user, shared })
@@ -142,4 +173,20 @@ async fn is_member(room: &Room, user: &UserId) -> bool {
     member.ok().flatten().is_some_and(|m| {
         *m.membership() == matrix_sdk::ruma::events::room::member::MembershipState::Join
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_name_else_the_localpart() {
+        let mut ann = User::from(OwnedUserId::try_from("@ann:example.org").unwrap());
+        assert_eq!(ann.display_name(), "ann");
+        ann.name = Some(" Ann ".into());
+        assert_eq!(ann.display_name(), "Ann");
+        ann.name = Some(" ".into());
+        assert_eq!(ann.display_name(), "ann");
+        assert_eq!(ann.localpart(), "ann");
+    }
 }

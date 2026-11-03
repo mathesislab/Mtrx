@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use mtrx_core as core;
 
-use crate::{MtrxError, Session, Timeline, runtime::run};
+use crate::{MtrxError, Session, Timeline, User, runtime::run};
 
 /// When a room notifies (on all our devices).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -61,8 +61,7 @@ pub struct SpaceLink {
 /// Someone banned from a room.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Banned {
-    pub user_id: String,
-    pub name: Option<String>,
+    pub user: User,
     pub reason: Option<String>,
 }
 
@@ -151,8 +150,7 @@ impl From<core::RoomSettings> for RoomSettings {
                 .banned
                 .into_iter()
                 .map(|b| Banned {
-                    user_id: b.id.to_string(),
-                    name: b.name,
+                    user: User::from(&b.user),
                     reason: b.reason,
                 })
                 .collect(),
@@ -239,10 +237,7 @@ impl From<core::Confirmation> for LevelConfirmation {
 /// Someone in a room.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Member {
-    pub user_id: String,
-    pub name: Option<String>,
-    /// `mxc://` URI, for `Session.avatar`.
-    pub avatar_url: Option<String>,
+    pub user: User,
     pub role: Role,
     /// Their power level; `None` for a creator of the room (an owner, above
     /// every level).
@@ -276,9 +271,7 @@ impl From<core::Member> for Member {
                 })
                 .collect(),
             manageable: m.manageable(),
-            user_id: m.id.to_string(),
-            name: m.name,
-            avatar_url: m.avatar.map(|a| a.to_string()),
+            user: User::from(&m.user),
             role: m.role.into(),
             level: m.level,
             invited: m.invited,
@@ -298,8 +291,8 @@ impl From<core::Member> for Member {
 /// just give it: any change to our own, or a level as high as ours.
 #[uniffi::export]
 pub fn level_confirmation(member: Member, level: i64) -> Option<LevelConfirmation> {
-    let name = core::shown_name(member.name.as_deref(), &member.user_id);
-    core::level_confirmation(&name, member.own, &member.manage.into(), level).map(Into::into)
+    let name = &member.user.display_name;
+    core::level_confirmation(name, member.own, &member.manage.into(), level).map(Into::into)
 }
 
 /// A level typed for a custom level: a number, at most `up_to`.

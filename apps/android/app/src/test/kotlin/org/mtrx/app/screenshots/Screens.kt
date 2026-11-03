@@ -25,6 +25,7 @@ import org.mtrx.app.rooms.OverviewRowActions
 import org.mtrx.app.rooms.RoomInfoActions
 import org.mtrx.app.rooms.RoomInfoHeader
 import org.mtrx.app.summary
+import org.mtrx.app.user
 import org.mtrx.app.timeline.TimelineActions
 import uniffi.mtrx.Access
 import uniffi.mtrx.Badges
@@ -39,7 +40,6 @@ import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.Reaction
-import uniffi.mtrx.Reader
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.Role
 import uniffi.mtrx.RoomKind
@@ -52,6 +52,7 @@ import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.Topic
+import uniffi.mtrx.User
 
 // Fake data for the screenshot tests: a team working on ice sheets. No
 // call reaches the native library (Images never loads without a picture).
@@ -170,7 +171,7 @@ fun say(
     time: Instant,
     own: Boolean = false,
     reactions: List<Reaction> = emptyList(),
-    readBy: List<Reader> = emptyList(),
+    readBy: List<User> = emptyList(),
     replyTo: ReplyQuote? = null,
     first: Boolean = true,
 ): TimelineRow = event(
@@ -192,15 +193,13 @@ fun event(
     time: Instant,
     own: Boolean,
     content: EventContent,
-    readBy: List<Reader> = emptyList(),
+    readBy: List<User> = emptyList(),
     first: Boolean = true,
 ): TimelineRow = messageRow(
     id,
     TimelineEvent(
         eventId = "\$$id",
-        senderId = sender,
-        senderName = name,
-        senderAvatarUrl = null,
+        sender = user(sender, name),
         timestamp = time,
         own = own,
         content = content,
@@ -213,7 +212,7 @@ fun event(
 
 /** A loaded quote of [sender]'s message [id]. */
 fun quoting(id: String, sender: String, name: String, body: String) =
-    ReplyQuote(eventId = "\$$id", state = QuoteState.LOADED, senderId = sender, senderName = name, kind = MessageKind.TEXT, body = body)
+    ReplyQuote(eventId = "\$$id", state = QuoteState.LOADED, sender = user(sender, name), kind = MessageKind.TEXT, body = body)
 
 val bob = "@bob:example.org"
 val ana = "@ana:example.org"
@@ -257,7 +256,7 @@ val iceSettings = roomSettings(
     listed = false,
     spaces = listOf(SpaceLink(spaceId = TEAM, suggested = true, canChange = true)),
     canAddTo = listOf(OUTREACH),
-    banned = listOf(Banned(userId = "@spam:example.net", name = "Spammer", reason = "Spam")),
+    banned = listOf(Banned(user = user("@spam:example.net", "Spammer"), reason = "Spam")),
 ).copy(notify = NotifyMode.MENTIONS, history = History.INVITED, permissions = Permissions.MODERATORS)
 
 val iceMembers = listOf(

@@ -58,7 +58,7 @@ pub(crate) fn space_rooms<'a>(
             inside.contains(&r.id)
                 || r.direct_user
                     .as_ref()
-                    .is_some_and(|u| members.is_some_and(|m| m.contains(u)))
+                    .is_some_and(|u| members.is_some_and(|m| m.contains(&u.id)))
                 || layout.category_of(&r.id).is_some()
         })
         .collect()
@@ -148,7 +148,7 @@ pub(crate) mod tests {
 
     pub(crate) fn direct(id: &str, user: &str) -> RoomSummary {
         RoomSummary {
-            direct_user: Some(OwnedUserId::try_from(user).unwrap()),
+            direct_user: Some(crate::User::from(OwnedUserId::try_from(user).unwrap())),
             ..room(id, RoomKind::Direct)
         }
     }

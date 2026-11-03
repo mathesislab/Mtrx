@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use mtrx_core::{self as core, OwnedRoomId, OwnedUserId};
+use mtrx_core::{self as core, OwnedRoomId};
 
 use crate::{
     MtrxError, RoomKind, RoomSummary, Session, TaskHandle,
@@ -542,8 +542,8 @@ impl TryFrom<&RoomSummary> for core::RoomSummary {
 
     /// Without its tag, which the apps don't get.
     fn try_from(room: &RoomSummary) -> Result<Self, MtrxError> {
-        let direct_user: Option<OwnedUserId> = (room.direct_user_id.as_deref())
-            .map(crate::error::user_id)
+        let direct_user = (room.direct_user.as_ref())
+            .map(core::User::try_from)
             .transpose()?;
         let pinned = (room.pinned.iter())
             .map(|id| core::OwnedEventId::try_from(id.as_str()).map_err(MtrxError::invalid))
@@ -612,7 +612,7 @@ mod tests {
             unread_mentions: 0,
             unread_notifications: 0,
             last_activity: None,
-            direct_user_id: None,
+            direct_user: None,
             alias: None,
             joined_members: 0,
             public: false,

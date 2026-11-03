@@ -7,7 +7,7 @@ use matrix_sdk::{
     Room, RoomMemberships,
     notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode},
     ruma::{
-        OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomAliasId, RoomId, UserId,
+        OwnedRoomAliasId, OwnedRoomId, RoomAliasId, RoomId, UserId,
         api::client::{
             directory::{get_room_visibility, set_room_visibility},
             room::Visibility,
@@ -28,7 +28,7 @@ use matrix_sdk::{
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    Error, Permissions, Result, RoomHandle, Session,
+    Error, Permissions, Result, RoomHandle, Session, User,
     media::guess_mimetype,
     permissions::{everyone_can_edit, power_levels},
     synced,
@@ -135,8 +135,7 @@ pub struct SpaceLink {
 /// Someone banned from a room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Banned {
-    pub id: OwnedUserId,
-    pub name: Option<String>,
+    pub user: User,
     pub reason: Option<String>,
 }
 
@@ -236,8 +235,11 @@ impl RoomHandle {
             .await?
             .into_iter()
             .map(|member| Banned {
-                id: member.user_id().to_owned(),
-                name: member.display_name().map(ToOwned::to_owned),
+                user: User {
+                    id: member.user_id().to_owned(),
+                    name: member.display_name().map(ToOwned::to_owned),
+                    avatar: member.avatar_url().map(ToOwned::to_owned),
+                },
                 reason: member.event().reason().map(ToOwned::to_owned),
             })
             .collect();

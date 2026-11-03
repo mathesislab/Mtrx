@@ -17,7 +17,7 @@ final class RoomInfoModelTests: XCTestCase {
 
     func testReadsTheSettingsAndMembers() {
         XCTAssertEqual(model.settings, Make.settings())
-        XCTAssertEqual(model.members?.map(\.userId), ["@me:example.org"])
+        XCTAssertEqual(model.members?.map(\.user.userId), ["@me:example.org"])
     }
 
     func testAChangeShowsAtOnceThenAsTheServerHasIt() async {

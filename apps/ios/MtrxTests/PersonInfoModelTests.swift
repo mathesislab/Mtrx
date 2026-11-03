@@ -23,7 +23,9 @@ final class PersonInfoModelTests: XCTestCase {
 
     func testTheProfileReplacesTheChatsNameAndPicture() async {
         session.profile = .success(
-            UserProfile(userId: "@bob:example.org", name: "Bob Builder", avatarUrl: "mxc://example.org/bob"))
+            User(
+                userId: "@bob:example.org", name: "Bob Builder", avatarUrl: "mxc://example.org/bob",
+                displayName: "Bob Builder"))
         let model = makeModel()
         // The chat's at once.
         XCTAssertEqual(model.name, "Bob")
@@ -35,7 +37,8 @@ final class PersonInfoModelTests: XCTestCase {
     }
 
     func testWhatTheProfileLacksStaysTheChats() async {
-        session.profile = .success(UserProfile(userId: "@bob:example.org", name: nil, avatarUrl: "mxc://example.org/bob"))
+        session.profile = .success(
+            User(userId: "@bob:example.org", name: nil, avatarUrl: "mxc://example.org/bob", displayName: "bob"))
         let model = makeModel()
         model.load()
         await eventually { model.avatarUrl == "mxc://example.org/bob" }
@@ -103,8 +106,9 @@ final class PersonInfoModelTests: XCTestCase {
 
     func testADirectChatsHeaderOpensThePersonsSheet() async {
         let timeline = TimelineModel(session: session, room: chat)
-        XCTAssertEqual(timeline.person, "@bob:example.org")
-        session.profile = .success(UserProfile(userId: "@bob:example.org", name: "Bob Builder", avatarUrl: nil))
+        XCTAssertEqual(timeline.person?.userId, "@bob:example.org")
+        session.profile = .success(
+            User(userId: "@bob:example.org", name: "Bob Builder", avatarUrl: nil, displayName: "Bob Builder"))
         timeline.showPersonInfo()
         XCTAssertEqual(timeline.personInfo?.userId, "@bob:example.org")
         // The profile is asked for as it opens.

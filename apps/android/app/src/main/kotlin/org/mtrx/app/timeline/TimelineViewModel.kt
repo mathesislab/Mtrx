@@ -344,7 +344,7 @@ class TimelineViewModel(
         val eventId = row.event.eventId ?: return
         endEdit()
         pendingReply = null
-        _composing.value = Composing.Replying(itemId, displayName(row.event), preview(row), eventId)
+        _composing.value = Composing.Replying(itemId, row.event.sender.displayName, preview(row), eventId)
         drafts.changed(currentDraft())
     }
 

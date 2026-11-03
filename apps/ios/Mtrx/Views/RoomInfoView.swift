@@ -373,18 +373,18 @@ struct RoomSettingsSections: View {
 
     private func bannedSection(_ settings: RoomSettings) -> some View {
         Section("Banned") {
-            ForEach(settings.banned, id: \.userId) { banned in
+            ForEach(settings.banned, id: \.user.userId) { banned in
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(banned.name ?? banned.userId)
-                        Text(banned.reason.map { "\(banned.userId) · \($0)" } ?? banned.userId)
+                        Text(banned.user.displayName)
+                        Text(banned.reason.map { "\(banned.user.userId) · \($0)" } ?? banned.user.userId)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
                     Spacer()
                     if settings.canUnban {
-                        Button("Unban") { model.unban(banned.userId) }
+                        Button("Unban") { model.unban(banned.user.userId) }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                     }

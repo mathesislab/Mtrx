@@ -60,7 +60,6 @@ import uniffi.mtrx.PresenceDot
 import uniffi.mtrx.PresenceListener
 import uniffi.mtrx.PresenceState
 import uniffi.mtrx.PusherInfo
-import uniffi.mtrx.Reader
 import uniffi.mtrx.RecoveryListener
 import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
@@ -85,7 +84,7 @@ import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.TimelineRowsListener
 import uniffi.mtrx.TypingListener
-import uniffi.mtrx.UserProfile
+import uniffi.mtrx.User
 import uniffi.mtrx.Verification
 import uniffi.mtrx.VerificationListener
 import uniffi.mtrx.VerificationRequestListener
@@ -122,7 +121,7 @@ class FakeSession : Session(NoHandle) {
     var roomTimeline: Timeline = FakeTimeline()
 
     /** [userProfile] gives [profile], or throws [profileError]; after [profileGate] if set. */
-    var profile: UserProfile? = null
+    var profile: User? = null
     var profileError: MtrxException? = null
     var profileGate: CompletableDeferred<Unit>? = null
 
@@ -273,10 +272,10 @@ class FakeSession : Session(NoHandle) {
 
     override suspend fun timeline(roomId: String): Timeline = roomTimeline
 
-    override suspend fun userProfile(userId: String): UserProfile {
+    override suspend fun userProfile(userId: String): User {
         profileGate?.await()
         profileError?.let { throw it }
-        return profile ?: UserProfile(userId = userId, name = null, avatarUrl = null)
+        return profile ?: user(userId)
     }
 
     /** [sharedRooms] gives these, by user; [sharedError] fails it. */
@@ -516,9 +515,7 @@ fun member(
     invited: Boolean = false,
     defaultLevel: Long = 0,
 ): Member = Member(
-    userId = userId,
-    name = name,
-    avatarUrl = null,
+    user = user(userId, name),
     role = when (level) {
         100L -> Role.ADMIN
         50L -> Role.MODERATOR
@@ -666,6 +663,14 @@ fun makePresence(
     },
 )
 
+/** [userId], named [name] if given; shown as the library names them: by name, else the ID's localpart. */
+fun user(userId: String, name: String? = null): User = User(
+    userId = userId,
+    name = name,
+    avatarUrl = null,
+    displayName = name ?: userId.removePrefix("@").substringBefore(':'),
+)
+
 fun summary(
     id: String,
     kind: RoomKind = RoomKind.ROOM,
@@ -689,7 +694,7 @@ fun summary(
     unreadMentions = mentions.toULong(),
     unreadNotifications = unread.toULong(),
     lastActivity = lastActivity,
-    directUserId = directUserId,
+    directUser = directUserId?.let { user(it) },
     alias = null,
     joinedMembers = 2uL,
     pinned = pinned,
@@ -859,7 +864,7 @@ fun messageEvent(
     eventId: String? = "\$$id",
     sendState: SendState = SendState.Sent,
     editable: Boolean = false,
-    readBy: List<Reader> = emptyList(),
+    readBy: List<User> = emptyList(),
 ): TimelineRow = eventItem(id, sender, EventContent.Message(message), own, at, eventId, sendState, editable, readBy)
 
 fun eventItem(
@@ -871,14 +876,12 @@ fun eventItem(
     eventId: String? = "\$$id",
     sendState: SendState = SendState.Sent,
     editable: Boolean = false,
-    readBy: List<Reader> = emptyList(),
+    readBy: List<User> = emptyList(),
 ): TimelineRow = messageRow(
     id,
     TimelineEvent(
         eventId = eventId,
-        senderId = sender,
-        senderName = null,
-        senderAvatarUrl = null,
+        sender = user(sender),
         timestamp = Instant.ofEpochSecond(at),
         own = own,
         content = content,

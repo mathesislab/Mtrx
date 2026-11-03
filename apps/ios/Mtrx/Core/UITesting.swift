@@ -44,6 +44,9 @@ enum UITesting {
     static let ann = "!ann:example.org"
 }
 
+/// The other person of the direct chats and messages.
+private var annUser: User { User(userId: "@ann:example.org", name: "Ann", avatarUrl: nil, displayName: "Ann") }
+
 private final class UITestCore: Mtrx, @unchecked Sendable {
     override func restore() async throws -> Session? {
         UITestSession(noHandle: .init())
@@ -128,7 +131,7 @@ private final class UITestSession: Session, @unchecked Sendable {
         RoomSummary(
             id: id, name: name, avatarUrl: nil, topic: nil, kind: kind, invited: false, encrypted: false,
             unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0,
-            lastActivity: Date().addingTimeInterval(-ago), directUserId: kind == .direct ? "@ann:example.org" : nil,
+            lastActivity: Date().addingTimeInterval(-ago), directUser: kind == .direct ? annUser : nil,
             alias: nil, joinedMembers: 3, public: false, pinned: [])
     }
 
@@ -276,9 +279,9 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     private static func message(_ id: String, _ text: String, own: Bool, at: Date, sent: Bool = true) -> TimelineRow {
         let message = Message(
             kind: .text, body: text, edited: false, media: nil, reactions: [], replyTo: nil, rawBody: text)
+        let sender = own ? User(userId: "@me:example.org", name: "Me", avatarUrl: nil, displayName: "Me") : annUser
         let event = TimelineEvent(
-            eventId: sent ? "$\(id)" : nil, senderId: own ? "@me:example.org" : "@ann:example.org",
-            senderName: own ? "Me" : "Ann", senderAvatarUrl: nil, timestamp: at, own: own,
+            eventId: sent ? "$\(id)" : nil, sender: sender, timestamp: at, own: own,
             content: .message(message: message), sendState: sent ? .sent : .sending, editable: own)
         return row(id, event)
     }

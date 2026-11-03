@@ -8,7 +8,7 @@ use std::{collections::HashMap, time::SystemTime};
 
 use chrono::{DateTime, Local};
 use iced::advanced::widget::Id;
-use mtrx_core::{Event, EventContent, MessageKind, Reply, Row};
+use mtrx_core::{Event, EventContent, MessageKind, Reply, Row, User};
 use mtrx_format::{Block, Document, Inline};
 
 use crate::{
@@ -133,7 +133,7 @@ impl Part<'_> {
         match &self.text {
             // Copied as the name and time put before messages are.
             Text::Sender(event) => vec![
-                unit(display_name(event), "", ""),
+                unit(event.sender.display_name(), "", ""),
                 unit(time(event), "", ", "),
             ],
             Text::Reply(reply) => {
@@ -214,10 +214,10 @@ pub fn copied(
     let mut last_row = None;
     for (row, part, mut copied) in copies {
         match (&part.text, rows[row].event()) {
-            (Text::Sender(event), _) => sender = Some(&event.sender),
-            (_, Some(event)) if several && sender != Some(&event.sender) => {
-                copied = Copied::byline(&display_name(event), &time(event)).then(copied);
-                sender = Some(&event.sender);
+            (Text::Sender(event), _) => sender = Some(&event.sender.id),
+            (_, Some(event)) if several && sender != Some(&event.sender.id) => {
+                copied = Copied::byline(&event.sender.display_name(), &time(event)).then(copied);
+                sender = Some(&event.sender.id);
             }
             _ => {}
         }
@@ -234,22 +234,13 @@ pub fn copied(
 /// The name of the sender of a reply's message and the start of it, as
 /// shown before it is cut to fit.
 fn reply_text(reply: &Reply) -> (String, String) {
-    let sender = (reply.sender_name.as_deref())
-        .or(reply.sender.as_ref().map(|s| s.localpart()))
-        .unwrap_or("…");
+    let sender = (reply.sender.as_ref()).map_or_else(|| "…".to_owned(), User::display_name);
     let preview = reply.preview.as_deref().unwrap_or(if reply.failed {
         "Could not load the message"
     } else {
         "Loading…"
     });
-    (sender.to_owned(), preview.to_owned())
-}
-
-pub fn display_name(event: &Event) -> String {
-    event
-        .sender_name
-        .clone()
-        .unwrap_or_else(|| event.sender.localpart().to_owned())
+    (sender, preview.to_owned())
 }
 
 pub fn time(event: &Event) -> String {
@@ -286,8 +277,7 @@ mod tests {
         if let EventContent::Message(m) = &mut reply.content {
             m.in_reply_to = Some(Reply {
                 event_id: "$x:x".try_into().unwrap(),
-                sender: Some(user("carol")),
-                sender_name: None,
+                sender: Some(User::from(user("carol"))),
                 preview: Some("Where is the data from?".into()),
                 kind: None,
                 failed: false,

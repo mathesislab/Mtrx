@@ -349,7 +349,7 @@ private enum Screens {
                 "2",
                 Make.event(
                     "ann", Make.text("Plots at https://example.org/runs"), at: at(1), eventId: "$2",
-                    readBy: [Make.reader("bob")]),
+                    readBy: [Make.user("bob")]),
                 firstInGroup: false),
             Make.row(
                 "3",
@@ -369,8 +369,8 @@ private enum Screens {
                         "Thanks, the plots at https://example.org/runs look right.",
                         edited: true,
                         replyTo: ReplyQuote(
-                            eventId: "$2", state: .loaded, senderId: "@ann:example.org", senderName: "Ann",
-                            kind: .text, body: "Plots at https://example.org/runs")),
+                            eventId: "$2", state: .loaded, sender: Make.user("ann"), kind: .text,
+                            body: "Plots at https://example.org/runs")),
                     at: at(8), own: true, eventId: "$q"),
                 firstInGroup: false),
             Make.row(
@@ -398,7 +398,11 @@ private enum Screens {
     static let settings = Make.settings(
         access: .knock, encrypted: true, listed: false,
         spaces: [SpaceLink(spaceId: "!polar", suggested: true, canChange: true)], canAddTo: ["!teach"],
-        banned: [Banned(userId: "@spam:example.org", name: "Spammer", reason: "Spam")], address: "#ice:example.org")
+        banned: [
+            Banned(
+                user: User(userId: "@spam:example.org", name: "Spammer", avatarUrl: nil, displayName: "Spammer"),
+                reason: "Spam")
+        ], address: "#ice:example.org")
 
     static let members = [
         Make.member("me", level: 100, upTo: 99),
