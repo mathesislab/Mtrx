@@ -393,6 +393,9 @@ final class FakeSession: Session, @unchecked Sendable {
     var changeError: Error?
     var children: Result<[DirectoryRoom], Error> = .success([])
     var childrenRequests = 0
+    /// Each space's rooms as `spaceChildren` last gave them, as the
+    /// library keeps them.
+    var listed: [String: [DirectoryRoom]] = [:]
     /// What `sharedRooms` returns.
     var shared: [String] = []
     var directory: Result<DirectoryPage, Error> = .success(DirectoryPage(rooms: [], next: nil))
@@ -436,7 +439,13 @@ final class FakeSession: Session, @unchecked Sendable {
 
     override func spaceChildren(spaceId: String) async throws -> [DirectoryRoom] {
         childrenRequests += 1
-        return try children.get()
+        let rooms = try children.get()
+        listed[spaceId] = rooms
+        return rooms
+    }
+
+    override func listedSpaceChildren(spaceId: String) -> [DirectoryRoom]? {
+        listed[spaceId]
     }
 
     override func publicRooms(server: String?, query: String, kind: DirectoryKind, page: String?) async throws
@@ -660,14 +669,14 @@ enum Make {
     static func room(
         _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil, unread: UInt64 = 0,
         directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil, topic: String? = nil,
-        parents: [String] = [], pinned: [String] = [], alias: String? = nil, members: UInt64 = 2,
+        pinned: [String] = [], alias: String? = nil, members: UInt64 = 2,
         mentions: UInt64 = 0
     ) -> RoomSummary {
         RoomSummary(
             id: id, name: name ?? id, avatarUrl: avatarUrl, topic: topic, kind: kind, invited: invited,
             encrypted: false, unreadMessages: unread, unreadMentions: mentions, unreadNotifications: 0,
             lastActivity: lastActivity, directUserId: directUser, alias: alias, joinedMembers: members,
-            parents: parents, public: false, pinned: pinned)
+            public: false, pinned: pinned)
     }
 
     /// A room's settings, all ours to change unless said otherwise.
@@ -717,18 +726,18 @@ enum Make {
     }
 
     /// The library's lists of `rooms` (most recently active first), with
-    /// the members of the spaces by space ID; the rooms tagged by ID; the
-    /// rooms joined or made here, not listed yet.
+    /// what each space lists (`children`) and its members, by space ID; the
+    /// rooms tagged by ID; the rooms joined or made here, not listed yet.
     static func lists(
-        _ rooms: [RoomSummary], loaded: Bool = true, notesAtTop: Bool = true, members: [String: [String]] = [:],
-        drafts: [String] = [], favourites: [String] = [], lowPriority: [String] = [],
-        categories: [TestCategory] = [], joining: [String] = []
+        _ rooms: [RoomSummary], loaded: Bool = true, notesAtTop: Bool = true, children: [String: [String]] = [:],
+        members: [String: [String]] = [:], drafts: [String] = [], favourites: [String] = [],
+        lowPriority: [String] = [], categories: [TestCategory] = [], joining: [String] = []
     ) -> RoomLists {
         // The rooms are made up valid.
         try! RoomLists(
             rooms: rooms, loaded: loaded, ownUserId: "@me:example.org", notesAtTop: notesAtTop,
-            spaceMembers: members, drafts: drafts, favourites: favourites, lowPriority: lowPriority,
-            categories: categories, joining: joining)
+            spaceChildren: children, spaceMembers: members, drafts: drafts, favourites: favourites,
+            lowPriority: lowPriority, categories: categories, joining: joining)
     }
 
     /// The rooms of the library's integration test, most recently active
@@ -739,21 +748,24 @@ enum Make {
     static let roomsBySpaceRooms = [
         room("!carol", kind: .direct, invited: true, name: "Carol", directUser: "@carol:example.org"),
         room("!party", invited: true, name: "Party"),
-        room("!offer", invited: true, name: "Offer", parents: ["!team"]),
+        room("!offer", invited: true, name: "Offer"),
         room("!bob", kind: .direct, name: "Bob", unread: 2, directUser: "@bob:example.org"),
         room("!loose", name: "Loose", unread: 1),
-        room("!deep", name: "Deep", parents: ["!sub"]),
-        room("!sub", kind: .space, name: "Sub", parents: ["!team"]),
-        room("!lab", name: "Lab", parents: ["!team"]),
+        room("!deep", name: "Deep"),
+        room("!sub", kind: .space, name: "Sub"),
+        room("!lab", name: "Lab"),
         room("!team", kind: .space, name: "Team"),
         room("!other", kind: .space, name: "Other"),
     ]
+
+    /// What the spaces of `roomsBySpaceRooms` list.
+    static let roomsBySpaceChildren = ["!team": ["!offer", "!sub", "!lab"], "!sub": ["!deep"]]
 
     /// Those rooms' lists, Bob's chat in Team; `extra` rooms last; rooms
     /// `joining`, not listed yet.
     static func roomsBySpace(loaded: Bool = true, extra: [RoomSummary] = [], joining: [String] = []) -> RoomLists {
         lists(
-            roomsBySpaceRooms + extra, loaded: loaded, members: ["!team": ["@bob:example.org", "@me:example.org"]],
-            joining: joining)
+            roomsBySpaceRooms + extra, loaded: loaded, children: roomsBySpaceChildren,
+            members: ["!team": ["@bob:example.org", "@me:example.org"]], joining: joining)
     }
 }

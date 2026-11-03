@@ -241,7 +241,7 @@ struct RoomSettingsSections: View {
                 Picker("Who can join", selection: Binding(get: { settings.access }, set: { model.setAccess($0) })) {
                     Text("Invited people").tag(Access.invite)
                     Text("Ask to join").tag(Access.knock)
-                    if !room.parents.isEmpty || settings.access == .spaceMembers {
+                    if !session.lists.parents(roomId: room.id).isEmpty || settings.access == .spaceMembers {
                         Text("Space members").tag(Access.spaceMembers)
                     }
                     Text("Anyone").tag(Access.public)
