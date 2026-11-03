@@ -416,24 +416,6 @@ impl Session {
         Ok(notes)
     }
 
-    pub async fn set_room_name(&self, room: &RoomId, name: &str) -> Result<()> {
-        self.sdk_room(room)?.set_name(name.to_owned()).await?;
-        Ok(())
-    }
-
-    /// Set the room's topic; a blank one removes it. The room lists show it
-    /// at once ([`Session::room_lists`]).
-    pub async fn set_room_topic(&self, room_id: &RoomId, topic: &str) -> Result<()> {
-        let room = self.sdk_room(room_id)?;
-        // As the room list has it.
-        let shown = Some(topic.to_owned()).filter(|t| !t.trim().is_empty());
-        self.echoes.set_topic(room_id, shown.clone());
-        let result = room.set_room_topic(topic).await;
-        (self.echoes).topic_answered(room_id, &shown, result.is_ok(), Instant::now());
-        result?;
-        Ok(())
-    }
-
     /// Users matching `term` by name or ID in the server's user directory
     /// (people sharing a room with us, or everyone if the server allows).
     pub async fn search_users(&self, term: &str, limit: u64) -> Result<Vec<UserSummary>> {
@@ -476,23 +458,6 @@ impl Session {
                 Err(e.into())
             }
         }
-    }
-
-    /// Leave the room, or decline its invite; it is not coming any more.
-    pub async fn leave(&self, room: &OwnedRoomId) -> Result<()> {
-        self.sdk_room(room)?.leave().await?;
-        self.echoes.drop_joining(room);
-        Ok(())
-    }
-
-    pub async fn invite(&self, room: &OwnedRoomId, user: &OwnedUserId) -> Result<()> {
-        Ok(self.sdk_room(room)?.invite_user_by_id(user).await?)
-    }
-
-    /// Add `child` to `space` (sends `m.space.child` in the space).
-    pub async fn add_to_space(&self, space: &OwnedRoomId, child: &OwnedRoomId) -> Result<()> {
-        let content = SpaceChildEventContent::new(self.via());
-        synced::send_state(&self.sdk_room(space)?, child, content).await
     }
 
     /// Find a known room by ID, alias or exact display name.

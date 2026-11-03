@@ -445,10 +445,8 @@ fn set_tag(summary: &RoomSummary, tag: RoomTag, session: &Arc<Session>) -> Task<
     let (session, room) = (session.clone(), summary.id.clone());
     Task::perform(
         async move {
-            session
-                .set_room_tag(&room, tag)
-                .await
-                .map_err(|e| e.to_string())
+            let saved = async { session.room(&room)?.set_tag(tag).await };
+            saved.await.map_err(|e| e.to_string())
         },
         |result| app::Message::Arrange(Message::Saved(result)),
     )

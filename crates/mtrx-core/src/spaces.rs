@@ -106,10 +106,10 @@ pub(crate) struct SpaceMembers {
 }
 
 impl SpaceMembers {
-    /// Spaces whose members to load now ([`Session::joined_member_ids`]),
+    /// Spaces whose members to load now ([`RoomHandle::joined_member_ids`]),
     /// with their number of members, to pass back to [`Self::loaded`].
     ///
-    /// [`Session::joined_member_ids`]: crate::Session::joined_member_ids
+    /// [`RoomHandle::joined_member_ids`]: crate::RoomHandle::joined_member_ids
     pub(crate) fn due(&mut self, rooms: &[RoomSummary]) -> Vec<(OwnedRoomId, u64)> {
         let spaces = top_level_spaces(rooms);
         self.asked

@@ -5,14 +5,14 @@ use std::collections::HashSet;
 use matrix_sdk::{
     RoomMemberships,
     ruma::{
-        Int, OwnedMxcUri, OwnedUserId, RoomId, UserId,
+        Int, OwnedMxcUri, OwnedUserId, UserId,
         events::room::member::MembershipState,
         events::room::power_levels::{RoomPowerLevels, UserPowerLevel},
         int,
     },
 };
 
-use crate::{Result, RoomHandle, Session};
+use crate::{Result, RoomHandle};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
@@ -60,85 +60,6 @@ impl Role {
             Role::Moderator => 50,
             Role::Member => default,
         }
-    }
-}
-
-impl Session {
-    /// Joined and invited members, admins first, then by name. Loads the
-    /// member list from the server if it is not complete yet.
-    pub async fn members(&self, room_id: &RoomId) -> Result<Vec<Member>> {
-        let room = self.sdk_room(room_id)?;
-        let levels = crate::permissions::power_levels(&room).await.ok();
-        let own = self.user_id();
-        let mut members: Vec<Member> = room
-            .members(RoomMemberships::JOIN | RoomMemberships::INVITE)
-            .await?
-            .into_iter()
-            .map(|member| {
-                let id = member.user_id().to_owned();
-                let level = member.power_level();
-                let manage = match &levels {
-                    Some(levels) => manage(levels, &own, &id),
-                    None => Manage::default(),
-                };
-                Member {
-                    name: member.display_name().map(ToOwned::to_owned),
-                    avatar: member.avatar_url().map(ToOwned::to_owned),
-                    role: role(level),
-                    level: match level {
-                        UserPowerLevel::Int(level) => Some(level.into()),
-                        _ => None,
-                    },
-                    invited: *member.membership() == MembershipState::Invite,
-                    own: id == own,
-                    manage,
-                    id,
-                }
-            })
-            .collect();
-        let alone = alone(&members);
-        if let Some(us) = members.iter_mut().find(|m| m.own) {
-            us.manage.alone = alone;
-        }
-        members.sort_by_cached_key(|m| {
-            let name = m
-                .name
-                .clone()
-                .unwrap_or_else(|| m.id.localpart().to_owned());
-            (m.invited, m.role, name.to_lowercase())
-        });
-        Ok(members)
-    }
-
-    /// The IDs of the joined members. Loads the member list from the server
-    /// if it is not complete yet.
-    pub async fn joined_member_ids(&self, room_id: &RoomId) -> Result<HashSet<OwnedUserId>> {
-        crate::lists::joined_member_ids(&self.client, room_id).await
-    }
-
-    /// Remove someone from a room (kick), or also keep them out (ban).
-    pub async fn remove_member(
-        &self,
-        room_id: &RoomId,
-        user: &UserId,
-        reason: Option<&str>,
-        ban: bool,
-    ) -> Result<()> {
-        let room = self.sdk_room(room_id)?;
-        if ban {
-            room.ban_user(user, reason).await?;
-        } else {
-            room.kick_user(user, reason).await?;
-        }
-        Ok(())
-    }
-
-    /// Give someone, or ourselves, a power level in a room.
-    pub async fn set_level(&self, room_id: &RoomId, user: &UserId, level: i64) -> Result<()> {
-        let room = self.sdk_room(room_id)?;
-        room.update_power_levels(vec![(user, Int::new_saturating(level))])
-            .await?;
-        Ok(())
     }
 }
 

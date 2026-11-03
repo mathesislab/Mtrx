@@ -115,17 +115,6 @@ async fn save(room: &Room, drafts: &Drafts, draft: &Draft) -> Result<()> {
 }
 
 impl Session {
-    /// The draft left in room `room_id`, if any.
-    pub async fn draft(&self, room_id: &RoomId) -> Result<Option<Draft>> {
-        load(&self.sdk_room(room_id)?).await
-    }
-
-    /// Keep `draft` for room `room_id`; an empty one clears it. The apps
-    /// keep drafts through [`Session::draft_keeper`].
-    pub async fn save_draft(&self, room_id: &RoomId, draft: &Draft) -> Result<()> {
-        save(&self.sdk_room(room_id)?, &self.drafts, draft).await
-    }
-
     /// The rooms with a draft now, then after every change.
     pub fn rooms_with_drafts_updates(&self) -> Live<BTreeSet<OwnedRoomId>> {
         Live::from_watch(self.drafts.rooms.subscribe())

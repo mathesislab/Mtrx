@@ -660,8 +660,10 @@ async fn main_screen_with_math() {
         })
         .await
         .unwrap();
-    alice.add_to_space(&space, &room).await.unwrap();
-    alice.add_to_space(&space, &general).await.unwrap();
+    let alice = Arc::new(alice);
+    let spaced = alice.room(&space).unwrap();
+    spaced.add_child(&room).await.unwrap();
+    spaced.add_child(&general).await.unwrap();
 
     accept_invite(&bob, &room).await;
     accept_invite(&carol, &room).await;
@@ -821,7 +823,7 @@ async fn main_screen_with_math() {
         }
         main.verified = Some(true);
         let mut open = Room::new(
-            room.clone(),
+            alice.room(&room).unwrap(),
             timeline.clone(),
             main.session.draft_keeper(&room),
         );
@@ -1352,7 +1354,7 @@ async fn send_later_bar() {
         },
     ];
     let mut open = Room::new(
-        room.clone(),
+        main.session.room(&room).unwrap(),
         timeline.clone(),
         main.session.draft_keeper(&room),
     );
@@ -1626,7 +1628,7 @@ async fn big_room_benchmark() {
     let session = Arc::new(second);
     let mut main = Main::new(session);
     let mut open = Room::new(
-        room.clone(),
+        main.session.room(&room).unwrap(),
         timeline.clone(),
         main.session.draft_keeper(&room),
     );
@@ -1698,8 +1700,8 @@ async fn room_management_screens() {
     .await
     .unwrap();
     let timeline = Arc::new(alice.timeline(&room).await.unwrap());
-    let members = alice.members(&room).await.unwrap();
     let session = Arc::new(alice);
+    let members = session.room(&room).unwrap().members().await.unwrap();
 
     let main_with = |configure: &dyn Fn(&mut Main)| {
         let mut main = Main::new(session.clone());
@@ -1707,7 +1709,7 @@ async fn room_management_screens() {
         main.space = Some(space.clone());
         main.verified = Some(true);
         let mut open = Room::new(
-            room.clone(),
+            main.session.room(&room).unwrap(),
             timeline.clone(),
             main.session.draft_keeper(&room),
         );
@@ -1844,7 +1846,7 @@ async fn room_management_screens() {
         }),
         "info-user",
     );
-    let settings = session.room_settings(&room).await.unwrap();
+    let settings = session.room(&room).unwrap().settings().await.unwrap();
     snapshot(
         &main_with(&|main| {
             let mut card = info::Card::new(
@@ -1894,9 +1896,10 @@ async fn room_management_screens() {
         })
         .await
         .unwrap();
+    let handle = session.room(&glaciers).unwrap();
     tokio::time::timeout(TIMEOUT, async {
-        while session
-            .set_room_access(&glaciers, mtrx_core::Access::Public)
+        while handle
+            .set_join_rule(mtrx_core::Access::Public)
             .await
             .is_err()
         {
@@ -1906,7 +1909,7 @@ async fn room_management_screens() {
     .await
     .unwrap();
     let children = session.space_children(&space).await.unwrap();
-    let space_settings = session.room_settings(&space).await.unwrap();
+    let space_settings = session.room(&space).unwrap().settings().await.unwrap();
     snapshot(
         &main_with(&|main| {
             let mut card = info::Card::new(
@@ -2060,7 +2063,7 @@ async fn mention_colours() {
     main.show_rooms(rooms);
     main.verified = Some(true);
     let mut open = Room::new(
-        room.clone(),
+        main.session.room(&room).unwrap(),
         timeline.clone(),
         main.session.draft_keeper(&room),
     );
@@ -2189,7 +2192,7 @@ async fn media_messages() {
         main.show_rooms(rooms.clone());
         main.verified = Some(true);
         let mut open = Room::new(
-            room.clone(),
+            main.session.room(&room).unwrap(),
             timeline.clone(),
             main.session.draft_keeper(&room),
         );
@@ -2262,6 +2265,7 @@ async fn media_messages() {
 async fn room_categories() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("arrange", &dir).await;
+    let alice = Arc::new(alice);
     let (_, bob) = user("colleague", &dir).await;
     let mut ids = HashMap::new();
     for name in ["ice-sheets", "ocean", "admin", "archive", "seminar"] {
@@ -2275,12 +2279,12 @@ async fn room_categories() {
         ids.insert(name, id);
     }
     alice.direct_chat(&bob.user_id()).await.unwrap();
-    alice
-        .set_room_tag(&ids["ocean"], RoomTag::Favourite)
+    (alice.room(&ids["ocean"]).unwrap())
+        .set_tag(RoomTag::Favourite)
         .await
         .unwrap();
-    alice
-        .set_room_tag(&ids["archive"], RoomTag::LowPriority)
+    (alice.room(&ids["archive"]).unwrap())
+        .set_tag(RoomTag::LowPriority)
         .await
         .unwrap();
     let mut projects = String::new();
@@ -2318,7 +2322,7 @@ async fn room_categories() {
     })
     .await
     .unwrap();
-    let session = Arc::new(alice);
+    let session = alice;
 
     let main_with = |configure: &dyn Fn(&mut Main)| {
         let mut main = Main::new(session.clone());
@@ -2428,6 +2432,7 @@ async fn room_categories() {
 async fn show_menu() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("shower", &dir).await;
+    let alice = Arc::new(alice);
     let (_, bob) = user("colleague", &dir).await;
     let space = alice
         .create_room(NewRoom {
@@ -2446,17 +2451,17 @@ async fn show_menu() {
             })
             .await
             .unwrap();
-        alice.add_to_space(&space, &id).await.unwrap();
+        alice.room(&space).unwrap().add_child(&id).await.unwrap();
         ids.insert(name, id);
     }
     let dm = alice.direct_chat(&bob.user_id()).await.unwrap();
     accept_invite(&bob, &dm).await;
-    alice
-        .set_room_tag(&ids["ice-sheets"], RoomTag::Favourite)
+    (alice.room(&ids["ice-sheets"]).unwrap())
+        .set_tag(RoomTag::Favourite)
         .await
         .unwrap();
-    alice
-        .set_room_tag(&ids["coffee"], RoomTag::LowPriority)
+    (alice.room(&ids["coffee"]).unwrap())
+        .set_tag(RoomTag::LowPriority)
         .await
         .unwrap();
     alice
@@ -2496,7 +2501,7 @@ async fn show_menu() {
     if let Some(seminars) = rooms.rooms.iter_mut().find(|r| r.id == ids["seminars"]) {
         seminars.unread_messages = 2;
     }
-    let session = Arc::new(alice);
+    let session = alice;
 
     let mut main = Main::new(session.clone());
     // The space's members, as if loaded, for the direct chat with Bob.
@@ -2588,6 +2593,7 @@ async fn website_screenshots() {
         .await
         .unwrap();
 
+    let ana = Arc::new(ana);
     let space = ana
         .create_room(NewRoom {
             name: Some("Glaciology Lab".into()),
@@ -2615,7 +2621,7 @@ async fn website_screenshots() {
             })
             .await
             .unwrap();
-        ana.add_to_space(&space, &room).await.unwrap();
+        ana.room(&space).unwrap().add_child(&room).await.unwrap();
         accept_invite(&ben, &room).await;
         accept_invite(&chloe, &room).await;
         rooms_in_space.push(room);
@@ -2764,7 +2770,6 @@ async fn website_screenshots() {
             .unwrap()
     };
 
-    let ana = Arc::new(ana);
     let now = SystemTime::now();
     // Tomorrow at nine.
     let tomorrow_nine: SystemTime = (chrono::Local::now().date_naive() + chrono::Days::new(1))
@@ -2789,7 +2794,7 @@ async fn website_screenshots() {
             files: Vec::new(),
         }];
         let mut open = Room::new(
-            room.clone(),
+            main.session.room(&room).unwrap(),
             timeline.clone(),
             main.session.draft_keeper(&room),
         );
@@ -2889,7 +2894,7 @@ async fn composer_scrolls_alone() {
     let mut main = Main::new(Arc::new(alice));
     main.verified = Some(true);
     let mut open = Room::new(
-        room.clone(),
+        main.session.room(&room).unwrap(),
         timeline.clone(),
         main.session.draft_keeper(&room),
     );
@@ -3060,7 +3065,11 @@ async fn drafts_stay_in_their_room() {
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
     main.verified = Some(true);
-    let open = Room::new(a.clone(), timeline.clone(), alice.draft_keeper(&a));
+    let open = Room::new(
+        alice.room(&a).unwrap(),
+        timeline.clone(),
+        alice.draft_keeper(&a),
+    );
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
@@ -3086,17 +3095,29 @@ async fn drafts_stay_in_their_room() {
     )));
     let before = app.room_draft();
     let other_timeline = Arc::new(alice.timeline(&b).await.unwrap());
-    *open_room(&mut app) = Room::new(b.clone(), other_timeline, alice.draft_keeper(&b));
+    *open_room(&mut app) = Room::new(
+        alice.room(&b).unwrap(),
+        other_timeline,
+        alice.draft_keeper(&b),
+    );
     let _ = messages_of(app.keep_draft(before)).await;
     let kept = mtrx_core::Draft {
         text: "Yes, see you there".into(),
         ..kept
     };
-    assert_eq!(alice.draft(&a).await.unwrap(), Some(kept.clone()));
-    assert_eq!(alice.draft(&b).await.unwrap(), None, "per room");
+    assert_eq!(
+        alice.room(&a).unwrap().draft().await.unwrap(),
+        Some(kept.clone())
+    );
+    let drafted = alice.room(&b).unwrap().draft().await.unwrap();
+    assert_eq!(drafted, None, "per room");
 
     // Back in the room: the text, answering the question once it is found.
-    *open_room(&mut app) = Room::new(a.clone(), timeline.clone(), alice.draft_keeper(&a));
+    *open_room(&mut app) = Room::new(
+        alice.room(&a).unwrap(),
+        timeline.clone(),
+        alice.draft_keeper(&a),
+    );
     let restored = open_room(&mut app).drafts.restore().await;
     let found = messages_of(app.update(room::Message::DraftLoaded(restored).to(&a))).await;
     assert_eq!(
@@ -3110,14 +3131,15 @@ async fn drafts_stay_in_their_room() {
 }
 
 /// Wait until the draft kept for `room` on the device is `draft`.
-async fn draft_kept(session: &Session, room: &OwnedRoomId, draft: Option<mtrx_core::Draft>) {
+async fn draft_kept(session: &Arc<Session>, room: &OwnedRoomId, draft: Option<mtrx_core::Draft>) {
+    let room = session.room(room).unwrap();
     for _ in 0..50 {
-        if session.draft(room).await.unwrap() == draft {
+        if room.draft().await.unwrap() == draft {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(session.draft(room).await.unwrap(), draft);
+    assert_eq!(room.draft().await.unwrap(), draft);
 }
 
 /// Typed while another room opens: in neither room, nor in the draft kept
@@ -3137,7 +3159,11 @@ async fn typing_while_a_room_opens_goes_nowhere() {
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
     main.verified = Some(true);
-    let mut open = Room::new(a.clone(), timeline.clone(), alice.draft_keeper(&a));
+    let mut open = Room::new(
+        alice.room(&a).unwrap(),
+        timeline.clone(),
+        alice.draft_keeper(&a),
+    );
     open.set_composer(typed("Hello"));
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
@@ -3155,7 +3181,7 @@ async fn typing_while_a_room_opens_goes_nowhere() {
         text: "Hello".into(),
         reply_to: None,
     };
-    assert_eq!(alice.draft(&a).await.unwrap(), Some(kept));
+    assert_eq!(alice.room(&a).unwrap().draft().await.unwrap(), Some(kept));
 }
 
 /// An invite chosen while a room opens stays shown: the room opening late
@@ -3215,7 +3241,11 @@ async fn results_stay_with_their_room() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let mut main = Main::new(Arc::new(alice));
     main.verified = Some(true);
-    let mut open = Room::new(a.clone(), timeline, main.session.draft_keeper(&a));
+    let mut open = Room::new(
+        main.session.room(&a).unwrap(),
+        timeline,
+        main.session.draft_keeper(&a),
+    );
     open.set_composer(typed("Later, in a"));
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
@@ -3439,7 +3469,7 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
     main.verified = Some(true);
-    let mut open = Room::new(a.clone(), timeline, alice.draft_keeper(&a));
+    let mut open = Room::new(alice.room(&a).unwrap(), timeline, alice.draft_keeper(&a));
     open.set_composer(typed("Later, in a"));
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
@@ -3455,7 +3485,7 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
         reply_to: None,
     };
     assert_eq!(
-        alice.draft(&a).await.unwrap(),
+        alice.room(&a).unwrap().draft().await.unwrap(),
         Some(kept),
         "kept on leaving"
     );
@@ -3463,7 +3493,7 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
         let _ = messages_of(app.update(message)).await;
     }
 
-    assert_eq!(alice.draft(&a).await.unwrap(), None);
+    assert_eq!(alice.room(&a).unwrap().draft().await.unwrap(), None);
     let drafts = alice.rooms_with_drafts_updates().get();
     assert!(!drafts.contains(&a), "{drafts:?}");
     assert_eq!(open_room(&mut app).id, b);

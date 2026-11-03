@@ -14,7 +14,7 @@ use std::{
 
 use matrix_sdk::{
     Client,
-    ruma::{EventId, OwnedEventId, OwnedRoomId, RoomId},
+    ruma::{EventId, OwnedEventId, OwnedRoomId},
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
@@ -224,58 +224,6 @@ impl Session {
     /// The scheduled messages, then every change.
     pub fn scheduled_updates(&self) -> Live<Vec<ScheduledMessage>> {
         Live::from_watch(self.schedule.messages.subscribe())
-    }
-
-    /// Schedule a Markdown message and files for `send_at`, which must be
-    /// in the future; they are sent as by [`RoomTimeline::send`].
-    ///
-    /// [`RoomTimeline::send`]: crate::RoomTimeline::send
-    pub async fn schedule(
-        &self,
-        room_id: &RoomId,
-        text: &str,
-        files: Vec<Attachment>,
-        send_at: SystemTime,
-        in_reply_to: Option<&EventId>,
-    ) -> Result<ScheduledMessage> {
-        self.sdk_room(room_id)?;
-        let send_at = future_time(send_at)?;
-        if text.trim().is_empty() && files.is_empty() {
-            return Err(Error::Timeline("nothing to send".into()));
-        }
-        let message = ScheduledMessage {
-            id: random_id(),
-            room_id: room_id.to_owned(),
-            text: text.to_owned(),
-            send_at,
-            in_reply_to: in_reply_to.map(ToOwned::to_owned),
-            overdue: false,
-            files: files
-                .iter()
-                .map(|file| ScheduledFile {
-                    filename: file.filename.clone(),
-                    mimetype: file.mimetype.clone(),
-                    size: file.bytes.len() as u64,
-                })
-                .collect(),
-        };
-        // The files first: the scheduler may send the message once listed.
-        let listed = match self.schedule.store_files(&message.id, files).await {
-            Ok(()) => {
-                self.schedule
-                    .modify(async |messages| {
-                        messages.push(message.clone());
-                        Ok(())
-                    })
-                    .await
-            }
-            Err(e) => Err(e),
-        };
-        if let Err(e) = listed {
-            self.schedule.remove_files(&message).await;
-            return Err(e);
-        }
-        Ok(message)
     }
 
     /// Change a scheduled message's text, keeping its time.

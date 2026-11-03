@@ -360,19 +360,6 @@ impl Session {
     ) -> Result<()> {
         self.categories.change(change).await
     }
-
-    /// Set the room's favourite or low priority tag, or remove both. The
-    /// room list shows it at once ([`Session::room_lists`]).
-    pub async fn set_room_tag(&self, room: &RoomId, tag: RoomTag) -> Result<()> {
-        self.echoes.set_tag(room, tag);
-        let result = self.save_room_tag(room, tag).await;
-        (self.echoes).tag_answered(room, tag, result.is_ok(), Instant::now());
-        result
-    }
-
-    async fn save_room_tag(&self, room: &RoomId, tag: RoomTag) -> Result<()> {
-        save_tag(&self.sdk_room(room)?, tag).await
-    }
 }
 
 impl RoomHandle {
