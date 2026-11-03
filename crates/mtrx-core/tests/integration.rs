@@ -195,7 +195,7 @@ async fn encrypted_messages_between_users() -> Result<()> {
     let alice_timeline = alice.session.timeline(&room).await?;
     wait_for("bob joined", alice_timeline.updates(), |entries| {
         entries.iter().any(|e| {
-            matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.session.user_id()
+            matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()
             && matches!(ev.content, EventContent::Membership {
                 change: MembershipChange::InvitationAccepted, ..
             }))
@@ -237,7 +237,7 @@ async fn encrypted_messages_between_users() -> Result<()> {
             },
         ])]
     );
-    assert_eq!(message.sender, alice.session.user_id());
+    assert_eq!(message.sender.id, alice.session.user_id());
     Ok(())
 }
 
@@ -293,7 +293,7 @@ async fn avatars_in_room_list_and_timeline() -> Result<()> {
         |entries| {
             entries.iter().any(|e| {
                 matches!(e, TimelineEntry::Event(ev)
-                if ev.sender == bob.session.user_id() && ev.sender_avatar.as_ref() == Some(&avatar))
+                if ev.sender.id == bob.session.user_id() && ev.sender.avatar.as_ref() == Some(&avatar))
             })
         },
     )
@@ -841,7 +841,7 @@ async fn co_owners() -> Result<()> {
     let members = timeout("bob joined", async {
         loop {
             let members = s.room(&room)?.members().await?;
-            if members.iter().any(|m| m.id == bob_id && !m.invited) {
+            if members.iter().any(|m| m.user.id == bob_id && !m.invited) {
                 return anyhow::Ok(members);
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1015,7 +1015,10 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     let found = timeout("bob in coffee", async {
         loop {
             let members = s.room(&open)?.members().await?;
-            if let Some(bob) = members.into_iter().find(|m| m.id == bob_id && !m.invited) {
+            if let Some(bob) = members
+                .into_iter()
+                .find(|m| m.user.id == bob_id && !m.invited)
+            {
                 return anyhow::Ok(bob);
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1027,7 +1030,7 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     // gives any and keeps theirs.
     assert_eq!(found.manage.up_to, Some(9007199254740991));
     let us = s.room(&open)?.members().await?;
-    let us = us.iter().find(|m| m.id == s.user_id()).unwrap();
+    let us = us.iter().find(|m| m.user.id == s.user_id()).unwrap();
     assert_eq!((us.level, us.manage.up_to), (None, None));
     assert!(
         b.room(&open)?
@@ -1083,7 +1086,7 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
     wait_for("bob joined", alice_timeline.updates(), |entries| {
         entries
             .iter()
-            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.session.user_id()))
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
     })
     .await?;
     let bob_timeline = bob.session.timeline(&room).await?;
@@ -1125,7 +1128,7 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
         .unwrap();
     assert_eq!(reply.event_id, question);
     assert_eq!(reply.preview.as_deref(), Some("Which dataset?"));
-    assert_eq!(reply.sender, Some(bob.session.user_id()));
+    assert_eq!(reply.sender.map(|u| u.id), Some(bob.session.user_id()));
     assert_eq!(reply.kind, Some(mtrx_core::MessageKind::Text));
 
     // Reaction, seen as ours by alice and as someone else's by bob.
@@ -1144,7 +1147,7 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
                     key: "👍".into(),
                     count: 1,
                     own: false,
-                    by: vec![mtrx_core::Reader {
+                    by: vec![mtrx_core::User {
                         id: alice_id.clone(),
                         name: Some(alice_id.localpart().to_owned()),
                         avatar: None,
@@ -1281,14 +1284,14 @@ async fn members_and_notifications() -> Result<()> {
     let role = |user: &Device| {
         members
             .iter()
-            .find(|m| m.id == user.session.user_id())
+            .find(|m| m.user.id == user.session.user_id())
             .map(|m| (m.role, m.invited))
     };
     assert_eq!(role(&alice), Some((mtrx_core::Role::Admin, false)));
     assert_eq!(role(&bob), Some((mtrx_core::Role::Member, false)));
     assert_eq!(role(&carol), Some((mtrx_core::Role::Member, true)));
     assert_eq!(
-        members.last().map(|m| m.id.clone()),
+        members.last().map(|m| m.user.id.clone()),
         Some(carol.session.user_id())
     );
 
@@ -1297,7 +1300,7 @@ async fn members_and_notifications() -> Result<()> {
     wait_for("bob joined", alice_timeline.updates(), |entries| {
         entries
             .iter()
-            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.session.user_id()))
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
     })
     .await?;
     let notifications = alice.session.notifications();
@@ -1440,7 +1443,7 @@ async fn notifications_for_rooms_never_opened() -> Result<()> {
     let joined = |entries: &Vec<TimelineEntry>| {
         entries
             .iter()
-            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob_id))
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob_id))
     };
 
     // Mentions only: in the encrypted room a mention is told apart from
@@ -1586,7 +1589,7 @@ async fn images_and_files() -> Result<()> {
     wait_for("bob joined", alice_timeline.updates(), |entries| {
         entries
             .iter()
-            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == bob.session.user_id()))
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
     })
     .await?;
 
@@ -1890,7 +1893,9 @@ async fn notes_to_self() -> Result<()> {
     let list = s.room_list().await?;
     let state = wait_for("notes listed as a direct chat", list.updates(), |state| {
         state.rooms.iter().any(|r| {
-            r.id == notes && r.kind == RoomKind::Direct && r.direct_user == Some(s.user_id())
+            r.id == notes
+                && r.kind == RoomKind::Direct
+                && r.direct_user.as_ref().map(|u| &u.id) == Some(&s.user_id())
         })
     })
     .await?;

@@ -47,7 +47,7 @@ struct RoomView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 if let person = model.person {
-                    PersonHeader(room: room, presence: presence.presence(of: person), open: model.showPersonInfo)
+                    PersonHeader(room: room, presence: presence.presence(of: person.userId), open: model.showPersonInfo)
                 } else {
                     RoomHeader(
                         room: room, topic: topic, canEdit: info.settings?.canChangeTopic ?? false,
@@ -70,7 +70,7 @@ struct RoomView: View {
         }
         .overlay {
             if showsShared, let person = model.person {
-                SharedRoomsPanel(userId: person, name: room.name)
+                SharedRoomsPanel(userId: person.userId, name: room.name)
                     .transition(.opacity)
             }
         }

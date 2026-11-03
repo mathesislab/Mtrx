@@ -442,16 +442,16 @@ fun SettingsColumn(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(person.name ?: person.userId, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(person.user.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            listOfNotNull(person.userId.takeIf { person.name != null }, person.reason).joinToString(" · "),
+                            listOfNotNull(person.user.userId, person.reason).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    if (settings.canUnban) TextButton(onClick = { actions.unban(person.userId) }) { Text("Unban") }
+                    if (settings.canUnban) TextButton(onClick = { actions.unban(person.user.userId) }) { Text("Unban") }
                 }
             }
         }
@@ -528,13 +528,10 @@ fun LazyListScope.membersSection(members: List<Member>?, images: Images, actions
         item(key = "members-loading") { Loading() }
         return
     }
-    items(members, key = { "member:" + it.userId }) { member ->
+    items(members, key = { "member:" + it.user.userId }) { member ->
         MemberRow(member, images, actions)
     }
 }
-
-/** A member's name: their display name, else their user ID. */
-fun memberName(member: Member): String = member.name?.takeIf { it.isNotBlank() } ?: member.userId
 
 /** A member: avatar, name and role; tapped, [MemberMenu] where we may manage them. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -542,12 +539,12 @@ fun memberName(member: Member): String = member.name?.takeIf { it.isNotBlank() }
 fun MemberRow(member: Member, images: Images, actions: RoomInfoActions) {
     var menu by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf<MemberQuestion?>(null) }
-    val name = memberName(member)
+    val name = member.user.displayName
     org.mtrx.app.ui.CompactRow(
         title = if (member.own) "$name (you)" else name,
-        subtitle = if (member.invited) "Invited" else member.userId.takeIf { member.name != null },
+        subtitle = if (member.invited) "Invited" else member.user.userId,
         onClick = if (member.manageable) ({ menu = true }) else null,
-        leading = { Avatar(name, member.avatarUrl, member.userId, images, size = 36.dp) },
+        leading = { Avatar(name, member.user.avatarUrl, member.user.userId, images, size = 36.dp) },
         trailing = {
             member.label?.let {
                 Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -561,7 +558,7 @@ fun MemberRow(member: Member, images: Images, actions: RoomInfoActions) {
                 onChoose = { question ->
                     menu = false
                     if (question is MemberQuestion.Level && question.confirmation == null) {
-                        actions.setLevel(member.userId, question.level)
+                        actions.setLevel(member.user.userId, question.level)
                     } else {
                         asking = question
                     }
@@ -579,7 +576,7 @@ fun MemberRow(member: Member, images: Images, actions: RoomInfoActions) {
                 button = confirmation?.button ?: "Change",
                 onConfirm = {
                     asking = null
-                    actions.setLevel(member.userId, question.level)
+                    actions.setLevel(member.user.userId, question.level)
                 },
                 onDismiss = { asking = null },
             )
@@ -589,7 +586,7 @@ fun MemberRow(member: Member, images: Images, actions: RoomInfoActions) {
             name,
             onSet = { level ->
                 asking = null
-                actions.setLevel(member.userId, level)
+                actions.setLevel(member.user.userId, level)
             },
             onDismiss = { asking = null },
         )
@@ -598,7 +595,7 @@ fun MemberRow(member: Member, images: Images, actions: RoomInfoActions) {
             ban = question.ban,
             onRemove = { reason ->
                 asking = null
-                actions.remove(member.userId, reason, question.ban)
+                actions.remove(member.user.userId, reason, question.ban)
             },
             onDismiss = { asking = null },
         )
@@ -621,7 +618,7 @@ sealed interface MemberQuestion {
  */
 @Composable
 fun MemberMenu(member: Member, onChoose: (MemberQuestion) -> Unit) {
-    val name = memberName(member)
+    val name = member.user.displayName
     Column(Modifier.padding(bottom = 16.dp)) {
         Text(
             if (member.own) "$name (you)" else name,

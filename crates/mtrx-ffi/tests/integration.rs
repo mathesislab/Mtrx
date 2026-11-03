@@ -24,11 +24,10 @@ use mtrx_ffi::{
     ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
     MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, Presence,
     PresenceActivity, PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState,
-    Reaction, Reader, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind,
-    RoomLists, RoomListsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout,
-    SendState, Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener,
-    UserProfile, Verification, VerificationListener, VerificationRequestListener,
-    VerificationState,
+    Reaction, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists,
+    RoomListsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout, SendState,
+    Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, User,
+    Verification, VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -937,7 +936,10 @@ fn rooms_made_set_up_joined_and_left() {
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
         let members = block_on(a_room.members()).unwrap();
-        if let Some(bob) = members.iter().find(|m| m.user_id == bob_id && !m.invited) {
+        if let Some(bob) = members
+            .iter()
+            .find(|m| m.user.user_id == bob_id && !m.invited)
+        {
             assert!(bob.manage.up_to.is_some() && bob.manage.remove);
             break;
         }
@@ -1088,10 +1090,11 @@ fn reactions_replies_edits_receipts_and_typing() {
     let (names, room_id) = room_of(&core_runtime, &["ffi-talk", "ffi-talk-bob"]);
     let (alice, bob) = (sign_in(&names[0]), sign_in(&names[1]));
     let (alice_id, bob_id) = (alice.session.user_id(), bob.session.user_id());
-    let reader = |id: &str, name: &str| Reader {
+    let reader = |id: &str, name: &str| User {
         user_id: id.into(),
         name: Some(name.into()),
         avatar_url: None,
+        display_name: name.into(),
     };
     let (alice_reader, bob_reader) = (reader(&alice_id, &names[0]), reader(&bob_id, &names[1]));
     wait_for_room(&alice.session, &room_id);
@@ -1112,10 +1115,9 @@ fn reactions_replies_edits_receipts_and_typing() {
     block_on(alice_timeline.reply(question_row.clone(), "The **new** one".into())).unwrap();
     let items = bob_items.wait("Bob sees the reply with its quote", |i| {
         find(i, "The new one").is_some_and(|(_, e)| {
-            message(e)
-                .reply_to
-                .as_ref()
-                .is_some_and(|q| q.state == QuoteState::Loaded && q.sender_name.is_some())
+            message(e).reply_to.as_ref().is_some_and(|q| {
+                q.state == QuoteState::Loaded && q.sender.as_ref().is_some_and(|s| s.name.is_some())
+            })
         })
     });
     let reply = find(items, "The new one").unwrap().1;
@@ -1124,8 +1126,7 @@ fn reactions_replies_edits_receipts_and_typing() {
         Some(ReplyQuote {
             event_id: question_id.unwrap(),
             state: QuoteState::Loaded,
-            sender_id: Some(bob_id.clone()),
-            sender_name: Some(names[1].clone()),
+            sender: Some(bob_reader.clone()),
             kind: Some(MessageKind::Text),
             body: Some("Which dataset?".into()),
         })
@@ -1152,7 +1153,7 @@ fn reactions_replies_edits_receipts_and_typing() {
     let reactions = |items: &[TimelineRow]| {
         find(items, "Which dataset?").map(|(_, e)| message(e).reactions.clone())
     };
-    let thumbs = |count, by_us, senders: &[&Reader]| {
+    let thumbs = |count, by_us, senders: &[&User]| {
         Some(vec![Reaction {
             key: "👍".into(),
             count,
@@ -1329,10 +1330,11 @@ fn profiles_and_inviting_to_a_space() {
     // Alice looks Bob up: his name (the server's default), no picture.
     assert_eq!(
         block_on(alice.session.user_profile(bob_id.clone())).unwrap(),
-        UserProfile {
+        User {
             user_id: bob_id.clone(),
-            name: Some(bob_name),
+            name: Some(bob_name.clone()),
             avatar_url: None,
+            display_name: bob_name,
         }
     );
     assert!(matches!(

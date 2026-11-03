@@ -53,8 +53,8 @@ pub struct RoomSummary {
     pub unread_mentions: u64,
     pub unread_notifications: u64,
     pub last_activity: Option<SystemTime>,
-    /// For a direct chat, the other person's user ID.
-    pub direct_user_id: Option<String>,
+    /// For a direct chat, the other person.
+    pub direct_user: Option<User>,
     /// The room's address, e.g. `#ice-sheets:example.org`.
     pub alias: Option<String>,
     pub joined_members: u64,
@@ -87,7 +87,7 @@ impl From<&core::RoomSummary> for RoomSummary {
             unread_mentions: room.unread_mentions,
             unread_notifications: room.unread_notifications,
             last_activity: room.last_activity,
-            direct_user_id: room.direct_user.as_ref().map(ToString::to_string),
+            direct_user: room.direct_user.as_ref().map(User::from),
             alias: room.alias.clone(),
             joined_members: room.joined_members,
             parents: room.parents.iter().map(ToString::to_string).collect(),
@@ -97,24 +97,40 @@ impl From<&core::RoomSummary> for RoomSummary {
     }
 }
 
-/// Someone's public profile.
+/// Someone: their user ID, with their name and picture as far as known.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct UserProfile {
+pub struct User {
     /// `@user:server`.
     pub user_id: String,
     /// Display name, if they set one.
     pub name: Option<String>,
     /// `mxc://` URI, for `Session.avatar`.
     pub avatar_url: Option<String>,
+    /// What to call them: their name, else their user ID's localpart.
+    pub display_name: String,
 }
 
-impl From<core::UserSummary> for UserProfile {
-    fn from(user: core::UserSummary) -> Self {
+impl From<&core::User> for User {
+    fn from(user: &core::User) -> Self {
         Self {
             user_id: user.id.to_string(),
-            name: user.name,
-            avatar_url: user.avatar.map(|uri| uri.to_string()),
+            name: user.name.clone(),
+            avatar_url: user.avatar.as_ref().map(ToString::to_string),
+            display_name: user.display_name(),
         }
+    }
+}
+
+impl TryFrom<&User> for core::User {
+    type Error = crate::MtrxError;
+
+    /// Back, for the apps' tests; `display_name` is worked out again.
+    fn try_from(user: &User) -> Result<Self, crate::MtrxError> {
+        Ok(Self {
+            id: crate::error::user_id(&user.user_id)?,
+            name: user.name.clone(),
+            avatar: user.avatar_url.clone().map(Into::into),
+        })
     }
 }
 
@@ -189,10 +205,8 @@ pub enum MessageAction {
 pub struct TimelineEvent {
     /// The server's ID; `None` while a message we sent is not sent yet.
     pub event_id: Option<String>,
-    pub sender_id: String,
-    pub sender_name: Option<String>,
-    /// `mxc://` URI, for `Session.avatar`.
-    pub sender_avatar_url: Option<String>,
+    /// Their name and picture arrive in a later update when not yet known.
+    pub sender: User,
     pub timestamp: SystemTime,
     /// We sent it.
     pub own: bool,
@@ -205,7 +219,7 @@ pub struct TimelineEvent {
     /// Moved off state events to the message before, as the desktop shows
     /// them. Names and avatars arrive in a later update when not yet known.
     #[uniffi(default)]
-    pub read_by: Vec<Reader>,
+    pub read_by: Vec<User>,
     /// For `EventContent.unableToDecrypt`, why, as far as known.
     #[uniffi(default)]
     pub utd_cause: Option<UtdCause>,
@@ -272,16 +286,6 @@ pub enum SendState {
     },
 }
 
-/// Someone who read up to an event, or reacted to it.
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
-pub struct Reader {
-    pub user_id: String,
-    /// Display name, once known.
-    pub name: Option<String>,
-    /// `mxc://` URI, for `Session.avatar`.
-    pub avatar_url: Option<String>,
-}
-
 /// Everyone who reacted to a message with one key.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Reaction {
@@ -291,7 +295,7 @@ pub struct Reaction {
     /// We reacted with it: `Timeline.react` with it removes ours.
     pub by_us: bool,
     /// Who reacted, us included, in the order they did.
-    pub senders: Vec<Reader>,
+    pub senders: Vec<User>,
 }
 
 /// The message a reply answers, as quoted above the reply.
@@ -302,8 +306,7 @@ pub struct ReplyQuote {
     pub event_id: String,
     pub state: QuoteState,
     /// The original's sender, once loaded.
-    pub sender_id: Option<String>,
-    pub sender_name: Option<String>,
+    pub sender: Option<User>,
     /// The original's kind once loaded, if it is a message (`None` if it was
     /// deleted, or is a poll, say).
     pub kind: Option<MessageKind>,
@@ -482,9 +485,7 @@ impl From<&core::Event> for TimelineEvent {
     fn from(event: &core::Event) -> Self {
         Self {
             event_id: event.event_id.as_ref().map(ToString::to_string),
-            sender_id: event.sender.to_string(),
-            sender_name: event.sender_name.clone(),
-            sender_avatar_url: event.sender_avatar.as_ref().map(ToString::to_string),
+            sender: User::from(&event.sender),
             timestamp: event.timestamp,
             own: event.own,
             content: EventContent::from(&event.content),
@@ -497,18 +498,8 @@ impl From<&core::Event> for TimelineEvent {
                 },
             },
             editable: event.editable,
-            read_by: event.read_by.iter().map(Reader::from).collect(),
+            read_by: event.read_by.iter().map(User::from).collect(),
             utd_cause: event.utd_cause.map(UtdCause::from),
-        }
-    }
-}
-
-impl From<&core::Reader> for Reader {
-    fn from(reader: &core::Reader) -> Self {
-        Self {
-            user_id: reader.id.to_string(),
-            name: reader.name.clone(),
-            avatar_url: reader.avatar.as_ref().map(ToString::to_string),
         }
     }
 }
@@ -519,7 +510,7 @@ impl From<&core::Reaction> for Reaction {
             key: reaction.key.clone(),
             count: reaction.count as u64,
             by_us: reaction.own,
-            senders: reaction.by.iter().map(Reader::from).collect(),
+            senders: reaction.by.iter().map(User::from).collect(),
         }
     }
 }
@@ -535,8 +526,7 @@ impl From<&core::Reply> for ReplyQuote {
             } else {
                 QuoteState::Loading
             },
-            sender_id: reply.sender.as_ref().map(ToString::to_string),
-            sender_name: reply.sender_name.clone(),
+            sender: reply.sender.as_ref().map(User::from),
             kind: reply.kind.map(message_kind),
             body: reply.preview.clone(),
         }
@@ -663,9 +653,11 @@ mod tests {
             id: id.into(),
             key: core::EventKey::local(id),
             event_id: None,
-            sender: "@alice:example.org".try_into().unwrap(),
-            sender_name: Some("Alice".into()),
-            sender_avatar: Some("mxc://example.org/alice".into()),
+            sender: core::User {
+                id: "@alice:example.org".try_into().unwrap(),
+                name: Some("Alice".into()),
+                avatar: Some("mxc://example.org/alice".into()),
+            },
             timestamp: at(1_700_000_000),
             own: true,
             editable: true,
@@ -698,20 +690,24 @@ mod tests {
     }
 
     #[test]
-    fn profiles_keep_what_is_set() {
-        let profile = UserProfile::from(core::UserSummary {
+    fn users_keep_what_is_set_and_are_named() {
+        let mut bob = core::User {
             id: "@bob:example.org".try_into().unwrap(),
             name: Some("Bob".into()),
             avatar: None,
-        });
+        };
         assert_eq!(
-            profile,
-            UserProfile {
+            User::from(&bob),
+            User {
                 user_id: "@bob:example.org".into(),
                 name: Some("Bob".into()),
                 avatar_url: None,
+                display_name: "Bob".into(),
             }
         );
+        bob.name = None;
+        assert_eq!(User::from(&bob).display_name, "bob");
+        assert_eq!(core::User::try_from(&User::from(&bob)).unwrap(), bob);
     }
 
     fn message(document: Document, media: Option<core::Media>) -> core::EventContent {
@@ -790,9 +786,10 @@ mod tests {
             "a",
             message(Document::from_html("<b>bold</b> text"), None),
         ));
-        assert_eq!(event.sender_id, "@alice:example.org");
+        assert_eq!(event.sender.user_id, "@alice:example.org");
+        assert_eq!(event.sender.display_name, "Alice");
         assert_eq!(
-            event.sender_avatar_url.as_deref(),
+            event.sender.avatar_url.as_deref(),
             Some("mxc://example.org/alice")
         );
         assert_eq!(event.timestamp, at(1_700_000_000));
@@ -815,15 +812,14 @@ mod tests {
 
     #[test]
     fn messages_carry_reactions_quotes_and_readers() {
-        let bob = |name: Option<&str>| core::Reader {
+        let bob = |name: Option<&str>| core::User {
             id: "@bob:example.org".try_into().unwrap(),
             name: name.map(Into::into),
             avatar: Some("mxc://example.org/bob".into()),
         };
         let reply = |preview: Option<&str>, failed| core::Reply {
             event_id: "$original:example.org".try_into().unwrap(),
-            sender: preview.map(|_| "@bob:example.org".try_into().unwrap()),
-            sender_name: preview.map(|_| "Bob".into()),
+            sender: preview.map(|_| bob(Some("Bob"))),
             preview: preview.map(Into::into),
             kind: preview.map(|_| core::MessageKind::Image),
             failed,
@@ -844,12 +840,13 @@ mod tests {
 
         let converted = TimelineEvent::from(&event);
         assert!(!converted.editable);
-        let bob_reader = |name: Option<&str>| Reader {
+        let bob_user = |name: Option<&str>| User {
             user_id: "@bob:example.org".into(),
             name: name.map(Into::into),
             avatar_url: Some("mxc://example.org/bob".into()),
+            display_name: name.unwrap_or("bob").into(),
         };
-        assert_eq!(converted.read_by, [bob_reader(None)]);
+        assert_eq!(converted.read_by, [bob_user(None)]);
         let EventContent::Message { message } = converted.content else {
             panic!("not a message");
         };
@@ -859,7 +856,7 @@ mod tests {
                 key: "👍".into(),
                 count: 1,
                 by_us: false,
-                senders: vec![bob_reader(Some("Bob"))],
+                senders: vec![bob_user(Some("Bob"))],
             }]
         );
         assert_eq!(
@@ -867,8 +864,7 @@ mod tests {
             Some(ReplyQuote {
                 event_id: "$original:example.org".into(),
                 state: QuoteState::Loaded,
-                sender_id: Some("@bob:example.org".into()),
-                sender_name: Some("Bob".into()),
+                sender: Some(bob_user(Some("Bob"))),
                 kind: Some(MessageKind::Image),
                 body: Some("ice.png".into()),
             })
@@ -925,7 +921,11 @@ mod tests {
             last_activity: Some(at(5)),
             parents: Vec::new(),
             tag: core::RoomTag::None,
-            direct_user: Some("@bob:example.org".try_into().unwrap()),
+            direct_user: Some(core::User {
+                id: "@bob:example.org".try_into().unwrap(),
+                name: Some("Bob".into()),
+                avatar: None,
+            }),
             alias: None,
             joined_members: 2,
             pinned: Vec::new(),
@@ -933,7 +933,11 @@ mod tests {
         let summary = RoomSummary::from(&room);
         assert_eq!(summary.id, "!room:example.org");
         assert_eq!(summary.kind, RoomKind::Direct);
-        assert_eq!(summary.direct_user_id.as_deref(), Some("@bob:example.org"));
+        let bob = summary.direct_user.as_ref().unwrap();
+        assert_eq!(
+            (bob.user_id.as_str(), bob.display_name.as_str()),
+            ("@bob:example.org", "Bob")
+        );
         assert_eq!(summary.last_activity, Some(at(5)));
         assert_eq!(summary.unread_mentions, 1);
         // Back, for the apps' tests.

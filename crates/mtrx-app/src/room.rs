@@ -21,7 +21,7 @@ use iced::{
 use mtrx_core::{
     CallService, Draft, DraftKeeper, Event, EventContent, EventKey, Media, Member, MessageKind,
     MessageRow, MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomHandle, RoomKind, RoomSummary,
-    RoomTimeline, Row, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, UserId,
+    RoomTimeline, Row, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, User, UserId,
 };
 
 use crate::{
@@ -49,7 +49,7 @@ use crate::{
     pins,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
-    rows::{self, Part, display_name, time},
+    rows::{self, Part, time},
     selectable::{self, selectable},
     selectable_image::selectable_image,
     selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
@@ -427,7 +427,7 @@ impl Room {
                     return None;
                 };
                 let preview = first_line(&m.document.to_plain_text());
-                Target::of(event, display_name(event), preview)
+                Target::of(event, event.sender.display_name(), preview)
             },
             move |target| Message::ReplyFound(target).to(&id),
         )
@@ -598,7 +598,7 @@ impl Room {
     ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
         let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
         let senders = self.visible_events().flat_map(move |event| {
-            let sender = event.sender_avatar.as_deref().map(|a| (a, SENDER_AVATAR));
+            let sender = (event.sender.avatar.as_deref()).map(|a| (a, SENDER_AVATAR));
             let listed = matches!(popup, Some(Popup::Readers(row)) if *row == event.id);
             let reactors = match popup {
                 Some(Popup::Reactors { row, key }) if *row == event.id => Some(key.as_str()),
@@ -1196,7 +1196,7 @@ impl Room {
         let presence = summary
             .filter(|s| s.kind == RoomKind::Direct && !s.is_notes(look.own_user))
             .and_then(|s| s.direct_user.as_ref())
-            .and_then(|user| look.presences.get(user));
+            .and_then(|user| look.presences.get(&user.id));
         // The name (and the person's presence) and picture open the room's
         // info card.
         let info = summary.map_or(info::Target::Room(self.id.clone()), info::target_of);
@@ -1652,9 +1652,9 @@ fn event_view<'a>(
     let hovered = context.hovered == Some(event.id.as_str());
     let gutter: Element<'a, app::Message> = if with_header {
         mouse_area(context.avatars.view(
-            event.sender.as_str(),
-            &display_name(event),
-            event.sender_avatar.as_deref(),
+            event.sender.id.as_str(),
+            &event.sender.display_name(),
+            event.sender.avatar.as_deref(),
             SENDER_AVATAR,
             Shape::Circle,
         ))
@@ -1719,7 +1719,7 @@ fn event_view<'a>(
     let toolbar = toolbar_shown.then(|| {
         let target = message.and_then(|m| {
             let preview = first_line(&m.document.to_plain_text());
-            Target::of(event, display_name(event), preview)
+            Target::of(event, event.sender.display_name(), preview)
         });
         let edit_text = message.map(|m| m.body.clone());
         let picker = message
@@ -2147,7 +2147,7 @@ fn sender_line<'a>(
     let open = sender_info(event);
     let mut name = span(units[0].text.clone()).font(fonts::SEMIBOLD);
     if context.colored_names {
-        name = name.color(avatar::name_color(event.sender.as_str(), context.theme));
+        name = name.color(avatar::name_color(event.sender.id.as_str(), context.theme));
     }
     let time = span(units[1].text.clone());
     row![
@@ -2170,24 +2170,24 @@ fn sender_line<'a>(
 /// The card of `user`, mentioned in `rows`: their name and picture
 /// among `members` if loaded, else the name the newest mention shows.
 fn mentioned(user: OwnedUserId, members: Option<&[Member]>, rows: &[Row]) -> info::Target {
-    let member = members.and_then(|members| members.iter().find(|m| m.id == user));
-    let name = member.and_then(|m| m.name.clone()).or_else(|| {
+    let member = members.and_then(|members| members.iter().find(|m| m.user.id == user));
+    let name = member.and_then(|m| m.user.name.clone()).or_else(|| {
         (rows.iter().rev().filter_map(Row::event)).find_map(|event| match &event.content {
             EventContent::Message(m) => m.document.mention_name(user.as_str()).map(str::to_owned),
             _ => None,
         })
     });
-    let avatar = member.and_then(|m| m.avatar.clone());
-    info::sender(user, name, avatar)
+    let avatar = member.and_then(|m| m.user.avatar.clone());
+    info::Target::User(User {
+        id: user,
+        name,
+        avatar,
+    })
 }
 
 /// Opens the sender's info card.
 fn sender_info(event: &Event) -> app::Message {
-    app::Message::ShowInfo(info::sender(
-        event.sender.clone(),
-        event.sender_name.clone(),
-        event.sender_avatar.clone(),
-    ))
+    app::Message::ShowInfo(info::Target::User(event.sender.clone()))
 }
 
 /// A muted line in the text column, e.g. "Loading…".
@@ -2335,9 +2335,11 @@ mod tests {
         };
         let entries = rows([mention("$a", "Nils"), mention("$b", "Nils W")]);
         let member = Member {
-            id: nils.clone(),
-            name: Some("Nils Wolf".into()),
-            avatar: Some("mxc://x/nils".into()),
+            user: User {
+                id: nils.clone(),
+                name: Some("Nils Wolf".into()),
+                avatar: Some("mxc://x/nils".into()),
+            },
             role: mtrx_core::Role::Member,
             level: Some(0),
             invited: false,

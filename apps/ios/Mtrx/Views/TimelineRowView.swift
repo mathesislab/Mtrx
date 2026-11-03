@@ -96,9 +96,9 @@ struct MessageView: View {
     var body: some View {
         VStack(alignment: own ? .trailing : .leading, spacing: 3) {
             if row.showSender {
-                Text(event.displayName)
+                Text(event.sender.displayName)
                     .fontWeight(.semibold)
-                    .foregroundColor(AvatarColor.of(event.senderId))
+                    .foregroundColor(AvatarColor.of(event.sender.userId))
                     .lineLimit(1)
                     .padding(.leading, (row.avatarColumn ? Self.avatarSize + Self.avatarSpacing : 0) + 12)
             }
@@ -106,7 +106,7 @@ struct MessageView: View {
                 if own { Spacer(minLength: 48) }
                 if row.avatarColumn {
                     if row.showSender {
-                        AvatarView(name: event.displayName, uri: event.senderAvatarUrl, size: Self.avatarSize)
+                        AvatarView(name: event.sender.displayName, uri: event.sender.avatarUrl, size: Self.avatarSize)
                     } else {
                         Color.clear.frame(width: Self.avatarSize, height: 1)
                     }
@@ -216,7 +216,7 @@ struct MessageView: View {
         let text: Text
         switch message.kind {
         case .emote:
-            text = Text("\(event.displayName) ").italic() + Text(Formatting.linked(message.body)).italic()
+            text = Text("\(event.sender.displayName) ").italic() + Text(Formatting.linked(message.body)).italic()
         default:
             text = Text(Formatting.linked(message.body))
         }
@@ -375,7 +375,7 @@ struct QuoteView: View {
                 .fill(own ? Color.ownBubbleLink : Color.accentColor)
                 .frame(width: 3)
             VStack(alignment: .leading, spacing: 1) {
-                if let sender = quote.senderLabel {
+                if let sender = quote.sender?.displayName {
                     Text(sender)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
@@ -437,7 +437,7 @@ struct ReactionChips: View {
 /// Who read up to a message: small avatars, at most three, then "+N".
 /// Tapping lists them.
 struct ReaderAvatarsView: View {
-    let readers: [Reader]
+    let readers: [User]
     let show: () -> Void
 
     var body: some View {

@@ -229,7 +229,7 @@ pub fn direct_users<'a>(view: &RoomListView<'a>, own: &UserId) -> Vec<&'a OwnedU
     listed(view)
         .into_iter()
         .filter(|r| r.kind == RoomKind::Direct)
-        .filter_map(|r| r.direct_user.as_ref())
+        .filter_map(|r| r.direct_user.as_ref().map(|u| &u.id))
         .filter(|user| *user != own)
         .collect()
 }
@@ -1424,7 +1424,7 @@ impl<'a> RoomListView<'a> {
                 .direct_user
                 .as_ref()
                 .filter(|_| room.kind == RoomKind::Direct);
-            let presence = person.and_then(|user| self.presences.get(user));
+            let presence = person.and_then(|user| self.presences.get(&user.id));
             let tint = self.tint;
             presence::with_dot(picture, presence, ROOM_AVATAR, move |theme| {
                 tint.color(theme)
@@ -1750,7 +1750,7 @@ fn out_of_view_arrows<'a>(
 mod tests {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
-    use mtrx_core::{OwnedUserId, RoomListState};
+    use mtrx_core::{OwnedUserId, RoomListState, User};
 
     use super::*;
 
@@ -1777,6 +1777,10 @@ mod tests {
         }
     }
 
+    fn user(id: &str) -> User {
+        User::from(OwnedUserId::try_from(id).unwrap())
+    }
+
     /// A space with a room below it, a direct chat with one of its members
     /// and a room outside it.
     fn rooms() -> Vec<RoomSummary> {
@@ -1784,7 +1788,7 @@ mod tests {
             room("!space:x", RoomKind::Space, &[]),
             room("!inside:x", RoomKind::Room, &["!space:x"]),
             RoomSummary {
-                direct_user: Some("@bob:x".try_into().unwrap()),
+                direct_user: Some(user("@bob:x")),
                 ..room("!bob:x", RoomKind::Direct, &[])
             },
             room("!loose:x", RoomKind::Room, &[]),
@@ -1875,12 +1879,12 @@ mod tests {
         let own: OwnedUserId = "@me:x".try_into().unwrap();
         let mut rooms = rooms();
         rooms.push(RoomSummary {
-            direct_user: Some("@carol:x".try_into().unwrap()),
+            direct_user: Some(user("@carol:x")),
             ..room("!carol:x", RoomKind::Direct, &[])
         });
         // The Notes to self, not pinned, are listed but not followed.
         rooms.push(RoomSummary {
-            direct_user: Some(own.clone()),
+            direct_user: Some(User::from(own.clone())),
             ..room("!notes:x", RoomKind::Direct, &[])
         });
         let (avatars, presences) = (Avatars::new(), Presences::default());
@@ -1912,7 +1916,7 @@ mod tests {
             ..room("!fav:x", RoomKind::Room, &[])
         });
         rooms.push(RoomSummary {
-            direct_user: Some("@me:x".try_into().unwrap()),
+            direct_user: Some(user("@me:x")),
             ..room("!notes:x", RoomKind::Direct, &[])
         });
         let (avatars, presences) = (Avatars::new(), Presences::default());

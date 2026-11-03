@@ -13,8 +13,7 @@ use iced::{
 };
 use mtrx_core::{
     Confirmation, Contact, Grouping, Member, NewRoom, OwnedRoomId, OwnedUserId, Permissions,
-    RoomCategories, RoomKind, RoomLists, RoomSummary, SpaceKey, UserId, UserSummary, a_role,
-    typed_level,
+    RoomCategories, RoomKind, RoomLists, RoomSummary, SpaceKey, User, UserId, a_role, typed_level,
 };
 
 use crate::{
@@ -95,8 +94,8 @@ pub enum Message {
     /// People the user shares spaces, rooms or chats with.
     Contacts(Vec<Contact>),
     /// The server's user directory's answer to a query.
-    Suggestions(String, Vec<UserSummary>),
-    Pick(UserSummary),
+    Suggestions(String, Vec<User>),
+    Pick(User),
     Unpick(usize),
     ToggleRoom(OwnedRoomId),
     /// Tick all of these rooms.
@@ -179,10 +178,10 @@ pub struct Dialog {
     /// Spaces whose members are suggested first.
     near: Vec<OwnedRoomId>,
     /// Ourselves, offered first for a direct chat: notes to self.
-    own: Option<UserSummary>,
+    own: Option<User>,
     /// The server's user directory's results for the query.
-    directory: Vec<UserSummary>,
-    people: Vec<UserSummary>,
+    directory: Vec<User>,
+    people: Vec<User>,
     rooms: Vec<OwnedRoomId>,
     /// Invited people who co-own the new room, where the server offers it.
     co_owners: Vec<OwnedUserId>,
@@ -242,7 +241,7 @@ impl Dialog {
     /// Offer a chat with ourselves (notes to self) in a direct chat dialog.
     pub fn offer_self(&mut self, own: OwnedUserId) {
         if matches!(self.kind, Kind::DirectChat) {
-            self.own = Some(UserSummary {
+            self.own = Some(User {
                 id: own,
                 name: Some("Notes to self".into()),
                 avatar: None,
@@ -280,10 +279,10 @@ impl Dialog {
     /// People to suggest: those the user knows that match the query (the
     /// closest, and those in nearby spaces, first), then the server's
     /// directory results. Picked people are left out.
-    fn suggestions(&self) -> (Vec<&UserSummary>, Vec<&UserSummary>) {
+    fn suggestions(&self) -> (Vec<&User>, Vec<&User>) {
         const KNOWN: usize = 8;
         let query = self.query.trim().trim_start_matches('@').to_lowercase();
-        let picked = |user: &UserSummary| self.people.iter().any(|p| p.id == user.id);
+        let picked = |user: &User| self.people.iter().any(|p| p.id == user.id);
         let mut known: Vec<(bool, bool, &Contact)> = self
             .contacts
             .iter()
@@ -307,7 +306,7 @@ impl Dialog {
                 && ("notes to self".contains(&query)
                     || own.id.as_str()[1..].to_lowercase().contains(&query))
         });
-        let known: Vec<&UserSummary> = own
+        let known: Vec<&User> = own
             .into_iter()
             .chain(known.into_iter().take(KNOWN).map(|(_, _, c)| &c.user))
             .collect();
@@ -368,7 +367,7 @@ impl Dialog {
                     .level()
                     .map(|l| a_role(l, member.manage.default_level))
                     .unwrap_or_default();
-                let name = member.shown_name();
+                let name = member.user.display_name();
                 if member.own {
                     (
                         format!("You are {role} now."),
@@ -572,9 +571,11 @@ impl Dialog {
                 *ban,
             ),
             Kind::Encrypt { room, .. } => Request::Encrypt(room.clone()),
-            Kind::Level(change) => {
-                Request::SetLevel(change.room.clone(), change.member.id.clone(), self.level()?)
-            }
+            Kind::Level(change) => Request::SetLevel(
+                change.room.clone(),
+                change.member.user.id.clone(),
+                self.level()?,
+            ),
             Kind::SignOut => Request::SignOut,
             // Not for the server: see `category_edit`.
             Kind::Category { .. } => return None,
@@ -647,7 +648,7 @@ impl Dialog {
                 Some((_, asked)) => (asked.title.clone(), asked.button.as_str()),
                 None if change.member.own => ("Your power level".into(), "Set"),
                 None => (
-                    format!("Power level for {}", change.member.shown_name()),
+                    format!("Power level for {}", change.member.user.display_name()),
                     "Set",
                 ),
             },
@@ -824,7 +825,7 @@ impl Dialog {
             // A new room's invited people may co-own it.
             let owners = self.owners_offered && self.creates_room();
             let chips = self.people.iter().enumerate().map(|(i, person)| {
-                let name = button(text(format!("{} ×", label(person))).size(13))
+                let name = button(text(format!("{} ×", person.display_name())).size(13))
                     .padding([3, 8])
                     .style(style::secondary_button)
                     .on_press(message(Message::Unpick(i)));
@@ -880,11 +881,7 @@ impl Dialog {
         if let Ok(id) = UserId::parse(query)
             && !listed(&id)
         {
-            list = list.push(person(&UserSummary {
-                id,
-                name: None,
-                avatar: None,
-            }));
+            list = list.push(person(&User::from(id)));
         }
         section = section.push(frame::scroll(list).height(Length::Shrink));
         section.into()
@@ -1044,10 +1041,10 @@ fn list_heading<'a>(heading: &'a str) -> Element<'a, app::Message> {
 }
 
 /// A suggested person; picks them.
-fn person<'a>(user: &UserSummary) -> Element<'a, app::Message> {
+fn person<'a>(user: &User) -> Element<'a, app::Message> {
     button(
         column![
-            text(label(user)),
+            text(user.display_name()),
             text(user.id.to_string()).size(12).style(text::secondary),
         ]
         .spacing(1),
@@ -1057,12 +1054,6 @@ fn person<'a>(user: &UserSummary) -> Element<'a, app::Message> {
     .style(style::list_item(false))
     .on_press(message(Message::Pick(user.clone())))
     .into()
-}
-
-fn label(user: &UserSummary) -> String {
-    user.name
-        .clone()
-        .unwrap_or_else(|| user.id.localpart().to_owned())
 }
 
 fn option<'a>(

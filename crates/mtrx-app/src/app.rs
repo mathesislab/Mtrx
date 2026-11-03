@@ -644,7 +644,7 @@ impl Main {
             .and_then(|room| rooms.iter().find(|r| r.id == room.id));
         let mut people: Vec<&OwnedUserId> = open
             .filter(|r| r.kind == RoomKind::Direct)
-            .and_then(|r| r.direct_user.as_ref())
+            .and_then(|r| r.direct_user.as_ref().map(|u| &u.id))
             .into_iter()
             .collect();
         people.extend(sidebar::direct_users(
@@ -654,7 +654,7 @@ impl Main {
         if self.show_members
             && let Some(Ok(members)) = self.pane.room().and_then(|r| r.member_list.as_ref())
         {
-            people.extend(members.iter().map(|m| &m.id));
+            people.extend(members.iter().map(|m| &m.user.id));
         }
         let mut unique: Vec<OwnedUserId> = Vec::with_capacity(people.len());
         for person in people {
@@ -2036,7 +2036,7 @@ impl App {
                     };
                     let card = match room {
                         Some(room) => room.mentioned(user),
-                        None => info::sender(user, None, None),
+                        None => info::Target::User(mtrx_core::User::from(user)),
                     };
                     Task::done(Message::ShowInfo(card))
                 }

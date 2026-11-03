@@ -18,7 +18,7 @@ final class TimelineModel: ObservableObject {
     let roomId: String
     /// The other person of a direct chat (not the Notes to self), whose
     /// picture and name the header shows, opening their info sheet.
-    let person: String?
+    let person: User?
     @Published private(set) var rows: [TimelineRow] = []
     /// Not opened yet.
     @Published private(set) var opening = true
@@ -86,8 +86,7 @@ final class TimelineModel: ObservableObject {
         self.room = room
         drafts = session.draftKeeper(roomId: room.id)
         roomId = room.id
-        let ours = session.userId()
-        person = room.kind == .direct ? room.directUserId.flatMap { $0 == ours ? nil : $0 } : nil
+        person = room.person(ours: session.userId())
     }
 
     /// Open the timeline, with the draft left in the room unless something
@@ -202,7 +201,7 @@ final class TimelineModel: ObservableObject {
     /// A direct chat's header was tapped: the other person's info sheet.
     func showPersonInfo() {
         guard let person, personInfo == nil else { return }
-        let info = PersonInfoModel(session: session, userId: person, room: room)
+        let info = PersonInfoModel(session: session, userId: person.userId, room: room)
         info.load()
         personInfo = info
     }
@@ -510,7 +509,7 @@ struct ComposeTarget: Equatable {
 
     init(itemId: String, row: MessageRow) {
         self.init(
-            itemId: itemId, eventId: row.event.eventId, sender: row.event.displayName,
+            itemId: itemId, eventId: row.event.eventId, sender: row.event.sender.displayName,
             preview: row.message?.summary ?? "")
     }
 }

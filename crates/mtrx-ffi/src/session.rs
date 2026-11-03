@@ -12,7 +12,7 @@ use mtrx_core::{self as core, OwnedMxcUri, OwnedRoomId, OwnedUserId};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ConnectionState, Media, MtrxError, TaskHandle, Timeline, UserProfile,
+    ConnectionState, Media, MtrxError, TaskHandle, Timeline, User,
     runtime::{InRuntime, follow, run},
 };
 
@@ -132,12 +132,11 @@ impl Session {
         .await
     }
 
-    /// Someone's name and picture from their profile on the server, e.g.
-    /// for a direct chat's `directUserId`.
-    pub async fn user_profile(&self, user_id: String) -> Result<UserProfile, MtrxError> {
+    /// Someone's name and picture from their profile on the server.
+    pub async fn user_profile(&self, user_id: String) -> Result<User, MtrxError> {
         let user = OwnedUserId::try_from(user_id.as_str()).map_err(MtrxError::invalid)?;
         let session = self.core();
-        run(async move { Ok(UserProfile::from(session.user_profile(&user).await?)) }).await
+        run(async move { Ok(User::from(&session.user_profile(&user).await?)) }).await
     }
 
     /// Sign out on the server and delete all local data of the account,

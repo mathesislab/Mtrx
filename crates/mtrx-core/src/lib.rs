@@ -65,11 +65,11 @@ pub use live::{AbortOnDrop, Live};
 pub use media::MediaRef;
 pub use members::{
     Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,
-    shown_name, typed_level,
+    typed_level,
 };
 pub use notes::notes_markdown;
 pub use notifications::Notification;
-pub use people::{Contact, UserInfo};
+pub use people::{Contact, User, UserInfo};
 pub use permissions::{Permissions, SpaceUpdate};
 pub use pins::PinsChange;
 pub use presence::{
@@ -82,7 +82,7 @@ pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
 pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, SpaceLink};
-pub use rooms::{NewRoom, RoomKind, RoomListState, RoomSummary, UserSummary};
+pub use rooms::{NewRoom, RoomKind, RoomListState, RoomSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
 pub use secrets::{Secret, SecretBackend, SecretStore};
@@ -91,8 +91,8 @@ pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use spaces::{descendants, top_level_spaces};
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
-    MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SEEK_PAGE, SEEK_PAGES,
-    SendState, TimelineEntry, Upload, UtdCause, mention_targets,
+    MessageKind, PendingSend, Reaction, Reply, RoomTimeline, SEEK_PAGE, SEEK_PAGES, SendState,
+    TimelineEntry, Upload, UtdCause, mention_targets,
 };
 
 pub use url::Url;

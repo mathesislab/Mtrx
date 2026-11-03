@@ -10,7 +10,7 @@ import org.mtrx.app.model.describe
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.Session
-import uniffi.mtrx.UserProfile
+import uniffi.mtrx.User
 
 /** What the person's info sheet shows of them. */
 data class PersonCard(val userId: String, val name: String, val avatarUrl: String?)
@@ -20,7 +20,7 @@ data class PersonCard(val userId: String, val name: String, val avatarUrl: Strin
  * avatar where set, otherwise the chat's (also while the profile loads, or
  * when it could not).
  */
-fun personCard(userId: String, header: RoomHeader, profile: UserProfile?): PersonCard = PersonCard(
+fun personCard(userId: String, header: RoomHeader, profile: User?): PersonCard = PersonCard(
     userId = userId,
     name = profile?.name?.takeIf { it.isNotBlank() } ?: header.name,
     avatarUrl = profile?.avatarUrl ?: header.avatarUrl,
@@ -39,8 +39,8 @@ class PersonInfoModel(
     private val actions: CoroutineScope,
 ) {
     /** Null while loading, and after a failure (the chat's name and avatar stay). */
-    private val _profile = MutableStateFlow<UserProfile?>(null)
-    val profile: StateFlow<UserProfile?> = _profile.asStateFlow()
+    private val _profile = MutableStateFlow<User?>(null)
+    val profile: StateFlow<User?> = _profile.asStateFlow()
 
     /** The list of spaces to invite to is open, instead of the person. */
     private val _choosingSpace = MutableStateFlow(false)

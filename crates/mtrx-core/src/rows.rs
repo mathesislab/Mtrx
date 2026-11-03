@@ -139,7 +139,7 @@ pub fn rows(entries: &[TimelineEntry], context: &RowContext) -> Vec<Row> {
 
 /// `event` continues the group of `previous`.
 fn continues(previous: &Event, event: &Event) -> bool {
-    previous.sender == event.sender
+    previous.sender.id == event.sender.id
         && (event.timestamp)
             .duration_since(previous.timestamp)
             .unwrap_or_default()
@@ -215,13 +215,13 @@ fn summary_row(events: &[&Event]) -> Option<Row> {
 fn summary(events: &[&Event]) -> String {
     let creators: Vec<_> = (events.iter())
         .filter(|e| matches!(&e.content, EventContent::OtherState { event_type } if event_type == "m.room.create"))
-        .map(|e| &e.sender)
+        .map(|e| &e.sender.id)
         .collect();
     let mut parts: Vec<String> = Vec::new();
     let mut joined: Vec<String> = Vec::new();
     let mut left: Vec<String> = Vec::new();
     for event in events {
-        let name = display_name(event);
+        let name = event.sender.display_name();
         let part = match &event.content {
             EventContent::OtherState { event_type } if event_type == "m.room.create" => {
                 format!("{name} created and configured the room")
@@ -230,7 +230,7 @@ fn summary(events: &[&Event]) -> String {
             EventContent::OtherState { .. }
             | EventContent::Topic { .. }
             | EventContent::Pins(_)
-                if creators.contains(&&event.sender) =>
+                if creators.contains(&&event.sender.id) =>
             {
                 continue;
             }
@@ -299,11 +299,6 @@ fn summary(events: &[&Event]) -> String {
         parts.push(format!("{} left", left.join(", ")));
     }
     parts.join(" · ")
-}
-
-/// The sender's display name, else their user ID's localpart.
-fn display_name(event: &Event) -> String {
-    (event.sender_name.clone()).unwrap_or_else(|| event.sender.localpart().to_owned())
 }
 
 #[cfg(test)]

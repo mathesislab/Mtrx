@@ -5,20 +5,18 @@ use std::collections::HashSet;
 use matrix_sdk::{
     RoomMemberships,
     ruma::{
-        Int, OwnedMxcUri, OwnedUserId, UserId,
+        Int, OwnedUserId, UserId,
         events::room::member::MembershipState,
         events::room::power_levels::{RoomPowerLevels, UserPowerLevel},
         int,
     },
 };
 
-use crate::{Result, RoomHandle};
+use crate::{Result, RoomHandle, User};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
-    pub id: OwnedUserId,
-    pub name: Option<String>,
-    pub avatar: Option<OwnedMxcUri>,
+    pub user: User,
     pub role: Role,
     /// Their power level; `None` for a creator of the room, above all levels.
     pub level: Option<i64>,
@@ -82,17 +80,19 @@ impl RoomHandle {
                     None => Manage::default(),
                 };
                 Member {
-                    name: member.display_name().map(ToOwned::to_owned),
-                    avatar: member.avatar_url().map(ToOwned::to_owned),
+                    user: User {
+                        id,
+                        name: member.display_name().map(ToOwned::to_owned),
+                        avatar: member.avatar_url().map(ToOwned::to_owned),
+                    },
                     role: role(level),
                     level: match level {
                         UserPowerLevel::Int(level) => Some(level.into()),
                         _ => None,
                     },
                     invited: *member.membership() == MembershipState::Invite,
-                    own: id == own,
+                    own: member.user_id() == own,
                     manage,
-                    id,
                 }
             })
             .collect();
@@ -100,13 +100,7 @@ impl RoomHandle {
         if let Some(us) = members.iter_mut().find(|m| m.own) {
             us.manage.alone = alone;
         }
-        members.sort_by_cached_key(|m| {
-            let name = m
-                .name
-                .clone()
-                .unwrap_or_else(|| m.id.localpart().to_owned());
-            (m.invited, m.role, name.to_lowercase())
-        });
+        members.sort_by_cached_key(|m| (m.invited, m.role, m.user.display_name().to_lowercase()));
         Ok(members)
     }
 
@@ -182,11 +176,6 @@ pub struct Confirmation {
 }
 
 impl Member {
-    /// Their name, else their user ID.
-    pub fn shown_name(&self) -> String {
-        shown_name(self.name.as_deref(), self.id.as_str())
-    }
-
     /// "Owner" (a creator, above every level), "Admin", "Mod", "Level 20",
     /// or nothing for a plain member.
     pub fn label(&self) -> Option<String> {
@@ -238,20 +227,12 @@ impl Member {
     /// What to ask before giving them `level`, or nothing to just give it:
     /// any change to our own, or a level as high as ours.
     pub fn confirmation(&self, level: i64) -> Option<Confirmation> {
-        level_confirmation(&self.shown_name(), self.own, &self.manage, level)
+        level_confirmation(&self.user.display_name(), self.own, &self.manage, level)
     }
 
     /// We may do something to them: change their level, remove or ban them.
     pub fn manageable(&self) -> bool {
         self.manage.up_to.is_some() || self.manage.remove || self.manage.ban
-    }
-}
-
-/// A member's name, else their user ID.
-pub fn shown_name(name: Option<&str>, id: &str) -> String {
-    match name.map(str::trim) {
-        Some(name) if !name.is_empty() => name.to_owned(),
-        _ => id.to_owned(),
     }
 }
 
@@ -347,9 +328,11 @@ mod tests {
     /// we may give them (`None`: theirs is not ours to change).
     fn member(name: &str, level: Option<i64>, up_to: Option<i64>) -> Member {
         Member {
-            id: format!("@{name}:example.org").try_into().unwrap(),
-            name: Some(name[..1].to_uppercase() + &name[1..]),
-            avatar: None,
+            user: User {
+                id: format!("@{name}:example.org").try_into().unwrap(),
+                name: Some(name[..1].to_uppercase() + &name[1..]),
+                avatar: None,
+            },
             role: Role::Member,
             level,
             invited: false,
@@ -471,10 +454,9 @@ mod tests {
     }
 
     #[test]
-    fn shown_name_else_the_user_id() {
-        let mut ann = member("ann", Some(0), None);
-        assert_eq!(ann.shown_name(), "Ann");
-        ann.name = Some(" ".into());
-        assert_eq!(ann.shown_name(), "@ann:example.org");
+    fn confirmations_name_them_else_by_localpart() {
+        let mut bob = member("bob", Some(0), Some(100));
+        bob.user.name = None;
+        assert_eq!(bob.confirmation(100).unwrap().title, "Make bob an admin?");
     }
 }

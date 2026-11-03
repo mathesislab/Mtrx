@@ -24,6 +24,7 @@ import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
 import org.mtrx.app.roomSettings
 import org.mtrx.app.textEvent
+import org.mtrx.app.user
 import uniffi.mtrx.Draft
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
@@ -33,7 +34,7 @@ import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.RowContent
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.Topic
-import uniffi.mtrx.UserProfile
+import uniffi.mtrx.User
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TimelineViewModelTest {
@@ -78,7 +79,7 @@ class TimelineViewModelTest {
 
     @Test
     fun personInfoOpensOnceAndCloses() = runTest {
-        session.profile = UserProfile(userId = "@bob:x", name = "Bob", avatarUrl = null)
+        session.profile = User(userId = "@bob:x", name = "Bob", avatarUrl = null, displayName = "Bob")
         val viewModel = viewModel()
         viewModel.showPersonInfo("@bob:x")
         val model = viewModel.personInfo.value!!
@@ -299,7 +300,7 @@ class TimelineViewModelTest {
             body = "the reply",
             edited = false,
             media = null,
-            replyTo = ReplyQuote("\$0", QuoteState.LOADED, alice, null, MessageKind.TEXT, "the original"),
+            replyTo = ReplyQuote("\$0", QuoteState.LOADED, user(alice), MessageKind.TEXT, "the original"),
         ),
     )
 
