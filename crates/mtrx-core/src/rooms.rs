@@ -1,7 +1,6 @@
 //! Live room list (rooms, spaces, DMs) and room management.
 
 use std::{
-    collections::HashMap,
     sync::Arc,
     time::{Instant, SystemTime},
 };
@@ -10,7 +9,6 @@ use eyeball_im::Vector;
 use futures_util::{StreamExt, pin_mut};
 use matrix_sdk::{
     Client, Room, RoomState,
-    deserialized_responses::SyncOrStrippedState,
     ruma::{
         OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
         RoomOrAliasId, RoomVersionId, UserId,
@@ -19,7 +17,7 @@ use matrix_sdk::{
             room::create_room::v3::{CreationContent, Request as CreateRoomRequest, RoomPreset},
         },
         events::{
-            InitialStateEvent, SyncStateEvent,
+            InitialStateEvent,
             room::encryption::RoomEncryptionEventContent,
             space::{child::SpaceChildEventContent, parent::SpaceParentEventContent},
         },
@@ -35,9 +33,9 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use crate::{
-    Error, Live, Result, RoomHandle, RoomTag, Session, User,
+    Error, Live, Result, RoomHandle, RoomTag, Session, SpaceGraph, User,
     permissions::{Permissions, open_power_levels_raw},
-    synced, system_time,
+    system_time,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +63,6 @@ pub struct RoomSummary {
     pub unread_mentions: u64,
     pub unread_notifications: u64,
     pub last_activity: Option<SystemTime>,
-    /// Joined spaces that list this room as a child.
-    pub parents: Vec<OwnedRoomId>,
     pub tag: RoomTag,
     /// For a direct chat, the other user.
     pub direct_user: Option<User>,
@@ -94,11 +90,14 @@ pub struct RoomListState {
     /// Synced with the server since the list was created, and every room the
     /// server reported is in `rooms`. Before that, `rooms` may be a stale cache.
     pub loaded: bool,
+    /// The joined spaces and what they list.
+    pub graph: Arc<SpaceGraph>,
 }
 
 async fn run_room_list(
     client: Client,
     service: Arc<RoomListService>,
+    spaces: Live<Arc<SpaceGraph>>,
     tx: watch::Sender<RoomListState>,
 ) -> Result<()> {
     let list = service
@@ -116,7 +115,8 @@ async fn run_room_list(
     let mut service_state_stream = service_state.clone();
     // Space membership changes do not show up as room list diffs.
     let mut room_updates = client.subscribe_to_all_room_updates();
-    pin_mut!(entries);
+    let graphs = spaces.updates();
+    pin_mut!(entries, graphs);
 
     let mut items: Vector<RoomListItem> = Vector::new();
     loop {
@@ -132,6 +132,7 @@ async fn run_room_list(
             }
             Some(_) = loading_stream.next() => {}
             Some(_) = service_state_stream.next() => {}
+            Some(_) = graphs.next() => {}
         }
 
         let synced = matches!(service_state.get(), ServiceState::Running);
@@ -143,24 +144,15 @@ async fn run_room_list(
                 } => items.len() >= maximum_number_of_rooms.unwrap_or(0) as usize,
             };
         let rooms = summarize(&items).await;
-        tx.send_replace(RoomListState { rooms, loaded });
+        tx.send_replace(RoomListState {
+            rooms,
+            loaded,
+            graph: spaces.get(),
+        });
     }
 }
 
 async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
-    let mut parents: HashMap<OwnedRoomId, Vec<OwnedRoomId>> = HashMap::new();
-    for space in items
-        .iter()
-        .filter(|r| r.is_space() && r.state() == RoomState::Joined)
-    {
-        for child in space_children(space).await {
-            parents
-                .entry(child)
-                .or_default()
-                .push(space.room_id().to_owned());
-        }
-    }
-
     let mut rooms = Vec::with_capacity(items.len());
     for room in items.iter() {
         let kind = if room.is_space() {
@@ -202,7 +194,6 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             unread_mentions: room.num_unread_mentions(),
             unread_notifications: room.num_unread_notifications(),
             last_activity: room.latest_event_timestamp().map(system_time),
-            parents: parents.remove(room.room_id()).unwrap_or_default(),
             tag,
             direct_user,
             alias: room.canonical_alias().map(|a| a.to_string()),
@@ -246,37 +237,6 @@ async fn direct_user(room: &Room) -> Option<User> {
     }
 }
 
-/// Children listed by `m.space.child` events. Events without `via` mean the
-/// child was removed.
-pub(crate) async fn space_children(space: &Room) -> Vec<OwnedRoomId> {
-    let events = match space
-        .get_state_events_static::<SpaceChildEventContent>()
-        .await
-    {
-        Ok(events) => events,
-        Err(e) => {
-            warn!(space = %space.room_id(), "could not read m.space.child events: {e}");
-            return Vec::new();
-        }
-    };
-    events
-        .into_iter()
-        .filter_map(|raw| match raw.deserialize() {
-            Ok(SyncOrStrippedState::Sync(SyncStateEvent::Original(e)))
-                if !e.content.via.is_empty() =>
-            {
-                Some(e.state_key)
-            }
-            Ok(SyncOrStrippedState::Stripped(e))
-                if e.content.via.as_ref().is_some_and(|v| !v.is_empty()) =>
-            {
-                Some(e.state_key)
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 /// Options for [`Session::create_room`].
 #[derive(Clone, Debug, Default)]
 pub struct NewRoom {
@@ -299,8 +259,9 @@ impl Session {
     /// be running for it to fill.
     pub async fn room_list(&self) -> Result<Live<RoomListState>> {
         let (client, service) = (self.client.clone(), self.sync.room_list_service());
+        let spaces = self.spaces.clone();
         Ok(Live::spawn(RoomListState::default(), |tx| async move {
-            if let Err(e) = run_room_list(client, service, tx).await {
+            if let Err(e) = run_room_list(client, service, spaces, tx).await {
                 warn!("room list stopped: {e}");
             }
         }))
@@ -374,7 +335,8 @@ impl Session {
         self.echoes.set_joining(&room);
         if let Some(parent) = &new.parent {
             let content = SpaceChildEventContent::new(self.via());
-            synced::send_state(&self.sdk_room(parent)?, &room, content).await?;
+            self.set_child(&self.sdk_room(parent)?, &room, content)
+                .await?;
         }
         Ok(room)
     }
@@ -527,6 +489,6 @@ impl RoomHandle {
     /// List `room` in this space (sends `m.space.child`).
     pub async fn add_child(&self, room: &RoomId) -> Result<()> {
         let content = SpaceChildEventContent::new(self.session.via());
-        synced::send_state(&self.room, room, content).await
+        self.session.set_child(&self.room, room, content).await
     }
 }

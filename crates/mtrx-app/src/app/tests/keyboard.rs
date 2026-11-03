@@ -431,6 +431,7 @@ async fn keys_go_to_other_rooms_from_the_composer() {
     ui.main().show_rooms(RoomListState {
         rooms: vec![summary(&other, "other"), summary(&open, "open")],
         loaded: false,
+        ..Default::default()
     });
     ui.run(iced::widget::operation::focus(room::COMPOSER));
 
@@ -754,6 +755,7 @@ async fn shortcuts_type_nothing_in_fields() {
     ui.main().show_rooms(RoomListState {
         rooms: vec![summary(&other, "other"), summary(&open, "open")],
         loaded: false,
+        ..Default::default()
     });
     let typed = |ui: &mut Ui, key: &str, modifiers| {
         let (_, messages) = ui.messages(&[press(Key::Character(key.into()), modifiers)]);

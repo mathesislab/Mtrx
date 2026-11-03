@@ -10,6 +10,7 @@ use matrix_sdk::ruma::{
 };
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tracing::warn;
 use url::Url;
 
 use crate::{Error, Result, RoomHandle, Session, timeline::send_message};
@@ -177,10 +178,24 @@ impl RoomHandle {
         self.can_send_state("m.room.topic").await
     }
 
-    /// The call service set for this space.
+    /// The call service set for this space, else for the nearest space it
+    /// is in (through nested spaces too).
     pub async fn call_service(&self) -> Result<Option<CallService>> {
         let content = fetch_state::<CallServiceEventContent>(&self.session, self.id()).await?;
-        Ok(content.and_then(|c| c.service))
+        if let Some(service) = content.and_then(|c| c.service) {
+            return Ok(Some(service));
+        }
+        for space in self.session.space_graph().ancestors(self.id()) {
+            match fetch_state::<CallServiceEventContent>(&self.session, &space).await {
+                Ok(content) => {
+                    if let Some(service) = content.and_then(|c| c.service) {
+                        return Ok(Some(service));
+                    }
+                }
+                Err(e) => warn!(%space, "could not read the space's call service: {e}"),
+            }
+        }
+        Ok(None)
     }
 
     /// Set or remove the call service of this space.

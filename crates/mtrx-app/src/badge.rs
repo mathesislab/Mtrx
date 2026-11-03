@@ -138,7 +138,6 @@ mod tests {
             unread_mentions: 0,
             unread_notifications: notifications,
             last_activity: None,
-            parents: Vec::new(),
             tag: mtrx_core::RoomTag::None,
             direct_user: None,
             alias: None,

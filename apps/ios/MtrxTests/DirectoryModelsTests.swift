@@ -28,30 +28,36 @@ final class DirectoryRowsTests: XCTestCase {
 @MainActor
 final class SpaceOverviewModelTests: XCTestCase {
     private var session: FakeSession!
-    private var cache: SpaceChildrenCache!
 
     override func setUp() async throws {
         session = FakeSession(noHandle: .init())
-        cache = SpaceChildrenCache()
     }
 
     func testShowsTheLastListAtOnceThenTheNewOne() async {
-        cache["!team"] = [Make.directoryRoom("!old")]
+        session.listed["!team"] = [Make.directoryRoom("!old")]
         session.children = .success([Make.directoryRoom("!lab", name: "Lab"), Make.directoryRoom("!deep", name: "Deep")])
-        let model = SpaceOverviewModel(session: session, spaceId: "!team", cache: cache)
+        let model = SpaceOverviewModel(session: session, spaceId: "!team")
         XCTAssertEqual(model.rooms.map(\.id), ["!old"])
         XCTAssertFalse(model.unknown)
         await model.load()
         XCTAssertEqual(model.rooms.map(\.id), ["!lab", "!deep"])
-        XCTAssertEqual(cache["!team"]?.count, 2)
         model.filter = "de"
         XCTAssertEqual(model.shown.map(\.id), ["!deep"])
     }
 
+    func testNeverListedUntilLoaded() async {
+        session.children = .success([Make.directoryRoom("!lab")])
+        let model = SpaceOverviewModel(session: session, spaceId: "!team")
+        XCTAssertTrue(model.unknown)
+        await model.load()
+        XCTAssertFalse(model.unknown)
+        XCTAssertEqual(model.rooms.map(\.id), ["!lab"])
+    }
+
     func testAFailureKeepsTheLastList() async {
-        cache["!team"] = [Make.directoryRoom("!old")]
+        session.listed["!team"] = [Make.directoryRoom("!old")]
         session.children = .failure(MtrxError.Other(reason: "timed out"))
-        let model = SpaceOverviewModel(session: session, spaceId: "!team", cache: cache)
+        let model = SpaceOverviewModel(session: session, spaceId: "!team")
         await model.load()
         XCTAssertTrue(model.failed)
         XCTAssertEqual(model.rooms.map(\.id), ["!old"])
@@ -63,7 +69,7 @@ final class SpaceOverviewModelTests: XCTestCase {
         let lab = Make.directoryRoom("!lab")
         let door = Make.directoryRoom("!door", access: .knock)
         session.children = .success([lab, door])
-        let model = SpaceOverviewModel(session: session, spaceId: "!team", cache: cache)
+        let model = SpaceOverviewModel(session: session, spaceId: "!team")
         await model.load()
         XCTAssertEqual(model.action(lab, joined: false), .join)
         let joined = await model.join(lab)
@@ -79,7 +85,7 @@ final class SpaceOverviewModelTests: XCTestCase {
 
     func testAFailedJoinSaysWhy() async {
         session.changeError = MtrxError.Other(reason: "Not allowed")
-        let model = SpaceOverviewModel(session: session, spaceId: "!team", cache: cache)
+        let model = SpaceOverviewModel(session: session, spaceId: "!team")
         let joined = await model.join(Make.directoryRoom("!lab"))
         XCTAssertNil(joined)
         XCTAssertEqual(model.error, "Not allowed")

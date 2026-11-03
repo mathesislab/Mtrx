@@ -64,18 +64,3 @@ fun filtered(rooms: List<DirectoryRoom>, filter: String): List<DirectoryRoom> {
 /** [rooms] with [roomId]'s membership now [membership]. */
 fun withMembership(rooms: List<DirectoryRoom>, roomId: String, membership: Membership): List<DirectoryRoom> =
     rooms.map { if (it.id == roomId) it.copy(membership = membership) else it }
-
-/** The last list of each space's rooms, shown at once while it updates. */
-class SpaceChildrenCache {
-    private val lists = mutableMapOf<String, List<DirectoryRoom>>()
-
-    operator fun get(spaceId: String): List<DirectoryRoom>? = synchronized(lists) { lists[spaceId] }
-
-    operator fun set(spaceId: String, rooms: List<DirectoryRoom>) {
-        synchronized(lists) { lists[spaceId] = rooms }
-    }
-
-    fun clear() {
-        synchronized(lists) { lists.clear() }
-    }
-}

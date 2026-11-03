@@ -347,8 +347,13 @@ class FakeSession : Session(NoHandle) {
     override suspend fun spaceChildren(spaceId: String): List<DirectoryRoom> {
         childrenGate?.await()
         childrenError?.let { throw it }
-        return children[spaceId].orEmpty()
+        return children[spaceId].orEmpty().also { listed[spaceId] = it }
     }
+
+    /** Each space's rooms as [spaceChildren] last gave them, as the library keeps them. */
+    val listed = mutableMapOf<String, List<DirectoryRoom>>()
+
+    override fun listedSpaceChildren(spaceId: String): List<DirectoryRoom>? = listed[spaceId]
 
     override suspend fun publicRooms(server: String?, query: String, kind: DirectoryKind, page: String?): DirectoryPage {
         roomCalls += "directory $server '$query' $kind $page"
@@ -675,7 +680,6 @@ fun summary(
     name: String = id.removePrefix("!").substringBefore(':'),
     lastActivity: Instant? = null,
     topic: String? = null,
-    parents: List<String> = emptyList(),
     pinned: List<String> = emptyList(),
     mentions: Long = 0,
 ): RoomSummary = RoomSummary(
@@ -693,7 +697,6 @@ fun summary(
     directUser = directUserId?.let { user(it) },
     alias = null,
     joinedMembers = 2uL,
-    parents = parents,
     pinned = pinned,
 )
 

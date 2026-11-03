@@ -64,6 +64,10 @@ pub struct Session {
     pub(crate) drafts: crate::drafts::Drafts,
     /// Changes made here, until the room list and timelines have them.
     pub(crate) echoes: Arc<crate::echo::Echoes>,
+    /// The joined spaces and what they list, as last synced.
+    pub(crate) spaces: crate::Live<Arc<crate::SpaceGraph>>,
+    /// Each space's rooms as its server last listed them.
+    pub(crate) listings: crate::directory::Listings,
     pub(crate) connection: tokio::sync::watch::Receiver<crate::Connection>,
     /// Kept for the session: it follows push rule changes, so it knows a
     /// room's mode right after setting it (sync echoes it later).
@@ -190,6 +194,7 @@ impl Session {
         let directory_servers = crate::account_data::Synced::load(client.clone()).await;
         let drafts = crate::drafts::Drafts::load(&client).await;
         let presence_keeper = crate::presence::Keeper::new(client.clone());
+        let spaces = crate::space_graph::follow(client.clone()).await;
         Ok(Self {
             client,
             sync,
@@ -205,6 +210,8 @@ impl Session {
             directory_servers,
             drafts,
             echoes: Default::default(),
+            spaces,
+            listings: Default::default(),
             connection,
             notification_settings,
             presence_keeper: presence_keeper.clone(),

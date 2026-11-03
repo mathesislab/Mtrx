@@ -56,9 +56,6 @@ final class SessionModel: ObservableObject {
     /// Why asking another device to verify failed.
     @Published var verificationError: String?
     private(set) lazy var recovery = RecoveryModel(session: session)
-    /// The spaces' rooms as their servers last listed them, for the
-    /// overview to show at once.
-    let spaceChildren = SpaceChildrenCache()
     /// How this phone shows each space's sections.
     let sectionLayouts: SectionLayouts
     /// The Rooms tab's groups folded on this phone, by `ListSection.key`
@@ -433,17 +430,6 @@ enum HomeTab: Hashable {
 /// A room by ID, to present a sheet for.
 struct RoomRef: Identifiable, Hashable {
     let id: String
-}
-
-/// The spaces' rooms as their servers last listed them, by space ID.
-@MainActor
-final class SpaceChildrenCache {
-    private var rooms: [String: [DirectoryRoom]] = [:]
-
-    subscript(spaceId: String) -> [DirectoryRoom]? {
-        get { rooms[spaceId] }
-        set { rooms[spaceId] = newValue }
-    }
 }
 
 /// Time iOS grants to finish work after the app went to the background.

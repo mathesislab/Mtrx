@@ -1,30 +1,26 @@
 //! Room list rendering.
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Write,
-};
+use std::{collections::HashMap, fmt::Write};
 
-use mtrx_core::{OwnedRoomId, RoomKind, RoomSummary};
+use mtrx_core::{OwnedRoomId, RoomKind, RoomListState, RoomSummary};
 
 /// Print spaces as a tree with their rooms, then rooms outside any space,
 /// then direct messages and invites.
-pub fn print_tree(rooms: &[RoomSummary], ids: bool) {
+pub fn print_tree(state: &RoomListState, ids: bool) {
+    let (rooms, graph) = (&state.rooms, &state.graph);
     let by_id: HashMap<&OwnedRoomId, &RoomSummary> = rooms.iter().map(|r| (&r.id, r)).collect();
-    let mut children: HashMap<&OwnedRoomId, Vec<&RoomSummary>> = HashMap::new();
-    for room in rooms {
-        for parent in &room.parents {
-            children.entry(parent).or_default().push(room);
-        }
-    }
-    let in_list = |r: &RoomSummary| r.parents.iter().any(|p| by_id.contains_key(p));
+    let in_list = |r: &RoomSummary| graph.parents(&r.id).iter().any(|p| by_id.contains_key(p));
 
-    let top_spaces: Vec<_> = rooms
-        .iter()
-        .filter(|r| r.kind == RoomKind::Space && !r.invited && !in_list(r))
-        .collect();
-    for space in &top_spaces {
-        print_node(space, &children, 0, &mut HashSet::new(), ids);
+    for space in graph.top_level(rooms) {
+        let Some(space) = by_id.get(&space) else {
+            continue;
+        };
+        println!("{}", line(space, ids));
+        for (depth, room) in graph.tree(&space.id) {
+            if let Some(room) = by_id.get(&room) {
+                println!("{}{}", "  ".repeat(depth + 1), line(room, ids));
+            }
+        }
     }
 
     let loose = |r: &&RoomSummary, kind| !r.invited && r.kind == kind && !in_list(r);
@@ -49,24 +45,6 @@ fn print_section<'a>(title: &str, rooms: impl Iterator<Item = &'a RoomSummary>, 
             println!("  {}", line(room, ids));
         }
     }
-}
-
-fn print_node<'a>(
-    room: &'a RoomSummary,
-    children: &HashMap<&OwnedRoomId, Vec<&'a RoomSummary>>,
-    depth: usize,
-    path: &mut HashSet<&'a OwnedRoomId>,
-    ids: bool,
-) {
-    println!("{}{}", "  ".repeat(depth), line(room, ids));
-    // Space graphs may contain cycles.
-    if !path.insert(&room.id) {
-        return;
-    }
-    for child in children.get(&room.id).into_iter().flatten() {
-        print_node(child, children, depth + 1, path, ids);
-    }
-    path.remove(&room.id);
 }
 
 fn line(room: &RoomSummary, ids: bool) -> String {
