@@ -275,7 +275,7 @@ impl Layout {
 
     /// The section `room` belongs in.
     pub fn section_of(&self, room: &RoomSummary, grouping: &Grouping) -> Section {
-        if room.invited {
+        if room.membership == crate::Membership::Invited {
             Section::Invites
         } else if grouping.favourites && room.tag == RoomTag::Favourite {
             Section::Favourites
@@ -403,9 +403,9 @@ mod tests {
             avatar: None,
             topic: None,
             kind,
-            invited: false,
+            membership: crate::Membership::Joined,
             encrypted: false,
-            public: false,
+            join_rule: crate::JoinRule::Invite,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,

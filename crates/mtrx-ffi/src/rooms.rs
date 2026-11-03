@@ -4,28 +4,7 @@
 
 use mtrx_core::{self as core, OwnedServerName, OwnedUserId, RoomOrAliasId};
 
-use crate::{MtrxError, Role, Session, error::room_id, runtime::run};
-
-/// Who may join a listed room.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum JoinAccess {
-    Public,
-    /// Members of a space it is in.
-    SpaceMembers,
-    /// Anyone may ask; members let them in.
-    Knock,
-    /// Only invited people (servers rarely list these).
-    Invite,
-}
-
-/// Our membership of a listed room, if any.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum Membership {
-    Joined,
-    Invited,
-    /// We asked to join, and wait to be let in.
-    Asked,
-}
+use crate::{JoinRule, Membership, MtrxError, Role, Session, error::room_id, runtime::run};
 
 /// A room or space to join, as a space or a directory lists it.
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -41,7 +20,11 @@ pub struct DirectoryRoom {
     pub is_space: bool,
     /// For a space, how many rooms and spaces it lists.
     pub children: u64,
-    pub access: JoinAccess,
+    pub join_rule: JoinRule,
+    /// Who may join, in words: "Public: anyone can join"…
+    pub join_rule_fact: String,
+    /// As the server had it when listed; what to show is
+    /// `RoomLists.joinButton`.
     pub membership: Option<Membership>,
     /// Ours, where we are a member.
     pub role: Option<Role>,
@@ -62,20 +45,57 @@ impl From<core::DirectoryRoom> for DirectoryRoom {
             members: room.members,
             is_space: room.is_space,
             children: room.children,
-            access: match room.access {
-                core::JoinAccess::Public => JoinAccess::Public,
-                core::JoinAccess::SpaceMembers => JoinAccess::SpaceMembers,
-                core::JoinAccess::Knock => JoinAccess::Knock,
-                core::JoinAccess::Invite => JoinAccess::Invite,
-            },
-            membership: room.membership.map(|m| match m {
-                core::Membership::Joined => Membership::Joined,
-                core::Membership::Invited => Membership::Invited,
-                core::Membership::Asked => Membership::Asked,
-            }),
+            join_rule: room.join_rule.into(),
+            join_rule_fact: room.join_rule.fact().to_owned(),
+            membership: room.membership.map(Membership::from),
             role: room.role.map(Role::from),
             via: room.via.iter().map(ToString::to_string).collect(),
             suggested: room.suggested,
+        }
+    }
+}
+
+/// What a listed room's button does, as the room lets us in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum JoinAction {
+    /// We are in: open it.
+    Open,
+    Join,
+    AskToJoin,
+    /// An invite, to answer.
+    Invited,
+    /// We asked, and wait: nothing to do.
+    Asked,
+    /// Only invited people may join: nothing to do.
+    InviteOnly,
+}
+
+impl From<core::JoinAction> for JoinAction {
+    fn from(action: core::JoinAction) -> Self {
+        match action {
+            core::JoinAction::Open => Self::Open,
+            core::JoinAction::Join => Self::Join,
+            core::JoinAction::AskToJoin => Self::AskToJoin,
+            core::JoinAction::Invited => Self::Invited,
+            core::JoinAction::Asked => Self::Asked,
+            core::JoinAction::InviteOnly => Self::InviteOnly,
+        }
+    }
+}
+
+/// A listed room's button (or note), from `RoomLists.joinButton`.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct JoinButton {
+    pub action: JoinAction,
+    /// "Join", "Ask to join", "Open", "Invited", "Asked", "Invite only".
+    pub title: String,
+}
+
+impl From<core::JoinAction> for JoinButton {
+    fn from(action: core::JoinAction) -> Self {
+        Self {
+            action: action.into(),
+            title: action.title().to_owned(),
         }
     }
 }

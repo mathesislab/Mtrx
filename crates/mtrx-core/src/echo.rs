@@ -9,7 +9,7 @@ use std::{
 use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId, RoomId};
 use tokio::sync::watch;
 
-use crate::{RoomSummary, RoomTag};
+use crate::{Membership, RoomSummary, RoomTag};
 
 /// How long a change the server accepted may still differ from what sync
 /// brought (sync lags behind the server's answer).
@@ -82,11 +82,14 @@ pub(crate) struct Changes {
     /// Rooms joined or made here that the room list does not list as
     /// joined yet.
     joining: BTreeSet<OwnedRoomId>,
+    /// Rooms asked to join here that the room list does not list yet.
+    knocking: BTreeSet<OwnedRoomId>,
 }
 
 impl Changes {
     fn count(&self) -> usize {
-        self.tags.len() + self.topics.len() + self.pinned.len() + self.joining.len()
+        let rooms = self.joining.len() + self.knocking.len();
+        self.tags.len() + self.topics.len() + self.pinned.len() + rooms
     }
 
     /// When the next of the changes the server accepted times out.
@@ -186,6 +189,18 @@ impl Echoes {
             .send_if_modified(|changes| changes.joining.remove(room));
     }
 
+    /// `room` is being asked to join: asked until the room list lists it.
+    pub(crate) fn set_knocking(&self, room: &RoomId) {
+        self.changes
+            .send_if_modified(|changes| changes.knocking.insert(room.to_owned()));
+    }
+
+    /// Asking to join `room` failed.
+    pub(crate) fn drop_knocking(&self, room: &RoomId) {
+        self.changes
+            .send_if_modified(|changes| changes.knocking.remove(room));
+    }
+
     /// Changes after every change.
     pub(crate) fn subscribe(&self) -> watch::Receiver<Changes> {
         self.changes.subscribe()
@@ -193,8 +208,8 @@ impl Echoes {
 
     /// Lay the changes over `rooms`, first dropping those the rooms show,
     /// those of rooms gone, those the server accepted [`ECHO_TIMEOUT`] ago,
-    /// and the rooms coming that are listed as joined; returns when the next
-    /// of those left times out.
+    /// the rooms coming that are listed as joined and those asked to join
+    /// that are listed; returns when the next of those left times out.
     pub(crate) fn lay_over(&self, rooms: &mut [RoomSummary], now: Instant) -> Option<Instant> {
         self.changes.send_if_modified(|changes| {
             let synced = |id: &OwnedRoomId| rooms.iter().find(|r| &r.id == id);
@@ -202,7 +217,9 @@ impl Echoes {
             (changes.tags).retain(|id, p| p.shows_over(synced(id).map(|r| &r.tag), now));
             (changes.topics).retain(|id, p| p.shows_over(synced(id).map(|r| &r.topic), now));
             (changes.pinned).retain(|id, p| p.shows_over(synced(id).map(|r| &r.pinned), now));
-            (changes.joining).retain(|id| synced(id).is_none_or(|r| r.invited));
+            let coming = |r: &RoomSummary| r.membership != Membership::Joined;
+            (changes.joining).retain(|id| synced(id).is_none_or(coming));
+            (changes.knocking).retain(|id| synced(id).is_none());
             changes.count() != before
         });
         let changes = self.changes.borrow();
@@ -218,6 +235,12 @@ impl Echoes {
     /// joined when last laid over.
     pub(crate) fn joining(&self) -> BTreeSet<OwnedRoomId> {
         self.changes.borrow().joining.clone()
+    }
+
+    /// The rooms asked to join here that the room list did not list when
+    /// last laid over.
+    pub(crate) fn knocking(&self) -> BTreeSet<OwnedRoomId> {
+        self.changes.borrow().knocking.clone()
     }
 
     /// `room`'s pinned messages as shown: those set here until `synced`
@@ -385,7 +408,7 @@ mod tests {
         echoes.drop_joining(&failed);
         echoes.drop_joining(&left);
         let mut rooms = vec![room(invite.as_str(), RoomKind::Room)];
-        rooms[0].invited = true;
+        rooms[0].membership = Membership::Invited;
         echoes.lay_over(&mut rooms, Instant::now());
         assert_eq!(
             echoes.joining(),
@@ -393,9 +416,26 @@ mod tests {
         );
 
         // Listed as joined: here, no longer coming.
-        rooms[0].invited = false;
+        rooms[0].membership = Membership::Joined;
         rooms.push(room(made.as_str(), RoomKind::Space));
         echoes.lay_over(&mut rooms, Instant::now());
         assert!(echoes.joining().is_empty());
+    }
+
+    #[test]
+    fn rooms_asked_to_join_are_asked_until_listed() {
+        let echoes = Echoes::default();
+        let (asked, failed) = (owned_room_id!("!asked:x"), owned_room_id!("!failed:x"));
+        echoes.set_knocking(&asked);
+        echoes.set_knocking(&failed);
+        echoes.drop_knocking(&failed);
+        echoes.lay_over(&mut [], Instant::now());
+        assert_eq!(echoes.knocking(), BTreeSet::from([asked.clone()]));
+
+        // Listed, as asked or let in: the list has it.
+        let mut rooms = vec![room(asked.as_str(), RoomKind::Room)];
+        rooms[0].membership = Membership::Asked;
+        echoes.lay_over(&mut rooms, Instant::now());
+        assert!(echoes.knocking().is_empty());
     }
 }

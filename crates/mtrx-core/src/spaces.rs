@@ -4,12 +4,14 @@ use std::collections::{HashMap, HashSet};
 
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 
-use crate::{Grouping, Layout, RoomCategories, RoomKind, RoomSummary, RoomTag, SpaceGraph};
+use crate::{
+    Grouping, Layout, Membership, RoomCategories, RoomKind, RoomSummary, RoomTag, SpaceGraph,
+};
 
 /// Whether a room list may show `room`: rooms and direct chats, and spaces
 /// only when invited to, to be answered.
 fn listed(room: &RoomSummary) -> bool {
-    room.kind != RoomKind::Space || room.invited
+    room.kind != RoomKind::Space || room.membership == Membership::Invited
 }
 
 /// What Home lists, in the order of `rooms`: direct chats, invites (to
@@ -30,7 +32,7 @@ pub(crate) fn home_rooms<'a>(
         .filter(|r| listed(r))
         .filter(|r| {
             at_home.all_rooms
-                || r.invited
+                || r.membership == Membership::Invited
                 || r.kind == RoomKind::Direct
                 || graph.parents(&r.id).is_empty()
                 || categories.home.category_of(&r.id).is_some()
@@ -131,9 +133,9 @@ pub(crate) mod tests {
             avatar: None,
             topic: None,
             kind,
-            invited: false,
+            membership: Membership::Joined,
             encrypted: false,
-            public: false,
+            join_rule: crate::JoinRule::Invite,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,
@@ -155,7 +157,7 @@ pub(crate) mod tests {
 
     pub(crate) fn invited(summary: RoomSummary) -> RoomSummary {
         RoomSummary {
-            invited: true,
+            membership: Membership::Invited,
             ..summary
         }
     }

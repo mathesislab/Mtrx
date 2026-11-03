@@ -37,8 +37,8 @@ pub use encryption::{
 };
 pub use error::MtrxError;
 pub use manage::{
-    Access, Banned, History, LevelChoice, LevelConfirmation, Manage, Member, NotifyMode,
-    Permissions, Role, RoomSettings, SpaceLink, level_confirmation, role_level, typed_level,
+    Banned, History, LevelChoice, LevelConfirmation, Manage, Member, NotifyMode, Permissions, Role,
+    RoomSettings, SpaceLink, level_confirmation, role_level, typed_level,
 };
 pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,
@@ -51,7 +51,7 @@ pub use room_list::{
     SpaceEntry, SpaceKey,
 };
 pub use rooms::{
-    Address, DirectoryKind, DirectoryPage, DirectoryRoom, JoinAccess, Membership, NewRoom,
+    Address, DirectoryKind, DirectoryPage, DirectoryRoom, JoinAction, JoinButton, NewRoom,
     RoomLink, Topic, compose_topic, parse_address, parse_topic,
 };
 pub use runtime::TaskHandle;

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use mtrx_core::{self as core, OwnedEventId};
 
 use crate::{
-    Access, History, Member, MtrxError, NotifyMode, Permissions, RoomSettings, Session,
+    History, JoinRule, Member, MtrxError, NotifyMode, Permissions, RoomSettings, Session,
     runtime::{InRuntime, run},
 };
 
@@ -75,13 +75,8 @@ impl Room {
     }
 
     /// Who may join.
-    pub async fn set_join_rule(&self, rule: Access) -> Result<(), MtrxError> {
-        let rule = match rule {
-            Access::Invite => core::Access::Invite,
-            Access::SpaceMembers => core::Access::SpaceMembers,
-            Access::Knock => core::Access::Knock,
-            Access::Public => core::Access::Public,
-        };
+    pub async fn set_join_rule(&self, rule: JoinRule) -> Result<(), MtrxError> {
+        let rule = core::JoinRule::from(rule);
         let room = self.core();
         run(async move { Ok(room.set_join_rule(rule).await?) }).await
     }
