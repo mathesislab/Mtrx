@@ -89,20 +89,20 @@ val iceTopic = Topic(
 /** The rooms, most recently active first. */
 val roomList = listOf(
     summary("!with-bob:example.org", RoomKind.DIRECT, unread = 2, directUserId = "@bob:example.org", name = "Bob Berg", lastActivity = at(10, 42)),
-    summary(ICE, unread = 3, name = "Ice sheets", lastActivity = at(10, 30), topic = iceTopic.text, parents = listOf(TEAM), pinned = listOf("\$p1", "\$p2")),
+    summary(ICE, unread = 3, name = "Ice sheets", lastActivity = at(10, 30), topic = iceTopic.text, pinned = listOf("\$p1", "\$p2")),
     summary("!with-carol:example.org", RoomKind.DIRECT, invited = true, directUserId = "@carol:example.org", name = "Carol Chen"),
-    summary(SEA, name = "Sea ice", lastActivity = at(9, 5), topic = "Sea ice and the ocean", parents = listOf(TEAM)),
-    summary(PAPERS, unread = 1, mentions = 1, name = "Papers", lastActivity = at(17, 20, daysAgo = 1), parents = listOf(TEAM)),
+    summary(SEA, name = "Sea ice", lastActivity = at(9, 5), topic = "Sea ice and the ocean"),
+    summary(PAPERS, unread = 1, mentions = 1, name = "Papers", lastActivity = at(17, 20, daysAgo = 1)),
     summary(WORKSHOP, invited = true, name = "Workshop 2027"),
     summary("!notes:example.org", RoomKind.DIRECT, directUserId = ME, name = "Notes to self", lastActivity = at(8, 0, daysAgo = 2)),
-    summary(TEACHING, unread = 5, name = "Teaching", lastActivity = at(14, 0, daysAgo = 3), parents = listOf(OUTREACH)),
+    summary(TEACHING, unread = 5, name = "Teaching", lastActivity = at(14, 0, daysAgo = 3)),
     summary(LOOSE, name = "Coffee", lastActivity = at(12, 0, daysAgo = 9)),
     summary(TEAM, RoomKind.SPACE, name = "Ice team"),
     summary(OUTREACH, RoomKind.SPACE, name = "Outreach"),
     summary("!with-dan:example.org", RoomKind.DIRECT, directUserId = "@dan:example.org", name = "Dan Dahl", lastActivity = at(16, 0, daysAgo = 4)),
-    summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = "Radargrams from the traverse", parents = listOf(TEAM)),
-    summary(CODE, unread = 4, name = "Model code", lastActivity = at(11, 0, daysAgo = 1), parents = listOf(TEAM)),
-    summary(ARCHIVE, name = "Archive 2025", lastActivity = at(9, 0, daysAgo = 40), parents = listOf(TEAM)),
+    summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = "Radargrams from the traverse"),
+    summary(CODE, unread = 4, name = "Model code", lastActivity = at(11, 0, daysAgo = 1)),
+    summary(ARCHIVE, name = "Archive 2025", lastActivity = at(9, 0, daysAgo = 40)),
     summary(SUMMIT, invited = true, name = "Ice summit 2027"),
 )
 

@@ -94,25 +94,31 @@ class RoomModelsTest {
 
     @Test
     fun theLastListShowsAtOnceAndUpdatesBehind() = runTest {
-        val cache = SpaceChildrenCache()
-        cache["!team:x"] = listOf(directoryRoom("!old:x"))
+        session.listed["!team:x"] = listOf(directoryRoom("!old:x"))
         session.children["!team:x"] = listOf(directoryRoom("!lab:x"), directoryRoom("!ask:x", access = JoinAccess.KNOCK))
         session.childrenGate = CompletableDeferred()
-        val model = SpaceOverviewModel("!team:x", session, cache)
+        val model = SpaceOverviewModel("!team:x", session)
         assertEquals(listOf("!old:x"), model.rooms.value?.map { it.id })
         assertTrue(model.updating.value)
         session.childrenGate!!.complete(Unit)
         assertEquals(listOf("!lab:x", "!ask:x"), model.rooms.value?.map { it.id })
         assertFalse(model.updating.value)
-        assertEquals(listOf("!lab:x", "!ask:x"), cache["!team:x"]?.map { it.id })
+    }
+
+    @Test
+    fun nothingShowsUntilFirstListed() = runTest {
+        session.childrenGate = CompletableDeferred()
+        val model = SpaceOverviewModel("!team:x", session)
+        assertNull(model.rooms.value)
+        session.childrenGate!!.complete(Unit)
+        assertEquals(emptyList<String>(), model.rooms.value?.map { it.id })
     }
 
     @Test
     fun aFailedUpdateKeepsTheListAndOffersTryAgain() = runTest {
-        val cache = SpaceChildrenCache()
-        cache["!team:x"] = listOf(directoryRoom("!old:x"))
+        session.listed["!team:x"] = listOf(directoryRoom("!old:x"))
         session.childrenError = MtrxException.Other("timeout")
-        val model = SpaceOverviewModel("!team:x", session, cache)
+        val model = SpaceOverviewModel("!team:x", session)
         assertTrue(model.failed.value)
         assertEquals(listOf("!old:x"), model.rooms.value?.map { it.id })
         session.childrenError = null
@@ -126,7 +132,7 @@ class RoomModelsTest {
         val lab = directoryRoom("!lab:x")
         val ask = directoryRoom("!ask:x", access = JoinAccess.KNOCK)
         session.children["!team:x"] = listOf(lab, ask)
-        val model = SpaceOverviewModel("!team:x", session, SpaceChildrenCache())
+        val model = SpaceOverviewModel("!team:x", session)
         model.join(lab)
         model.knock(ask)
         assertEquals(listOf("join !lab:x", "knock !ask:x"), session.roomCalls)

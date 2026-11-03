@@ -151,7 +151,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
         composable(SPACE, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
             val spaceId = entry.arguments?.getString("roomId") ?: return@composable
             val model: RoomInfoModel = viewModel { RoomInfoModel(spaceId, session, ::composeTopic) }
-            val overview: SpaceOverviewModel = viewModel { SpaceOverviewModel(spaceId, session, account.spaceChildren) }
+            val overview: SpaceOverviewModel = viewModel { SpaceOverviewModel(spaceId, session) }
             OverviewScreen(account, signedIn, info, rooms, model, overview, nav, openLink, openRoom)
         }
         composable(JOIN) {

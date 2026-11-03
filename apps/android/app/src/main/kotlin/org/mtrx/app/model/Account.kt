@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.mtrx.app.rooms.SpaceChildrenCache
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
@@ -100,9 +99,6 @@ class Account(
 
     /** How this phone arranges each space's sections. */
     val sections = SectionLayouts(sectionStore, scope)
-
-    /** The last list of each space's rooms, for its overview. */
-    val spaceChildren = SpaceChildrenCache()
 
     private val _connection = MutableStateFlow(ConnectionState.ONLINE)
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
@@ -537,7 +533,6 @@ class Account(
         _rooms.value = NoRooms
         _connection.value = ConnectionState.ONLINE
         spaceSelection.clear()
-        spaceChildren.clear()
         _roomRequest.value = null
         notifications.clearAll()
     }

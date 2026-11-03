@@ -615,7 +615,6 @@ mod tests {
             direct_user_id: None,
             alias: None,
             joined_members: 0,
-            parents: Vec::new(),
             public: false,
             pinned: Vec::new(),
         }
