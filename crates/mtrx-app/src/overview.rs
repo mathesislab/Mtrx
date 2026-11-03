@@ -7,7 +7,9 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, pick_list, row, space, text, text_input},
 };
-use mtrx_core::{DirectoryRoom, Member, Membership, OwnedRoomId, OwnedServerName, RoomSummary};
+use mtrx_core::{
+    DirectoryRoom, Member, Membership, OwnedRoomId, OwnedServerName, RoomLists, RoomSummary,
+};
 
 use crate::{
     app,
@@ -88,8 +90,6 @@ pub struct Overview {
     expanded: HashSet<OwnedRoomId>,
     /// Joining or asking to join.
     busy: HashSet<OwnedRoomId>,
-    /// Asked to join here, before the server's list says so.
-    asked: HashSet<OwnedRoomId>,
     members: Option<Result<Vec<Member>, String>>,
     error: Option<String>,
 }
@@ -120,7 +120,6 @@ impl Overview {
             show: Show::default(),
             expanded: HashSet::new(),
             busy: HashSet::new(),
-            asked: HashSet::new(),
             members: None,
             error: None,
         }
@@ -165,11 +164,8 @@ impl Overview {
             }
             Message::Done(room, result) => {
                 self.busy.remove(&room);
-                match result {
-                    Ok(()) => {
-                        self.asked.insert(room);
-                    }
-                    Err(e) => self.error = Some(e),
+                if let Err(e) = result {
+                    self.error = Some(e);
                 }
             }
             Message::MembersLoaded(result) => self.members = Some(result),
@@ -298,7 +294,7 @@ impl Overview {
             ));
         }
         let mut list = column![].spacing(2);
-        for line in self.lines(shown.space_rooms, shown.rooms) {
+        for line in self.lines(shown.space_rooms, shown.lists) {
             list = list.push(self.line(line, shown));
         }
         let mut body = column![tools, list].spacing(10);
@@ -320,9 +316,9 @@ impl Overview {
 
     /// The Rooms tab's lines: the rooms the space lists that the filter
     /// shows, with the rooms of expanded subspaces below each.
-    fn lines<'a>(&self, listing: &'a SpaceRooms, ours: &[RoomSummary]) -> Vec<Line<'a>> {
+    fn lines<'a>(&self, listing: &'a SpaceRooms, lists: &RoomLists) -> Vec<Line<'a>> {
         let mut lines = Vec::new();
-        self.push_lines(&mut lines, &mut vec![self.space.clone()], listing, ours);
+        self.push_lines(&mut lines, &mut vec![self.space.clone()], listing, lists);
         lines
     }
 
@@ -334,7 +330,7 @@ impl Overview {
         lines: &mut Vec<Line<'a>>,
         path: &mut Vec<OwnedRoomId>,
         listing: &'a SpaceRooms,
-        ours: &[RoomSummary],
+        lists: &RoomLists,
     ) {
         let depth = path.len() - 1;
         let of = &path[depth];
@@ -347,7 +343,7 @@ impl Overview {
         let filter = self.filter.trim().to_lowercase();
         let mut any = false;
         for room in rooms {
-            let membership = directory::membership(room, ours, self.asked.contains(&room.id));
+            let membership = lists.membership(&room.id);
             let joined = membership == Some(Membership::Joined);
             let open = (room.is_space && !path.contains(&room.id))
                 .then(|| self.expanded.contains(&room.id));
@@ -370,7 +366,7 @@ impl Overview {
             });
             if open == Some(true) {
                 path.push(room.id.clone());
-                self.push_lines(lines, path, listing, ours);
+                self.push_lines(lines, path, listing, lists);
                 path.pop();
             }
         }
@@ -506,7 +502,7 @@ fn quiet<'a>(line: &'static str, depth: usize) -> Element<'a, app::Message> {
 
 #[cfg(test)]
 mod tests {
-    use mtrx_core::JoinAccess;
+    use mtrx_core::JoinRule;
 
     use super::*;
 
@@ -520,7 +516,7 @@ mod tests {
             members: 3,
             is_space: true,
             children: 1,
-            access: JoinAccess::Public,
+            join_rule: JoinRule::Public,
             membership: None,
             via: Vec::new(),
             suggested: false,
@@ -539,7 +535,7 @@ mod tests {
         overview.update(Message::Expand(b));
         // Opened below B too.
         overview.update(Message::Expand(a));
-        let lines: Vec<_> = (overview.lines(&listing, &[]).into_iter())
+        let lines: Vec<_> = (overview.lines(&listing, &RoomLists::default()).into_iter())
             .map(|line| match line {
                 Line::Room {
                     room, open, depth, ..

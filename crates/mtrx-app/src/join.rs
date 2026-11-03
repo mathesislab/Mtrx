@@ -11,7 +11,7 @@ use iced::{
 };
 use mtrx_core::{
     DirectoryKind, DirectoryPage, DirectoryRoom, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
-    RoomSummary, parse_address,
+    RoomLists, parse_address,
 };
 
 use crate::{app, avatar::Avatars, directory, frame, style};
@@ -61,7 +61,7 @@ pub enum Message {
 pub enum Joined {
     Room,
     Space(OwnedRoomId),
-    Asked(OwnedRoomId),
+    Asked,
 }
 
 /// A directory search: on `server` (ours if `None`), from `page`.
@@ -101,7 +101,6 @@ pub struct Join {
     preview: Option<(String, Option<Result<DirectoryRoom, String>>)>,
     /// Joining or asking to join, by the ID or address used.
     busy: HashSet<String>,
-    asked: HashSet<OwnedRoomId>,
     /// The running search or preview; replaced by each new one.
     pub request: Option<Handle>,
 }
@@ -130,7 +129,6 @@ impl Join {
             error: None,
             preview: None,
             busy: HashSet::new(),
-            asked: HashSet::new(),
             request: None,
         };
         let action = join.find();
@@ -254,10 +252,7 @@ impl Join {
                 self.busy.remove(room.as_str());
                 match result {
                     Ok(Joined::Space(id)) => return Action::ShowSpace(id),
-                    Ok(Joined::Room) => {}
-                    Ok(Joined::Asked(id)) => {
-                        self.asked.insert(id);
-                    }
+                    Ok(Joined::Room | Joined::Asked) => {}
                     Err(e) => self.error = Some(e),
                 }
             }
@@ -293,7 +288,7 @@ impl Join {
     /// `pictures`: rooms show their pictures, as the room list does.
     pub fn view<'a>(
         &'a self,
-        rooms: &'a [RoomSummary],
+        lists: &'a RoomLists,
         avatars: &'a Avatars,
         pictures: bool,
     ) -> Element<'a, app::Message> {
@@ -346,7 +341,7 @@ impl Join {
                     .size(12)
                     .style(text::danger)
                     .into(),
-                Some(Ok(room)) => self.entry(room, rooms, avatars, pictures),
+                Some(Ok(room)) => self.entry(room, lists, avatars, pictures),
             });
         } else if self.server != Server::Other {
             body = body.push(directory::tabs(
@@ -360,7 +355,7 @@ impl Join {
             ));
             let mut list = column![].spacing(2);
             for room in &self.rooms {
-                list = list.push(self.entry(room, rooms, avatars, pictures));
+                list = list.push(self.entry(room, lists, avatars, pictures));
             }
             if self.loading {
                 list = list.push(quiet("Looking…"));
@@ -391,14 +386,14 @@ impl Join {
     fn entry<'a>(
         &'a self,
         room: &'a DirectoryRoom,
-        rooms: &'a [RoomSummary],
+        lists: &'a RoomLists,
         avatars: &'a Avatars,
         pictures: bool,
     ) -> Element<'a, app::Message> {
         let address: OwnedRoomOrAliasId = room.id.clone().into();
         directory::entry(
             room,
-            directory::membership(room, rooms, self.asked.contains(&room.id)),
+            lists.membership(&room.id),
             self.busy.contains(address.as_str()),
             container(text("")).into(),
             directory::Shown { avatars, pictures },

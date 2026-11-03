@@ -2342,7 +2342,7 @@ mod tests {
             },
             role: mtrx_core::Role::Member,
             level: Some(0),
-            invited: false,
+            membership: mtrx_core::Membership::Joined,
             own: false,
             manage: Default::default(),
         };

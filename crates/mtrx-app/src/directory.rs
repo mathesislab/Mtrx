@@ -5,11 +5,12 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::{
-    Alignment, Element, Length, Theme,
+    Alignment, Color, Element, Length, Theme,
     widget::{button, column, container, hover, row, space, text},
 };
 use mtrx_core::{
-    DirectoryRoom, JoinAccess, Membership, OwnedRoomId, Role, RoomKind, RoomLists, RoomSummary,
+    DirectoryRoom, JoinAction, JoinRule, Membership, OwnedRoomId, Role, RoomKind, RoomLists,
+    RoomSummary,
 };
 
 use crate::{
@@ -28,18 +29,6 @@ const ACTION_WIDTH: f32 = 96.0;
 const LEAVE_WIDTH: f32 = 72.0;
 const ROLE_WIDTH: f32 = 44.0;
 
-/// Our membership of a listed room: as the room list has it (it follows
-/// joins from anywhere), else asked to join (`asked` here, or as the server
-/// listed it).
-pub fn membership(room: &DirectoryRoom, rooms: &[RoomSummary], asked: bool) -> Option<Membership> {
-    match rooms.iter().find(|r| r.id == room.id) {
-        Some(r) if r.invited => Some(Membership::Invited),
-        Some(_) => Some(Membership::Joined),
-        None if asked => Some(Membership::Asked),
-        None => room.membership.filter(|m| *m == Membership::Asked),
-    }
-}
-
 /// What a listed room's row needs besides the room.
 pub struct Shown<'a> {
     pub avatars: &'a Avatars,
@@ -47,9 +36,10 @@ pub struct Shown<'a> {
     pub pictures: bool,
 }
 
-/// One room or space, after `lead` (an indent, say); `busy` while joining
-/// or asking to. Our role, Leave and the main button line up in columns.
-/// One we're in opens on a click; hovered, it offers Leave… and Open.
+/// One room or space, after `lead` (an indent, say), with our `membership`
+/// of it ([`RoomLists::membership`]); `busy` while joining or asking to.
+/// Our role, Leave and the main button line up in columns. One we're in
+/// opens on a click; hovered, it offers Leave… and Open.
 pub fn entry<'a>(
     room: &DirectoryRoom,
     membership: Option<Membership>,
@@ -59,7 +49,7 @@ pub fn entry<'a>(
     on_join: app::Message,
     on_knock: app::Message,
 ) -> Element<'a, app::Message> {
-    let access = icon_for(room.access);
+    let access = icon_for(room.join_rule);
     let pictured = shown.pictures || room.is_space;
     let picture = if pictured {
         shown.avatars.view(
@@ -90,7 +80,7 @@ pub fn entry<'a>(
     .width(Length::Fill);
     let mut line = row![lead, picture, details].spacing(8);
     if pictured {
-        line = line.push(container(icon_for(room.access)).center_x(20));
+        line = line.push(container(icon_for(room.join_rule)).center_x(20));
     }
     let joined = membership == Some(Membership::Joined);
     let role = match room.role.filter(|_| joined) {
@@ -162,7 +152,7 @@ fn details(room: &DirectoryRoom) -> String {
     parts.join(" · ")
 }
 
-/// Join, Ask to join or Open, as the room allows.
+/// Join, Ask to join or Open, as the room allows ([`JoinAction`]).
 fn action<'a>(
     room: &DirectoryRoom,
     membership: Option<Membership>,
@@ -177,7 +167,7 @@ fn action<'a>(
             .into()
     };
     if busy {
-        return quiet(if room.access == JoinAccess::Knock {
+        return quiet(if room.join_rule == JoinRule::Knock {
             "Asking…"
         } else {
             "Joining…"
@@ -188,17 +178,15 @@ fn action<'a>(
     } else {
         app::Message::OpenRoom(room.id.clone())
     };
-    match membership {
+    let action = room.action(membership);
+    match action {
         // Open shows while hovered.
-        Some(Membership::Joined) => space().into(),
+        JoinAction::Open => space().into(),
         // Shows the invite, to accept or decline.
-        Some(Membership::Invited) => act("Invited", true, open),
-        Some(Membership::Asked) => quiet("Asked"),
-        None => match room.access {
-            JoinAccess::Public | JoinAccess::SpaceMembers => act("Join", true, on_join),
-            JoinAccess::Knock => act("Ask to join", true, on_knock),
-            JoinAccess::Invite => quiet("Invite only"),
-        },
+        JoinAction::Invited => act(action.title(), true, open),
+        JoinAction::Join => act(action.title(), true, on_join),
+        JoinAction::AskToJoin => act(action.title(), true, on_knock),
+        JoinAction::Asked | JoinAction::InviteOnly => quiet(action.title()),
     }
 }
 
@@ -217,15 +205,27 @@ fn act<'a>(label: &'a str, primary: bool, on_press: app::Message) -> Element<'a,
 }
 
 /// Who can join, as an icon with its hint.
-fn icon_for<'a>(access: JoinAccess) -> Element<'a, app::Message> {
-    const SIZE: f32 = 15.0;
-    let (icon, label) = match access {
-        JoinAccess::Public => (icons::hash(SIZE + 2.0, secondary), "Anyone can join"),
-        JoinAccess::SpaceMembers => (icons::people(SIZE, secondary), "Space members can join"),
-        JoinAccess::Knock => (icons::door(SIZE, secondary), "Ask to join"),
-        JoinAccess::Invite => (icons::lock(SIZE, secondary), "Invited people only"),
-    };
-    hint(icon, label, Position::Left)
+fn icon_for<'a>(rule: JoinRule) -> Element<'a, app::Message> {
+    hint(
+        join_rule_icon(rule, 15.0, secondary),
+        rule.fact(),
+        Position::Left,
+    )
+}
+
+/// Who can join, as an icon `size` high: # anyone, people for a space's
+/// members, a door for asking, a lock for invited people only.
+pub fn join_rule_icon<'a, M: 'a>(
+    rule: JoinRule,
+    size: f32,
+    color: fn(&Theme) -> Color,
+) -> Element<'a, M> {
+    match rule {
+        JoinRule::Public => icons::hash(size + 2.0, color),
+        JoinRule::SpaceMembers => icons::people(size, color),
+        JoinRule::Knock => icons::door(size, color),
+        JoinRule::Invite => icons::lock(size, color),
+    }
 }
 
 /// A row of tabs, `chosen` marked.
@@ -252,7 +252,7 @@ pub fn tabs<'a, T: Copy + PartialEq + 'a>(
 }
 
 /// The colour of quiet icons.
-pub fn secondary(theme: &Theme) -> iced::Color {
+pub fn secondary(theme: &Theme) -> Color {
     theme
         .extended_palette()
         .background
@@ -270,7 +270,6 @@ pub struct SpaceRooms {
     by_space: HashMap<OwnedRoomId, Listed>,
     /// Joining or asking to join, from the search.
     pub busy: HashSet<OwnedRoomId>,
-    pub asked: HashSet<OwnedRoomId>,
 }
 
 #[derive(Default)]
@@ -371,7 +370,8 @@ impl SpaceRooms {
 /// The joined spaces whose rooms the search looks through: those in the
 /// selected space (and it), or all at Home.
 pub fn searched_spaces(lists: &RoomLists, selected: Option<&OwnedRoomId>) -> Vec<OwnedRoomId> {
-    let is_space = |r: &&RoomSummary| r.kind == RoomKind::Space && !r.invited;
+    let is_space =
+        |r: &&RoomSummary| r.kind == RoomKind::Space && r.membership == Membership::Joined;
     match selected {
         Some(space) => {
             let below = lists.graph.descendants(space);
@@ -405,7 +405,7 @@ mod tests {
             members: 3,
             is_space: false,
             children: 0,
-            access: JoinAccess::Public,
+            join_rule: JoinRule::Public,
             membership: None,
             via: Vec::new(),
             suggested: false,
@@ -420,9 +420,9 @@ mod tests {
             avatar: None,
             topic: None,
             kind: RoomKind::Room,
-            invited: false,
+            membership: Membership::Joined,
             encrypted: false,
-            public: false,
+            join_rule: JoinRule::Invite,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,
