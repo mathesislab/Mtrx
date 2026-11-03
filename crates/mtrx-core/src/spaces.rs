@@ -6,27 +6,6 @@ use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 
 use crate::{Grouping, Layout, RoomCategories, RoomKind, RoomSummary, RoomTag, SpaceGraph};
 
-/// Rooms below `space`, through nested spaces too.
-pub fn descendants(rooms: &[RoomSummary], space: &RoomId) -> HashSet<OwnedRoomId> {
-    let mut children: HashMap<&RoomId, Vec<&OwnedRoomId>> = HashMap::new();
-    for room in rooms {
-        for parent in &room.parents {
-            children.entry(parent).or_default().push(&room.id);
-        }
-    }
-    let mut found = HashSet::new();
-    let mut stack = vec![space];
-    while let Some(id) = stack.pop() {
-        for child in children.get(id).into_iter().flatten() {
-            // Space graphs may contain cycles.
-            if found.insert((*child).clone()) {
-                stack.push(child);
-            }
-        }
-    }
-    found
-}
-
 /// Whether a room list may show `room`: rooms and direct chats, and spaces
 /// only when invited to, to be answered.
 fn listed(room: &RoomSummary) -> bool {
@@ -159,7 +138,6 @@ pub(crate) mod tests {
             unread_mentions: 0,
             unread_notifications: 0,
             last_activity: None,
-            parents: Vec::new(),
             tag: RoomTag::None,
             direct_user: None,
             alias: None,

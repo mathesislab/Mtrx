@@ -63,8 +63,6 @@ pub struct RoomSummary {
     pub unread_mentions: u64,
     pub unread_notifications: u64,
     pub last_activity: Option<SystemTime>,
-    /// Joined spaces that list this room as a child.
-    pub parents: Vec<OwnedRoomId>,
     pub tag: RoomTag,
     /// For a direct chat, the other user.
     pub direct_user: Option<OwnedUserId>,
@@ -143,17 +141,16 @@ async fn run_room_list(
                     maximum_number_of_rooms,
                 } => items.len() >= maximum_number_of_rooms.unwrap_or(0) as usize,
             };
-        let graph = spaces.get();
-        let rooms = summarize(&items, &graph).await;
+        let rooms = summarize(&items).await;
         tx.send_replace(RoomListState {
             rooms,
             loaded,
-            graph,
+            graph: spaces.get(),
         });
     }
 }
 
-async fn summarize(items: &Vector<RoomListItem>, graph: &SpaceGraph) -> Vec<RoomSummary> {
+async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
     let mut rooms = Vec::with_capacity(items.len());
     for room in items.iter() {
         let kind = if room.is_space() {
@@ -200,7 +197,6 @@ async fn summarize(items: &Vector<RoomListItem>, graph: &SpaceGraph) -> Vec<Room
             unread_mentions: room.num_unread_mentions(),
             unread_notifications: room.num_unread_notifications(),
             last_activity: room.latest_event_timestamp().map(system_time),
-            parents: graph.parents(room.room_id()).to_vec(),
             tag,
             direct_user,
             alias: room.canonical_alias().map(|a| a.to_string()),

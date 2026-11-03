@@ -542,9 +542,6 @@ impl TryFrom<&RoomSummary> for core::RoomSummary {
 
     /// Without its tag, which the apps don't get.
     fn try_from(room: &RoomSummary) -> Result<Self, MtrxError> {
-        let ids = |ids: &[String]| -> Result<Vec<OwnedRoomId>, MtrxError> {
-            ids.iter().map(|id| crate::error::room_id(id)).collect()
-        };
         let direct_user: Option<OwnedUserId> = (room.direct_user_id.as_deref())
             .map(crate::error::user_id)
             .transpose()?;
@@ -568,7 +565,6 @@ impl TryFrom<&RoomSummary> for core::RoomSummary {
             unread_mentions: room.unread_mentions,
             unread_notifications: room.unread_notifications,
             last_activity: room.last_activity,
-            parents: ids(&room.parents)?,
             tag: core::RoomTag::None,
             direct_user,
             alias: room.alias.clone(),

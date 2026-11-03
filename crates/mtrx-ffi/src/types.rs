@@ -90,7 +90,8 @@ impl From<&core::RoomSummary> for RoomSummary {
             direct_user_id: room.direct_user.as_ref().map(ToString::to_string),
             alias: room.alias.clone(),
             joined_members: room.joined_members,
-            parents: room.parents.iter().map(ToString::to_string).collect(),
+            // Gone with the apps' use of it: `RoomLists.parents`.
+            parents: Vec::new(),
             public: room.public,
             pinned: room.pinned.iter().map(ToString::to_string).collect(),
         }
@@ -926,7 +927,6 @@ mod tests {
             unread_mentions: 1,
             unread_notifications: 2,
             last_activity: Some(at(5)),
-            parents: Vec::new(),
             tag: core::RoomTag::None,
             direct_user: Some("@bob:example.org".try_into().unwrap()),
             alias: None,

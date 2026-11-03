@@ -92,7 +92,6 @@ pub use secrets::{SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use space_graph::{Child, SpaceGraph};
-pub use spaces::descendants;
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
     MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SEEK_PAGE, SEEK_PAGES,

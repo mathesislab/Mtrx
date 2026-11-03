@@ -13,8 +13,7 @@ use iced::{
 };
 use mtrx_core::{
     Confirmation, Contact, Grouping, Member, NewRoom, OwnedRoomId, OwnedUserId, Permissions,
-    RoomCategories, RoomKind, RoomLists, RoomSummary, SpaceKey, UserId, UserSummary, a_role,
-    typed_level,
+    RoomCategories, RoomKind, RoomLists, SpaceKey, UserId, UserSummary, a_role, typed_level,
 };
 
 use crate::{
@@ -627,7 +626,6 @@ impl Dialog {
         arrange: &'a Arrange,
         grouping: &Grouping,
     ) -> Element<'a, app::Message> {
-        let rooms = &lists.rooms;
         let (title, submit) = match &self.kind {
             Kind::NewRoom {
                 space: Some((_, space)),
@@ -681,7 +679,7 @@ impl Dialog {
             }
             Kind::DirectChat => body.push(self.people_view("Name or @user:server")),
             Kind::Invite { .. } => body.push(self.people_view("Name or @user:server")),
-            Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, rooms)),
+            Kind::AddExisting { space, .. } => body.push(self.rooms_view(space, lists)),
             Kind::Category { space, .. } => body
                 .push(self.prose_field("Name", &self.name, Message::Name))
                 .push(self.category_rooms_view(space.as_ref(), lists, arrange, grouping)),
@@ -895,15 +893,14 @@ impl Dialog {
     fn rooms_view<'a>(
         &'a self,
         space: &OwnedRoomId,
-        rooms: &'a [RoomSummary],
+        lists: &'a RoomLists,
     ) -> Element<'a, app::Message> {
-        let candidates: Vec<_> = rooms
-            .iter()
+        let candidates: Vec<_> = (lists.rooms.iter())
             .filter(|r| {
                 !r.invited
                     && r.kind != RoomKind::Direct
                     && r.id != *space
-                    && !r.parents.contains(space)
+                    && !lists.graph.parents(&r.id).contains(space)
             })
             .collect();
         if candidates.is_empty() {

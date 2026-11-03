@@ -72,10 +72,8 @@ pub enum Message {
 /// What the app should do after a [`Message`].
 pub enum Action {
     None,
-    /// List a space's rooms, unless listed lately.
-    Load(OwnedRoomId),
-    /// List them in any case.
-    Reload(Vec<OwnedRoomId>),
+    /// List these spaces' rooms.
+    Load(Vec<OwnedRoomId>),
     LoadMembers,
     Join(OwnedRoomId, Vec<OwnedServerName>),
     Knock(OwnedRoomId, Vec<OwnedServerName>),
@@ -114,7 +112,7 @@ impl Overview {
     pub fn opened(&self) -> Action {
         match self.tab {
             Tab::Members => Action::LoadMembers,
-            _ => Action::Load(self.space.clone()),
+            _ => Action::Load(vec![self.space.clone()]),
         }
     }
 
@@ -123,18 +121,18 @@ impl Overview {
             Message::Tab(tab) => {
                 self.tab = tab;
                 match tab {
-                    Tab::Rooms => return Action::Load(self.space.clone()),
+                    Tab::Rooms => return Action::Load(vec![self.space.clone()]),
                     Tab::Members if self.members.is_none() => return Action::LoadMembers,
                     _ => {}
                 }
             }
             Message::Filter(filter) => self.filter = filter,
             Message::Show(show) => self.show = show,
-            Message::TryAgain => return Action::Reload(self.shown_spaces()),
+            Message::TryAgain => return Action::Load(self.shown_spaces()),
             Message::Expand(space) => {
                 if !self.expanded.remove(&space) {
                     self.expanded.insert(space.clone());
-                    return Action::Load(space);
+                    return Action::Load(vec![space]);
                 }
             }
             Message::Join(room, via) => {
@@ -311,7 +309,7 @@ impl Overview {
     ) -> iced::widget::Column<'a, app::Message> {
         let indent = f32::from(depth) * INDENT;
         let listing = shown.space_rooms;
-        let rooms = listing.rooms(of, shown.rooms);
+        let rooms = listing.rooms(of);
         // Nothing to show yet: room for what comes, or why it didn't.
         if rooms.is_empty() && !listing.listed(of) {
             let waiting = listing.failed(of).is_none();
@@ -329,7 +327,7 @@ impl Overview {
         }
         let filter = self.filter.trim().to_lowercase();
         let mut any = false;
-        for room in &rooms {
+        for room in rooms {
             let membership =
                 directory::membership(room, shown.rooms, self.asked.contains(&room.id));
             let joined = membership == Some(Membership::Joined);

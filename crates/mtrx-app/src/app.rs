@@ -1312,7 +1312,7 @@ impl App {
                 };
                 // A card stays below, e.g. a space's overview, to come
                 // back to.
-                let near = near_spaces(&kind, &main.lists.rooms, main.space.as_ref());
+                let near = near_spaces(&kind, &main.lists.graph, main.space.as_ref());
                 main.arrange.escape();
                 let mut dialog = Dialog::new(kind);
                 dialog.fill_category(&main.arrange.categories);
@@ -3389,7 +3389,6 @@ impl App {
             return Task::none();
         };
         let session = main.session.clone();
-        let spaces = sidebar::ancestors(&main.lists.rooms, room_id);
         let room = room_id.clone();
         let can_edit = load_can_edit_topic(&session, room.clone(), {
             let room = room.clone();
@@ -3412,20 +3411,23 @@ impl App {
                 move |can| room::Message::Pins(pins::Message::CanPin(can)).to(&reply),
             )
         };
-        let space_service = Task::perform(
-            async move {
-                for space in spaces {
-                    let Ok(space) = session.room(&space) else {
-                        continue;
-                    };
-                    if let Ok(Some(service)) = space.call_service().await {
-                        return Some(service);
-                    }
-                }
-                None
-            },
-            move |service| room::Message::Calls(calls::Message::SpaceService(service)).to(&room),
-        );
+        let space_service = {
+            let reply = room.clone();
+            Task::perform(
+                async move {
+                    session
+                        .room(&room)
+                        .ok()?
+                        .call_service()
+                        .await
+                        .ok()
+                        .flatten()
+                },
+                move |service| {
+                    room::Message::Calls(calls::Message::SpaceService(service)).to(&reply)
+                },
+            )
+        };
         Task::batch([can_edit, can_pin, old_link, space_service])
     }
 
@@ -4403,6 +4405,7 @@ impl App {
                 if let Some(card) = &main.card {
                     let card = card.view(info::Shown {
                         rooms: &main.lists.rooms,
+                        graph: &main.lists.graph,
                         avatars: &main.avatars,
                         own_user: &main.own_user,
                         presences: &main.presences,
@@ -5180,23 +5183,22 @@ fn load_can_edit_topic(
 
 /// List the rooms of all our spaces, for the room search.
 fn load_space_rooms(main: &mut Main) -> Task<Message> {
-    let spaces = directory::searched_spaces(&main.lists.rooms, None);
+    let spaces = directory::searched_spaces(&main.lists, None);
     Task::batch(
         spaces
             .iter()
-            .map(|space| list_space_rooms(&main.session, &mut main.space_rooms, space, false)),
+            .map(|space| list_space_rooms(&main.session, &mut main.space_rooms, space)),
     )
 }
 
-/// Ask `space`'s server for its rooms, unless listed lately (any time if
-/// `again`) or being listed.
+/// List `space`'s rooms (the core asks its server at most once a minute),
+/// unless being listed.
 fn list_space_rooms(
     session: &Arc<Session>,
     space_rooms: &mut directory::SpaceRooms,
     space: &OwnedRoomId,
-    again: bool,
 ) -> Task<Message> {
-    if !space_rooms.start(space, again) {
+    if !space_rooms.start(space) {
         return Task::none();
     }
     let (session, space) = (session.clone(), space.clone());
@@ -5221,11 +5223,10 @@ fn overview_task(
     let done = |message: Overview| Message::Info(info::Message::Overview(message));
     match action {
         Action::None => Task::none(),
-        Action::Load(space) => list_space_rooms(&session, space_rooms, &space, false),
-        Action::Reload(spaces) => Task::batch(
+        Action::Load(spaces) => Task::batch(
             spaces
                 .iter()
-                .map(|space| list_space_rooms(&session, space_rooms, space, true)),
+                .map(|space| list_space_rooms(&session, space_rooms, space)),
         ),
         Action::LoadMembers => {
             let space = space.clone();
@@ -5424,11 +5425,11 @@ fn used_emoji(main: &mut Main, used: Vec<String>) -> Task<Message> {
 /// space shown.
 fn near_spaces(
     kind: &dialog::Kind,
-    rooms: &[mtrx_core::RoomSummary],
+    graph: &mtrx_core::SpaceGraph,
     shown: Option<&OwnedRoomId>,
 ) -> Vec<OwnedRoomId> {
     let around = |room: &OwnedRoomId| {
-        let mut spaces = sidebar::ancestors(rooms, room);
+        let mut spaces = graph.ancestors(room);
         spaces.push(room.clone());
         spaces
     };

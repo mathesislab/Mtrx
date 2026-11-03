@@ -745,10 +745,8 @@ async fn main_screen_with_math() {
     let rooms = tokio::time::timeout(TIMEOUT, async {
         let mut updates = std::pin::pin!(list.updates());
         while let Some(state) = updates.next().await {
-            let in_space = state
-                .rooms
-                .iter()
-                .any(|r| r.id == room && r.parents.contains(&space));
+            let in_space = state.rooms.iter().any(|r| r.id == room)
+                && state.graph.parents(&room).contains(&space);
             let dm_avatar = state.rooms.iter().any(|r| r.id == dm && r.avatar.is_some());
             if state.loaded && in_space && dm_avatar {
                 return state;
@@ -1686,7 +1684,8 @@ async fn room_management_screens() {
                 && state
                     .rooms
                     .iter()
-                    .any(|r| r.id == room && r.parents.contains(&space) && r.name == "ice-sheets")
+                    .any(|r| r.id == room && r.name == "ice-sheets")
+                && state.graph.parents(&room).contains(&space)
                 && state
                     .rooms
                     .iter()
@@ -1955,7 +1954,7 @@ async fn room_management_screens() {
                 overview::Tab::Rooms,
             );
             main.space_rooms.loaded(space.clone(), Ok(children.clone()));
-            main.space_rooms.start(&space, true);
+            main.space_rooms.start(&space);
             main.card = Some(card);
         }),
         "space-overview-updating",
@@ -2716,10 +2715,7 @@ async fn website_screenshots() {
         let mut updates = std::pin::pin!(list.updates());
         while let Some(state) = updates.next().await {
             let in_space = rooms_in_space.iter().all(|id| {
-                state
-                    .rooms
-                    .iter()
-                    .any(|r| &r.id == id && r.parents.contains(&space))
+                state.rooms.iter().any(|r| &r.id == id) && state.graph.parents(id).contains(&space)
             });
             let dm_avatar = state.rooms.iter().any(|r| r.id == dm && r.avatar.is_some());
             if state.loaded && in_space && dm_avatar {
@@ -3008,7 +3004,6 @@ fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
         unread_mentions: 0,
         unread_notifications: 0,
         last_activity: None,
-        parents: Vec::new(),
         tag: RoomTag::None,
         direct_user: None,
         alias: None,
