@@ -285,11 +285,6 @@ impl Session {
         run(async move { Ok(session.knock(&room, via).await?.to_string()) }).await
     }
 
-    /// Leave a room or space, or decline an invite to it.
-    pub async fn leave(&self, room_id: String) -> Result<(), MtrxError> {
-        self.room(room_id)?.leave().await
-    }
-
     /// Servers whose directories we browsed, most recent first.
     pub fn directory_servers(&self) -> Vec<String> {
         self.core().directory_servers().servers

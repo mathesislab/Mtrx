@@ -252,7 +252,7 @@ class Account(
      */
     fun leave(roomId: String, name: String, onDone: (Boolean) -> Unit = {}): Job = membership(onDone) {
         try {
-            it.leave(roomId)
+            it.room(roomId).use { room -> room.leave() }
             null
         } catch (e: MtrxException) {
             "Could not leave $name: ${describe(e)}"

@@ -140,11 +140,6 @@ impl Session {
         run(async move { Ok(UserProfile::from(session.user_profile(&user).await?)) }).await
     }
 
-    /// Invite `user_id` to a room or space we are in (`RoomSummary.id`).
-    pub async fn invite(&self, room_id: String, user_id: String) -> Result<(), MtrxError> {
-        self.room(room_id)?.invite(user_id).await
-    }
-
     /// Sign out on the server and delete all local data of the account,
     /// even if the server is unreachable. Do not use the session afterwards.
     pub async fn logout(&self) -> Result<(), MtrxError> {

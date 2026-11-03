@@ -64,6 +64,7 @@ import uniffi.mtrx.Reader
 import uniffi.mtrx.RecoveryListener
 import uniffi.mtrx.RecoveryStatus
 import uniffi.mtrx.RecoveryStep
+import uniffi.mtrx.Room
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.Badges
 import uniffi.mtrx.ListSection
@@ -287,12 +288,6 @@ class FakeSession : Session(NoHandle) {
         return shared[userId].orEmpty()
     }
 
-    override suspend fun invite(roomId: String, userId: String) {
-        inviteGate?.await()
-        inviteError?.let { throw it }
-        invites += roomId to userId
-    }
-
     override suspend fun recover(recoveryKey: String, listener: RecoveryListener) {
         recoveryKeys += recoveryKey
         for (step in recoverySteps) {
@@ -337,56 +332,18 @@ class FakeSession : Session(NoHandle) {
     var ownersOffered = false
     val created = mutableListOf<NewRoom>()
 
-    private suspend fun call(record: String) {
+    suspend fun call(record: String) {
         roomCalls += record
         roomGate?.await()
         roomError?.let { throw it }
     }
 
-    override suspend fun roomSettings(roomId: String): RoomSettings {
-        settingsReads++
-        return settings
-    }
+    override fun room(roomId: String): Room = FakeRoom(this, roomId)
 
     override suspend fun pinnedTimeline(roomId: String): Timeline {
         pinnedOpened++
         return pinnedRoomTimeline
     }
-
-    override suspend fun setPinned(roomId: String, eventId: String, pin: Boolean) = call("${if (pin) "pin" else "unpin"} $eventId")
-
-    override suspend fun setRoomTopic(roomId: String, topic: String) = call("topic $topic")
-
-    override suspend fun setRoomName(roomId: String, name: String) = call("name $name")
-
-    override suspend fun setNotifyMode(roomId: String, mode: NotifyMode) = call("notify $mode")
-
-    override suspend fun setRoomAccess(roomId: String, access: Access) = call("access $access")
-
-    override suspend fun setListed(roomId: String, listed: Boolean) = call("listed $listed")
-
-    override suspend fun setHistory(roomId: String, history: History) = call("history $history")
-
-    override suspend fun setPermissions(roomId: String, permissions: Permissions) = call("permissions $permissions")
-
-    override suspend fun encryptRoom(roomId: String) = call("encrypt")
-
-    override suspend fun setAddress(roomId: String, name: String?) = call("address $name")
-
-    override suspend fun setSuggested(spaceId: String, roomId: String, suggested: Boolean) = call("suggested $spaceId $suggested")
-
-    override suspend fun addToSpace(spaceId: String, roomId: String) = call("add $spaceId")
-
-    override suspend fun removeFromSpace(spaceId: String, roomId: String) = call("take out $spaceId")
-
-    override suspend fun members(roomId: String): List<Member> = memberList
-
-    override suspend fun setLevel(roomId: String, userId: String, level: Long) = call("level $userId $level")
-
-    override suspend fun removeMember(roomId: String, userId: String, reason: String?, ban: Boolean) =
-        call("${if (ban) "ban" else "remove"} $userId $reason")
-
-    override suspend fun unban(roomId: String, userId: String) = call("unban $userId")
 
     override suspend fun spaceChildren(spaceId: String): List<DirectoryRoom> {
         childrenGate?.await()
@@ -415,8 +372,6 @@ class FakeSession : Session(NoHandle) {
         call("knock $room")
         return room
     }
-
-    override suspend fun leave(roomId: String) = call("leave $roomId")
 
     override fun directoryServers(): List<String> = browsedServers.toList()
 
@@ -451,6 +406,63 @@ class FakeSession : Session(NoHandle) {
     companion object {
         const val USER_ID = "@me:example.org"
     }
+}
+
+/**
+ * A room of [session]: it reads the session's settings and members, and
+ * records its changes in [FakeSession.roomCalls] (invites in
+ * [FakeSession.invites]).
+ */
+class FakeRoom(private val session: FakeSession, private val roomId: String) : Room(NoHandle) {
+    override suspend fun settings(): RoomSettings {
+        session.settingsReads++
+        return session.settings
+    }
+
+    override suspend fun members(): List<Member> = session.memberList
+
+    override suspend fun setPinned(eventId: String, pin: Boolean) = session.call("${if (pin) "pin" else "unpin"} $eventId")
+
+    override suspend fun setTopic(topic: String) = session.call("topic $topic")
+
+    override suspend fun setName(name: String) = session.call("name $name")
+
+    override suspend fun setNotify(mode: NotifyMode) = session.call("notify $mode")
+
+    override suspend fun setJoinRule(rule: Access) = session.call("access $rule")
+
+    override suspend fun setListed(listed: Boolean) = session.call("listed $listed")
+
+    override suspend fun setHistory(history: History) = session.call("history $history")
+
+    override suspend fun setPermissions(permissions: Permissions) = session.call("permissions $permissions")
+
+    override suspend fun encrypt() = session.call("encrypt")
+
+    override suspend fun setAddress(name: String?) = session.call("address $name")
+
+    /** On a space's room, as the following two. */
+    override suspend fun setSuggested(roomId: String, suggested: Boolean) =
+        session.call("suggested ${this.roomId} $suggested")
+
+    override suspend fun addChild(roomId: String) = session.call("add ${this.roomId}")
+
+    override suspend fun removeChild(roomId: String) = session.call("take out ${this.roomId}")
+
+    override suspend fun setLevel(userId: String, level: Long) = session.call("level $userId $level")
+
+    override suspend fun remove(userId: String, ban: Boolean, reason: String?) =
+        session.call("${if (ban) "ban" else "remove"} $userId $reason")
+
+    override suspend fun unban(userId: String) = session.call("unban $userId")
+
+    override suspend fun invite(userId: String) {
+        session.inviteGate?.await()
+        session.inviteError?.let { throw it }
+        session.invites += roomId to userId
+    }
+
+    override suspend fun leave() = session.call("leave $roomId")
 }
 
 /** A room's settings, all ours to change unless [may] is false. */
