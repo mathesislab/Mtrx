@@ -52,7 +52,7 @@ import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.NoHandle
-import uniffi.mtrx.NotificationContent
+import uniffi.mtrx.Notification
 import uniffi.mtrx.OAuthLogin
 import uniffi.mtrx.Presence
 import uniffi.mtrx.PresenceActivity
@@ -701,12 +701,12 @@ class FakeMtrx(private val restored: Session?) : MtrxInterface {
     var loginSession: Session? = null
 
     /** What [notification] returns, or throws [notificationError]; after [notificationGate] if set. */
-    var notificationContent: NotificationContent? = null
+    var notificationContent: Notification? = null
     var notificationError: MtrxException? = null
     var notificationGate: CompletableDeferred<Unit>? = null
     val notificationsRead = mutableListOf<Pair<String, String>>()
 
-    override suspend fun notification(roomId: String, eventId: String): NotificationContent? {
+    override suspend fun notification(roomId: String, eventId: String): Notification? {
         notificationsRead += roomId to eventId
         notificationGate?.await()
         notificationError?.let { throw it }
@@ -1137,12 +1137,12 @@ fun pushRegistration(
 
 /** The posted notifications, by room: the contents, or "fallback". */
 class FakeNotifier : MessageNotifier {
-    val posted = mutableListOf<NotificationContent>()
+    val posted = mutableListOf<Notification>()
     val fallbacks = mutableListOf<String>()
     val cleared = mutableListOf<String>()
     var clearedAll = 0
 
-    override suspend fun post(content: NotificationContent) {
+    override suspend fun post(content: Notification) {
         posted += content
     }
 

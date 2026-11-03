@@ -78,56 +78,6 @@ impl From<core::Notification> for Notification {
     }
 }
 
-/// What a push is about, for a local notification. Replaced by
-/// [`Notification`].
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct NotificationContent {
-    pub room_id: String,
-    pub event_id: String,
-    pub room_name: String,
-    /// `mxc://` URI, for `Session.avatar`.
-    #[uniffi(default)]
-    pub room_avatar_url: Option<String>,
-    pub is_direct: bool,
-    pub sender_id: String,
-    /// The sender's name in the room, else their ID's localpart.
-    pub sender_name: String,
-    /// `mxc://` URI, for `Session.avatar`.
-    #[uniffi(default)]
-    pub sender_avatar_url: Option<String>,
-    /// A message's text, or what it is: "Image", "Video", "Audio", "File",
-    /// "Location", "Sticker", "Call", "Encrypted message" (no key yet),
-    /// "Invited you", "New message", "New event".
-    pub body: String,
-    /// Mentions us or matches a keyword.
-    pub is_mention: bool,
-    /// The push rules ask for a sound.
-    pub is_noisy: bool,
-    pub timestamp: SystemTime,
-    /// Always true: what should not notify comes as nil.
-    pub should_notify: bool,
-}
-
-impl From<Notification> for NotificationContent {
-    fn from(n: Notification) -> Self {
-        Self {
-            room_id: n.room_id,
-            event_id: n.event_id,
-            room_name: n.room_name,
-            room_avatar_url: n.room_avatar_url,
-            is_direct: n.direct,
-            sender_id: n.sender.user_id,
-            sender_name: n.sender.display_name,
-            sender_avatar_url: n.sender.avatar_url,
-            body: n.body,
-            is_mention: n.highlight,
-            is_noisy: n.noisy,
-            timestamp: n.timestamp,
-            should_notify: true,
-        }
-    }
-}
-
 #[uniffi::export]
 impl Session {
     /// Have the server push this account's notifications to a push gateway
@@ -183,12 +133,12 @@ pub(crate) async fn notification(
     profile: core::Profile,
     room_id: String,
     event_id: String,
-) -> Result<Option<NotificationContent>, MtrxError> {
+) -> Result<Option<Notification>, MtrxError> {
     let room_id = OwnedRoomId::try_from(room_id.as_str()).map_err(MtrxError::invalid)?;
     let event_id = core::OwnedEventId::try_from(event_id.as_str()).map_err(MtrxError::invalid)?;
     run(async move {
         let notification = core::Notification::fetch(&profile, &room_id, &event_id).await?;
-        Ok(notification.map(|n| NotificationContent::from(Notification::from(n))))
+        Ok(notification.map(Notification::from))
     })
     .await
 }

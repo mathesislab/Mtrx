@@ -22,9 +22,9 @@ use mtrx_core::{
 };
 use mtrx_ffi::{
     ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
-    MediaKind, Message, MessageKind, Mtrx, MtrxError, NotificationContent, Presence,
-    PresenceActivity, PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState,
-    Reaction, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists,
+    MediaKind, Message, MessageKind, Mtrx, MtrxError, Notification, Presence, PresenceActivity,
+    PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction,
+    RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists,
     RoomListsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout, SendState,
     Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, User,
     Verification, VerificationListener, VerificationRequestListener, VerificationState,
@@ -1475,7 +1475,7 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
     // Bob's app syncs on; his push handler reads what Alice sent. The
     // app has the message's key once it shows the message.
     let push = bob.push_handler();
-    let fetch = |event_id: &str| -> NotificationContent {
+    let fetch = |event_id: &str| -> Notification {
         block_on(push.notification(room_id.clone(), event_id.into()))
             .unwrap()
             .expect("something to show")
@@ -1494,12 +1494,11 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
     assert_eq!(content.room_id, room_id);
     assert_eq!(content.event_id, event_id);
     assert_eq!(content.room_name, "lab");
-    assert_eq!(content.sender_id, alice.session.user_id());
-    assert_eq!(content.sender_name, names[0]);
+    assert_eq!(content.sender.user_id, alice.session.user_id());
+    assert_eq!(content.sender.display_name, names[0]);
     // The message's plain text, as typed (the timeline shows the name).
     assert_eq!(content.body, mention);
-    assert!(content.is_mention, "{content:?}");
-    assert!(content.should_notify, "{content:?}");
+    assert!(content.highlight, "{content:?}");
 
     // Without a mention: the room has two members, so it notifies too.
     let plain = "plots attached";
@@ -1507,7 +1506,7 @@ fn a_push_handler_reads_messages_while_the_app_syncs() {
     bob_items.wait("Alice's message", |items| sent(items, plain).is_some());
     let content = fetch(&event_id);
     assert_eq!(content.body, plain);
-    assert!(!content.is_mention && content.should_notify, "{content:?}");
+    assert!(!content.highlight, "{content:?}");
 
     // Bob's own message, sent from his app: nothing to show (the push
     // rules never notify for one's own).

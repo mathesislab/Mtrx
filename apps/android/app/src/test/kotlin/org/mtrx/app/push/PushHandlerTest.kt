@@ -10,8 +10,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeNotifier
+import org.mtrx.app.user
 import uniffi.mtrx.MtrxException
-import uniffi.mtrx.NotificationContent
+import uniffi.mtrx.Notification
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PushHandlerTest {
@@ -27,21 +28,18 @@ class PushHandlerTest {
     }
 
     private fun content(
-        shouldNotify: Boolean = true,
-        isNoisy: Boolean = true,
-        isDirect: Boolean = false,
-    ) = NotificationContent(
+        noisy: Boolean = true,
+        direct: Boolean = false,
+    ) = Notification(
         roomId = room,
         eventId = "\$x7",
         roomName = "Lab",
-        isDirect = isDirect,
-        senderId = "@alice:example.org",
-        senderName = "Alice",
+        direct = direct,
+        sender = user("@alice:example.org", "Alice"),
         body = "@bob:example.org hi",
-        isMention = true,
-        isNoisy = isNoisy,
+        highlight = true,
+        noisy = noisy,
         timestamp = Instant.ofEpochMilli(1_700_000_000_000),
-        shouldNotify = shouldNotify,
     )
 
     private class Setup {
@@ -80,10 +78,8 @@ class PushHandlerTest {
     }
 
     @Test
-    fun postsNothingForNilOrWhatShouldNotNotify() = runTest {
+    fun postsNothingForNil() = runTest {
         val setup = Setup()
-        setup.handler.handle(push())
-        setup.mtrx.notificationContent = content(shouldNotify = false)
         setup.handler.handle(push())
         assertTrue(setup.notifier.posted.isEmpty())
         assertTrue(setup.notifier.fallbacks.isEmpty())
@@ -153,7 +149,7 @@ class PushHandlerTest {
     @Test
     fun aRoomsMessagesAreTitledWithItsNameUnlessDirect() {
         assertEquals(NotificationLook(title = "Lab", silent = false, at = 1_700_000_000_000), lookOf(content()))
-        assertNull(lookOf(content(isDirect = true)).title)
-        assertTrue(lookOf(content(isNoisy = false)).silent)
+        assertNull(lookOf(content(direct = true)).title)
+        assertTrue(lookOf(content(noisy = false)).silent)
     }
 }

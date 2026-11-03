@@ -12,7 +12,7 @@ import org.json.JSONObject
 import org.mtrx.app.model.RoomNotifications
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
-import uniffi.mtrx.NotificationContent
+import uniffi.mtrx.Notification
 
 /** What a push from the Matrix push gateway says. */
 sealed interface Push {
@@ -45,7 +45,7 @@ fun parsePush(bytes: ByteArray): Push? = try {
 /** Posts the message notifications. Callable from any thread. */
 interface MessageNotifier : RoomNotifications {
     /** The room's notification, with [content] as its newest message. */
-    suspend fun post(content: NotificationContent)
+    suspend fun post(content: Notification)
 
     /** "New message" for the room, when the event could not be read. */
     fun postFallback(roomId: String)
@@ -91,7 +91,7 @@ class PushHandler(
             withContext(NonCancellable) { fallback(roomId) }
             throw e
         }
-        if (content == null || !content.shouldNotify) return
+        if (content == null) return
         if (foregroundRoom() == content.roomId) return
         notifier.post(content)
     }

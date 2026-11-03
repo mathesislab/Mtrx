@@ -8,7 +8,7 @@ use std::{
 use mtrx_core::{self as core, Profile, SecretStore, Url};
 
 use crate::{
-    MtrxError, NotificationContent, SecretBackend, Session,
+    MtrxError, Notification, SecretBackend, Session,
     runtime::{InRuntime, run},
     secrets::AppSecrets,
 };
@@ -81,13 +81,13 @@ impl Mtrx {
     /// or alone; the store's locks keep them apart. Calls in a process run
     /// one at a time. `None` if there is nothing to show (our own message,
     /// a muted room, an ignored sender, a deleted event); otherwise post a
-    /// notification if `shouldNotify`. Fails with `NotLoggedIn` without a
-    /// saved session, `Other` when the event cannot be fetched.
+    /// notification. Fails with `NotLoggedIn` without a saved session,
+    /// `Other` when the event cannot be fetched.
     pub async fn notification(
         &self,
         room_id: String,
         event_id: String,
-    ) -> Result<Option<NotificationContent>, MtrxError> {
+    ) -> Result<Option<Notification>, MtrxError> {
         crate::push::notification(self.profile()?, room_id, event_id).await
     }
 

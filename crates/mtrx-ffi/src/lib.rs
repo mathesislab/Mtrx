@@ -44,7 +44,7 @@ pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,
     presence_line,
 };
-pub use push::{Notification, NotificationContent, PusherInfo};
+pub use push::{Notification, PusherInfo};
 pub use room::Room;
 pub use room_list::{
     Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,
