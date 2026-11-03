@@ -12,6 +12,7 @@ use std::{
     collections::HashMap,
     io::{BufRead, Read},
     path::PathBuf,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -19,9 +20,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use mtrx_core::{
-    EventContent, NewRoom, OwnedRoomId, OwnedUserId, Permissions, Profile, RecoveryStep, RoomKind,
-    RoomList, RoomTimeline, SecretStore, Session, TimelineEntry, Verification, VerificationState,
-    describe_send_time, parse_send_time,
+    EventContent, Live, NewRoom, OwnedRoomId, OwnedUserId, Permissions, Profile, RecoveryStep,
+    RoomKind, RoomListState, RoomTimeline, SecretStore, Session, TimelineEntry, Verification,
+    VerificationState, describe_send_time, parse_send_time,
 };
 
 /// How long one-shot commands wait for the first sync.
@@ -264,7 +265,7 @@ async fn main() -> Result<()> {
         }
         Command::Rooms { ids } => {
             let (session, list) = synced(profile).await?;
-            rooms::print_tree(&list.current().rooms, ids);
+            rooms::print_tree(&list.get().rooms, ids);
             session.stop_sync().await;
         }
         Command::CreateRoom {
@@ -305,12 +306,13 @@ async fn main() -> Result<()> {
             let (session, list) = synced(profile).await?;
             let id = session.find_room(&room).await?;
             let is_space = list
-                .current()
+                .get()
                 .rooms
                 .iter()
                 .any(|r| r.id == id && r.kind == RoomKind::Space);
+            let room = session.room(&id)?;
             if is_space {
-                let update = session.let_everyone_edit_space(&id).await?;
+                let update = room.let_everyone_edit_all().await?;
                 println!(
                     "Opened {} room(s); {} already open; {} not allowed (not an admin there).",
                     update.changed.len(),
@@ -318,28 +320,29 @@ async fn main() -> Result<()> {
                     update.not_allowed.len()
                 );
             } else {
-                session.let_everyone_edit(&id).await?;
+                room.set_permissions(Permissions::Everyone).await?;
             }
             session.stop_sync().await;
         }
         Command::Leave { room } => {
             let (session, _list) = synced(profile).await?;
-            session.leave(&session.find_room(&room).await?).await?;
+            session
+                .room(&session.find_room(&room).await?)?
+                .leave()
+                .await?;
             session.stop_sync().await;
         }
         Command::Invite { room, user } => {
             let (session, _list) = synced(profile).await?;
-            session
-                .invite(&session.find_room(&room).await?, &user)
-                .await?;
+            let room = session.find_room(&room).await?;
+            session.room(&room)?.invite(&user).await?;
             session.stop_sync().await;
         }
         Command::SpaceAdd { space, room } => {
             let (session, _list) = synced(profile).await?;
             let space: OwnedRoomId = session.find_room(&space).await?;
-            session
-                .add_to_space(&space, &session.find_room(&room).await?)
-                .await?;
+            let room = session.find_room(&room).await?;
+            session.room(&space)?.add_child(&room).await?;
             session.stop_sync().await;
         }
         Command::Read { room, count } => {
@@ -397,7 +400,8 @@ async fn main() -> Result<()> {
             let (session, _list) = synced(profile).await?;
             let room = session.find_room(&room).await?;
             let message = session
-                .schedule(&room, text.trim_end(), Vec::new(), send_at, None)
+                .room(&room)?
+                .schedule(text.trim_end(), Vec::new(), send_at, None)
                 .await?;
             session.stop_sync().await;
             println!(
@@ -408,7 +412,7 @@ async fn main() -> Result<()> {
         }
         Command::Scheduled => {
             let (session, list) = synced(profile).await?;
-            let rooms = list.current().rooms;
+            let rooms = list.get().rooms;
             let now = SystemTime::now();
             for message in session.scheduled() {
                 let room = rooms
@@ -560,7 +564,7 @@ fn read_secret(from_stdin: bool, prompt: &str) -> Result<String> {
 
 /// Show emojis, ask the user to compare, until done or cancelled.
 async fn run_verification(verification: &Verification) -> Result<()> {
-    let mut states = verification.states();
+    let mut states = verification.states().updates();
     while let Some(state) = states.next().await {
         match state {
             VerificationState::Waiting | VerificationState::Confirmed => {}
@@ -687,7 +691,7 @@ fn read_text(text: Option<String>) -> Result<String> {
 }
 
 /// Print rooms whose unread count changes, until Ctrl-C.
-async fn watch_rooms(list: &RoomList) {
+async fn watch_rooms(list: &Live<RoomListState>) {
     let mut unread: HashMap<OwnedRoomId, u64> = HashMap::new();
     let mut updates = list.updates();
     loop {
@@ -706,11 +710,11 @@ async fn watch_rooms(list: &RoomList) {
 }
 
 /// Restore the session and wait until the room list is loaded.
-async fn synced(profile: Profile) -> Result<(Session, RoomList)> {
-    let session = Session::restore(profile).await?;
+async fn synced(profile: Profile) -> Result<(Arc<Session>, Live<RoomListState>)> {
+    let session = Arc::new(Session::restore(profile).await?);
     session.start_sync().await;
     let list = session.room_list().await?;
-    tokio::time::timeout(SYNC_TIMEOUT, list.wait_loaded())
+    tokio::time::timeout(SYNC_TIMEOUT, list.wait_for(|s| s.loaded))
         .await
         .context("timed out waiting for sync")?;
     Ok((session, list))

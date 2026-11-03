@@ -169,7 +169,7 @@ class TimelineViewModel(
 
     private suspend fun loadSettings() {
         try {
-            _settings.value = session.roomSettings(roomId)
+            _settings.value = session.room(roomId).use { it.settings() }
         } catch (e: MtrxException) {
             // Then we may not edit; the timeline works without.
         }
@@ -179,7 +179,7 @@ class TimelineViewModel(
     override fun saveTopic(topic: Topic) {
         actions.launch {
             try {
-                session.setRoomTopic(roomId, composeTopic(topic))
+                session.room(roomId).use { it.setTopic(composeTopic(topic)) }
             } catch (e: MtrxException) {
                 _error.value = describe(e)
             }
@@ -191,7 +191,7 @@ class TimelineViewModel(
     override fun setPinned(eventId: String, pin: Boolean) {
         actions.launch {
             try {
-                session.setPinned(roomId, eventId, pin)
+                session.room(roomId).use { it.setPinned(eventId, pin) }
             } catch (e: MtrxException) {
                 _error.value = describe(e)
             }

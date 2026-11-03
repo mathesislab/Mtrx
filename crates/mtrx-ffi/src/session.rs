@@ -8,13 +8,12 @@ use std::{
     },
 };
 
-use futures_util::StreamExt;
 use mtrx_core::{self as core, OwnedMxcUri, OwnedRoomId, OwnedUserId};
 use sha2::{Digest, Sha256};
 
 use crate::{
     ConnectionState, Media, MtrxError, TaskHandle, Timeline, UserProfile,
-    runtime::{InRuntime, run},
+    runtime::{InRuntime, follow, run},
 };
 
 /// Receives the connection state, now and after every change.
@@ -84,11 +83,9 @@ impl Session {
 
     /// Call `listener` with the connection state, now and on every change.
     pub fn subscribe_connection(&self, listener: Arc<dyn ConnectionListener>) -> Arc<TaskHandle> {
-        let mut updates = Box::pin(self.inner.connection_updates());
-        TaskHandle::spawn(async move {
-            while let Some(connection) = updates.next().await {
-                listener.on_update(connection.into());
-            }
+        let connection = self.inner.connection_updates();
+        follow(connection, ConnectionState::from, move |c| {
+            listener.on_update(c)
         })
     }
 
@@ -141,14 +138,6 @@ impl Session {
         let user = OwnedUserId::try_from(user_id.as_str()).map_err(MtrxError::invalid)?;
         let session = self.core();
         run(async move { Ok(UserProfile::from(session.user_profile(&user).await?)) }).await
-    }
-
-    /// Invite `user_id` to a room or space we are in (`RoomSummary.id`).
-    pub async fn invite(&self, room_id: String, user_id: String) -> Result<(), MtrxError> {
-        let room = OwnedRoomId::try_from(room_id.as_str()).map_err(MtrxError::invalid)?;
-        let user = OwnedUserId::try_from(user_id.as_str()).map_err(MtrxError::invalid)?;
-        let session = self.core();
-        run(async move { Ok(session.invite(&room, &user).await?) }).await
     }
 
     /// Sign out on the server and delete all local data of the account,

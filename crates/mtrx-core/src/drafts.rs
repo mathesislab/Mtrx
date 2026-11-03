@@ -10,16 +10,15 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{Stream, future::BoxFuture};
+use futures_util::future::BoxFuture;
 use matrix_sdk::{
     Client, ComposerDraft, ComposerDraftType, Room,
     ruma::{OwnedEventId, OwnedRoomId, RoomId},
 };
 use tokio::sync::watch;
-use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
-use crate::{Error, Result, Session, session::AbortOnDrop};
+use crate::{AbortOnDrop, Error, Live, Result, RoomHandle, Session};
 
 /// How long writing pauses before the draft is kept.
 pub const DRAFT_PAUSE: Duration = Duration::from_millis(1500);
@@ -116,20 +115,9 @@ async fn save(room: &Room, drafts: &Drafts, draft: &Draft) -> Result<()> {
 }
 
 impl Session {
-    /// The draft left in room `room_id`, if any.
-    pub async fn draft(&self, room_id: &RoomId) -> Result<Option<Draft>> {
-        load(&self.room(room_id)?).await
-    }
-
-    /// Keep `draft` for room `room_id`; an empty one clears it. The apps
-    /// keep drafts through [`Session::draft_keeper`].
-    pub async fn save_draft(&self, room_id: &RoomId, draft: &Draft) -> Result<()> {
-        save(&self.room(room_id)?, &self.drafts, draft).await
-    }
-
     /// The rooms with a draft now, then after every change.
-    pub fn rooms_with_drafts_updates(&self) -> impl Stream<Item = BTreeSet<OwnedRoomId>> + use<> {
-        WatchStream::new(self.drafts.rooms.subscribe())
+    pub fn rooms_with_drafts_updates(&self) -> Live<BTreeSet<OwnedRoomId>> {
+        Live::from_watch(self.drafts.rooms.subscribe())
     }
 
     /// Keeps the draft of room `room` as its composer changes.
@@ -139,6 +127,19 @@ impl Session {
             room: room.to_owned(),
             drafts: self.drafts.clone(),
         }))
+    }
+}
+
+impl RoomHandle {
+    /// The draft left in the room, if any.
+    pub async fn draft(&self) -> Result<Option<Draft>> {
+        load(&self.room).await
+    }
+
+    /// Keep `draft` for the room; an empty one clears it. The apps keep
+    /// drafts through [`Session::draft_keeper`].
+    pub async fn save_draft(&self, draft: &Draft) -> Result<()> {
+        save(&self.room, &self.session.drafts, draft).await
     }
 }
 

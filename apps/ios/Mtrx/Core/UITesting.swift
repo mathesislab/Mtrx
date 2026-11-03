@@ -62,11 +62,11 @@ private final class UITestSession: Session, @unchecked Sendable {
     private var listener: RoomListsListener?
     /// The rooms, in any order.
     private var rooms = [
-        UITestSession.room(UITesting.lab, "Lab"),
-        UITestSession.room(UITesting.ann, "Ann", kind: .direct, parents: [UITesting.team]),
-        UITestSession.room(UITesting.models, "Models", unread: 2, parents: [UITesting.team], ago: 600),
-        UITestSession.room(UITesting.papers, "Papers", parents: [UITesting.team], ago: 1_200),
-        UITestSession.room(UITesting.team, "Team", kind: .space, ago: 3_600),
+        UITestSession.summary(UITesting.lab, "Lab"),
+        UITestSession.summary(UITesting.ann, "Ann", kind: .direct, parents: [UITesting.team]),
+        UITestSession.summary(UITesting.models, "Models", unread: 2, parents: [UITesting.team], ago: 600),
+        UITestSession.summary(UITesting.papers, "Papers", parents: [UITesting.team], ago: 1_200),
+        UITestSession.summary(UITesting.team, "Team", kind: .space, ago: 3_600),
     ]
 
     override func userId() -> String { "@me:example.org" }
@@ -121,7 +121,7 @@ private final class UITestSession: Session, @unchecked Sendable {
         listener?.onUpdate(lists: lists)
     }
 
-    private static func room(
+    private static func summary(
         _ id: String, _ name: String, kind: RoomKind = .room, unread: UInt64 = 0, parents: [String] = [],
         ago: TimeInterval = 0
     ) -> RoomSummary {
@@ -165,11 +165,7 @@ private final class UITestSession: Session, @unchecked Sendable {
 
     override func timeline(roomId: String) async throws -> Timeline { timeline(roomId) }
 
-    override func roomSettings(roomId: String) async throws -> RoomSettings {
-        throw MtrxError.Other(reason: "No settings here")
-    }
-
-    override func members(roomId: String) async throws -> [Member] { [] }
+    override func room(roomId: String) throws -> Room { UITestRoom(noHandle: .init()) }
 
     override func draftKeeper(roomId: String) -> DraftKeeper {
         let keeper = UITestDraftKeeper(noHandle: .init())
@@ -185,6 +181,15 @@ private final class UITestSession: Session, @unchecked Sendable {
     fileprivate func keepDraft(_ draft: Draft, for roomId: String) {
         lock.withLock { drafts[roomId] = draft }
     }
+}
+
+/// A room's settings and members: none here.
+private final class UITestRoom: Room, @unchecked Sendable {
+    override func settings() async throws -> RoomSettings {
+        throw MtrxError.Other(reason: "No settings here")
+    }
+
+    override func members() async throws -> [Member] { [] }
 }
 
 /// A room's draft, kept in the session as it changes while the app runs.

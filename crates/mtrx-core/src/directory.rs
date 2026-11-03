@@ -5,7 +5,6 @@
 //! space may join, ones that take requests to join, and those the user is
 //! in or invited to. Invite-only rooms of others are never listed.
 
-use futures_util::Stream;
 use matrix_sdk::{
     RoomState,
     ruma::{
@@ -24,7 +23,7 @@ use matrix_sdk::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, Role, Session, account_data::AccountData};
+use crate::{Live, Result, Role, Session, account_data::AccountData};
 
 /// Who may join a room found in a space or a directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,7 +367,7 @@ impl Session {
     }
 
     /// The current servers, then every change, from this device or others.
-    pub fn directory_servers_updates(&self) -> impl Stream<Item = DirectoryServers> + use<> {
+    pub fn directory_servers_updates(&self) -> Live<DirectoryServers> {
         self.directory_servers.updates()
     }
 

@@ -8,7 +8,7 @@ use mtrx_core as core;
 
 use crate::{
     MtrxError, Session, TaskHandle,
-    runtime::{InRuntime, run},
+    runtime::{InRuntime, follow, forward, run},
 };
 
 /// Whether this device can read encrypted messages: `Session.encryptionState()`
@@ -226,18 +226,9 @@ impl Verification {
     /// Call `listener` with the state, now and on every change. Ends after
     /// `Done` or `Cancelled`.
     pub fn subscribe(&self, listener: Arc<dyn VerificationListener>) -> Arc<TaskHandle> {
-        let mut states = Box::pin(self.inner.states());
-        TaskHandle::spawn(async move {
-            while let Some(state) = states.next().await {
-                let end = matches!(
-                    state,
-                    core::VerificationState::Done | core::VerificationState::Cancelled(_)
-                );
-                listener.on_update(state.into());
-                if end {
-                    break;
-                }
-            }
+        let states = self.inner.states();
+        follow(states, VerificationState::from, move |state| {
+            listener.on_update(state)
         })
     }
 
@@ -277,10 +268,11 @@ impl Session {
     ) -> Arc<TaskHandle> {
         let session = self.core();
         TaskHandle::spawn(async move {
-            let mut states = Box::pin(session.encryption_states());
-            while let Some(state) = states.next().await {
-                listener.on_update(state.into());
-            }
+            let states = session.encryption_states().await;
+            forward(states, EncryptionState::from, |state| {
+                listener.on_update(state)
+            })
+            .await;
         })
     }
 

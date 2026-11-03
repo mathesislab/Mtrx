@@ -12,7 +12,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::{Error, Result, Session, timeline::send_message};
+use crate::{Error, Result, RoomHandle, Session, timeline::send_message};
 
 /// A call service, for starting calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,42 +171,36 @@ struct CallServiceEventContent {
     service: Option<CallService>,
 }
 
-impl Session {
+impl RoomHandle {
     /// Whether we may change the room's topic, and so its calls and links.
-    pub async fn can_change_topic(&self, room_id: &RoomId) -> Result<bool> {
-        self.can_send_state(room_id, "m.room.topic").await
+    pub async fn can_change_topic(&self) -> Result<bool> {
+        self.can_send_state("m.room.topic").await
     }
 
-    /// The call service set for a space.
-    pub async fn space_call_service(&self, space_id: &RoomId) -> Result<Option<CallService>> {
-        let content = fetch_state::<CallServiceEventContent>(self, space_id).await?;
+    /// The call service set for this space.
+    pub async fn call_service(&self) -> Result<Option<CallService>> {
+        let content = fetch_state::<CallServiceEventContent>(&self.session, self.id()).await?;
         Ok(content.and_then(|c| c.service))
     }
 
-    /// Set or remove the call service of a space.
-    pub async fn set_space_call_service(
-        &self,
-        space_id: &RoomId,
-        service: Option<CallService>,
-    ) -> Result<()> {
-        self.room(space_id)?
+    /// Set or remove the call service of this space.
+    pub async fn set_call_service(&self, service: Option<CallService>) -> Result<()> {
+        self.room
             .send_state_event(CallServiceEventContent { service })
             .await?;
         Ok(())
     }
 
-    /// Whether we may change the call service of a space.
-    pub async fn can_set_space_call_service(&self, space_id: &RoomId) -> Result<bool> {
-        self.can_send_state(space_id, CallServiceEventContent::TYPE)
-            .await
+    /// Whether we may change the call service of this space.
+    pub async fn can_set_call_service(&self) -> Result<bool> {
+        self.can_send_state(CallServiceEventContent::TYPE).await
     }
 
     /// Post a call link as a message.
-    pub async fn post_call(&self, room_id: &RoomId, service: &str, url: &Url) -> Result<()> {
-        let room = self.room(room_id)?;
+    pub async fn post_call(&self, service: &str, url: &Url) -> Result<()> {
         send_message(
-            &room,
-            &self.send_lock,
+            &self.room,
+            &self.session.send_lock,
             &format!("{service} call: {url}"),
             Vec::new(),
             None,
@@ -215,13 +209,9 @@ impl Session {
         Ok(())
     }
 
-    pub(crate) async fn can_send_state(&self, room_id: &RoomId, event_type: &str) -> Result<bool> {
-        let levels = self
-            .room(room_id)?
-            .power_levels()
-            .await
-            .map_err(matrix_sdk::Error::from)?;
-        Ok(levels.user_can_send_state(&self.user_id(), StateEventType::from(event_type)))
+    async fn can_send_state(&self, event_type: &str) -> Result<bool> {
+        let levels = (self.room.power_levels().await).map_err(matrix_sdk::Error::from)?;
+        Ok(levels.user_can_send_state(&self.session.user_id(), StateEventType::from(event_type)))
     }
 }
 

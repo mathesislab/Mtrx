@@ -11,7 +11,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use futures_util::Stream;
 use matrix_sdk::{
     Client,
     event_handler::EventHandlerHandle,
@@ -19,10 +18,9 @@ use matrix_sdk::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{Mutex, watch};
-use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
-use crate::Result;
+use crate::{Live, Result};
 
 /// A value kept as account data, as event content of its own type.
 pub(crate) trait AccountData: Clone + Default + PartialEq + Send + Sync + 'static {
@@ -81,8 +79,8 @@ impl<T: AccountData> Synced<T> {
     }
 
     /// The current value, then every change, from this device or others.
-    pub(crate) fn updates(&self) -> impl Stream<Item = T> + use<T> {
-        WatchStream::new(self.value.subscribe())
+    pub(crate) fn updates(&self) -> Live<T> {
+        Live::from_watch(self.value.subscribe())
     }
 
     /// Change the value: published at once, then saved on the server; if

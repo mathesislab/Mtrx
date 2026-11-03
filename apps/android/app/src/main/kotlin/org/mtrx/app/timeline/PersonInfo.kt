@@ -80,7 +80,7 @@ class PersonInfoModel(
         _inviting.value = space.id
         actions.launch {
             try {
-                session.invite(space.id, userId)
+                session.room(space.id).use { it.invite(userId) }
                 _message.value = "Invited to ${space.name}."
                 _choosingSpace.value = false
             } catch (e: MtrxException) {

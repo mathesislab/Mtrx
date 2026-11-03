@@ -20,9 +20,9 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Draft, DraftKeeper, Media, MediaRef, Notification,
+    CallService, Connection, Contact, Draft, DraftKeeper, Live, Media, MediaRef, Notification,
     OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
-    Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomLists,
+    Profile, RecoveryStep, RoomHandle, RoomKind, RoomListColours, RoomListState, RoomLists,
     RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
     SpaceKey, Topic, Url,
 };
@@ -69,6 +69,9 @@ const PROGRESS_TICK: Duration = Duration::from_secs(1);
 /// Where cards, the join dialog and Settings start, below the window's top.
 const PANEL_TOP: f32 = 72.0;
 
+/// The room lists, kept up to date while held.
+type LiveLists = Live<Arc<RoomLists>>;
+
 /// An `Arc` that identifies by pointer: lets live core handles be used as
 /// subscription keys and carried in messages.
 pub struct Shared<T>(pub Arc<T>);
@@ -97,7 +100,7 @@ pub enum Message {
     Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
     Login(login::Message),
     LoggedIn(Result<Shared<Session>, String>),
-    Ready(Result<(Shared<RoomList>, bool), String>),
+    Ready(Result<(Shared<LiveLists>, bool), String>),
     Rooms(Arc<RoomLists>),
     SelectSpace(Option<OwnedRoomId>),
     OpenRoom(OwnedRoomId),
@@ -290,7 +293,7 @@ enum Screen {
 
 struct Main {
     session: Arc<Session>,
-    room_list: Option<Arc<RoomList>>,
+    room_lists: Option<Arc<LiveLists>>,
     lists: Arc<RoomLists>,
     space: Option<OwnedRoomId>,
     pane: Pane,
@@ -514,7 +517,7 @@ struct Notice {
 impl Main {
     fn new(session: Arc<Session>) -> Self {
         Self {
-            room_list: None,
+            room_lists: None,
             lists: Arc::new(RoomLists::new(
                 RoomListState::default(),
                 session.room_categories(),
@@ -1023,8 +1026,9 @@ impl App {
                         session.start_sync().await;
                         session.start_scheduler();
                         let list = session.room_list().await?;
+                        let lists = session.room_lists(&list);
                         let verified = session.is_device_verified().await?;
-                        Ok((Shared(Arc::new(list)), verified))
+                        Ok((Shared(Arc::new(lists)), verified))
                     },
                     |result: mtrx_core::Result<_>| {
                         Message::Ready(result.map_err(|e| e.to_string()))
@@ -1116,8 +1120,8 @@ impl App {
                     return Task::none();
                 };
                 match result {
-                    Ok((Shared(list), verified)) => {
-                        main.room_list = Some(list);
+                    Ok((Shared(lists), verified)) => {
+                        main.room_lists = Some(lists);
                         main.verified = Some(verified);
                     }
                     Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
@@ -1208,18 +1212,22 @@ impl App {
                     // Another room or an invite was chosen meanwhile.
                     return Task::none();
                 }
-                match result {
-                    Ok(Shared(timeline)) => {
+                let opened = result.and_then(|timeline| {
+                    let handle = main.session.room(&id).map_err(|e| e.to_string())?;
+                    Ok((handle, timeline))
+                });
+                match opened {
+                    Ok((handle, Shared(timeline))) => {
                         // It opened after all.
                         main.notice
                             .take_if(|notice| notice.error && notice.room.as_ref() == Some(&id));
                         let drafts = main.session.draft_keeper(&id);
-                        let mut room = Room::new(id.clone(), timeline, drafts);
+                        let mut room = Room::new(handle, timeline, drafts);
                         let paginate = fill(&mut room);
                         let read = mark_read(&room);
                         // The member list stays open from the last room.
                         let members = if main.show_members {
-                            load_members(&main.session, &mut room)
+                            load_members(&mut room)
                         } else {
                             Task::none()
                         };
@@ -1402,9 +1410,8 @@ impl App {
                 let Some(card) = &mut main.card else {
                     return Task::none();
                 };
-                let session = main.session.clone();
                 let overview_session = main.session.clone();
-                let room = card.room().cloned();
+                let room = card.handle.clone();
                 let saved = |result: mtrx_core::Result<()>| {
                     Message::Info(info::Message::Saved(result.map_err(|e| e.to_string())))
                 };
@@ -1415,17 +1422,18 @@ impl App {
                     }
                     (info::Message::Copy(text), _) => iced::clipboard::write(text.clone()),
                     (info::Message::SaveDetails, Some(room)) => {
-                        let Some(summary) = main.lists.rooms.iter().find(|r| r.id == room) else {
+                        let Some(summary) = main.lists.rooms.iter().find(|r| r.id == room.id())
+                        else {
                             return Task::none();
                         };
                         let (name, topic) = card.changed_details(summary);
                         Task::perform(
                             async move {
                                 if let Some(name) = name {
-                                    session.set_room_name(&room, &name).await?;
+                                    room.set_name(&name).await?;
                                 }
                                 if let Some(topic) = topic {
-                                    session.set_room_topic(&room, &topic).await?;
+                                    room.set_topic(&topic).await?;
                                 }
                                 Ok(())
                             },
@@ -1434,17 +1442,11 @@ impl App {
                     }
                     (info::Message::Access(access), Some(room)) => {
                         let access = *access;
-                        Task::perform(
-                            async move { session.set_room_access(&room, access).await },
-                            saved,
-                        )
+                        Task::perform(async move { room.set_join_rule(access).await }, saved)
                     }
                     (info::Message::Notify(mode), Some(room)) => {
                         let mode = *mode;
-                        Task::perform(
-                            async move { session.set_notify_mode(&room, mode).await },
-                            saved,
-                        )
+                        Task::perform(async move { room.set_notify(mode).await }, saved)
                     }
                     (info::Message::ChangePicture, Some(room)) => Task::perform(
                         async move {
@@ -1456,45 +1458,43 @@ impl App {
                             else {
                                 return Ok(());
                             };
-                            session.set_room_picture(&room, file.path()).await
+                            room.set_picture(file.path()).await
                         },
                         saved,
                     ),
-                    (info::Message::RemovePicture, Some(room)) => Task::perform(
-                        async move { session.remove_room_picture(&room).await },
-                        saved,
-                    ),
+                    (info::Message::RemovePicture, Some(room)) => {
+                        Task::perform(async move { room.remove_picture().await }, saved)
+                    }
                     (info::Message::Change(change), Some(room)) => {
                         let change = change.clone();
+                        let session = main.session.clone();
                         Task::perform(
                             async move {
                                 use info::Change;
                                 match change {
                                     Change::Address(name) => {
-                                        session.set_address(&room, name.as_deref()).await
+                                        room.set_address(name.as_deref()).await
                                     }
-                                    Change::Listed(on) => session.set_listed(&room, on).await,
-                                    Change::History(h) => session.set_history(&room, h).await,
-                                    Change::Permissions(p) => {
-                                        session.set_permissions(&room, p).await
-                                    }
+                                    Change::Listed(on) => room.set_listed(on).await,
+                                    Change::History(h) => room.set_history(h).await,
+                                    Change::Permissions(p) => room.set_permissions(p).await,
                                     Change::Suggested(space, on) => {
-                                        session.set_suggested(&space, &room, on).await
+                                        session.room(&space)?.set_suggested(room.id(), on).await
                                     }
                                     Change::AddToSpace(space) => {
-                                        session.add_to_space(&space, &room).await
+                                        session.room(&space)?.add_child(room.id()).await
                                     }
                                     Change::RemoveFromSpace(space) => {
-                                        session.remove_from_space(&space, &room).await
+                                        session.room(&space)?.remove_child(room.id()).await
                                     }
-                                    Change::Unban(user) => session.unban(&room, &user).await,
+                                    Change::Unban(user) => room.unban(&user).await,
                                 }
                             },
                             saved,
                         )
                     }
                     // What was saved, or the settings as they are after a failure.
-                    (info::Message::Saved(_), Some(room)) => load_settings(&session, &room),
+                    (info::Message::Saved(_), Some(room)) => load_settings(&room),
                     _ => Task::none(),
                 };
                 let overview = match card.update(message) {
@@ -1512,7 +1512,7 @@ impl App {
                 let session = main.session.clone();
                 Task::future(async move {
                     let room = session.direct_chat(&user).await?;
-                    session.set_room_tag(&room, RoomTag::Favourite).await
+                    session.room(&room)?.set_tag(RoomTag::Favourite).await
                 })
                 .then(|result| match result {
                     Ok(()) => Task::none(),
@@ -1604,7 +1604,7 @@ impl App {
                                     .await
                                     .map(|_| ())
                             } else {
-                                session.leave(&id).await
+                                session.room(&id)?.leave().await
                             }
                         }
                     },
@@ -1794,7 +1794,7 @@ impl App {
                 Task::perform(
                     {
                         let room = room.clone();
-                        async move { session.set_level(&room, &user, level).await }
+                        async move { session.room(&room)?.set_level(&user, level).await }
                     },
                     move |result| {
                         Message::MembersChanged(room.clone(), result.map_err(|e| e.to_string()))
@@ -1818,7 +1818,7 @@ impl App {
                         if room.loading_members {
                             Task::none()
                         } else {
-                            load_members(&main.session, room)
+                            load_members(room)
                         }
                     }
                     _ => Task::done(Message::OpenRoom(id)),
@@ -1831,9 +1831,7 @@ impl App {
                 main.show_members = !main.show_members;
                 // Opening it shows the members anew.
                 match main.pane.room_mut() {
-                    Some(room) if main.show_members && !room.loading_members => {
-                        load_members(&main.session, room)
-                    }
+                    Some(room) if main.show_members && !room.loading_members => load_members(room),
                     _ => Task::none(),
                 }
             }
@@ -2316,7 +2314,7 @@ impl App {
                     && room.member_list.is_none()
                     && !room.loading_members
                 {
-                    load_members(&main.session, room)
+                    load_members(room)
                 } else {
                     Task::none()
                 };
@@ -3002,8 +3000,13 @@ impl App {
                 let (session, space) = (main.session.clone(), space.clone());
                 tasks.push(Task::perform(
                     async move {
-                        let service = session.space_call_service(&space).await.ok().flatten();
-                        let can_set = session.can_set_space_call_service(&space).await.ok();
+                        let (service, can_set) = match session.room(&space) {
+                            Ok(room) => (
+                                room.call_service().await.ok().flatten(),
+                                room.can_set_call_service().await.ok(),
+                            ),
+                            Err(_) => (None, None),
+                        };
                         settings::Message::SpaceLoaded(space, service, can_set)
                     },
                     Message::Settings,
@@ -3184,8 +3187,9 @@ impl App {
                     {
                         let id = id.clone();
                         async move {
+                            let room = session.room(&id)?;
                             if space {
-                                session.let_everyone_edit_space(&id).await.map(|update| {
+                                room.let_everyone_edit_all().await.map(|update| {
                                     let skipped = match update.not_allowed.len() {
                                         0 => String::new(),
                                         n => format!(
@@ -3195,9 +3199,7 @@ impl App {
                                     format!("Opened {} room(s).{skipped}", update.changed.len())
                                 })
                             } else {
-                                session
-                                    .let_everyone_edit(&id)
-                                    .await
+                                (room.set_permissions(mtrx_core::Permissions::Everyone).await)
                                     .map(|()| "Done.".to_owned())
                             }
                         }
@@ -3216,7 +3218,7 @@ impl App {
                 };
                 let session = main.session.clone();
                 Task::perform(
-                    async move { session.set_space_call_service(&space, service).await },
+                    async move { session.room(&space)?.set_call_service(service).await },
                     |result| {
                         Message::Settings(settings::Message::SpaceSaved(
                             result.map_err(|e| e.to_string()),
@@ -3248,7 +3250,6 @@ impl App {
         let Some(room) = main.pane.open_mut(&id) else {
             return Task::none();
         };
-        let session = main.session.clone();
         let google = self.google.clone();
         let state = &mut room.calls;
         let menu = |popup: &mut Popup| matches!(popup, Popup::Calls(_));
@@ -3272,14 +3273,11 @@ impl App {
             Calls::Start(service) => {
                 state.busy = true;
                 main.popup.take_if(menu);
-                let room = room.id.clone();
+                let room = room.handle.clone();
                 return Task::perform(
                     async move {
                         let link = new_call_link(&service, &google).await?;
-                        session
-                            .post_call(&room, &service.name, &link)
-                            .await
-                            .map_err(|e| e.to_string())
+                        (room.post_call(&service.name, &link).await).map_err(|e| e.to_string())
                     },
                     move |result| room::Message::Calls(Calls::Started(result)).to(&id),
                 );
@@ -3401,14 +3399,17 @@ impl App {
         let can_pin = {
             let (session, room, reply) = (session.clone(), room.clone(), room.clone());
             Task::perform(
-                async move { session.can_pin(&room).await.ok() },
+                async move { session.room(&room).ok()?.can_pin().await.ok() },
                 move |can| room::Message::Pins(pins::Message::CanPin(can)).to(&reply),
             )
         };
         let space_service = Task::perform(
             async move {
                 for space in spaces {
-                    if let Ok(Some(service)) = session.space_call_service(&space).await {
+                    let Ok(space) = session.room(&space) else {
+                        continue;
+                    };
+                    if let Ok(Some(service)) = space.call_service().await {
                         return Some(service);
                     }
                 }
@@ -3464,11 +3465,8 @@ impl App {
         let confirm_delete = |popup: &mut Popup| matches!(popup, Popup::ConfirmDelete(_));
         match message {
             Act::Pin(event, pin) => {
-                let (session, room_id) = (main.session.clone(), room.id.clone());
-                Task::perform(
-                    async move { session.set_pinned(&room_id, &event, pin).await },
-                    done,
-                )
+                let room = room.handle.clone();
+                Task::perform(async move { room.set_pinned(&event, pin).await }, done)
             }
             Act::React(key, emoji) => {
                 main.popup
@@ -3837,15 +3835,15 @@ impl App {
                 if text.trim().is_empty() && room.attachments.is_empty() {
                     return Task::none();
                 }
-                let room_id = room.id.clone();
+                let handle = room.handle.clone();
                 let reply_to = room.compose.reply_to().cloned();
                 let files = room.attachments.iter().map(|a| a.file.clone()).collect();
                 // The composer is cleared once saved, so nothing is lost on errors.
                 Task::perform(
                     async move {
-                        session
-                            .schedule(&room_id, &text, files, send_at, reply_to.as_deref())
-                            .await
+                        (handle
+                            .schedule(&text, files, send_at, reply_to.as_deref())
+                            .await)
                             .map(|_| ())
                     },
                     reply(Later::Scheduled),
@@ -3986,7 +3984,7 @@ impl App {
             return Task::none();
         };
         let beside = match main.pane.open_mut(room) {
-            Some(open) if main.show_members => load_members(&main.session, open),
+            Some(open) if main.show_members => load_members(open),
             _ => Task::none(),
         };
         let overview = match main.card.as_ref().and_then(|c| c.overview.as_ref()) {
@@ -4046,7 +4044,8 @@ impl App {
     fn reload_card(&self, room: &OwnedRoomId) -> Task<Message> {
         match &self.screen {
             Screen::Main(main) if main.card.as_ref().and_then(|c| c.room()) == Some(room) => {
-                load_settings(&main.session, room)
+                (main.card.as_ref().and_then(|c| c.handle.as_ref()))
+                    .map_or_else(Task::none, load_settings)
             }
             _ => Task::none(),
         }
@@ -4170,7 +4169,11 @@ impl App {
             return Task::none();
         };
         main.arrange.escape();
-        let card = info::Card::new(target, &main.lists.rooms, tab);
+        let mut card = info::Card::new(target, &main.lists.rooms, tab);
+        let room = card.room().map(|id| (id.clone(), main.session.room(id)));
+        card.handle = room
+            .as_ref()
+            .and_then(|(_, handle)| handle.as_ref().ok().cloned());
         // Fresher than the watcher's, and for people it does not follow.
         let presence = match card.user() {
             Some(user) if *user != main.own_user && !main.presences.unavailable() => {
@@ -4189,9 +4192,14 @@ impl App {
                     move |result| Message::Info(info::Message::UserLoaded(user.clone(), result)),
                 )
             }
-            None => card
-                .room()
-                .map_or_else(Task::none, |room| load_settings(&main.session, room)),
+            None => match room {
+                Some((_, Ok(handle))) => load_settings(&handle),
+                Some((id, Err(e))) => Task::done(Message::Info(info::Message::SettingsLoaded(
+                    id,
+                    Err(e.to_string()),
+                ))),
+                None => Task::none(),
+            },
         };
         let overview = card.overview.as_ref().map_or(Task::none(), |o| {
             overview_task(&main.session, &mut main.space_rooms, &o.space, o.opened())
@@ -4256,8 +4264,10 @@ impl App {
         }));
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
-                Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
-                    .map(Message::Scheduled),
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.scheduled_updates().updates()
+                })
+                .map(Message::Scheduled),
             );
             subscriptions.push(
                 Subscription::run_with(
@@ -4293,19 +4303,21 @@ impl App {
                 }));
             }
             subscriptions.push(
-                Subscription::run_with(Shared(main.session.clone()), |s| s.0.connection_updates())
-                    .map(Message::Connection),
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.connection_updates().updates()
+                })
+                .map(Message::Connection),
             );
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
-                    s.0.room_categories_updates()
+                    s.0.room_categories_updates().updates()
                 })
                 .map(|c| Message::Arrange(arrange::Message::Categories(c))),
             );
             subscriptions.push(main.arrange.subscription());
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
-                    s.0.room_list_colours_updates()
+                    s.0.room_list_colours_updates().updates()
                 })
                 .map(Message::Colours),
             );
@@ -4324,13 +4336,10 @@ impl App {
             {
                 subscriptions.push(iced::time::every(PROGRESS_TICK).map(|_| Message::Progress));
             }
-            if let Some(list) = &main.room_list {
+            if let Some(lists) = &main.room_lists {
                 subscriptions.push(
-                    Subscription::run_with(
-                        (Shared(main.session.clone()), Shared(list.clone())),
-                        |(session, list)| session.0.room_lists(&list.0),
-                    )
-                    .map(Message::Rooms),
+                    Subscription::run_with(Shared(lists.clone()), |lists| lists.0.updates())
+                        .map(Message::Rooms),
                 );
             }
             if let Some(room) = main.pane.room() {
@@ -4339,12 +4348,14 @@ impl App {
                     |(t, _)| {
                         let id = t.0.room_id().clone();
                         t.0.typing_updates()
+                            .updates()
                             .map(move |names| room::Message::Typing(names).to(&id))
                     },
                 ));
                 subscriptions.push(Subscription::run_with(Shared(room.timeline.clone()), |t| {
                     let id = t.0.room_id().clone();
                     t.0.rows()
+                        .updates()
                         .map(move |rows| room::Message::Timeline(rows).to(&id))
                 }));
                 subscriptions.push(Subscription::run_with(
@@ -4353,7 +4364,7 @@ impl App {
                         let (timeline, id) = (t.0.clone(), t.0.room_id().clone());
                         iced::futures::stream::once(async move { timeline.uploads().await })
                             .filter_map(|uploads| async move { uploads.ok() })
-                            .flatten()
+                            .flat_map(|uploads| uploads.updates())
                             .map(move |uploads| room::Message::Uploads(uploads).to(&id))
                     },
                 ));
@@ -4803,33 +4814,35 @@ async fn run_request(
             Request::CreateSpace(new) => Opened::Space(session.create_room(new).await?),
             Request::DirectChat(user) => Opened::Room(session.direct_chat(&user).await?),
             Request::Invite(room, people) => {
+                let room = session.room(&room)?;
                 for person in &people {
-                    session.invite(&room, person).await?;
+                    room.invite(person).await?;
                 }
                 Opened::Nothing
             }
             Request::AddToSpace(space, rooms) => {
+                let space = session.room(&space)?;
                 for room in &rooms {
-                    session.add_to_space(&space, room).await?;
+                    space.add_child(room).await?;
                 }
                 Opened::Nothing
             }
             Request::Leave(room) => {
-                session.leave(&room).await?;
+                session.room(&room)?.leave().await?;
                 Opened::Left(room)
             }
             Request::RemoveMember(room, user, reason, ban) => {
-                session
-                    .remove_member(&room, &user, reason.as_deref(), ban)
+                (session.room(&room)?)
+                    .remove(&user, ban, reason.as_deref())
                     .await?;
                 Opened::Members(room)
             }
             Request::SetLevel(room, user, level) => {
-                session.set_level(&room, &user, level).await?;
+                session.room(&room)?.set_level(&user, level).await?;
                 Opened::Members(room)
             }
             Request::Encrypt(room) => {
-                session.encrypt_room(&room).await?;
+                session.room(&room)?.encrypt().await?;
                 Opened::Settings(room)
             }
             Request::SignOut => {
@@ -5135,10 +5148,8 @@ fn save_topic(
     let session = session.clone();
     Task::perform(
         async move {
-            session
-                .set_room_topic(&room, &topic)
-                .await
-                .map_err(|e| e.to_string())
+            let saved = async { session.room(&room)?.set_topic(&topic).await };
+            saved.await.map_err(|e| e.to_string())
         },
         move |result| reply(topic::Message::Saved(result)),
     )
@@ -5153,7 +5164,7 @@ fn load_can_edit_topic(
 ) -> Task<Message> {
     let session = session.clone();
     Task::perform(
-        async move { session.can_change_topic(&room).await.ok() },
+        async move { session.room(&room).ok()?.can_change_topic().await.ok() },
         move |can| reply(topic::Message::CanEdit(can)),
     )
 }
@@ -5210,7 +5221,7 @@ fn overview_task(
         Action::LoadMembers => {
             let space = space.clone();
             Task::perform(
-                async move { session.members(&space).await },
+                async move { session.room(&space)?.members().await },
                 move |result| done(Overview::MembersLoaded(result.map_err(|e| e.to_string()))),
             )
         }
@@ -5241,20 +5252,17 @@ fn overview_task(
     }
 }
 
-fn load_members(session: &Arc<Session>, room: &mut Room) -> Task<Message> {
+fn load_members(room: &mut Room) -> Task<Message> {
     room.loading_members = true;
-    let (session, id) = (session.clone(), room.id.clone());
+    let (handle, id) = (room.handle.clone(), room.id.clone());
     Task::perform(
-        {
-            let id = id.clone();
-            async move {
-                let (members, everyone) =
-                    futures_util::join!(session.members(&id), session.can_mention_room(&id));
-                Ok((
-                    members.map_err(|e| e.to_string())?,
-                    everyone.unwrap_or(false),
-                ))
-            }
+        async move {
+            let (members, everyone) =
+                futures_util::join!(handle.members(), handle.can_mention_room());
+            Ok((
+                members.map_err(|e| e.to_string())?,
+                everyone.unwrap_or(false),
+            ))
         },
         move |result| room::Message::MembersLoaded(result).to(&id),
     )
@@ -5324,8 +5332,13 @@ async fn notify(notification: Notification) -> bool {
 fn load_access(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
     Task::perform(
         async move {
-            let permissions = session.permissions(&room).await.ok();
-            let can_change = session.can_change_permissions(&room).await.ok();
+            let (permissions, can_change) = match session.room(&room) {
+                Ok(handle) => (
+                    handle.permissions().await.ok(),
+                    handle.can_change_permissions().await.ok(),
+                ),
+                Err(_) => (None, None),
+            };
             settings::Message::AccessLoaded(room, permissions, can_change)
         },
         Message::Settings,
@@ -5361,19 +5374,11 @@ fn paginate(room: &mut Room) -> Task<Message> {
     )
 }
 
-fn load_settings(session: &Arc<Session>, room: &OwnedRoomId) -> Task<Message> {
-    let (session, room) = (session.clone(), room.clone());
+fn load_settings(room: &RoomHandle) -> Task<Message> {
+    let (room, id) = (room.clone(), room.id().to_owned());
     Task::perform(
-        {
-            let room = room.clone();
-            async move {
-                session
-                    .room_settings(&room)
-                    .await
-                    .map_err(|e| e.to_string())
-            }
-        },
-        move |result| Message::Info(info::Message::SettingsLoaded(room.clone(), result)),
+        async move { room.settings().await.map_err(|e| e.to_string()) },
+        move |result| Message::Info(info::Message::SettingsLoaded(id.clone(), result)),
     )
 }
 

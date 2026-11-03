@@ -7,7 +7,7 @@ use std::{
 };
 
 use eyeball_im::Vector;
-use futures_util::{Stream, StreamExt, pin_mut};
+use futures_util::{StreamExt, pin_mut};
 use matrix_sdk::{
     Client, Room, RoomState,
     deserialized_responses::SyncOrStrippedState,
@@ -31,12 +31,11 @@ use matrix_sdk_ui::room_list_service::{
     RoomListItem, RoomListLoadingState, RoomListService, State as ServiceState,
     filters::new_filter_non_left,
 };
-use tokio::{sync::watch, task::JoinHandle};
-use tokio_stream::wrappers::WatchStream;
+use tokio::sync::watch;
 use tracing::warn;
 
 use crate::{
-    Error, Result, RoomTag, Session,
+    Error, Live, Result, RoomHandle, RoomTag, Session,
     permissions::{Permissions, open_power_levels_raw},
     synced, system_time,
 };
@@ -85,7 +84,7 @@ impl RoomSummary {
     }
 }
 
-/// Snapshot published by [`RoomList`].
+/// The room list now, see [`Session::room_list`].
 #[derive(Clone, Debug, Default)]
 pub struct RoomListState {
     /// Joined and invited rooms, most recently active first.
@@ -93,49 +92,6 @@ pub struct RoomListState {
     /// Synced with the server since the list was created, and every room the
     /// server reported is in `rooms`. Before that, `rooms` may be a stale cache.
     pub loaded: bool,
-}
-
-/// Keeps a [`RoomListState`] up to date while it is alive.
-pub struct RoomList {
-    state: watch::Receiver<RoomListState>,
-    task: JoinHandle<()>,
-}
-
-impl Drop for RoomList {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-impl RoomList {
-    pub(crate) async fn new(client: Client, service: Arc<RoomListService>) -> Result<Self> {
-        let (tx, state) = watch::channel(RoomListState::default());
-        let task = tokio::spawn(async move {
-            if let Err(e) = run_room_list(client, service, tx).await {
-                warn!("room list stopped: {e}");
-            }
-        });
-        Ok(Self { state, task })
-    }
-
-    pub fn current(&self) -> RoomListState {
-        self.state.borrow().clone()
-    }
-
-    /// The current state, then every change.
-    pub fn updates(&self) -> impl Stream<Item = RoomListState> + use<> {
-        WatchStream::new(self.state.clone())
-    }
-
-    /// Wait until [`RoomListState::loaded`]; requires sync to be running.
-    pub async fn wait_loaded(&self) -> RoomListState {
-        let mut state = self.state.clone();
-        match state.wait_for(|s| s.loaded).await {
-            Ok(s) => s.clone(),
-            // Task ended (error is logged); return what we have.
-            Err(_) => self.current(),
-        }
-    }
 }
 
 async fn run_room_list(
@@ -341,9 +297,15 @@ pub struct UserSummary {
 }
 
 impl Session {
-    /// A live room list. Sync must be running for it to fill.
-    pub async fn room_list(&self) -> Result<RoomList> {
-        RoomList::new(self.client.clone(), self.sync.room_list_service()).await
+    /// The joined and invited rooms, kept up to date while held. Sync must
+    /// be running for it to fill.
+    pub async fn room_list(&self) -> Result<Live<RoomListState>> {
+        let (client, service) = (self.client.clone(), self.sync.room_list_service());
+        Ok(Live::spawn(RoomListState::default(), |tx| async move {
+            if let Err(e) = run_room_list(client, service, tx).await {
+                warn!("room list stopped: {e}");
+            }
+        }))
     }
 
     /// Whether new rooms can have owners besides their creator: on room
@@ -413,7 +375,8 @@ impl Session {
         let room = self.client.create_room(request).await?.room_id().to_owned();
         self.echoes.set_joining(&room);
         if let Some(parent) = &new.parent {
-            self.add_to_space(parent, &room).await?;
+            let content = SpaceChildEventContent::new(self.via());
+            synced::send_state(&self.sdk_room(parent)?, &room, content).await?;
         }
         Ok(room)
     }
@@ -451,24 +414,6 @@ impl Session {
             .mark_as_dm(&notes, &[user.to_owned()])
             .await?;
         Ok(notes)
-    }
-
-    pub async fn set_room_name(&self, room: &RoomId, name: &str) -> Result<()> {
-        self.room(room)?.set_name(name.to_owned()).await?;
-        Ok(())
-    }
-
-    /// Set the room's topic; a blank one removes it. The room lists show it
-    /// at once ([`Session::room_lists`]).
-    pub async fn set_room_topic(&self, room_id: &RoomId, topic: &str) -> Result<()> {
-        let room = self.room(room_id)?;
-        // As the room list has it.
-        let shown = Some(topic.to_owned()).filter(|t| !t.trim().is_empty());
-        self.echoes.set_topic(room_id, shown.clone());
-        let result = room.set_room_topic(topic).await;
-        (self.echoes).topic_answered(room_id, &shown, result.is_ok(), Instant::now());
-        result?;
-        Ok(())
     }
 
     /// Users matching `term` by name or ID in the server's user directory
@@ -515,23 +460,6 @@ impl Session {
         }
     }
 
-    /// Leave the room, or decline its invite; it is not coming any more.
-    pub async fn leave(&self, room: &OwnedRoomId) -> Result<()> {
-        self.room(room)?.leave().await?;
-        self.echoes.drop_joining(room);
-        Ok(())
-    }
-
-    pub async fn invite(&self, room: &OwnedRoomId, user: &OwnedUserId) -> Result<()> {
-        Ok(self.room(room)?.invite_user_by_id(user).await?)
-    }
-
-    /// Add `child` to `space` (sends `m.space.child` in the space).
-    pub async fn add_to_space(&self, space: &OwnedRoomId, child: &OwnedRoomId) -> Result<()> {
-        let content = SpaceChildEventContent::new(self.via());
-        synced::send_state(&self.room(space)?, child, content).await
-    }
-
     /// Find a known room by ID, alias or exact display name.
     ///
     /// Names are matched against rooms in the local store, so a fresh
@@ -566,10 +494,41 @@ impl Session {
             _ => Err(Error::AmbiguousRoom(query.to_owned(), matches)),
         }
     }
+}
 
-    pub(crate) fn room(&self, id: &RoomId) -> Result<Room> {
-        self.client
-            .get_room(id)
-            .ok_or_else(|| Error::RoomNotFound(id.to_string()))
+impl RoomHandle {
+    pub async fn set_name(&self, name: &str) -> Result<()> {
+        self.room.set_name(name.to_owned()).await?;
+        Ok(())
+    }
+
+    /// Set the topic; a blank one removes it. The room lists show it at
+    /// once ([`Session::room_lists`]).
+    pub async fn set_topic(&self, topic: &str) -> Result<()> {
+        let echoes = &self.session.echoes;
+        // As the room list has it.
+        let shown = Some(topic.to_owned()).filter(|t| !t.trim().is_empty());
+        echoes.set_topic(self.id(), shown.clone());
+        let result = self.room.set_room_topic(topic).await;
+        echoes.topic_answered(self.id(), &shown, result.is_ok(), Instant::now());
+        result?;
+        Ok(())
+    }
+
+    /// Leave the room, or decline its invite; it is not coming any more.
+    pub async fn leave(&self) -> Result<()> {
+        self.room.leave().await?;
+        self.session.echoes.drop_joining(self.id());
+        Ok(())
+    }
+
+    pub async fn invite(&self, user: &UserId) -> Result<()> {
+        Ok(self.room.invite_user_by_id(user).await?)
+    }
+
+    /// List `room` in this space (sends `m.space.child`).
+    pub async fn add_child(&self, room: &RoomId) -> Result<()> {
+        let content = SpaceChildEventContent::new(self.session.via());
+        synced::send_state(&self.room, room, content).await
     }
 }

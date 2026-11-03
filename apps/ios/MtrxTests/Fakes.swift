@@ -291,11 +291,6 @@ final class FakeSession: Session, @unchecked Sendable {
         return try profile.get()
     }
 
-    override func invite(roomId: String, userId: String) async throws {
-        if let inviteError { throw inviteError }
-        invites.append((roomId, userId))
-    }
-
     override func startSync() async {
         syncStarts += 1
         record("startSync")
@@ -389,7 +384,7 @@ final class FakeSession: Session, @unchecked Sendable {
     // MARK: Rooms: settings, members, pins, joining, making
 
     let fakePinned = FakeTimeline(noHandle: .init())
-    /// Each `roomSettings` call returns this (after the changes made).
+    /// Each `Room.settings` call returns this (after the changes made).
     var settings = Make.settings()
     var memberList: [Member] = []
     /// Changes asked for, in order, e.g. "notify mentions", "pin $e true".
@@ -408,70 +403,22 @@ final class FakeSession: Session, @unchecked Sendable {
     var offersOwnersResult = false
     var created: [NewRoom] = []
 
-    private func change(_ change: String) throws {
+    fileprivate func change(_ change: String) throws {
         if let changeError { throw changeError }
         changes.append(change)
     }
 
-    override func setPinned(roomId: String, eventId: String, pin: Bool) async throws {
-        try change("pin \(eventId) \(pin)")
+    /// Room `roomId`: its calls change this session's state.
+    override func room(roomId: String) throws -> Room {
+        let room = FakeRoom(noHandle: .init())
+        room.session = self
+        room.roomId = roomId
+        return room
     }
 
     override func pinnedTimeline(roomId: String) async throws -> Timeline { fakePinned }
 
-    override func roomSettings(roomId: String) async throws -> RoomSettings { settings }
-
-    override func members(roomId: String) async throws -> [Member] { memberList }
-
-    override func setNotifyMode(roomId: String, mode: NotifyMode) async throws {
-        try change("notify \(mode)")
-        settings.notify = mode
-    }
-
-    override func setRoomAccess(roomId: String, access: Access) async throws {
-        try change("access \(access)")
-        settings.access = access
-    }
-
-    override func setRoomName(roomId: String, name: String) async throws { try change("name \(name)") }
-
-    override func setRoomTopic(roomId: String, topic: String) async throws { try change("topic \(topic)") }
-
-    override func setAddress(roomId: String, name: String?) async throws { try change("address \(name ?? "-")") }
-
-    override func setListed(roomId: String, listed: Bool) async throws { try change("listed \(listed)") }
-
-    override func setHistory(roomId: String, history: History) async throws { try change("history \(history)") }
-
-    override func setPermissions(roomId: String, permissions: Permissions) async throws {
-        try change("permissions \(permissions)")
-    }
-
-    override func encryptRoom(roomId: String) async throws { try change("encrypt") }
-
-    override func setSuggested(spaceId: String, roomId: String, suggested: Bool) async throws {
-        try change("suggested \(spaceId) \(suggested)")
-    }
-
-    override func addToSpace(spaceId: String, roomId: String) async throws { try change("add to \(spaceId)") }
-
-    override func removeFromSpace(spaceId: String, roomId: String) async throws {
-        try change("remove from \(spaceId)")
-    }
-
-    override func setLevel(roomId: String, userId: String, level: Int64) async throws {
-        try change("level \(userId) \(level)")
-    }
-
-    override func removeMember(roomId: String, userId: String, reason: String?, ban: Bool) async throws {
-        try change("\(ban ? "ban" : "remove") \(userId) \(reason ?? "-")")
-    }
-
-    override func unban(roomId: String, userId: String) async throws { try change("unban \(userId)") }
-
     override func setNotesAtTop(on: Bool) async throws { try change("notes at top \(on)") }
-
-    override func leave(roomId: String) async throws { try change("leave \(roomId)") }
 
     override func join(room: String, via: [String]) async throws -> String {
         try change("join \(room)")
@@ -512,6 +459,73 @@ final class FakeSession: Session, @unchecked Sendable {
         created.append(new)
         return "!new:example.org"
     }
+}
+
+/// A room of a fake session (`FakeSession.room`): reads its settings and
+/// members, and records changes in its `changes`.
+final class FakeRoom: Room, @unchecked Sendable {
+    fileprivate var session: FakeSession!
+    fileprivate var roomId = ""
+
+    override func settings() async throws -> RoomSettings { session.settings }
+
+    override func members() async throws -> [Member] { session.memberList }
+
+    override func setPinned(eventId: String, pin: Bool) async throws {
+        try session.change("pin \(eventId) \(pin)")
+    }
+
+    override func setNotify(mode: NotifyMode) async throws {
+        try session.change("notify \(mode)")
+        session.settings.notify = mode
+    }
+
+    override func setJoinRule(rule: Access) async throws {
+        try session.change("access \(rule)")
+        session.settings.access = rule
+    }
+
+    override func setName(name: String) async throws { try session.change("name \(name)") }
+
+    override func setTopic(topic: String) async throws { try session.change("topic \(topic)") }
+
+    override func setAddress(name: String?) async throws { try session.change("address \(name ?? "-")") }
+
+    override func setListed(listed: Bool) async throws { try session.change("listed \(listed)") }
+
+    override func setHistory(history: History) async throws { try session.change("history \(history)") }
+
+    override func setPermissions(permissions: Permissions) async throws {
+        try session.change("permissions \(permissions)")
+    }
+
+    override func encrypt() async throws { try session.change("encrypt") }
+
+    /// On a space's room.
+    override func setSuggested(roomId: String, suggested: Bool) async throws {
+        try session.change("suggested \(self.roomId) \(suggested)")
+    }
+
+    override func addChild(roomId: String) async throws { try session.change("add to \(self.roomId)") }
+
+    override func removeChild(roomId: String) async throws { try session.change("remove from \(self.roomId)") }
+
+    override func setLevel(userId: String, level: Int64) async throws {
+        try session.change("level \(userId) \(level)")
+    }
+
+    override func remove(userId: String, ban: Bool, reason: String?) async throws {
+        try session.change("\(ban ? "ban" : "remove") \(userId) \(reason ?? "-")")
+    }
+
+    override func unban(userId: String) async throws { try session.change("unban \(userId)") }
+
+    override func invite(userId: String) async throws {
+        if let inviteError = session.inviteError { throw inviteError }
+        session.invites.append((roomId, userId))
+    }
+
+    override func leave() async throws { try session.change("leave \(roomId)") }
 }
 
 final class FakeOAuthLogin: OAuthLogin, @unchecked Sendable {

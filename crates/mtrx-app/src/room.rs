@@ -20,7 +20,7 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Draft, DraftKeeper, Event, EventContent, EventKey, Media, Member, MessageKind,
-    MessageRow, MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomKind, RoomSummary,
+    MessageRow, MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomHandle, RoomKind, RoomSummary,
     RoomTimeline, Row, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, UserId,
 };
 
@@ -179,6 +179,8 @@ impl Message {
 
 pub struct Room {
     pub id: OwnedRoomId,
+    /// Its members, pins, calls and scheduled messages are changed through it.
+    pub handle: RoomHandle,
     pub timeline: Arc<RoomTimeline>,
     /// The timeline's rows, oldest first.
     pub rows: Arc<Vec<Row>>,
@@ -247,7 +249,8 @@ pub enum Older {
 }
 
 impl Room {
-    pub fn new(id: OwnedRoomId, timeline: Arc<RoomTimeline>, drafts: DraftKeeper) -> Self {
+    pub fn new(handle: RoomHandle, timeline: Arc<RoomTimeline>, drafts: DraftKeeper) -> Self {
+        let id = handle.id().to_owned();
         // Messages being sent already when the room opens show their clock.
         let rows = Arc::new(timeline.current_rows());
         Self {
@@ -266,6 +269,7 @@ impl Room {
             can_mention_room: false,
             completion: None,
             id,
+            handle,
             rows,
             timeline,
             composer: text_editor::Content::new(),
