@@ -18,15 +18,13 @@ final class TimelineRowsTests: XCTestCase {
 
     func testRowCarriesReactionsQuoteEditedAndReaders() {
         let reactions = [
-            Reaction(key: "👍", count: 2, byUs: true, senders: [Make.reader("me"), Make.reader("bob")]),
-            Reaction(key: "🎉", count: 1, byUs: false, senders: [Make.reader("bob")]),
+            Reaction(key: "👍", count: 2, byUs: true, senders: [Make.user("me"), Make.user("bob")]),
+            Reaction(key: "🎉", count: 1, byUs: false, senders: [Make.user("bob")]),
         ]
-        let quote = ReplyQuote(
-            eventId: "$orig", state: .loaded, senderId: "@bob:example.org", senderName: "Bob", kind: .text,
-            body: "Hello")
+        let quote = ReplyQuote(eventId: "$orig", state: .loaded, sender: Make.user("bob"), kind: .text, body: "Hello")
         let event = Make.event(
             "alice", Make.text("Hi", edited: true, reactions: reactions, replyTo: quote), eventId: "$1",
-            readBy: [Make.reader("bob"), Make.reader("carol")])
+            readBy: [Make.user("bob"), Make.user("carol")])
         guard let row = messageRow(event) else { return XCTFail("no message") }
         XCTAssertEqual(row.reactions, reactions)
         XCTAssertEqual(row.quote, quote)
@@ -66,35 +64,27 @@ final class TimelineRowsTests: XCTestCase {
     }
 
     func testReadersBeyondThreeShowAsACount() {
-        let readers = ["a", "b", "c", "d", "e"].map { Make.reader($0) }
+        let readers = ["a", "b", "c", "d", "e"].map { Make.user($0) }
         let (shown, more) = ReaderAvatars.split(readers)
         XCTAssertEqual(shown.map(\.userId), readers.prefix(3).map(\.userId))
         XCTAssertEqual(more, 2)
         XCTAssertEqual(ReaderAvatars.split(Array(readers.prefix(2))).more, 0)
-        // A name not known yet: the user ID's local part.
-        XCTAssertEqual(Make.reader("anna", named: false).displayName, "anna")
-        XCTAssertEqual(Make.reader("anna").displayName, "Anna")
     }
 
     func testQuoteSaysWhatTheOriginalIs() {
-        func quote(_ state: QuoteState, kind: MessageKind? = .text, body: String? = "Hello", name: String? = "Bob")
-            -> ReplyQuote
-        {
+        func quote(_ state: QuoteState, kind: MessageKind? = .text, body: String? = "Hello") -> ReplyQuote {
             ReplyQuote(
-                eventId: "$orig", state: state, senderId: state == .loaded ? "@bob:example.org" : nil,
-                senderName: state == .loaded ? name : nil, kind: kind, body: body)
+                eventId: "$orig", state: state, sender: state == .loaded ? Make.user("bob") : nil, kind: kind,
+                body: body)
         }
         XCTAssertEqual(quote(.loading, body: nil).preview, "Loading…")
         XCTAssertFalse(quote(.loading, body: nil).canGoTo)
         XCTAssertEqual(quote(.failed, body: nil).preview, "Could not load the message")
         XCTAssertFalse(quote(.failed, body: nil).canGoTo)
-        XCTAssertNil(quote(.failed, body: nil).senderLabel)
 
         let text = quote(.loaded)
-        XCTAssertEqual(text.senderLabel, "Bob")
         XCTAssertEqual(text.preview, "Hello")
         XCTAssertTrue(text.canGoTo)
-        XCTAssertEqual(quote(.loaded, name: nil).senderLabel, "bob")
         XCTAssertEqual(quote(.loaded, kind: .image, body: "cat.png").preview, "Image: cat.png")
         XCTAssertEqual(quote(.loaded, kind: .file, body: "").preview, "File")
         XCTAssertEqual(quote(.loaded, kind: nil, body: "Message deleted").preview, "Message deleted")
@@ -107,10 +97,5 @@ final class TimelineRowsTests: XCTestCase {
         XCTAssertTrue(Emoji.search("tears joy").map(\.symbol).contains("😂"))
         XCTAssertFalse(Emoji.search("tears joy").map(\.symbol).contains("😀"))
         XCTAssertEqual(Emoji.search("  ").count, Emoji.all.count)
-    }
-
-    func testLocalpart() {
-        XCTAssertEqual(localpart("@alice:example.org"), "alice")
-        XCTAssertEqual(localpart("bob"), "bob")
     }
 }

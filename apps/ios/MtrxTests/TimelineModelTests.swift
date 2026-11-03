@@ -211,8 +211,7 @@ final class TimelineModelTests: XCTestCase {
             Make.text(
                 "Yes",
                 replyTo: ReplyQuote(
-                    eventId: "$o", state: .loaded, senderId: "@me:example.org", senderName: "Me", kind: .text,
-                    body: "Hello world")),
+                    eventId: "$o", state: .loaded, sender: Make.user("me"), kind: .text, body: "Hello world")),
             at: 5, eventId: "$r"))
 
     func testGoesToAQuotedMessageShown() async {

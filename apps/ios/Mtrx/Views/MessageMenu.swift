@@ -40,9 +40,9 @@ struct MessageMenu: View {
     /// Who wrote it and the start of it.
     private var preview: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(row.event.displayName)
+            Text(row.event.sender.displayName)
                 .font(.subheadline.weight(.semibold))
-                .foregroundColor(AvatarColor.of(row.event.senderId))
+                .foregroundColor(AvatarColor.of(row.event.sender.userId))
             Text(row.message?.body ?? "")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

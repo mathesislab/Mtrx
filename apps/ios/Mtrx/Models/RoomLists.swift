@@ -22,6 +22,14 @@ extension SpaceKey {
     }
 }
 
+extension RoomSummary {
+    /// A direct chat's other person: not ourselves, in the Notes to self.
+    func person(ours: String) -> User? {
+        guard kind == .direct, let user = directUser, user.userId != ours else { return nil }
+        return user
+    }
+}
+
 extension SpaceEntry: Identifiable {
     public var id: SpaceKey { key }
     var name: String { space?.name ?? "Home" }
