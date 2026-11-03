@@ -32,7 +32,7 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use crate::{Error, Result, Session, session::AbortOnDrop};
+use crate::{AbortOnDrop, Error, Result, Session};
 
 /// How often our presence is sent again while it is not offline. Synapse
 /// sets a device offline 30 s after its last refresh.

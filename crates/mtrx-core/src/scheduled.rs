@@ -12,18 +12,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use futures_util::Stream;
 use matrix_sdk::{
     Client,
     ruma::{EventId, OwnedEventId, OwnedRoomId, RoomId},
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
-use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
 use crate::{
-    Attachment, Error, PendingSend, Result, Session, session::AbortOnDrop, timeline::send_message,
+    AbortOnDrop, Attachment, Error, Live, PendingSend, Result, Session, timeline::send_message,
 };
 
 /// Store key of the list of scheduled messages.
@@ -223,8 +221,8 @@ impl Session {
     }
 
     /// The scheduled messages, then every change.
-    pub fn scheduled_updates(&self) -> impl Stream<Item = Vec<ScheduledMessage>> + use<> {
-        WatchStream::new(self.schedule.messages.subscribe())
+    pub fn scheduled_updates(&self) -> Live<Vec<ScheduledMessage>> {
+        Live::from_watch(self.schedule.messages.subscribe())
     }
 
     /// Schedule a Markdown message and files for `send_at`, which must be

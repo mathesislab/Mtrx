@@ -20,15 +20,12 @@ use matrix_sdk::{
     },
 };
 use matrix_sdk_ui::sync_service::SyncService;
-use tokio::{
-    sync::{Mutex, broadcast},
-    task::JoinHandle,
-};
+use tokio::sync::{Mutex, broadcast};
 use tracing::warn;
 use url::Url;
 
 use crate::{
-    Error, Profile, Result,
+    AbortOnDrop, Error, Profile, Result,
     profile::{StoredAuth, StoredSession},
     scheduled::Schedule,
 };
@@ -76,14 +73,6 @@ pub struct Session {
     pub(crate) own_presence: crate::OwnPresence,
     profile: Profile,
     _connection: AbortOnDrop,
-}
-
-pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 impl Session {
@@ -225,8 +214,8 @@ impl Session {
         })
     }
 
-    /// Start syncing in the background. Live views ([`crate::RoomList`], ...)
-    /// only update while sync runs.
+    /// Start syncing in the background. Live values ([`Session::room_list`],
+    /// ...) only update while sync runs.
     pub async fn start_sync(&self) {
         self.sync.start().await;
     }

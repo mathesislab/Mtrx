@@ -10,16 +10,15 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{Stream, future::BoxFuture};
+use futures_util::future::BoxFuture;
 use matrix_sdk::{
     Client, ComposerDraft, ComposerDraftType, Room,
     ruma::{OwnedEventId, OwnedRoomId, RoomId},
 };
 use tokio::sync::watch;
-use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
-use crate::{Error, Result, Session, session::AbortOnDrop};
+use crate::{AbortOnDrop, Error, Live, Result, Session};
 
 /// How long writing pauses before the draft is kept.
 pub const DRAFT_PAUSE: Duration = Duration::from_millis(1500);
@@ -128,8 +127,8 @@ impl Session {
     }
 
     /// The rooms with a draft now, then after every change.
-    pub fn rooms_with_drafts_updates(&self) -> impl Stream<Item = BTreeSet<OwnedRoomId>> + use<> {
-        WatchStream::new(self.drafts.rooms.subscribe())
+    pub fn rooms_with_drafts_updates(&self) -> Live<BTreeSet<OwnedRoomId>> {
+        Live::from_watch(self.drafts.rooms.subscribe())
     }
 
     /// Keeps the draft of room `room` as its composer changes.

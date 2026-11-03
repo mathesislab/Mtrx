@@ -331,7 +331,9 @@ async fn recovery_decrypts_history_on_new_device() -> Result<()> {
 
     let second = login(&name).await?;
     assert!(!second.session.is_device_verified().await?);
-    second.session.room_list().await?.wait_loaded().await;
+    (second.session.room_list().await?)
+        .wait_for(|s| s.loaded)
+        .await;
     second.session.recover(&key, |_| {}).await?;
     assert!(second.session.is_device_verified().await?);
 
@@ -383,15 +385,15 @@ async fn emoji_self_verification() -> Result<()> {
     accepted.accept().await?;
 
     let emojis = |state: &VerificationState| matches!(state, VerificationState::Emojis(_));
-    let a = wait_for("emojis (new)", outgoing.states(), emojis).await?;
-    let b = wait_for("emojis (old)", accepted.states(), emojis).await?;
+    let a = wait_for("emojis (new)", outgoing.states().updates(), emojis).await?;
+    let b = wait_for("emojis (old)", accepted.states().updates(), emojis).await?;
     assert_eq!(a, b, "both devices show the same emojis");
 
     outgoing.confirm().await?;
     accepted.confirm().await?;
     let done = |state: &VerificationState| matches!(state, VerificationState::Done);
-    wait_for("done (new)", outgoing.states(), done).await?;
-    wait_for("done (old)", accepted.states(), done).await?;
+    wait_for("done (new)", outgoing.states().updates(), done).await?;
+    wait_for("done (old)", accepted.states().updates(), done).await?;
     assert!(new.session.is_device_verified().await?);
     Ok(())
 }
@@ -482,9 +484,11 @@ async fn scheduled_messages() -> Result<()> {
     })
     .await?;
     assert!(SystemTime::now() >= on_time.send_at);
-    let held = wait_for("late one held", session.scheduled_updates(), |s| {
-        s.iter().all(|m| m.overdue)
-    })
+    let held = wait_for(
+        "late one held",
+        session.scheduled_updates().updates(),
+        |s| s.iter().all(|m| m.overdue),
+    )
     .await?;
     assert_eq!(held.len(), 1);
     assert_eq!(held[0].id, late.id);
@@ -1193,7 +1197,7 @@ async fn replies_reactions_edits_typing_receipts() -> Result<()> {
     .await?;
 
     // Typing.
-    let typing = bob_timeline.typing_updates();
+    let typing = bob_timeline.typing_updates().updates();
     alice_timeline.typing(true).await?;
     wait_for("bob sees alice typing", typing, |names| names.len() == 1).await?;
 
@@ -1611,6 +1615,18 @@ async fn images_and_files() -> Result<()> {
     };
     // Each upload reports its progress, and is gone once sent.
     let uploads = alice_timeline.uploads().await?;
+    let reported = tokio::spawn({
+        let mut uploads = uploads.updates();
+        async move {
+            let mut seen = false;
+            while let Some(now) = uploads.next().await {
+                seen |= now.iter().any(|u| u.total > 0);
+                if seen && now.is_empty() {
+                    break;
+                }
+            }
+        }
+    });
     let pending = alice_timeline
         .send(
             "Results:",
@@ -1623,17 +1639,7 @@ async fn images_and_files() -> Result<()> {
         )
         .await?;
     timeout("all sent", pending.sent()).await??;
-    let mut uploads = std::pin::pin!(uploads);
-    let mut seen = false;
-    timeout("uploads reported", async {
-        while let Some(now) = uploads.next().await {
-            seen |= now.iter().any(|u| u.total > 0);
-            if seen && now.is_empty() {
-                break;
-            }
-        }
-    })
-    .await?;
+    timeout("uploads reported", reported).await??;
 
     let bob_timeline = bob.session.timeline(&room).await?;
     let entries = wait_for("bob sees the files", bob_timeline.updates(), |e| {
@@ -1705,7 +1711,7 @@ async fn room_categories_and_tags() -> Result<()> {
     );
     wait_for(
         "the other device sees the category",
-        second.session.room_categories_updates(),
+        second.session.room_categories_updates().updates(),
         |c| {
             c.home
                 .category(&id)
@@ -1723,7 +1729,7 @@ async fn room_categories_and_tags() -> Result<()> {
     assert_eq!(s.room_list_colours().home.as_deref(), Some("Teal"));
     wait_for(
         "the other device sees the colours",
-        second.session.room_list_colours_updates(),
+        second.session.room_list_colours_updates().updates(),
         |c| {
             c.home.as_deref() == Some("Teal")
                 && c.spaces.get(&room).map(String::as_str) == Some("Rose")
@@ -1733,7 +1739,7 @@ async fn room_categories_and_tags() -> Result<()> {
 
     // Tags show in the room list.
     let list = s.room_list().await?;
-    list.wait_loaded().await;
+    list.wait_for(|s| s.loaded).await;
     s.set_room_tag(&room, mtrx_core::RoomTag::Favourite).await?;
     let tag =
         |state: &mtrx_core::RoomListState| state.rooms.iter().find(|r| r.id == room).map(|r| r.tag);
@@ -2028,7 +2034,7 @@ async fn signed_out_elsewhere() -> Result<()> {
     test_support::log_out_everywhere(&name)
         .await
         .map_err(anyhow::Error::msg)?;
-    wait_for("signed out", session.connection_updates(), |c| {
+    wait_for("signed out", session.connection_updates().updates(), |c| {
         *c == Connection::SignedOut
     })
     .await?;
@@ -2224,7 +2230,7 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     let s = &alice.session;
     let room = s.create_room(NewRoom::default()).await?;
     let other = s.create_room(NewRoom::default()).await?;
-    let mut with_drafts = Box::pin(s.rooms_with_drafts_updates());
+    let mut with_drafts = Box::pin(s.rooms_with_drafts_updates().updates());
     assert!(with_drafts.next().await.unwrap().is_empty());
     assert_eq!(s.draft(&room).await?, None);
 
@@ -2246,7 +2252,7 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     drop(session);
     let s = Session::restore(Profile::new("test", dir.path(), SecretStore::File)?).await?;
     assert_eq!(s.draft(&room).await?, Some(draft));
-    let mut with_drafts = Box::pin(s.rooms_with_drafts_updates());
+    let mut with_drafts = Box::pin(s.rooms_with_drafts_updates().updates());
     assert_eq!(
         with_drafts.next().await.unwrap(),
         std::collections::BTreeSet::from([room.clone()])
@@ -2293,7 +2299,7 @@ async fn changes_show_before_sync_brings_them() -> Result<()> {
     let (_, alice) = new_user("echoes").await?;
     let s = &alice.session;
     let list = s.room_list().await?;
-    let mut lists = std::pin::pin!(s.room_lists(&list));
+    let mut lists = std::pin::pin!(s.room_lists(&list).updates());
     // A room made is coming until listed.
     let room = s
         .create_room(NewRoom {
@@ -2311,7 +2317,7 @@ async fn changes_show_before_sync_brings_them() -> Result<()> {
         timeline.send_markdown("The plan", None).await?.sent(),
     )
     .await??;
-    wait_for("Pin offered", timeline.rows(), |rows| {
+    wait_for("Pin offered", timeline.rows().updates(), |rows| {
         actions(rows, &plan).contains(&MessageAction::Pin)
     })
     .await?;
@@ -2329,7 +2335,7 @@ async fn changes_show_before_sync_brings_them() -> Result<()> {
         })
     })
     .await?;
-    wait_for("Unpin offered", timeline.rows(), |rows| {
+    wait_for("Unpin offered", timeline.rows().updates(), |rows| {
         actions(rows, &plan).contains(&MessageAction::Unpin)
     })
     .await?;

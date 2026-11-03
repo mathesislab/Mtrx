@@ -35,15 +35,12 @@ use matrix_sdk_ui::timeline::{
     MembershipChange as SdkMembershipChange, MsgLikeKind, RoomExt, Timeline, TimelineDetails,
     TimelineEventItemId, TimelineItem, TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
 };
-use tokio::{
-    sync::{Mutex, broadcast, mpsc, watch},
-    task::JoinHandle,
-};
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    Error, PinsChange, Result, Session, calls,
+    AbortOnDrop, Error, Live, PinsChange, Result, Session, calls,
     echo::Echoes,
     media::{self, MediaRef},
     pins, room_links,
@@ -372,17 +369,12 @@ pub struct RoomTimeline {
     /// Back-paginations run one at a time.
     pagination: Mutex<()>,
     entries: watch::Receiver<Vec<TimelineEntry>>,
-    task: JoinHandle<()>,
     /// What the rows depend on besides the entries.
     context: watch::Receiver<RowContext>,
-    context_task: JoinHandle<()>,
-}
-
-impl Drop for RoomTimeline {
-    fn drop(&mut self) {
-        self.task.abort();
-        self.context_task.abort();
-    }
+    rows: watch::Receiver<Arc<Vec<Row>>>,
+    /// Convert the SDK's items to entries, follow the context, and make the
+    /// rows.
+    _tasks: [AbortOnDrop; 3],
 }
 
 impl RoomTimeline {
@@ -405,35 +397,25 @@ impl RoomTimeline {
         rows::rows(&self.entries.borrow(), &self.context.borrow())
     }
 
-    /// The current rows, then after every change: of the entries, the
-    /// pinned messages, whether we may pin, and whether keys are arriving.
-    pub fn rows(&self) -> impl Stream<Item = Arc<Vec<Row>>> + use<> {
-        let (mut entries, context) = (self.entries.clone(), self.context.clone());
-        entries.mark_changed();
-        stream::unfold(
-            (entries, context),
-            |(mut entries, mut context)| async move {
-                tokio::select! {
-                    changed = entries.changed() => changed.ok()?,
-                    // Once it ended, the context stays as it is.
-                    Ok(()) = context.changed() => {}
-                }
-                let rows = rows::rows(&entries.borrow_and_update(), &context.borrow_and_update());
-                Some((Arc::new(rows), (entries, context)))
-            },
-        )
+    /// The rows, kept up to date as the entries, the pinned messages,
+    /// whether we may pin and whether keys are arriving change; while the
+    /// timeline lives.
+    pub fn rows(&self) -> Live<Arc<Vec<Row>>> {
+        Live::from_watch(self.rows.clone())
     }
 
-    /// The files being uploaded for messages sent here from now on, after
-    /// each step of any; empty once all are sent, or failed.
-    pub async fn uploads(&self) -> Result<impl Stream<Item = Vec<Upload>> + use<>> {
+    /// The files being uploaded for messages sent here from now on: none
+    /// at first, then after each step of any; empty once all are sent, or
+    /// failed.
+    pub async fn uploads(&self) -> Result<Live<Vec<Upload>>> {
         let (_, updates) = (self.timeline.room().send_queue())
             .subscribe()
             .await
             .map_err(timeline_error)?;
-        Ok(BroadcastStream::new(updates)
-            .scan(Vec::<Upload>::new(), |uploads, update| {
-                let changed = match update {
+        let mut updates = BroadcastStream::new(updates);
+        Ok(Live::spawn(Vec::new(), |tx| async move {
+            while let Some(update) = updates.next().await {
+                tx.send_if_modified(|uploads| match update {
                     Ok(RoomSendQueueUpdate::MediaUpload {
                         related_to,
                         progress,
@@ -459,10 +441,9 @@ impl RoomTimeline {
                         uploads.len() != before
                     }
                     _ => false,
-                };
-                std::future::ready(Some(changed.then(|| uploads.clone())))
-            })
-            .filter_map(std::future::ready))
+                });
+            }
+        }))
     }
 
     /// Load up to `events` older events, after the loading under way.
@@ -631,36 +612,31 @@ impl RoomTimeline {
         Ok(self.timeline.room().typing_notice(typing).await?)
     }
 
-    /// Names of the others typing, then every change.
-    pub fn typing_updates(&self) -> impl Stream<Item = Vec<String>> + use<> {
+    /// Names of the others typing: nobody at first, then after every
+    /// notice; while held. Needs a tokio runtime.
+    pub fn typing_updates(&self) -> Live<Vec<String>> {
         let room = self.timeline.room().clone();
         let own = room.own_user_id().to_owned();
         let (guard, receiver) = room.subscribe_to_typing_notifications();
-        // The handler stays registered only while `guard` lives.
-        stream::unfold(
-            (guard, BroadcastStream::new(receiver), room),
-            move |(guard, mut users, room)| {
-                let own = own.clone();
-                async move {
-                    let ids = loop {
-                        match users.next().await? {
-                            Ok(ids) => break ids,
-                            Err(_lagged) => continue,
-                        }
-                    };
-                    let mut names = Vec::new();
-                    for id in ids.into_iter().filter(|id| *id != own) {
-                        let member = room.get_member_no_sync(&id).await.ok().flatten();
-                        names.push(
-                            member
-                                .and_then(|m| m.display_name().map(ToOwned::to_owned))
-                                .unwrap_or_else(|| id.localpart().to_owned()),
-                        );
-                    }
-                    Some((names, (guard, users, room)))
+        Live::spawn(Vec::new(), |typing| async move {
+            // The handler stays registered only while `guard` lives.
+            let _guard = guard;
+            let mut users = BroadcastStream::new(receiver);
+            while let Some(ids) = users.next().await {
+                // Else lagged behind.
+                let Ok(ids) = ids else { continue };
+                let mut names = Vec::new();
+                for id in ids.into_iter().filter(|id| *id != own) {
+                    let member = room.get_member_no_sync(&id).await.ok().flatten();
+                    names.push(
+                        member
+                            .and_then(|m| m.display_name().map(ToOwned::to_owned))
+                            .unwrap_or_else(|| id.localpart().to_owned()),
+                    );
                 }
-            },
-        )
+                typing.send_replace(names);
+            }
+        })
     }
 
     /// Mark everything up to the latest event as read.
@@ -947,7 +923,7 @@ impl Session {
         let (tx, entries) = watch::channel(flatten(&converted));
         let mut stream = Box::pin(stream);
         let (profile_tx, mut profile_rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn({
+        let convert = tokio::spawn({
             let timeline = timeline.clone();
             async move {
                 // Readers not seen as senders are fetched once. The original
@@ -1012,19 +988,46 @@ impl Session {
         let echoes = self.echoes.clone();
         let (first, timeout) = row_context(&room, keys_arriving, &echoes).await;
         let (context_tx, context) = watch::channel(first);
-        let keys = self.encryption_states().map(|state| state.keys_arriving);
-        let context_task =
+        let keys = stream::once(self.encryption_states())
+            .flat_map(|states| states.updates())
+            .map(|state| state.keys_arriving);
+        let follow_context =
             tokio::spawn(follow_row_context(room, keys, echoes, timeout, context_tx));
+        let shown = rows::rows(&entries.borrow(), &context.borrow());
+        let (rows_tx, rows) = watch::channel(Arc::new(shown));
+        let make_rows = tokio::spawn(follow_rows(entries.clone(), context.clone(), rows_tx));
         RoomTimeline {
             room_id: room_id.to_owned(),
             timeline,
             send_lock: self.send_lock.clone(),
             pagination: Mutex::default(),
             entries,
-            task,
             context,
-            context_task,
+            rows,
+            _tasks: [convert, follow_context, make_rows].map(AbortOnDrop),
         }
+    }
+}
+
+/// Keep `rows` up to date as `entries` or `context` change, until the
+/// entries end.
+async fn follow_rows(
+    mut entries: watch::Receiver<Vec<TimelineEntry>>,
+    mut context: watch::Receiver<RowContext>,
+    rows: watch::Sender<Arc<Vec<Row>>>,
+) {
+    loop {
+        tokio::select! {
+            changed = entries.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            // Once it ended, the context stays as it is.
+            Ok(()) = context.changed() => {}
+        }
+        let now = rows::rows(&entries.borrow_and_update(), &context.borrow_and_update());
+        rows.send_replace(Arc::new(now));
     }
 }
 

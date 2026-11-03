@@ -20,9 +20,9 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Draft, DraftKeeper, Google, Media, MediaRef, Notification,
-    OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
-    Profile, RecoveryStep, RoomKind, RoomList, RoomListColours, RoomListState, RoomLists,
+    CallService, Connection, Contact, Draft, DraftKeeper, Google, Live, Media, MediaRef,
+    Notification, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
+    OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists,
     RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
     SpaceKey, Topic, Url,
 };
@@ -68,6 +68,9 @@ const PROGRESS_TICK: Duration = Duration::from_secs(1);
 /// Where cards, the join dialog and Settings start, below the window's top.
 const PANEL_TOP: f32 = 72.0;
 
+/// The room lists, kept up to date while held.
+type LiveLists = Live<Arc<RoomLists>>;
+
 /// An `Arc` that identifies by pointer: lets live core handles be used as
 /// subscription keys and carried in messages.
 pub struct Shared<T>(pub Arc<T>);
@@ -96,7 +99,7 @@ pub enum Message {
     Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
     Login(login::Message),
     LoggedIn(Result<Shared<Session>, String>),
-    Ready(Result<(Shared<RoomList>, bool), String>),
+    Ready(Result<(Shared<LiveLists>, bool), String>),
     Rooms(Arc<RoomLists>),
     SelectSpace(Option<OwnedRoomId>),
     OpenRoom(OwnedRoomId),
@@ -289,7 +292,7 @@ enum Screen {
 
 struct Main {
     session: Arc<Session>,
-    room_list: Option<Arc<RoomList>>,
+    room_lists: Option<Arc<LiveLists>>,
     lists: Arc<RoomLists>,
     space: Option<OwnedRoomId>,
     pane: Pane,
@@ -513,7 +516,7 @@ struct Notice {
 impl Main {
     fn new(session: Arc<Session>) -> Self {
         Self {
-            room_list: None,
+            room_lists: None,
             lists: Arc::new(RoomLists::new(
                 RoomListState::default(),
                 session.room_categories(),
@@ -1022,8 +1025,9 @@ impl App {
                         session.start_sync().await;
                         session.start_scheduler();
                         let list = session.room_list().await?;
+                        let lists = session.room_lists(&list);
                         let verified = session.is_device_verified().await?;
-                        Ok((Shared(Arc::new(list)), verified))
+                        Ok((Shared(Arc::new(lists)), verified))
                     },
                     |result: mtrx_core::Result<_>| {
                         Message::Ready(result.map_err(|e| e.to_string()))
@@ -1115,8 +1119,8 @@ impl App {
                     return Task::none();
                 };
                 match result {
-                    Ok((Shared(list), verified)) => {
-                        main.room_list = Some(list);
+                    Ok((Shared(lists), verified)) => {
+                        main.room_lists = Some(lists);
                         main.verified = Some(verified);
                     }
                     Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
@@ -4264,8 +4268,10 @@ impl App {
         }));
         if let Screen::Main(main) = &self.screen {
             subscriptions.push(
-                Subscription::run_with(Shared(main.session.clone()), |s| s.0.scheduled_updates())
-                    .map(Message::Scheduled),
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.scheduled_updates().updates()
+                })
+                .map(Message::Scheduled),
             );
             subscriptions.push(
                 Subscription::run_with(
@@ -4301,19 +4307,21 @@ impl App {
                 }));
             }
             subscriptions.push(
-                Subscription::run_with(Shared(main.session.clone()), |s| s.0.connection_updates())
-                    .map(Message::Connection),
+                Subscription::run_with(Shared(main.session.clone()), |s| {
+                    s.0.connection_updates().updates()
+                })
+                .map(Message::Connection),
             );
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
-                    s.0.room_categories_updates()
+                    s.0.room_categories_updates().updates()
                 })
                 .map(|c| Message::Arrange(arrange::Message::Categories(c))),
             );
             subscriptions.push(main.arrange.subscription());
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
-                    s.0.room_list_colours_updates()
+                    s.0.room_list_colours_updates().updates()
                 })
                 .map(Message::Colours),
             );
@@ -4332,13 +4340,10 @@ impl App {
             {
                 subscriptions.push(iced::time::every(PROGRESS_TICK).map(|_| Message::Progress));
             }
-            if let Some(list) = &main.room_list {
+            if let Some(lists) = &main.room_lists {
                 subscriptions.push(
-                    Subscription::run_with(
-                        (Shared(main.session.clone()), Shared(list.clone())),
-                        |(session, list)| session.0.room_lists(&list.0),
-                    )
-                    .map(Message::Rooms),
+                    Subscription::run_with(Shared(lists.clone()), |lists| lists.0.updates())
+                        .map(Message::Rooms),
                 );
             }
             if let Some(room) = main.pane.room() {
@@ -4347,12 +4352,14 @@ impl App {
                     |(t, _)| {
                         let id = t.0.room_id().clone();
                         t.0.typing_updates()
+                            .updates()
                             .map(move |names| room::Message::Typing(names).to(&id))
                     },
                 ));
                 subscriptions.push(Subscription::run_with(Shared(room.timeline.clone()), |t| {
                     let id = t.0.room_id().clone();
                     t.0.rows()
+                        .updates()
                         .map(move |rows| room::Message::Timeline(rows).to(&id))
                 }));
                 subscriptions.push(Subscription::run_with(
@@ -4361,7 +4368,7 @@ impl App {
                         let (timeline, id) = (t.0.clone(), t.0.room_id().clone());
                         iced::futures::stream::once(async move { timeline.uploads().await })
                             .filter_map(|uploads| async move { uploads.ok() })
-                            .flatten()
+                            .flat_map(|uploads| uploads.updates())
                             .map(move |uploads| room::Message::Uploads(uploads).to(&id))
                     },
                 ));

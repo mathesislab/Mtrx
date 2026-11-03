@@ -4,11 +4,10 @@
 
 use std::collections::BTreeMap;
 
-use futures_util::Stream;
 use matrix_sdk::ruma::{OwnedRoomId, events::macros::EventContent};
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, Session, account_data::AccountData};
+use crate::{Live, Result, Session, account_data::AccountData};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomListColours {
@@ -44,7 +43,7 @@ impl Session {
     }
 
     /// The current colours, then every change, from this device or others.
-    pub fn room_list_colours_updates(&self) -> impl Stream<Item = RoomListColours> + use<> {
+    pub fn room_list_colours_updates(&self) -> Live<RoomListColours> {
         self.colours.updates()
     }
 

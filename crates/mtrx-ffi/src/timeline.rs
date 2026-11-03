@@ -2,12 +2,11 @@
 
 use std::sync::Arc;
 
-use futures_util::StreamExt;
 use mtrx_core::{self as core, OwnedEventId, RoomTimeline};
 
 use crate::{
     MtrxError, TaskHandle, TimelineRow,
-    runtime::{InRuntime, run},
+    runtime::{self, InRuntime, follow, run},
 };
 
 /// Receives a timeline's rows, oldest first: all of them, now and after
@@ -57,6 +56,11 @@ impl Timeline {
     }
 }
 
+/// The rows as the apps get them.
+fn timeline_rows(rows: Arc<Vec<core::Row>>) -> Vec<TimelineRow> {
+    rows.iter().map(TimelineRow::from).collect()
+}
+
 #[uniffi::export]
 impl Timeline {
     pub fn room_id(&self) -> String {
@@ -66,11 +70,8 @@ impl Timeline {
     /// Call `listener` with the rows, now and on every change. Ends when the
     /// timeline is dropped.
     pub fn subscribe_rows(&self, listener: Arc<dyn TimelineRowsListener>) -> Arc<TaskHandle> {
-        let mut updates = Box::pin(self.inner.rows());
-        TaskHandle::spawn(async move {
-            while let Some(rows) = updates.next().await {
-                listener.on_update(rows.iter().map(TimelineRow::from).collect());
-            }
+        follow(self.inner.rows(), timeline_rows, move |rows| {
+            listener.on_update(rows)
         })
     }
 
@@ -176,14 +177,15 @@ impl Timeline {
     }
 
     /// Call `listener` with the names of the others typing (display names,
-    /// else the user ID's localpart), on every change; nobody at first.
+    /// else the user ID's localpart): nobody now, then on every change.
     /// Runs until cancelled.
     pub fn subscribe_typing(&self, listener: Arc<dyn TypingListener>) -> Arc<TaskHandle> {
-        let mut updates = Box::pin(self.inner.typing_updates());
-        TaskHandle::spawn(async move {
-            while let Some(names) = updates.next().await {
-                listener.on_update(names);
-            }
+        let typing = {
+            let _runtime = runtime::enter();
+            self.inner.typing_updates()
+        };
+        follow(typing, std::convert::identity, move |names| {
+            listener.on_update(names)
         })
     }
 

@@ -10,18 +10,18 @@ use std::{
     time::Instant,
 };
 
-use futures_util::{Stream, StreamExt, stream};
+use futures_util::{Stream, StreamExt};
 use matrix_sdk::{
     Client, RoomMemberships,
     ruma::{OwnedRoomId, OwnedUserId, RoomId, UserId},
 };
-use tokio::task::JoinSet;
+use tokio::{sync::watch, task::JoinSet};
 use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
 use crate::{
-    Grouping, Layout, Result, RoomCategories, RoomKind, RoomList, RoomListState, RoomSummary,
-    Section, Session,
+    Grouping, Layout, Live, Result, RoomCategories, RoomKind, RoomListState, RoomSummary, Section,
+    Session,
     spaces::{SpaceMembers, home_rooms, space_rooms},
     top_level_spaces,
 };
@@ -633,29 +633,28 @@ fn search_by<T>(items: Vec<T>, filter: &str, name: impl Fn(&T) -> &str) -> Vec<T
 }
 
 impl Session {
-    /// The room lists from `list`, now and after every change of the list,
+    /// The room lists from `list`, kept up to date while held: as the list,
     /// the categories, the drafts and the changes made here (tags, topics,
-    /// pinned messages, rooms joined). Spaces list their direct chats once
-    /// their members are loaded, in a later update.
-    pub fn room_lists(&self, list: &RoomList) -> impl Stream<Item = Arc<RoomLists>> + use<> {
-        let follow = Follow {
+    /// pinned messages, rooms joined) change. Spaces list their direct
+    /// chats once their members are loaded, in a later update.
+    pub fn room_lists(&self, list: &Live<RoomListState>) -> Live<Arc<RoomLists>> {
+        let categories = self.room_categories_updates();
+        let drafts = self.rooms_with_drafts_updates();
+        let mut follow = Follow {
             client: self.client.clone(),
             own_user: self.user_id(),
             states: Box::pin(list.updates()),
-            categories: Box::pin(self.room_categories_updates()),
-            drafts: Box::pin(self.rooms_with_drafts_updates()),
+            categories: Box::pin(categories.updates()),
+            drafts: Box::pin(drafts.updates()),
             echo_updates: Box::pin(WatchStream::new(self.echoes.subscribe()).map(|_| ())),
             echoes: self.echoes.clone(),
-            state: None,
-            current: (self.room_categories(), BTreeSet::new()),
+            state: list.get(),
+            current: (categories.get(), drafts.get()),
             members: SpaceMembers::default(),
             loads: JoinSet::new(),
-            sent: None,
         };
-        stream::unfold(follow, |mut follow| async move {
-            let lists = follow.next().await?;
-            Some((lists, follow))
-        })
+        let (first, timeout) = follow.lists();
+        Live::spawn(Arc::new(first), |lists| follow.run(timeout, lists))
     }
 }
 
@@ -670,47 +669,28 @@ struct Follow {
     drafts: Updates<BTreeSet<OwnedRoomId>>,
     echo_updates: Updates<()>,
     echoes: Arc<crate::echo::Echoes>,
-    /// None until the list's first.
-    state: Option<RoomListState>,
+    state: RoomListState,
     current: (RoomCategories, BTreeSet<OwnedRoomId>),
     members: SpaceMembers,
     loads: JoinSet<(OwnedRoomId, u64, Result<HashSet<OwnedUserId>>)>,
-    sent: Option<Arc<RoomLists>>,
 }
 
 impl Follow {
-    /// The lists once they changed; none when the room list ends.
-    async fn next(&mut self) -> Option<Arc<RoomLists>> {
+    /// Send the lists whenever they change, until the room list ends; the
+    /// changes made here that they show time out at `timeout`.
+    async fn run(mut self, mut timeout: Option<Instant>, lists: watch::Sender<Arc<RoomLists>>) {
         loop {
-            let mut timeout = None;
-            if let Some(state) = &self.state {
-                for (space, count) in self.members.due(&state.rooms) {
-                    let client = self.client.clone();
-                    self.loads.spawn(async move {
-                        let loaded = joined_member_ids(&client, &space).await;
-                        (space, count, loaded)
-                    });
-                }
-                let mut state = state.clone();
-                timeout = self.echoes.lay_over(&mut state.rooms, Instant::now());
-                let (categories, drafts) = self.current.clone();
-                let members = self.members.known().clone();
-                let mut lists = RoomLists::new(state, categories, members, &self.own_user, drafts);
-                lists.joining = self.echoes.joining();
-                if self.sent.as_deref() != Some(&lists) {
-                    let lists = Arc::new(lists);
-                    self.sent = Some(lists.clone());
-                    return Some(lists);
-                }
-            }
-            let timed_out = async {
+            let timed_out = async move {
                 match timeout {
                     Some(at) => tokio::time::sleep_until(at.into()).await,
                     None => std::future::pending().await,
                 }
             };
             tokio::select! {
-                next = self.states.next() => self.state = Some(next?),
+                next = self.states.next() => match next {
+                    Some(state) => self.state = state,
+                    None => return,
+                },
                 Some(next) = self.categories.next() => self.current.0 = next,
                 Some(next) = self.drafts.next() => self.current.1 = next,
                 Some(()) = self.echo_updates.next() => {}
@@ -720,7 +700,36 @@ impl Follow {
                 },
                 () = timed_out => {}
             }
+            let (now, next) = self.lists();
+            timeout = next;
+            lists.send_if_modified(|sent| {
+                let changed = **sent != now;
+                if changed {
+                    *sent = Arc::new(now);
+                }
+                changed
+            });
         }
+    }
+
+    /// The lists from what is known now, and when the changes made here
+    /// that they show time out. Starts loading the members of spaces that
+    /// are due.
+    fn lists(&mut self) -> (RoomLists, Option<Instant>) {
+        for (space, count) in self.members.due(&self.state.rooms) {
+            let client = self.client.clone();
+            self.loads.spawn(async move {
+                let loaded = joined_member_ids(&client, &space).await;
+                (space, count, loaded)
+            });
+        }
+        let mut state = self.state.clone();
+        let timeout = self.echoes.lay_over(&mut state.rooms, Instant::now());
+        let (categories, drafts) = self.current.clone();
+        let members = self.members.known().clone();
+        let mut lists = RoomLists::new(state, categories, members, &self.own_user, drafts);
+        lists.joining = self.echoes.joining();
+        (lists, timeout)
     }
 }
 

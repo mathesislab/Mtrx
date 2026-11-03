@@ -9,12 +9,11 @@
 
 use std::{collections::BTreeMap, time::Instant};
 
-use futures_util::Stream;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId, events::macros::EventContent};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Result, RoomKind, RoomSummary, Session, account_data::AccountData, scheduled::random_id,
+    Live, Result, RoomKind, RoomSummary, Session, account_data::AccountData, scheduled::random_id,
 };
 
 /// The user's arrangement of the room list, for Home and each space.
@@ -345,7 +344,7 @@ impl Session {
     }
 
     /// The current categories, then every change, from this device or others.
-    pub fn room_categories_updates(&self) -> impl Stream<Item = RoomCategories> + use<> {
+    pub fn room_categories_updates(&self) -> Live<RoomCategories> {
         self.categories.updates()
     }
 
