@@ -84,7 +84,7 @@ final class PersonInfoModel: ObservableObject, Identifiable {
         let (session, userId) = (self.session, self.userId)
         Task {
             do {
-                try await session.invite(roomId: space.id, userId: userId)
+                try await session.room(roomId: space.id).invite(userId: userId)
                 choosingSpace = false
                 confirm("Invited to \(space.name).")
             } catch {

@@ -336,7 +336,7 @@ final class SessionModel: ObservableObject {
 
     /// Decline an invite.
     func decline(_ room: RoomSummary) async throws {
-        try await session.leave(roomId: room.id)
+        try await session.room(roomId: room.id).leave()
         left(room.id)
     }
 
