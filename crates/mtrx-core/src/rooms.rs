@@ -35,7 +35,7 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use crate::{
-    Error, Live, Result, RoomHandle, RoomTag, Session,
+    Error, Live, Result, RoomHandle, RoomTag, Session, User,
     permissions::{Permissions, open_power_levels_raw},
     synced, system_time,
 };
@@ -69,7 +69,7 @@ pub struct RoomSummary {
     pub parents: Vec<OwnedRoomId>,
     pub tag: RoomTag,
     /// For a direct chat, the other user.
-    pub direct_user: Option<OwnedUserId>,
+    pub direct_user: Option<User>,
     /// The room's address, e.g. `#ice-sheets:example.org`.
     pub alias: Option<String>,
     pub joined_members: u64,
@@ -80,7 +80,9 @@ pub struct RoomSummary {
 impl RoomSummary {
     /// Our direct chat with ourselves: the Notes to self.
     pub fn is_notes(&self, own_user: &UserId) -> bool {
-        self.direct_user.as_deref() == Some(own_user)
+        self.direct_user
+            .as_ref()
+            .is_some_and(|u| &*u.id == own_user)
     }
 }
 
@@ -176,16 +178,11 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             RoomTag::None
         };
         let direct_user = match kind {
-            RoomKind::Direct => room
-                .direct_targets()
-                .into_iter()
-                .find_map(|t| t.into_user_id()),
+            RoomKind::Direct => direct_user(room).await,
             _ => None,
         };
-        let avatar = match (room.avatar_url(), kind) {
-            (None, RoomKind::Direct) => direct_avatar(room).await,
-            (avatar, _) => avatar,
-        };
+        let avatar =
+            (room.avatar_url()).or_else(|| direct_user.as_ref().and_then(|u| u.avatar.clone()));
         rooms.push(RoomSummary {
             id: room.room_id().to_owned(),
             name: room
@@ -216,9 +213,9 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
     rooms
 }
 
-/// The other user's avatar in a DM: from the sync's room heroes, else from
-/// their member event in the store.
-async fn direct_avatar(room: &Room) -> Option<OwnedMxcUri> {
+/// The other user in a DM, with their name and avatar from the sync's room
+/// heroes, else from their member event in the store.
+async fn direct_user(room: &Room) -> Option<User> {
     let target = room
         .direct_targets()
         .into_iter()
@@ -229,13 +226,22 @@ async fn direct_avatar(room: &Room) -> Option<OwnedMxcUri> {
         .into_iter()
         .find(|h| h.user_id == target)
     {
-        return hero.avatar_url;
+        return Some(User {
+            id: target,
+            name: hero.display_name,
+            avatar: hero.avatar_url,
+        });
     }
     match room.get_member_no_sync(&target).await {
-        Ok(member) => member?.avatar_url().map(ToOwned::to_owned),
+        Ok(Some(member)) => Some(User {
+            id: target,
+            name: member.display_name().map(ToOwned::to_owned),
+            avatar: member.avatar_url().map(ToOwned::to_owned),
+        }),
+        Ok(None) => Some(User::from(target)),
         Err(e) => {
             warn!(room = %room.room_id(), "could not read DM member: {e}");
-            None
+            Some(User::from(target))
         }
     }
 }
@@ -286,14 +292,6 @@ pub struct NewRoom {
     /// Owners like its creator, invited too; only where the server offers
     /// owners ([`Session::offers_owners`]).
     pub co_owners: Vec<OwnedUserId>,
-}
-
-/// A user found by [`Session::search_users`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UserSummary {
-    pub id: OwnedUserId,
-    pub name: Option<String>,
-    pub avatar: Option<OwnedMxcUri>,
 }
 
 impl Session {
@@ -418,12 +416,12 @@ impl Session {
 
     /// Users matching `term` by name or ID in the server's user directory
     /// (people sharing a room with us, or everyone if the server allows).
-    pub async fn search_users(&self, term: &str, limit: u64) -> Result<Vec<UserSummary>> {
+    pub async fn search_users(&self, term: &str, limit: u64) -> Result<Vec<User>> {
         let response = self.client.search_users(term, limit).await?;
         Ok(response
             .results
             .into_iter()
-            .map(|user| UserSummary {
+            .map(|user| User {
                 id: user.user_id,
                 name: user.display_name,
                 avatar: user.avatar_url,

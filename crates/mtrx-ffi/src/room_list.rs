@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use mtrx_core::{self as core, OwnedRoomId, OwnedUserId};
+use mtrx_core::{self as core, OwnedRoomId};
 
 use crate::{
     MtrxError, RoomKind, RoomSummary, Session, TaskHandle,
@@ -480,8 +480,8 @@ impl TryFrom<&RoomSummary> for core::RoomSummary {
         let ids = |ids: &[String]| -> Result<Vec<OwnedRoomId>, MtrxError> {
             ids.iter().map(|id| crate::error::room_id(id)).collect()
         };
-        let direct_user: Option<OwnedUserId> = (room.direct_user_id.as_deref())
-            .map(crate::error::user_id)
+        let direct_user = (room.direct_user.as_ref())
+            .map(core::User::try_from)
             .transpose()?;
         let pinned = (room.pinned.iter())
             .map(|id| core::OwnedEventId::try_from(id.as_str()).map_err(MtrxError::invalid))
