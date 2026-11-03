@@ -148,10 +148,7 @@ async fn room_list_shows_space_hierarchy() -> Result<()> {
 
     let list = s.room_list().await?;
     let state = wait_for("room in space", list.updates(), |state| {
-        state
-            .rooms
-            .iter()
-            .any(|r| r.id == room && r.parents.contains(&space))
+        state.rooms.iter().any(|r| r.id == room) && state.graph.parents(&room).contains(&space)
     })
     .await?;
     let space_entry = state
@@ -655,7 +652,10 @@ async fn call_links_and_space_services() -> Result<()> {
     s.room(&space)?
         .set_call_service(Some(service.clone()))
         .await?;
-    assert_eq!(s.room(&space)?.call_service().await?, Some(service));
+    assert_eq!(s.room(&space)?.call_service().await?, Some(service.clone()));
+    // The space's rooms use it.
+    s.room(&space)?.add_child(&room).await?;
+    assert_eq!(s.room(&room)?.call_service().await?, Some(service));
 
     // In a moderated room, members cannot change room state.
     let bob_list = bob.session.room_list().await?;
@@ -758,10 +758,7 @@ async fn everyone_can_edit() -> Result<()> {
     );
     assert!(!bob.session.room(&room)?.can_change_topic().await?);
     wait_for("space synced", s.room_list().await?.updates(), |state| {
-        state
-            .rooms
-            .iter()
-            .any(|r| r.id == room && r.parents.contains(&space))
+        state.rooms.iter().any(|r| r.id == room) && state.graph.parents(&room).contains(&space)
     })
     .await?;
 
@@ -807,10 +804,7 @@ async fn room_management() -> Result<()> {
         .await?;
     let list = s.room_list().await?;
     wait_for("room in space", list.updates(), |state| {
-        state
-            .rooms
-            .iter()
-            .any(|r| r.id == room && r.parents.contains(&space))
+        state.rooms.iter().any(|r| r.id == room) && state.graph.parents(&room).contains(&space)
     })
     .await?;
 
@@ -987,10 +981,7 @@ async fn browse_and_join_space_rooms() -> Result<()> {
         .await?;
     let list = s.room_list().await?;
     wait_for("room in space", list.updates(), |state| {
-        state
-            .rooms
-            .iter()
-            .any(|r| r.id == open && r.parents.contains(&space))
+        state.rooms.iter().any(|r| r.id == open) && state.graph.parents(&open).contains(&space)
     })
     .await?;
     s.room(&open)?.set_join_rule(Access::SpaceMembers).await?;
@@ -2022,10 +2013,7 @@ async fn room_settings() -> Result<()> {
         .await?;
     s.room(&space)?.add_child(&room).await?;
     wait_for("in the space", list.updates(), |state| {
-        state
-            .rooms
-            .iter()
-            .any(|r| r.id == room && r.parents.contains(&space))
+        state.rooms.iter().any(|r| r.id == room) && state.graph.parents(&room).contains(&space)
     })
     .await?;
     s.room(&room)?.set_join_rule(Access::SpaceMembers).await?;

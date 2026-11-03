@@ -1824,6 +1824,7 @@ mod tests {
         let state = RoomListState {
             rooms: rooms.to_vec(),
             loaded: true,
+            ..Default::default()
         };
         let own: OwnedUserId = "@me:x".try_into().unwrap();
         let categories = arrange.categories.clone();

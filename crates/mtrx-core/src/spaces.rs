@@ -4,18 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, RoomId};
 
-use crate::{Grouping, Layout, RoomCategories, RoomKind, RoomSummary, RoomTag};
-
-/// Joined spaces in no joined space, in the order of `rooms` (the list's,
-/// most recently active first). Nested spaces show through these.
-pub fn top_level_spaces(rooms: &[RoomSummary]) -> Vec<&RoomSummary> {
-    let ids: HashSet<&OwnedRoomId> = rooms.iter().map(|r| &r.id).collect();
-    rooms
-        .iter()
-        .filter(|r| r.kind == RoomKind::Space && !r.invited)
-        .filter(|r| !r.parents.iter().any(|p| ids.contains(p)))
-        .collect()
-}
+use crate::{Grouping, Layout, RoomCategories, RoomKind, RoomSummary, RoomTag, SpaceGraph};
 
 /// Rooms below `space`, through nested spaces too.
 pub fn descendants(rooms: &[RoomSummary], space: &RoomId) -> HashSet<OwnedRoomId> {
@@ -49,9 +38,10 @@ fn listed(room: &RoomSummary) -> bool {
 /// categories; and, as [`RoomCategories::at_home`] says, every room or the
 /// favourites in spaces (those only when the room list has its Favourites
 /// section, by `grouping`). A room is in a space when a joined space lists it
-/// as a child ([`RoomSummary::parents`]).
+/// as a child ([`SpaceGraph::parents`]).
 pub(crate) fn home_rooms<'a>(
     rooms: &'a [RoomSummary],
+    graph: &SpaceGraph,
     categories: &RoomCategories,
     grouping: &Grouping,
 ) -> Vec<&'a RoomSummary> {
@@ -63,7 +53,7 @@ pub(crate) fn home_rooms<'a>(
             at_home.all_rooms
                 || r.invited
                 || r.kind == RoomKind::Direct
-                || r.parents.is_empty()
+                || graph.parents(&r.id).is_empty()
                 || categories.home.category_of(&r.id).is_some()
                 || (at_home.favourites && grouping.favourites && r.tag == RoomTag::Favourite)
         })
@@ -76,11 +66,12 @@ pub(crate) fn home_rooms<'a>(
 /// invites to them, to be answered.
 pub(crate) fn space_rooms<'a>(
     rooms: &'a [RoomSummary],
+    graph: &SpaceGraph,
     space: &RoomId,
     members: Option<&HashSet<OwnedUserId>>,
     layout: &Layout,
 ) -> Vec<&'a RoomSummary> {
-    let inside = descendants(rooms, space);
+    let inside = graph.descendants(space);
     rooms
         .iter()
         .filter(|r| listed(r))
@@ -110,8 +101,13 @@ impl SpaceMembers {
     /// with their number of members, to pass back to [`Self::loaded`].
     ///
     /// [`RoomHandle::joined_member_ids`]: crate::RoomHandle::joined_member_ids
-    pub(crate) fn due(&mut self, rooms: &[RoomSummary]) -> Vec<(OwnedRoomId, u64)> {
-        let spaces = top_level_spaces(rooms);
+    pub(crate) fn due(
+        &mut self,
+        rooms: &[RoomSummary],
+        graph: &SpaceGraph,
+    ) -> Vec<(OwnedRoomId, u64)> {
+        let top = graph.top_level(rooms);
+        let spaces: Vec<&RoomSummary> = rooms.iter().filter(|r| top.contains(&r.id)).collect();
         self.asked
             .retain(|id, _| spaces.iter().any(|space| &space.id == id));
         self.known
@@ -142,12 +138,14 @@ impl SpaceMembers {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::sync::Arc;
+
     use matrix_sdk::ruma::{owned_room_id, owned_user_id};
 
     use super::*;
-    use crate::RoomTag;
+    use crate::{RoomListState, RoomTag, space_graph::tests::graph};
 
-    pub(crate) fn room(id: &str, kind: RoomKind, parents: &[&str]) -> RoomSummary {
+    pub(crate) fn room(id: &str, kind: RoomKind) -> RoomSummary {
         RoomSummary {
             id: OwnedRoomId::try_from(id).unwrap(),
             name: id.into(),
@@ -161,10 +159,7 @@ pub(crate) mod tests {
             unread_mentions: 0,
             unread_notifications: 0,
             last_activity: None,
-            parents: parents
-                .iter()
-                .map(|p| OwnedRoomId::try_from(*p).unwrap())
-                .collect(),
+            parents: Vec::new(),
             tag: RoomTag::None,
             direct_user: None,
             alias: None,
@@ -176,45 +171,71 @@ pub(crate) mod tests {
     pub(crate) fn direct(id: &str, user: &str) -> RoomSummary {
         RoomSummary {
             direct_user: Some(OwnedUserId::try_from(user).unwrap()),
-            ..room(id, RoomKind::Direct, &[])
+            ..room(id, RoomKind::Direct)
         }
     }
 
+    pub(crate) fn invited(summary: RoomSummary) -> RoomSummary {
+        RoomSummary {
+            invited: true,
+            ..summary
+        }
+    }
+
+    /// `rooms`, synced, with the joined spaces listing what `spaces` says.
+    pub(crate) fn state(rooms: Vec<RoomSummary>, spaces: &[(&str, &[&str])]) -> RoomListState {
+        RoomListState {
+            rooms,
+            loaded: true,
+            graph: Arc::new(graph(spaces)),
+        }
+    }
+
+    /// What the spaces of [`list`] list: Lab, Offer, Sub, Club and Both in
+    /// Team, Deep in Sub, and Both in Other too.
+    pub(crate) const LINKS: &[(&str, &[&str])] = &[
+        (
+            "!team:x",
+            &["!lab:x", "!offer:x", "!sub:x", "!club:x", "!both:x"],
+        ),
+        ("!sub:x", &["!deep:x"]),
+        ("!other:x", &["!both:x"]),
+    ];
+
     /// In list order: two top-level spaces, one nested, rooms in and out of
-    /// them, direct chats, invites.
-    pub(crate) fn list() -> Vec<RoomSummary> {
-        let mut invited_room = room("!offer:x", RoomKind::Room, &["!team:x"]);
-        invited_room.invited = true;
-        let mut invited_space = room("!guild:x", RoomKind::Space, &[]);
-        invited_space.invited = true;
-        let mut invited_nested = room("!club:x", RoomKind::Space, &["!team:x"]);
-        invited_nested.invited = true;
-        vec![
+    /// them, direct chats, invites ([`LINKS`]).
+    pub(crate) fn list() -> RoomListState {
+        let rooms = vec![
             direct("!bob:x", "@bob:x"),
-            room("!lab:x", RoomKind::Room, &["!team:x"]),
-            room("!other:x", RoomKind::Space, &[]),
-            invited_room,
-            room("!loose:x", RoomKind::Room, &[]),
-            room("!deep:x", RoomKind::Room, &["!sub:x"]),
-            room("!sub:x", RoomKind::Space, &["!team:x"]),
+            room("!lab:x", RoomKind::Room),
+            room("!other:x", RoomKind::Space),
+            invited(room("!offer:x", RoomKind::Room)),
+            room("!loose:x", RoomKind::Room),
+            room("!deep:x", RoomKind::Room),
+            room("!sub:x", RoomKind::Space),
             direct("!carol:x", "@carol:x"),
-            invited_space,
-            invited_nested,
-            room("!team:x", RoomKind::Space, &[]),
-            room("!both:x", RoomKind::Room, &["!team:x", "!other:x"]),
-        ]
+            invited(room("!guild:x", RoomKind::Space)),
+            invited(room("!club:x", RoomKind::Space)),
+            room("!team:x", RoomKind::Space),
+            room("!both:x", RoomKind::Room),
+        ];
+        state(rooms, LINKS)
     }
 
     #[test]
     fn home_lists_chats_invites_and_rooms_in_no_space() {
-        let mut rooms = list();
+        let mut rooms = list().rooms;
         rooms.push(RoomSummary {
             tag: RoomTag::Favourite,
-            ..room("!star:x", RoomKind::Room, &["!other:x"])
+            ..room("!star:x", RoomKind::Room)
         });
+        let mut links = LINKS.to_vec();
+        let other: &[&str] = &["!both:x", "!star:x"];
+        links[2] = ("!other:x", other);
+        let graph = graph(&links);
         let mut categories = RoomCategories::default();
         let home = |categories: &RoomCategories, grouping: &Grouping| -> Vec<String> {
-            home_rooms(&rooms, categories, grouping)
+            home_rooms(&rooms, &graph, categories, grouping)
                 .iter()
                 .map(|r| r.id.to_string())
                 .collect()
@@ -260,36 +281,25 @@ pub(crate) mod tests {
         let mut members = SpaceMembers::default();
         let space = |joined_members| RoomSummary {
             joined_members,
-            ..room("!a:x", RoomKind::Space, &[])
+            ..room("!a:x", RoomKind::Space)
         };
         let bob = HashSet::from([owned_user_id!("@bob:x")]);
+        let graph = SpaceGraph::default();
 
         let rooms = [space(2)];
-        assert_eq!(members.due(&rooms), [(owned_room_id!("!a:x"), 2)]);
-        assert!(members.due(&rooms).is_empty(), "asked once");
+        assert_eq!(members.due(&rooms, &graph), [(owned_room_id!("!a:x"), 2)]);
+        assert!(members.due(&rooms, &graph).is_empty(), "asked once");
 
         // A load for an older number is stale.
         let rooms = [space(3)];
-        assert_eq!(members.due(&rooms), [(owned_room_id!("!a:x"), 3)]);
+        assert_eq!(members.due(&rooms, &graph), [(owned_room_id!("!a:x"), 3)]);
         members.loaded(owned_room_id!("!a:x"), 2, bob.clone());
         assert!(members.known().get(&owned_room_id!("!a:x")).is_none());
         members.loaded(owned_room_id!("!a:x"), 3, bob.clone());
         assert_eq!(members.known().get(&owned_room_id!("!a:x")), Some(&bob));
 
         // Gone spaces are forgotten.
-        assert!(members.due(&[]).is_empty());
+        assert!(members.due(&[], &graph).is_empty());
         assert!(members.known.is_empty() && members.asked.is_empty());
-    }
-
-    #[test]
-    fn cycles_end() {
-        let rooms = vec![
-            room("!a:x", RoomKind::Space, &["!b:x"]),
-            room("!b:x", RoomKind::Space, &["!a:x"]),
-            room("!r:x", RoomKind::Room, &["!a:x"]),
-        ];
-        assert!(top_level_spaces(&rooms).is_empty());
-        let below = descendants(&rooms, &owned_room_id!("!a:x"));
-        assert_eq!(below.len(), 3);
     }
 }

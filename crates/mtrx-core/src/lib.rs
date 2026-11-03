@@ -39,6 +39,7 @@ mod scheduled;
 mod secrets;
 mod send_time;
 mod session;
+mod space_graph;
 mod spaces;
 mod synced;
 mod timeline;
@@ -90,7 +91,8 @@ pub use scheduled::{ScheduledFile, ScheduledMessage};
 pub use secrets::{SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
-pub use spaces::{descendants, top_level_spaces};
+pub use space_graph::{Child, SpaceGraph};
+pub use spaces::descendants;
 pub use timeline::{
     Attachment, Event, EventContent, EventKey, Media, MediaKind, MembershipChange, Message,
     MessageKind, PendingSend, Reaction, Reader, Reply, RoomTimeline, SEEK_PAGE, SEEK_PAGES,

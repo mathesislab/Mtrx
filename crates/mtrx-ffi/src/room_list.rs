@@ -99,6 +99,14 @@ pub struct SectionChoice {
     pub rooms: u64,
 }
 
+/// A room or space below a space, with how deep (0 for what the space
+/// lists itself).
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct TreeEntry {
+    pub depth: u32,
+    pub room: RoomSummary,
+}
+
 /// A category of a space's list (Home's for no `space`), for the lists
 /// made up in tests and previews.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -157,9 +165,10 @@ impl RoomLists {
 
 #[uniffi::export]
 impl RoomLists {
-    /// The lists of `rooms` (with their `parents`), for tests and previews:
-    /// as the library makes them, with the members of the spaces by space
-    /// ID, for their direct chats; the rooms tagged `favourites` and
+    /// The lists of `rooms`, for tests and previews: as the library makes
+    /// them, with what each joined space lists (`space_children`, room IDs
+    /// by space ID, in order) and the members of the spaces by space ID,
+    /// for their direct chats; the rooms tagged `favourites` and
     /// `low_priority` by ID, the `categories`, and the rooms `joining`.
     #[uniffi::constructor]
     #[allow(clippy::too_many_arguments)]
@@ -168,6 +177,7 @@ impl RoomLists {
         loaded: bool,
         own_user_id: String,
         notes_at_top: bool,
+        space_children: HashMap<String, Vec<String>>,
         space_members: HashMap<String, Vec<String>>,
         drafts: Vec<String>,
         favourites: Vec<String>,
@@ -188,6 +198,22 @@ impl RoomLists {
                 Ok(summary)
             })
             .collect::<Result<_, MtrxError>>()?;
+        let graph = space_children
+            .iter()
+            .map(|(space, children)| {
+                let children = (children.iter())
+                    .map(|room| {
+                        Ok(core::Child {
+                            room: crate::error::room_id(room)?,
+                            suggested: false,
+                            via: Vec::new(),
+                            order: None,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, MtrxError>>()?;
+                Ok((crate::error::room_id(space)?, children))
+            })
+            .collect::<Result<core::SpaceGraph, MtrxError>>()?;
         let members = space_members
             .iter()
             .map(|(space, users)| {
@@ -222,7 +248,11 @@ impl RoomLists {
             });
         }
         let mut lists = core::RoomLists::new(
-            core::RoomListState { rooms, loaded },
+            core::RoomListState {
+                rooms,
+                loaded,
+                graph: Arc::new(graph),
+            },
             room_categories,
             members,
             &crate::error::user_id(&own_user_id)?,
@@ -422,6 +452,41 @@ impl RoomLists {
             Err(_) => Vec::new(),
         }
     }
+
+    /// The joined spaces that list the room directly.
+    pub fn parents(&self, room_id: String) -> Vec<RoomSummary> {
+        let Ok(id) = OwnedRoomId::try_from(room_id) else {
+            return Vec::new();
+        };
+        (self.inner.parents(&id).into_iter())
+            .map(RoomSummary::from)
+            .collect()
+    }
+
+    /// The joined spaces the room is in, through nested spaces too,
+    /// nearest first.
+    pub fn ancestors(&self, room_id: String) -> Vec<RoomSummary> {
+        let Ok(id) = OwnedRoomId::try_from(room_id) else {
+            return Vec::new();
+        };
+        (self.inner.ancestors(&id).into_iter())
+            .map(RoomSummary::from)
+            .collect()
+    }
+
+    /// What a space lists, through nested spaces too, depth first; rooms
+    /// we are not in or invited to are left out.
+    pub fn tree(&self, space_id: String) -> Vec<TreeEntry> {
+        let Ok(id) = OwnedRoomId::try_from(space_id) else {
+            return Vec::new();
+        };
+        (self.inner.tree(&id).into_iter())
+            .map(|(depth, room)| TreeEntry {
+                depth: u32::try_from(depth).unwrap_or(u32::MAX),
+                room: room.into(),
+            })
+            .collect()
+    }
 }
 
 impl From<Arc<core::RoomLists>> for RoomLists {
@@ -531,5 +596,68 @@ impl Session {
             }))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(id: &str, kind: RoomKind, name: &str) -> RoomSummary {
+        RoomSummary {
+            id: id.into(),
+            name: name.into(),
+            avatar_url: None,
+            topic: None,
+            kind,
+            invited: false,
+            encrypted: false,
+            unread_messages: 0,
+            unread_mentions: 0,
+            unread_notifications: 0,
+            last_activity: None,
+            direct_user_id: None,
+            alias: None,
+            joined_members: 0,
+            parents: Vec::new(),
+            public: false,
+            pinned: Vec::new(),
+        }
+    }
+
+    /// Team lists Sub, which lists Deep.
+    #[test]
+    fn spaces_from_what_they_list() {
+        let lists = RoomLists::new(
+            vec![
+                summary("!deep:x", RoomKind::Room, "Deep"),
+                summary("!sub:x", RoomKind::Space, "Sub"),
+                summary("!team:x", RoomKind::Space, "Team"),
+            ],
+            true,
+            "@me:x".into(),
+            true,
+            HashMap::from([
+                ("!team:x".into(), vec!["!sub:x".into()]),
+                ("!sub:x".into(), vec!["!deep:x".into()]),
+            ]),
+            HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let names = |rooms: Vec<RoomSummary>| -> Vec<String> {
+            rooms.into_iter().map(|r| r.name).collect()
+        };
+        assert_eq!(names(lists.parents("!deep:x".into())), ["Sub"]);
+        assert_eq!(names(lists.ancestors("!deep:x".into())), ["Sub", "Team"]);
+        assert_eq!(names(lists.top_level_spaces()), ["Team"]);
+        let tree: Vec<_> = (lists.tree("!team:x".into()).into_iter())
+            .map(|entry| (entry.depth, entry.room.name))
+            .collect();
+        assert_eq!(tree, [(0, "Sub".to_owned()), (1, "Deep".to_owned())]);
     }
 }

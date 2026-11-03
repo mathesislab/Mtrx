@@ -21,9 +21,8 @@ use tracing::warn;
 
 use crate::{
     Grouping, Layout, Live, Result, RoomCategories, RoomKind, RoomListState, RoomSummary, Section,
-    Session,
+    Session, SpaceGraph,
     spaces::{SpaceMembers, home_rooms, space_rooms},
-    top_level_spaces,
 };
 
 /// What a room list lists.
@@ -122,6 +121,8 @@ pub struct RoomLists {
     pub rooms: Vec<RoomSummary>,
     /// See [`RoomListState::loaded`].
     pub loaded: bool,
+    /// The joined spaces and what they list.
+    pub graph: Arc<SpaceGraph>,
     pub categories: RoomCategories,
     /// The Notes to self, while kept at the top.
     pub notes: Option<OwnedRoomId>,
@@ -153,7 +154,11 @@ impl RoomLists {
         own_user: &UserId,
         drafts: BTreeSet<OwnedRoomId>,
     ) -> Self {
-        let RoomListState { rooms, loaded } = state;
+        let RoomListState {
+            rooms,
+            loaded,
+            graph,
+        } = state;
         let notes = (rooms.iter())
             .find(|r| r.is_notes(own_user))
             .filter(|_| categories.notes_at_top())
@@ -165,6 +170,7 @@ impl RoomLists {
         let mut lists = Self {
             rooms,
             loaded,
+            graph,
             categories,
             notes,
             chats,
@@ -181,10 +187,9 @@ impl RoomLists {
 
     fn space_entries(&self) -> Vec<SpaceEntry> {
         let grouping = Grouping::default();
-        let mut entries: Vec<SpaceEntry> = top_level_spaces(&self.rooms)
-            .into_iter()
+        let mut entries: Vec<SpaceEntry> = (self.graph.top_level(&self.rooms).into_iter())
             .map(|space| {
-                let key = SpaceKey::Space(space.id.clone());
+                let key = SpaceKey::Space(space);
                 SpaceEntry {
                     rooms: ids(self.listed(&key, &grouping)),
                     unread: self.unread(&key, &grouping),
@@ -260,13 +265,14 @@ impl RoomLists {
     /// Favourites section).
     pub fn listed(&self, key: &SpaceKey, grouping: &Grouping) -> Vec<&RoomSummary> {
         match key {
-            SpaceKey::Home => home_rooms(&self.rooms, &self.categories, grouping),
+            SpaceKey::Home => home_rooms(&self.rooms, &self.graph, &self.categories, grouping),
             SpaceKey::Outside => match self.space(key) {
                 Some(entry) => self.rooms_of(&entry.rooms).collect(),
                 None => Vec::new(),
             },
             SpaceKey::Space(space) => space_rooms(
                 &self.rooms,
+                &self.graph,
                 space,
                 self.members.get(space),
                 self.categories.layout(Some(space)),
@@ -510,6 +516,28 @@ impl RoomLists {
         (self.space(&SpaceKey::Space(space.clone())))
             .is_some_and(|e| e.rooms.iter().any(|r| r == room))
     }
+
+    /// The joined spaces that list `room` directly.
+    pub fn parents(&self, room: &RoomId) -> Vec<&RoomSummary> {
+        self.rooms_of(self.graph.parents(room)).collect()
+    }
+
+    /// The joined spaces `room` is in, through nested spaces too, nearest
+    /// first.
+    pub fn ancestors(&self, room: &RoomId) -> Vec<&RoomSummary> {
+        (self.graph.ancestors(room).iter())
+            .filter_map(|id| self.room(id))
+            .collect()
+    }
+
+    /// What `space` lists, through nested spaces too, depth first, each
+    /// with its depth (0 for what `space` lists itself); rooms not in the
+    /// list are left out.
+    pub fn tree(&self, space: &RoomId) -> Vec<(usize, &RoomSummary)> {
+        (self.graph.tree(space).into_iter())
+            .filter_map(|(depth, id)| Some((depth, self.room(&id)?)))
+            .collect()
+    }
 }
 
 /// The phones' Home's name.
@@ -716,7 +744,7 @@ impl Follow {
     /// that they show time out. Starts loading the members of spaces that
     /// are due.
     fn lists(&mut self) -> (RoomLists, Option<Instant>) {
-        for (space, count) in self.members.due(&self.state.rooms) {
+        for (space, count) in self.members.due(&self.state.rooms, &self.state.graph) {
             let client = self.client.clone();
             self.loads.spawn(async move {
                 let loaded = joined_member_ids(&client, &space).await;
@@ -757,7 +785,7 @@ mod tests {
     use super::*;
     use crate::{
         RoomTag,
-        spaces::tests::{direct, list, room},
+        spaces::tests::{direct, invited, list, room, state},
     };
 
     fn id(id: &str) -> OwnedRoomId {
@@ -772,12 +800,12 @@ mod tests {
         rooms.iter().map(|r| r.id.as_str()).collect()
     }
 
-    fn lists(rooms: Vec<RoomSummary>, members: &[(&str, &[&str])]) -> RoomLists {
-        lists_with(rooms, members, RoomCategories::default())
+    fn lists(state: RoomListState, members: &[(&str, &[&str])]) -> RoomLists {
+        lists_with(state, members, RoomCategories::default())
     }
 
     fn lists_with(
-        rooms: Vec<RoomSummary>,
+        state: RoomListState,
         members: &[(&str, &[&str])],
         categories: RoomCategories,
     ) -> RoomLists {
@@ -787,10 +815,6 @@ mod tests {
                 (id(space), users)
             })
             .collect();
-        let state = RoomListState {
-            rooms,
-            loaded: true,
-        };
         RoomLists::new(
             state,
             categories,
@@ -803,13 +827,6 @@ mod tests {
     fn named(name: &str, summary: RoomSummary) -> RoomSummary {
         RoomSummary {
             name: name.into(),
-            ..summary
-        }
-    }
-
-    fn invited(summary: RoomSummary) -> RoomSummary {
-        RoomSummary {
-            invited: true,
             ..summary
         }
     }
@@ -828,21 +845,28 @@ mod tests {
     /// Party. Loose is unread.
     fn phone() -> RoomLists {
         lists(
-            vec![
-                invited(named("Carol", direct("!carol", "@carol:x"))),
-                invited(named("Party", room("!party", RoomKind::Room, &[]))),
-                invited(named("Offer", room("!offer", RoomKind::Room, &["!team"]))),
-                unread(2, named("Bob", direct("!bob", "@bob:x"))),
-                unread(1, named("Loose", room("!loose", RoomKind::Room, &[]))),
-                named("Deep", room("!deep", RoomKind::Room, &["!sub"])),
-                named("Sub", room("!sub", RoomKind::Space, &["!team"])),
-                named("Lab", room("!lab", RoomKind::Room, &["!team"])),
-                named("Team", room("!team", RoomKind::Space, &[])),
-                named("Other", room("!other", RoomKind::Space, &[])),
-            ],
+            state(
+                vec![
+                    invited(named("Carol", direct("!carol", "@carol:x"))),
+                    invited(named("Party", room("!party", RoomKind::Room))),
+                    invited(named("Offer", room("!offer", RoomKind::Room))),
+                    unread(2, named("Bob", direct("!bob", "@bob:x"))),
+                    unread(1, named("Loose", room("!loose", RoomKind::Room))),
+                    named("Deep", room("!deep", RoomKind::Room)),
+                    named("Sub", room("!sub", RoomKind::Space)),
+                    named("Lab", room("!lab", RoomKind::Room)),
+                    named("Team", room("!team", RoomKind::Space)),
+                    named("Other", room("!other", RoomKind::Space)),
+                ],
+                PHONE,
+            ),
             &[("!team", &["@bob:x", "@me:x"])],
         )
     }
+
+    /// What the spaces of [`phone`] list.
+    const PHONE: &[(&str, &[&str])] =
+        &[("!team", &["!offer", "!sub", "!lab"]), ("!sub", &["!deep"])];
 
     #[test]
     fn spaces_list_their_rooms_in_list_order() {
@@ -902,10 +926,10 @@ mod tests {
         assert_eq!(top, ["!team", "!other"]);
 
         let only_spaces = super::tests::lists(
-            vec![
-                room("!lab", RoomKind::Room, &["!team"]),
-                room("!team", RoomKind::Space, &[]),
-            ],
+            state(
+                vec![room("!lab", RoomKind::Room), room("!team", RoomKind::Space)],
+                &[("!team", &["!lab"])],
+            ),
             &[],
         );
         assert_eq!(only_spaces.spaces.len(), 1);
@@ -928,6 +952,7 @@ mod tests {
             RoomListState {
                 rooms: lists.rooms,
                 loaded: true,
+                graph: lists.graph,
             },
             lists.categories,
             lists.members,
@@ -943,16 +968,16 @@ mod tests {
 
     #[test]
     fn an_unread_room_in_a_category_of_the_space_lights_it() {
-        let space = || room("!space:x", RoomKind::Space, &[]);
-        let rooms = vec![space(), unread(1, room("!loose:x", RoomKind::Room, &[]))];
+        let space = || room("!space:x", RoomKind::Space);
+        let rooms = vec![space(), unread(1, room("!loose:x", RoomKind::Room))];
         let key = SpaceKey::Space(id("!space:x"));
         let grouping = Grouping::default();
-        assert!(!lists(rooms.clone(), &[]).unread(&key, &grouping));
+        assert!(!lists(state(rooms.clone(), &[]), &[]).unread(&key, &grouping));
         let mut categories = RoomCategories::default();
         let layout = categories.layout_mut(Some(&id("!space:x")));
         let mine = layout.add_category("Mine");
         layout.place(&id("!loose:x"), Some(&mine));
-        assert!(lists_with(rooms, &[], categories).unread(&key, &grouping));
+        assert!(lists_with(state(rooms, &[]), &[], categories).unread(&key, &grouping));
     }
 
     #[test]
@@ -962,7 +987,7 @@ mod tests {
         // Unread messages: Bob 2, Loose 1, and an unread invite.
         let mut rooms = lists.rooms.clone();
         rooms[1].unread_messages = 4;
-        let lists = super::tests::lists(rooms, &[("!team", &["@bob:x"])]);
+        let lists = super::tests::lists(state(rooms, PHONE), &[("!team", &["@bob:x"])]);
         assert_eq!(
             lists.badges,
             Badges {
@@ -977,7 +1002,7 @@ mod tests {
 
         let mut rooms = lists.rooms.clone();
         rooms[7].unread_messages = 5;
-        let lists = super::tests::lists(rooms, &[]);
+        let lists = super::tests::lists(state(rooms, PHONE), &[]);
         assert_eq!(lists.badges.spaces, 5);
         assert_eq!(lists.badges.rooms, 6);
     }
@@ -987,9 +1012,9 @@ mod tests {
         let rooms = vec![
             named("Notes", direct("!notes", "@me:x")),
             named("Ann", direct("!ann", "@ann:x")),
-            named("Lab", room("!lab", RoomKind::Room, &[])),
+            named("Lab", room("!lab", RoomKind::Room)),
         ];
-        let lists = super::tests::lists(rooms.clone(), &[]);
+        let lists = super::tests::lists(state(rooms.clone(), &[]), &[]);
         assert_eq!(lists.notes, Some(id("!notes")));
         assert_eq!(strs(&lists.chats), ["!ann"]);
         let grouping = Grouping::default();
@@ -1002,7 +1027,7 @@ mod tests {
             notes_at_top: Some(false),
             ..Default::default()
         };
-        let off = lists_with(rooms, &[], categories);
+        let off = lists_with(state(rooms, &[]), &[], categories);
         assert_eq!(off.notes, None);
         assert_eq!(strs(&off.chats), ["!notes", "!ann"]);
         let home = off.sections(&SpaceKey::Home, &grouping);
@@ -1050,13 +1075,16 @@ mod tests {
             ..summary
         };
         let lists = lists(
-            vec![
-                active(60, room("!a", RoomKind::Room, &["!one", "!two"])),
-                room("!b", RoomKind::Room, &["!one", "!two"]),
-                active(120, room("!c", RoomKind::Room, &["!one"])),
-                room("!one", RoomKind::Space, &[]),
-                room("!two", RoomKind::Space, &[]),
-            ],
+            state(
+                vec![
+                    active(60, room("!a", RoomKind::Room)),
+                    room("!b", RoomKind::Room),
+                    active(120, room("!c", RoomKind::Room)),
+                    room("!one", RoomKind::Space),
+                    room("!two", RoomKind::Space),
+                ],
+                &[("!one", &["!a", "!b", "!c"]), ("!two", &["!a", "!b"])],
+            ),
             &[],
         );
         let groups = lists.room_groups(None, &BTreeSet::new());
@@ -1077,17 +1105,37 @@ mod tests {
         assert!(lists.chat_spaces(&id("!carol")).is_empty());
 
         let both = super::tests::lists(
-            vec![
-                direct("!bob", "@bob:x"),
-                room("!lab", RoomKind::Room, &["!one", "!two"]),
-                named("One", room("!one", RoomKind::Space, &[])),
-                named("Two", room("!two", RoomKind::Space, &[])),
-            ],
+            state(
+                vec![
+                    direct("!bob", "@bob:x"),
+                    room("!lab", RoomKind::Room),
+                    named("One", room("!one", RoomKind::Space)),
+                    named("Two", room("!two", RoomKind::Space)),
+                ],
+                &[("!one", &["!lab"]), ("!two", &["!lab"])],
+            ),
             &[("!one", &["@bob:x"]), ("!two", &["@bob:x"])],
         );
         assert_eq!(both.chat_spaces(&id("!bob")), ["One", "Two"]);
         let first = both.first_space_of(&id("!lab")).map(|s| s.id.as_str());
         assert_eq!(first, Some("!one"));
+    }
+
+    /// The spaces around a room, and what a space lists below it, as the
+    /// list has them.
+    #[test]
+    fn parents_ancestors_and_tree() {
+        let lists = phone();
+        let names = |rooms: Vec<&RoomSummary>| -> Vec<String> {
+            rooms.iter().map(|r| r.name.clone()).collect()
+        };
+        assert_eq!(names(lists.parents(&id("!deep"))), ["Sub"]);
+        assert_eq!(names(lists.ancestors(&id("!deep"))), ["Sub", "Team"]);
+        assert!(lists.ancestors(&id("!loose")).is_empty());
+        let tree: Vec<_> = (lists.tree(&id("!team")).into_iter())
+            .map(|(depth, room)| (depth, room.name.as_str()))
+            .collect();
+        assert_eq!(tree, [(0, "Offer"), (0, "Sub"), (1, "Deep"), (0, "Lab")]);
     }
 
     /// A space's list, with Lab and Bob never active.
@@ -1097,18 +1145,21 @@ mod tests {
             last_activity: at(secs),
             ..summary
         };
-        let plain = |name: &str| named(name, room(&format!("!{name}"), RoomKind::Room, &["!s"]));
+        let plain = |name: &str| named(name, room(&format!("!{name}"), RoomKind::Room));
         let chat = |name: &str| named(name, direct(&format!("!{name}"), &format!("@{name}:x")));
         let lists = lists(
-            vec![
-                plain("Lab"),
-                active(60, chat("anna")),
-                active(3600, plain("Field work")),
-                chat("Bob"),
-                active(0, plain("general")),
-                active(7200, chat("Cleo")),
-                room("!s", RoomKind::Space, &[]),
-            ],
+            state(
+                vec![
+                    plain("Lab"),
+                    active(60, chat("anna")),
+                    active(3600, plain("Field work")),
+                    chat("Bob"),
+                    active(0, plain("general")),
+                    active(7200, chat("Cleo")),
+                    room("!s", RoomKind::Space),
+                ],
+                &[("!s", &["!Lab", "!Field work", "!general"])],
+            ),
             &[("!s", &["@anna:x", "@Bob:x", "@Cleo:x"])],
         );
         let sections = lists.space_list(
@@ -1172,14 +1223,14 @@ mod tests {
         let rooms = [
             RoomSummary {
                 last_activity: at,
-                ..room("!b", RoomKind::Room, &[])
+                ..room("!b", RoomKind::Room)
             },
             RoomSummary {
                 last_activity: at,
-                ..room("!a", RoomKind::Room, &[])
+                ..room("!a", RoomKind::Room)
             },
-            room("!c", RoomKind::Room, &[]),
-            room("!d", RoomKind::Room, &[]),
+            room("!c", RoomKind::Room),
+            room("!d", RoomKind::Room),
         ];
         let sorted = RoomSort::MostRecent.apply(rooms.iter().collect());
         assert_eq!(found_ids(sorted), ["!b", "!a", "!c", "!d"]);
@@ -1193,23 +1244,23 @@ mod tests {
         let papers = layout.add_category("Papers");
         layout.place(&id("!paper"), Some(&papers));
         lists_with(
-            vec![
-                named("Notes", direct("!notes", "@me:x")),
-                unread(2, named("Ann", direct("!ann", "@ann:x"))),
-                unread(3, named("Lab", room("!lab", RoomKind::Room, &["!team"]))),
-                RoomSummary {
-                    unread_mentions: 1,
-                    ..unread(
-                        1,
-                        named("Paper", room("!paper", RoomKind::Room, &["!team"])),
-                    )
-                },
-                RoomSummary {
-                    tag: RoomTag::LowPriority,
-                    ..named("Old", room("!old", RoomKind::Room, &["!team"]))
-                },
-                named("Team", room("!team", RoomKind::Space, &[])),
-            ],
+            state(
+                vec![
+                    named("Notes", direct("!notes", "@me:x")),
+                    unread(2, named("Ann", direct("!ann", "@ann:x"))),
+                    unread(3, named("Lab", room("!lab", RoomKind::Room))),
+                    RoomSummary {
+                        unread_mentions: 1,
+                        ..unread(1, named("Paper", room("!paper", RoomKind::Room)))
+                    },
+                    RoomSummary {
+                        tag: RoomTag::LowPriority,
+                        ..named("Old", room("!old", RoomKind::Room))
+                    },
+                    named("Team", room("!team", RoomKind::Space)),
+                ],
+                &[("!team", &["!lab", "!paper", "!old"])],
+            ),
             &[("!team", &["@ann:x", "@me:x"])],
             categories,
         )
@@ -1355,11 +1406,14 @@ mod tests {
     #[test]
     fn the_search_puts_names_starting_with_the_filter_first() {
         let lists = lists(
-            vec![
-                named("Sea ice", room("!1", RoomKind::Room, &[])),
-                named("Ice sheets", room("!2", RoomKind::Room, &[])),
-                named("Glaciers", room("!3", RoomKind::Room, &[])),
-            ],
+            state(
+                vec![
+                    named("Sea ice", room("!1", RoomKind::Room)),
+                    named("Ice sheets", room("!2", RoomKind::Room)),
+                    named("Glaciers", room("!3", RoomKind::Room)),
+                ],
+                &[],
+            ),
             &[],
         );
         let grouping = Grouping::default();
@@ -1410,19 +1464,20 @@ mod tests {
     #[test]
     fn the_desktops_home_sections() {
         let mut rooms = vec![
-            room("!space:x", RoomKind::Space, &[]),
-            unread(1, room("!inside:x", RoomKind::Room, &["!space:x"])),
+            room("!space:x", RoomKind::Space),
+            unread(1, room("!inside:x", RoomKind::Room)),
             direct("!bob:x", "@bob:x"),
-            room("!loose:x", RoomKind::Room, &[]),
+            room("!loose:x", RoomKind::Room),
         ];
         rooms.push(RoomSummary {
             tag: RoomTag::Favourite,
-            ..room("!star:x", RoomKind::Room, &["!space:x"])
+            ..room("!star:x", RoomKind::Room)
         });
-        rooms.push(invited(room("!offer:x", RoomKind::Room, &["!space:x"])));
+        rooms.push(invited(room("!offer:x", RoomKind::Room)));
+        let space: &[(&str, &[&str])] = &[("!space:x", &["!inside:x", "!star:x", "!offer:x"])];
         let grouping = Grouping::default();
         let home = |categories: &RoomCategories| {
-            let lists = lists_with(rooms.clone(), &[], categories.clone());
+            let lists = lists_with(state(rooms.clone(), space), &[], categories.clone());
             let sections: Vec<_> = (lists.sections(&SpaceKey::Home, &grouping).into_iter())
                 .filter(|(_, rooms)| !rooms.is_empty())
                 .map(|(section, rooms)| {
@@ -1463,7 +1518,7 @@ mod tests {
             )
         );
         // A space's rooms are always just "Rooms".
-        let lists = lists_with(rooms.clone(), &[], categories);
+        let lists = lists_with(state(rooms.clone(), space), &[], categories);
         let key = SpaceKey::Space(id("!space:x"));
         assert_eq!(lists.section_title(&key, &Section::Rooms), "Rooms");
     }

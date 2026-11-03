@@ -3210,6 +3210,7 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
             },
         ],
         loaded: false,
+        ..Default::default()
     });
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
@@ -3289,6 +3290,7 @@ async fn a_room_that_failed_to_open_opens_again() {
     main.show_rooms(RoomListState {
         rooms: vec![summary(&a, "a")],
         loaded: false,
+        ..Default::default()
     });
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     let problem = |app: &App| match &app.screen {

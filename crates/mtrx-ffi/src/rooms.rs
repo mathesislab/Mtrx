@@ -221,8 +221,10 @@ fn users(ids: &[String]) -> Result<Vec<OwnedUserId>, MtrxError> {
 
 #[uniffi::export]
 impl Session {
-    /// A space's rooms and subspaces as its server lists them; rooms only
-    /// invited people may join are left out.
+    /// A space's rooms and subspaces as its server lists them, with the
+    /// ones we are in or invited to that it leaves out; rooms only invited
+    /// people may join are left out. Its server is asked again after a
+    /// minute.
     pub async fn space_children(&self, space_id: String) -> Result<Vec<DirectoryRoom>, MtrxError> {
         let space = room_id(&space_id)?;
         let session = self.core();
@@ -231,6 +233,14 @@ impl Session {
             Ok(rooms.into_iter().map(DirectoryRoom::from).collect())
         })
         .await
+    }
+
+    /// A space's rooms as `spaceChildren` last gave them, however long ago,
+    /// to show at once; none before.
+    pub fn listed_space_children(&self, space_id: String) -> Option<Vec<DirectoryRoom>> {
+        let space = room_id(&space_id).ok()?;
+        let rooms = self.core().listed_space_children(&space)?;
+        Some(rooms.into_iter().map(DirectoryRoom::from).collect())
     }
 
     /// A page of `server`'s public directory (ours if `None`) matching

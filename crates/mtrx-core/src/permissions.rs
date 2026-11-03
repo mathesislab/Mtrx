@@ -7,8 +7,6 @@
 //! Permissions are room state (`m.room.power_levels`) enforced by the
 //! server, so they hold for members using other clients too.
 
-use std::collections::HashSet;
-
 use matrix_sdk::{
     Room,
     deserialized_responses::SyncOrStrippedState,
@@ -24,7 +22,7 @@ use matrix_sdk::{
 };
 use serde_json::json;
 
-use crate::{Error, Result, RoomHandle, rooms::space_children, synced};
+use crate::{Error, Result, RoomHandle, synced};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Permissions {
@@ -165,16 +163,17 @@ impl RoomHandle {
     /// have joined.
     pub async fn let_everyone_edit_all(&self) -> Result<SpaceUpdate> {
         let mut update = SpaceUpdate::default();
-        let mut seen = HashSet::new();
-        let mut pending = vec![self.id().to_owned()];
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id.clone()) {
-                continue;
-            }
+        let below = self.session.space_graph().descendants(self.id());
+        let mut rooms = vec![self.id().to_owned()];
+        rooms.extend(
+            below
+                .into_iter()
+                .filter(|id| id.as_str() != self.id().as_str()),
+        );
+        for id in rooms {
             let Ok(room) = self.session.room(&id) else {
                 continue;
             };
-            pending.extend(space_children(&room.room).await);
             if room.permissions().await? == Permissions::Everyone {
                 update.unchanged.push(id);
             } else if room.can_change_permissions().await? {

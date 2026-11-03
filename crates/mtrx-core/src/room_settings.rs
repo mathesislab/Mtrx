@@ -5,7 +5,6 @@ use std::path::Path;
 
 use matrix_sdk::{
     Room, RoomMemberships,
-    deserialized_responses::SyncOrStrippedState,
     notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode},
     ruma::{
         OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomAliasId, RoomId, UserId,
@@ -14,7 +13,7 @@ use matrix_sdk::{
             room::Visibility,
         },
         events::{
-            EmptyStateKey, StateEventType, SyncStateEvent,
+            EmptyStateKey, StateEventType,
             room::{
                 canonical_alias::RoomCanonicalAliasEventContent,
                 history_visibility::{HistoryVisibility, RoomHistoryVisibilityEventContent},
@@ -32,7 +31,6 @@ use crate::{
     Error, Permissions, Result, RoomHandle, Session,
     media::guess_mimetype,
     permissions::{everyone_can_edit, power_levels},
-    rooms::space_children,
     synced,
 };
 
@@ -178,6 +176,7 @@ impl Session {
     /// The joined spaces listing the room, and those we may add it to.
     async fn space_links(&self, room_id: &RoomId) -> (Vec<SpaceLink>, Vec<OwnedRoomId>) {
         let own = self.user_id();
+        let graph = self.space_graph();
         let (mut links, mut others) = (Vec::new(), Vec::new());
         for space in self.client.joined_rooms() {
             if !space.is_space() || space.room_id() == room_id {
@@ -186,7 +185,7 @@ impl Session {
             let can_change = power_levels(&space)
                 .await
                 .is_ok_and(|levels| levels.user_can_send_state(&own, StateEventType::SpaceChild));
-            match child_link(&space, room_id).await {
+            match graph.child(space.room_id(), room_id) {
                 Some(link) => links.push(SpaceLink {
                     space: space.room_id().to_owned(),
                     suggested: link.suggested,
@@ -217,26 +216,6 @@ impl Session {
                 IsOneToOne::from(one_to_one),
             )
             .await
-    }
-
-    /// Joined spaces listing `room_id` as a child.
-    async fn parent_spaces(&self, room_id: &RoomId) -> Vec<OwnedRoomId> {
-        let mut parents = Vec::new();
-        for space in self
-            .client
-            .joined_rooms()
-            .into_iter()
-            .filter(|r| r.is_space())
-        {
-            if space_children(&space)
-                .await
-                .iter()
-                .any(|child| child == room_id)
-            {
-                parents.push(space.room_id().to_owned());
-            }
-        }
-        parents
     }
 }
 
@@ -350,7 +329,7 @@ impl RoomHandle {
             Access::Public => JoinRule::Public,
             Access::Knock => JoinRule::Knock,
             Access::SpaceMembers => {
-                let spaces = self.session.parent_spaces(self.id()).await;
+                let spaces = self.session.space_graph().parents(self.id()).to_vec();
                 if spaces.is_empty() {
                     return Err(Error::Permissions("the room is in no space".into()));
                 }
@@ -429,17 +408,19 @@ impl RoomHandle {
 
     /// Suggest `room` to this space's members, or not.
     pub async fn set_suggested(&self, room: &RoomId, suggested: bool) -> Result<()> {
-        let mut content = child_link(&self.room, room)
-            .await
-            .ok_or_else(|| Error::RoomNotFound(room.to_string()))?;
+        let graph = self.session.space_graph();
+        let child =
+            (graph.child(self.id(), room)).ok_or_else(|| Error::RoomNotFound(room.to_string()))?;
+        let mut content = SpaceChildEventContent::new(child.via.clone());
+        content.order = child.order.clone();
         content.suggested = suggested;
-        synced::send_state(&self.room, room, content).await
+        self.session.set_child(&self.room, room, content).await
     }
 
     /// Take `room` out of this space: it no longer lists it.
     pub async fn remove_child(&self, room: &RoomId) -> Result<()> {
         let removed = SpaceChildEventContent::new(Vec::new());
-        synced::send_state(&self.room, room, removed).await
+        self.session.set_child(&self.room, room, removed).await
     }
 
     /// Make the image at `path` the room's picture.
@@ -456,29 +437,6 @@ impl RoomHandle {
     pub async fn remove_picture(&self) -> Result<()> {
         self.room.remove_avatar().await?;
         Ok(())
-    }
-}
-
-/// The space's link to a room, if it lists it.
-async fn child_link(space: &Room, room_id: &RoomId) -> Option<SpaceChildEventContent> {
-    let raw = space
-        .get_state_event_static_for_key::<SpaceChildEventContent, _>(room_id)
-        .await
-        .ok()??;
-    match raw.deserialize().ok()? {
-        SyncOrStrippedState::Sync(SyncStateEvent::Original(event))
-            if !event.content.via.is_empty() =>
-        {
-            Some(event.content)
-        }
-        SyncOrStrippedState::Stripped(event) => {
-            let mut content =
-                SpaceChildEventContent::new(event.content.via.filter(|v| !v.is_empty())?);
-            content.suggested = event.content.suggested;
-            content.order = event.content.order;
-            Some(content)
-        }
-        _ => None,
     }
 }
 
