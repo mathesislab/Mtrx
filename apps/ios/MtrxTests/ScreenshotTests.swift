@@ -211,7 +211,7 @@ final class ScreenshotTests: XCTestCase {
 
     /// The last list, its server not answering.
     func testSpaceOverviewNotAnswering() async throws {
-        model.spaceChildren["!polar"] = Screens.children
+        session.listed["!polar"] = Screens.children
         session.children = .failure(MtrxError.Other(reason: "timed out"))
         try await snap("09b-space-overview-failed", SpaceOverviewView(space: Screens.polar))
     }
@@ -294,7 +294,7 @@ private enum Screens {
         """
 
     static let ice = Make.room(
-        "!ice", name: "Ice sheets", unread: 0, lastActivity: now, topic: topic, parents: ["!polar"],
+        "!ice", name: "Ice sheets", unread: 0, lastActivity: now, topic: topic,
         pinned: ["$p2"], alias: "#ice:example.org", members: 4)
     static let polar = Make.room(
         "!polar", kind: .space, name: "Polar lab", topic: "The polar group: rooms for projects and talk.",
@@ -305,24 +305,22 @@ private enum Screens {
         [
             ice,
             Make.room(
-                "!sea", name: "Sea ice", unread: 3, lastActivity: now.addingTimeInterval(-600), parents: ["!polar"]),
+                "!sea", name: "Sea ice", unread: 3, lastActivity: now.addingTimeInterval(-600)),
             Make.room(
                 "!ann", kind: .direct, name: "Ann Lindqvist", unread: 2, directUser: "@ann:example.org",
                 lastActivity: now.addingTimeInterval(-1200)),
             Make.room(
-                "!reading", name: "Reading group", lastActivity: now.addingTimeInterval(-86_400), parents: ["!teach"]),
+                "!reading", name: "Reading group", lastActivity: now.addingTimeInterval(-86_400)),
             Make.room(
-                "!models", name: "Models", unread: 5, lastActivity: now.addingTimeInterval(-3_600),
-                parents: ["!polar"], mentions: 1),
+                "!models", name: "Models", unread: 5, lastActivity: now.addingTimeInterval(-3_600), mentions: 1),
             Make.room(
                 "!notes", kind: .direct, name: "Notes to self", directUser: "@me:example.org",
                 lastActivity: now.addingTimeInterval(-3_000)),
             Make.room(
-                "!paper", name: "Ice sheet paper", lastActivity: now.addingTimeInterval(-5_000), parents: ["!polar"]),
+                "!paper", name: "Ice sheet paper", lastActivity: now.addingTimeInterval(-5_000)),
             Make.room(
-                "!old", name: "Field season 2025", lastActivity: now.addingTimeInterval(-900_000),
-                parents: ["!polar"]),
-            Make.room("!join", invited: true, name: "Glacier seminar", parents: ["!polar"]),
+                "!old", name: "Field season 2025", lastActivity: now.addingTimeInterval(-900_000)),
+            Make.room("!join", invited: true, name: "Glacier seminar"),
             Make.room(
                 "!bob", kind: .direct, name: "Bob Meyer", directUser: "@bob:example.org",
                 lastActivity: now.addingTimeInterval(-7_200)),
@@ -332,6 +330,9 @@ private enum Screens {
                 lastActivity: now.addingTimeInterval(-200_000)),
             Make.room("!teach", kind: .space, name: "Teaching"),
             polar,
+        ],
+        children: [
+            "!polar": ["!ice", "!sea", "!models", "!paper", "!old", "!join"], "!teach": ["!reading"],
         ],
         members: ["!polar": ["@ann:example.org", "@bob:example.org"], "!teach": ["@ann:example.org"]],
         drafts: ["!ann", "!reading", "!paper"], favourites: ["!ice"], lowPriority: ["!old"],

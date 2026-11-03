@@ -44,30 +44,6 @@ const PREVIEW_HEIGHT: f32 = 18.0;
 /// The room search field, focused by ⌘K / Ctrl+K.
 pub const SEARCH: &str = "room-search";
 
-/// Spaces containing `room`, nearest first (through nested spaces too).
-pub fn ancestors(rooms: &[RoomSummary], room: &OwnedRoomId) -> Vec<OwnedRoomId> {
-    let parents = |id: &OwnedRoomId| {
-        rooms
-            .iter()
-            .find(|r| &r.id == id)
-            .map(|r| r.parents.clone())
-            .unwrap_or_default()
-    };
-    let mut found: Vec<OwnedRoomId> = Vec::new();
-    let mut next = parents(room);
-    while !next.is_empty() {
-        let mut further = Vec::new();
-        for space in next {
-            if !found.contains(&space) {
-                further.extend(parents(&space));
-                found.push(space);
-            }
-        }
-        next = further;
-    }
-    found
-}
-
 /// The room list's sections and their rooms, in display order; sections
 /// may be empty. Notes pinned at the top are not in them.
 fn sections<'a>(view: &RoomListView<'a>) -> Vec<(Section, Vec<&'a RoomSummary>)> {
@@ -122,7 +98,7 @@ fn listed<'a>(view: &RoomListView<'a>) -> Vec<&'a RoomSummary> {
 /// Rooms of our spaces (the selected one's, or all at Home) not joined yet
 /// that the search finds.
 fn not_joined<'a>(view: &RoomListView<'a>, filter: &str) -> Vec<&'a DirectoryRoom> {
-    let spaces = directory::searched_spaces(view.rooms(), view.selected_space);
+    let spaces = directory::searched_spaces(view.lists, view.selected_space);
     view.space_rooms.found(&spaces, view.rooms(), filter)
 }
 
@@ -561,7 +537,8 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
             .search(Some(&view.key()), &view.grouping, &filter);
         let unjoined = not_joined(&view, &filter);
         let space_rooms = view.space_rooms;
-        let looking = space_rooms.any_loading(&directory::searched_spaces(rooms, selected_space));
+        let looking =
+            space_rooms.any_loading(&directory::searched_spaces(view.lists, selected_space));
         if found.is_empty() && unjoined.is_empty() && !looking {
             let none = if selected_space.is_some() {
                 "No rooms or chats in this space match."
@@ -1748,13 +1725,16 @@ fn out_of_view_arrows<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashMap, HashSet};
+    use std::{
+        collections::{BTreeSet, HashMap, HashSet},
+        sync::Arc,
+    };
 
-    use mtrx_core::{OwnedUserId, RoomListState, User};
+    use mtrx_core::{Child, OwnedUserId, RoomListState, SpaceGraph, User};
 
     use super::*;
 
-    fn room(id: &str, kind: RoomKind, parents: &[&str]) -> RoomSummary {
+    fn room(id: &str, kind: RoomKind) -> RoomSummary {
         RoomSummary {
             id: id.try_into().unwrap(),
             name: id.into(),
@@ -1768,7 +1748,6 @@ mod tests {
             unread_mentions: 0,
             unread_notifications: 0,
             last_activity: None,
-            parents: parents.iter().map(|p| (*p).try_into().unwrap()).collect(),
             tag: RoomTag::None,
             direct_user: None,
             alias: None,
@@ -1785,13 +1764,13 @@ mod tests {
     /// and a room outside it.
     fn rooms() -> Vec<RoomSummary> {
         vec![
-            room("!space:x", RoomKind::Space, &[]),
-            room("!inside:x", RoomKind::Room, &["!space:x"]),
+            room("!space:x", RoomKind::Space),
+            room("!inside:x", RoomKind::Room),
             RoomSummary {
                 direct_user: Some(user("@bob:x")),
-                ..room("!bob:x", RoomKind::Direct, &[])
+                ..room("!bob:x", RoomKind::Direct)
             },
-            room("!loose:x", RoomKind::Room, &[]),
+            room("!loose:x", RoomKind::Room),
         ]
     }
 
@@ -1802,6 +1781,17 @@ mod tests {
 
     fn space() -> OwnedRoomId {
         "!space:x".try_into().unwrap()
+    }
+
+    /// The space lists the room below it.
+    fn graph() -> Arc<SpaceGraph> {
+        let inside = Child {
+            room: "!inside:x".try_into().unwrap(),
+            suggested: false,
+            via: Vec::new(),
+            order: None,
+        };
+        Arc::new([(space(), vec![inside])].into_iter().collect())
     }
 
     /// A room with notifications the client doesn't count as unread
@@ -1828,6 +1818,7 @@ mod tests {
         let state = RoomListState {
             rooms: rooms.to_vec(),
             loaded: true,
+            graph: graph(),
         };
         let own: OwnedUserId = "@me:x".try_into().unwrap();
         let categories = arrange.categories.clone();
@@ -1880,12 +1871,12 @@ mod tests {
         let mut rooms = rooms();
         rooms.push(RoomSummary {
             direct_user: Some(user("@carol:x")),
-            ..room("!carol:x", RoomKind::Direct, &[])
+            ..room("!carol:x", RoomKind::Direct)
         });
         // The Notes to self, not pinned, are listed but not followed.
         rooms.push(RoomSummary {
             direct_user: Some(User::from(own.clone())),
-            ..room("!notes:x", RoomKind::Direct, &[])
+            ..room("!notes:x", RoomKind::Direct)
         });
         let (avatars, presences) = (Avatars::new(), Presences::default());
         let mut arrange = Arrange::default();
@@ -1913,11 +1904,11 @@ mod tests {
         let mut rooms = rooms();
         rooms.push(RoomSummary {
             tag: RoomTag::Favourite,
-            ..room("!fav:x", RoomKind::Room, &[])
+            ..room("!fav:x", RoomKind::Room)
         });
         rooms.push(RoomSummary {
             direct_user: Some(user("@me:x")),
-            ..room("!notes:x", RoomKind::Direct, &[])
+            ..room("!notes:x", RoomKind::Direct)
         });
         let (avatars, presences) = (Avatars::new(), Presences::default());
         let mut arrange = Arrange::default();

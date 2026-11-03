@@ -9,7 +9,7 @@ use iced::{
 };
 use mtrx_core::{
     Access, CallService, History, MxcUri, NotifyMode, OwnedRoomId, OwnedUserId, Permissions,
-    RoomHandle, RoomKind, RoomSettings, RoomSummary, RoomTag, Topic, User, UserInfo,
+    RoomHandle, RoomKind, RoomSettings, RoomSummary, RoomTag, SpaceGraph, Topic, User, UserInfo,
 };
 
 use crate::{
@@ -45,6 +45,8 @@ const SHARED_HEIGHT: f32 = 200.0;
 #[derive(Clone, Copy)]
 pub struct Shown<'a> {
     pub rooms: &'a [RoomSummary],
+    /// The joined spaces and what they list.
+    pub graph: &'a SpaceGraph,
     pub avatars: &'a Avatars,
     pub own_user: &'a OwnedUserId,
     pub presences: &'a Presences,
@@ -618,14 +620,14 @@ impl Card {
             .into_iter()
             .filter(|&access| {
                 access != Access::SpaceMembers
-                    || !room.parents.is_empty()
+                    || !shown.graph.parents(&room.id).is_empty()
                     || settings.access == access
             })
             .map(Join)
             .collect();
             card = card.push(settings::option(
                 "Who can join",
-                access_description(settings.access, &parent_names(room, rooms)),
+                access_description(settings.access, &parent_names(room, shown.graph, rooms)),
                 pick_list(choices, Some(Join(settings.access)), |Join(access)| {
                     app::Message::Info(Message::Access(access))
                 })
@@ -1197,9 +1199,12 @@ fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Mes
 }
 
 /// The names of the joined spaces that list `room`.
-fn parent_names<'a>(room: &RoomSummary, rooms: &'a [RoomSummary]) -> Vec<&'a str> {
-    room.parents
-        .iter()
+fn parent_names<'a>(
+    room: &RoomSummary,
+    graph: &SpaceGraph,
+    rooms: &'a [RoomSummary],
+) -> Vec<&'a str> {
+    (graph.parents(&room.id).iter())
         .filter_map(|p| rooms.iter().find(|r| &r.id == p))
         .map(|r| r.name.as_str())
         .collect()

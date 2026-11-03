@@ -66,9 +66,9 @@ private final class UITestSession: Session, @unchecked Sendable {
     /// The rooms, in any order.
     private var rooms = [
         UITestSession.summary(UITesting.lab, "Lab"),
-        UITestSession.summary(UITesting.ann, "Ann", kind: .direct, parents: [UITesting.team]),
-        UITestSession.summary(UITesting.models, "Models", unread: 2, parents: [UITesting.team], ago: 600),
-        UITestSession.summary(UITesting.papers, "Papers", parents: [UITesting.team], ago: 1_200),
+        UITestSession.summary(UITesting.ann, "Ann", kind: .direct),
+        UITestSession.summary(UITesting.models, "Models", unread: 2, ago: 600),
+        UITestSession.summary(UITesting.papers, "Papers", ago: 1_200),
         UITestSession.summary(UITesting.team, "Team", kind: .space, ago: 3_600),
     ]
 
@@ -109,8 +109,9 @@ private final class UITestSession: Session, @unchecked Sendable {
         let ordered = rooms.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
         // The rooms are made up valid.
         return try! RoomLists(
-            rooms: ordered, loaded: true, ownUserId: userId(), notesAtTop: true, spaceMembers: [:], drafts: [],
-            favourites: [], lowPriority: [], categories: [], joining: [])
+            rooms: ordered, loaded: true, ownUserId: userId(), notesAtTop: true,
+            spaceChildren: [UITesting.team: [UITesting.ann, UITesting.models, UITesting.papers]], spaceMembers: [:],
+            drafts: [], favourites: [], lowPriority: [], categories: [], joining: [])
     }
 
     /// A message was sent or arrived in room `id`: it moves up the list.
@@ -125,14 +126,13 @@ private final class UITestSession: Session, @unchecked Sendable {
     }
 
     private static func summary(
-        _ id: String, _ name: String, kind: RoomKind = .room, unread: UInt64 = 0, parents: [String] = [],
-        ago: TimeInterval = 0
+        _ id: String, _ name: String, kind: RoomKind = .room, unread: UInt64 = 0, ago: TimeInterval = 0
     ) -> RoomSummary {
         RoomSummary(
             id: id, name: name, avatarUrl: nil, topic: nil, kind: kind, invited: false, encrypted: false,
             unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0,
             lastActivity: Date().addingTimeInterval(-ago), directUser: kind == .direct ? annUser : nil,
-            alias: nil, joinedMembers: 3, parents: parents, public: false, pinned: [])
+            alias: nil, joinedMembers: 3, public: false, pinned: [])
     }
 
     /// Room `id`'s timeline, the same each time.
@@ -146,6 +146,8 @@ private final class UITestSession: Session, @unchecked Sendable {
             return timeline
         }
     }
+
+    override func listedSpaceChildren(spaceId: String) -> [DirectoryRoom]? { nil }
 
     override func sharedRooms(userId: String) async throws -> [String] {
         [UITesting.lab, UITesting.ann, UITesting.models, UITesting.papers, UITesting.team]

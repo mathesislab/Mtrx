@@ -57,11 +57,12 @@ final class SpaceSectionsTests: XCTestCase {
             [
                 Make.room("!notes", kind: .direct, name: "Notes to self", directUser: "@me:example.org"),
                 Make.room("!ann", kind: .direct, name: "Ann", unread: 2, directUser: "@ann:example.org"),
-                Make.room("!lab", name: "Lab", unread: 3, parents: ["!team"]),
-                Make.room("!paper", name: "Paper", unread: 1, parents: ["!team"]),
+                Make.room("!lab", name: "Lab", unread: 3),
+                Make.room("!paper", name: "Paper", unread: 1),
                 Make.room("!team", kind: .space, name: "Team"),
             ],
-            notesAtTop: notesAtTop, members: ["!team": ["@ann:example.org", "@me:example.org"]])
+            notesAtTop: notesAtTop, children: ["!team": ["!lab", "!paper"]],
+            members: ["!team": ["@ann:example.org", "@me:example.org"]])
     }
 
     /// Team's sections with a favourite, a category and a low priority
@@ -70,12 +71,13 @@ final class SpaceSectionsTests: XCTestCase {
         let lists = Make.lists(
             [
                 Make.room("!ann", kind: .direct, name: "Ann", directUser: "@ann:example.org"),
-                Make.room("!ice", name: "Ice", parents: ["!team"]),
-                Make.room("!lab", name: "Lab", parents: ["!team"]),
-                Make.room("!paper", name: "Paper", parents: ["!team"]),
-                Make.room("!old", name: "Old", parents: ["!team"]),
+                Make.room("!ice", name: "Ice"),
+                Make.room("!lab", name: "Lab"),
+                Make.room("!paper", name: "Paper"),
+                Make.room("!old", name: "Old"),
                 Make.room("!team", kind: .space, name: "Team"),
             ],
+            children: ["!team": ["!ice", "!lab", "!paper", "!old"]],
             members: ["!team": ["@ann:example.org", "@me:example.org"]], favourites: ["!ice"],
             lowPriority: ["!old"],
             categories: [TestCategory(space: "!team", id: "a", name: "Papers", rooms: ["!paper"])])

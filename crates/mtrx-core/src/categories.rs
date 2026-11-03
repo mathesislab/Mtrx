@@ -410,7 +410,6 @@ mod tests {
             unread_mentions: 0,
             unread_notifications: 0,
             last_activity: None,
-            parents: Vec::new(),
             tag: RoomTag::None,
             direct_user: None,
             alias: None,

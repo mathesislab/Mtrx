@@ -14,17 +14,17 @@ import uniffi.mtrx.Session
 
 /**
  * The Rooms tab of space [spaceId]'s overview: its rooms and subspaces as
- * its server lists them. The last list ([cache]) shows at once while it
- * updates behind; a failed update offers Try again. Joining or asking to
- * join stays on the overview, the row changing (Open as the room list has
- * it, at once; Asked). Methods are called on the main thread.
+ * its server lists them, with the joined ones it leaves out. The library's
+ * last list shows at once while it updates behind; a failed update offers
+ * Try again. Joining or asking to join stays on the overview, the row
+ * changing (Open as the room list has it, at once; Asked). Methods are
+ * called on the main thread.
  */
 class SpaceOverviewModel(
     val spaceId: String,
     private val session: Session,
-    private val cache: SpaceChildrenCache,
 ) : ViewModel() {
-    private val _rooms = MutableStateFlow(cache[spaceId])
+    private val _rooms = MutableStateFlow(session.listedSpaceChildren(spaceId))
     /** Null until first listed. */
     val rooms: StateFlow<List<DirectoryRoom>?> = _rooms.asStateFlow()
 
@@ -52,9 +52,7 @@ class SpaceOverviewModel(
         _failed.value = false
         viewModelScope.launch {
             try {
-                val list = session.spaceChildren(spaceId)
-                cache[spaceId] = list
-                _rooms.value = list
+                _rooms.value = session.spaceChildren(spaceId)
             } catch (e: MtrxException) {
                 _failed.value = true
             } finally {
@@ -76,9 +74,7 @@ class SpaceOverviewModel(
             try {
                 call()
                 if (after == null) return@launch
-                val list = withMembership(_rooms.value.orEmpty(), room.id, after)
-                cache[spaceId] = list
-                _rooms.value = list
+                _rooms.value = withMembership(_rooms.value.orEmpty(), room.id, after)
             } catch (e: MtrxException) {
                 _error.value = describe(e)
             } finally {

@@ -13,16 +13,14 @@ struct SpaceOverviewView: View {
         NavigationStack {
             SpaceOverviewPage(
                 space: space,
-                overview: SpaceOverviewModel(
-                    session: session.session, spaceId: space.id, cache: session.spaceChildren),
+                overview: SpaceOverviewModel(session: session.session, spaceId: space.id),
                 info: session.info(for: space), close: { dismiss() }
             )
             .navigationDestination(for: RoomRef.self) { ref in
                 if let subspace = session.room(ref.id) {
                     SpaceOverviewPage(
                         space: subspace,
-                        overview: SpaceOverviewModel(
-                            session: session.session, spaceId: subspace.id, cache: session.spaceChildren),
+                        overview: SpaceOverviewModel(session: session.session, spaceId: subspace.id),
                         info: session.info(for: subspace), close: { dismiss() })
                 }
             }

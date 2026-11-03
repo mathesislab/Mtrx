@@ -2,16 +2,15 @@
 //! them: a picture, the name, what it is about, who can join, and Join, Ask
 //! to join or Open.
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet};
 
 use iced::{
     Alignment, Element, Length, Theme,
     widget::{button, column, container, hover, row, space, text},
 };
-use mtrx_core::{DirectoryRoom, JoinAccess, Membership, OwnedRoomId, Role, RoomKind, RoomSummary};
+use mtrx_core::{
+    DirectoryRoom, JoinAccess, Membership, OwnedRoomId, Role, RoomKind, RoomLists, RoomSummary,
+};
 
 use crate::{
     app,
@@ -262,12 +261,10 @@ pub fn secondary(theme: &Theme) -> iced::Color {
         .scale_alpha(0.6)
 }
 
-/// How long a space's rooms as listed stay fresh; older, opening the space
-/// refreshes them behind what is shown.
-const FRESH: Duration = Duration::from_secs(60);
-
-/// Each space's rooms as its server last listed them, for its overview and
-/// the room search. Kept while the app runs, so they show at once.
+/// Each space's rooms as last listed ([`mtrx_core::Session::space_children`]:
+/// as its server lists them, with the joined rooms it leaves out), for its
+/// overview and the room search. Kept while the app runs, so they show at
+/// once; opening the space lists them again behind what is shown.
 #[derive(Default)]
 pub struct SpaceRooms {
     by_space: HashMap<OwnedRoomId, Listed>,
@@ -278,36 +275,32 @@ pub struct SpaceRooms {
 
 #[derive(Default)]
 struct Listed {
-    /// As last listed, and when.
-    rooms: Option<(Vec<DirectoryRoom>, Instant)>,
+    /// As last listed.
+    rooms: Option<Vec<DirectoryRoom>>,
     loading: bool,
     /// Why the last attempt failed.
     failed: Option<String>,
 }
 
 impl SpaceRooms {
-    /// Start listing `space`'s rooms, if not listed lately (any time if
-    /// `again`), nor being listed: whether to ask its server.
-    pub fn start(&mut self, space: &OwnedRoomId, again: bool) -> bool {
+    /// Start listing `space`'s rooms, unless being listed: whether to ask
+    /// for them.
+    pub fn start(&mut self, space: &OwnedRoomId) -> bool {
         let listed = self.by_space.entry(space.clone()).or_default();
-        let fresh = listed
-            .rooms
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() < FRESH && listed.failed.is_none());
-        if listed.loading || (fresh && !again) {
+        if listed.loading {
             return false;
         }
         listed.loading = true;
         true
     }
 
-    /// The server's answer; on failure, the last list stays.
+    /// The answer; on failure, the last list stays.
     pub fn loaded(&mut self, space: OwnedRoomId, result: Result<Vec<DirectoryRoom>, String>) {
         let listed = self.by_space.entry(space).or_default();
         listed.loading = false;
         match result {
             Ok(rooms) => {
-                listed.rooms = Some((rooms, Instant::now()));
+                listed.rooms = Some(rooms);
                 listed.failed = None;
             }
             Err(e) => listed.failed = Some(e),
@@ -327,28 +320,17 @@ impl SpaceRooms {
         self.by_space.get(space)?.failed.as_deref()
     }
 
-    /// Its server has listed the space's rooms.
+    /// The space's rooms have been listed.
     pub fn listed(&self, space: &OwnedRoomId) -> bool {
         self.by_space.get(space).is_some_and(|l| l.rooms.is_some())
     }
 
-    /// The space's rooms: as its server listed them, with the joined rooms
-    /// that list leaves out (all of them, until it answered); suggested
-    /// first, then by name.
-    pub fn rooms(&self, space: &OwnedRoomId, known: &[RoomSummary]) -> Vec<DirectoryRoom> {
-        let mut rooms = self
-            .by_space
-            .get(space)
-            .and_then(|l| l.rooms.as_ref())
-            .map(|(rooms, _)| rooms.clone())
-            .unwrap_or_default();
-        for room in known.iter().filter(|r| r.parents.contains(space)) {
-            if !rooms.iter().any(|r| r.id == room.id) {
-                rooms.push(from_summary(room, known));
-            }
-        }
-        rooms.sort_by_cached_key(|r| (!r.suggested, r.name.to_lowercase()));
-        rooms
+    /// The space's rooms as last listed (none yet before): suggested first,
+    /// then by name.
+    pub fn rooms(&self, space: &OwnedRoomId) -> &[DirectoryRoom] {
+        (self.by_space.get(space))
+            .and_then(|l| l.rooms.as_deref())
+            .unwrap_or_default()
     }
 
     /// Pictures of the listed rooms, with their size.
@@ -356,7 +338,7 @@ impl SpaceRooms {
         self.by_space
             .values()
             .filter_map(|l| l.rooms.as_ref())
-            .flat_map(|(rooms, _)| rooms)
+            .flatten()
             .filter_map(|r| Some((r.avatar.as_deref()?, AVATAR)))
     }
 
@@ -373,7 +355,7 @@ impl SpaceRooms {
         let mut found: Vec<_> = spaces
             .iter()
             .filter_map(|space| self.by_space.get(space)?.rooms.as_ref())
-            .flat_map(|(rooms, _)| rooms)
+            .flatten()
             .filter(|r| !rooms.iter().any(|known| known.id == r.id))
             .filter(|r| seen.insert(&r.id))
             .filter_map(|r| {
@@ -386,56 +368,23 @@ impl SpaceRooms {
     }
 }
 
-/// A joined room as the room list knows it, until its space's server lists
-/// it: who can join is only public or not, and our role unknown.
-fn from_summary(room: &RoomSummary, known: &[RoomSummary]) -> DirectoryRoom {
-    DirectoryRoom {
-        id: room.id.clone(),
-        alias: room.alias.as_deref().and_then(|a| a.try_into().ok()),
-        name: room.name.clone(),
-        topic: room.topic.clone(),
-        avatar: room.avatar.clone(),
-        members: room.joined_members,
-        is_space: room.kind == RoomKind::Space,
-        children: known
-            .iter()
-            .filter(|r| r.parents.contains(&room.id))
-            .count() as u64,
-        access: if room.public {
-            JoinAccess::Public
-        } else {
-            JoinAccess::Invite
-        },
-        membership: Some(if room.invited {
-            Membership::Invited
-        } else {
-            Membership::Joined
-        }),
-        role: None,
-        via: Vec::new(),
-        suggested: false,
-    }
-}
-
 /// The joined spaces whose rooms the search looks through: those in the
 /// selected space (and it), or all at Home.
-pub fn searched_spaces(rooms: &[RoomSummary], selected: Option<&OwnedRoomId>) -> Vec<OwnedRoomId> {
+pub fn searched_spaces(lists: &RoomLists, selected: Option<&OwnedRoomId>) -> Vec<OwnedRoomId> {
     let is_space = |r: &&RoomSummary| r.kind == RoomKind::Space && !r.invited;
     match selected {
         Some(space) => {
-            let below = mtrx_core::descendants(rooms, space);
+            let below = lists.graph.descendants(space);
             std::iter::once(space.clone())
                 .chain(
-                    rooms
-                        .iter()
+                    (lists.rooms.iter())
                         .filter(is_space)
                         .filter(|r| below.contains(&r.id))
                         .map(|r| r.id.clone()),
                 )
                 .collect()
         }
-        None => rooms
-            .iter()
+        None => (lists.rooms.iter())
             .filter(is_space)
             .map(|r| r.id.clone())
             .collect(),
@@ -478,7 +427,6 @@ mod tests {
             unread_mentions: 0,
             unread_notifications: 0,
             last_activity: None,
-            parents: Vec::new(),
             tag: mtrx_core::RoomTag::None,
             direct_user: None,
             alias: None,
@@ -488,28 +436,22 @@ mod tests {
     }
 
     #[test]
-    fn joined_rooms_show_until_the_server_lists_and_the_list_outlasts_failures() {
+    fn the_last_list_outlasts_failures() {
         let space: OwnedRoomId = "!space:x".try_into().unwrap();
-        let mut joined = summary("c", "Joined ice");
-        joined.parents = vec![space.clone()];
-        let known = [joined];
         let mut rooms = SpaceRooms::default();
         let names = |rooms: &SpaceRooms| -> Vec<String> {
-            rooms
-                .rooms(&space, &known)
-                .into_iter()
-                .map(|r| r.name)
+            (rooms.rooms(&space).iter())
+                .map(|r| r.name.clone())
                 .collect()
         };
-        assert!(rooms.start(&space, false));
-        assert!(!rooms.start(&space, false), "already listing");
-        assert_eq!(names(&rooms), ["Joined ice"]);
+        assert!(rooms.start(&space));
+        assert!(!rooms.start(&space), "already listing");
+        assert!(names(&rooms).is_empty() && !rooms.listed(&space));
         rooms.loaded(space.clone(), Ok(vec![listed("a", "Ice sheets")]));
-        assert_eq!(names(&rooms), ["Ice sheets", "Joined ice"]);
-        assert!(!rooms.start(&space, false), "fresh");
-        assert!(rooms.start(&space, true));
+        assert_eq!(names(&rooms), ["Ice sheets"]);
+        assert!(rooms.start(&space), "listed again");
         rooms.loaded(space.clone(), Err("timed out".into()));
-        assert_eq!(names(&rooms), ["Ice sheets", "Joined ice"]);
+        assert_eq!(names(&rooms), ["Ice sheets"]);
         assert_eq!(rooms.failed(&space), Some("timed out"));
     }
 
