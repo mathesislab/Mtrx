@@ -9,7 +9,8 @@ use iced::{
 };
 use mtrx_core::{
     Access, CallService, History, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId,
-    Permissions, RoomKind, RoomSettings, RoomSummary, RoomTag, Topic, UserInfo, UserSummary,
+    Permissions, RoomHandle, RoomKind, RoomSettings, RoomSummary, RoomTag, Topic, UserInfo,
+    UserSummary,
 };
 
 use crate::{
@@ -123,6 +124,8 @@ struct Framed<'a> {
 
 pub struct Card {
     pub target: Target,
+    /// The room's, to read and change its settings; set by the app.
+    pub handle: Option<RoomHandle>,
     /// Spaces and rooms shared with the person, once loaded.
     shared: Option<Vec<OwnedRoomId>>,
     /// The room's settings, once loaded.
@@ -163,6 +166,7 @@ impl Card {
             name: room.map(|r| r.name.clone()).unwrap_or_default(),
             topic: topic::Editor::new(room.and_then(|r| r.topic.as_deref()).unwrap_or_default()),
             target,
+            handle: None,
             shared: None,
             settings: None,
             saving: false,

@@ -5,14 +5,14 @@ use std::collections::HashSet;
 use matrix_sdk::{
     RoomMemberships,
     ruma::{
-        Int, OwnedMxcUri, OwnedUserId, RoomId, UserId,
+        Int, OwnedMxcUri, OwnedUserId, UserId,
         events::room::member::MembershipState,
         events::room::power_levels::{RoomPowerLevels, UserPowerLevel},
         int,
     },
 };
 
-use crate::{Result, Session};
+use crate::{Result, RoomHandle};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
@@ -63,13 +63,13 @@ impl Role {
     }
 }
 
-impl Session {
+impl RoomHandle {
     /// Joined and invited members, admins first, then by name. Loads the
     /// member list from the server if it is not complete yet.
-    pub async fn members(&self, room_id: &RoomId) -> Result<Vec<Member>> {
-        let room = self.room(room_id)?;
-        let levels = crate::permissions::power_levels(&room).await.ok();
-        let own = self.user_id();
+    pub async fn members(&self) -> Result<Vec<Member>> {
+        let room = &self.room;
+        let levels = crate::permissions::power_levels(room).await.ok();
+        let own = self.session.user_id();
         let mut members: Vec<Member> = room
             .members(RoomMemberships::JOIN | RoomMemberships::INVITE)
             .await?
@@ -112,32 +112,24 @@ impl Session {
 
     /// The IDs of the joined members. Loads the member list from the server
     /// if it is not complete yet.
-    pub async fn joined_member_ids(&self, room_id: &RoomId) -> Result<HashSet<OwnedUserId>> {
-        crate::lists::joined_member_ids(&self.client, room_id).await
+    pub async fn joined_member_ids(&self) -> Result<HashSet<OwnedUserId>> {
+        crate::lists::joined_member_ids(&self.session.client, self.id()).await
     }
 
-    /// Remove someone from a room (kick), or also keep them out (ban).
-    pub async fn remove_member(
-        &self,
-        room_id: &RoomId,
-        user: &UserId,
-        reason: Option<&str>,
-        ban: bool,
-    ) -> Result<()> {
-        let room = self.room(room_id)?;
+    /// Remove someone from the room (kick), or also keep them out (ban).
+    pub async fn remove(&self, user: &UserId, ban: bool, reason: Option<&str>) -> Result<()> {
         if ban {
-            room.ban_user(user, reason).await?;
+            self.room.ban_user(user, reason).await?;
         } else {
-            room.kick_user(user, reason).await?;
+            self.room.kick_user(user, reason).await?;
         }
         Ok(())
     }
 
-    /// Give someone, or ourselves, a power level in a room.
-    pub async fn set_level(&self, room_id: &RoomId, user: &UserId, level: i64) -> Result<()> {
-        let room = self.room(room_id)?;
-        room.update_power_levels(vec![(user, Int::new_saturating(level))])
-            .await?;
+    /// Give someone, or ourselves, a power level in the room.
+    pub async fn set_level(&self, user: &UserId, level: i64) -> Result<()> {
+        let levels = vec![(user, Int::new_saturating(level))];
+        self.room.update_power_levels(levels).await?;
         Ok(())
     }
 }

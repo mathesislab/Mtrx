@@ -883,7 +883,7 @@ impl PendingSend {
 
 impl Session {
     pub async fn timeline(&self, room_id: &OwnedRoomId) -> Result<RoomTimeline> {
-        if self.room(room_id)?.encryption_state().is_encrypted() {
+        if self.sdk_room(room_id)?.encryption_state().is_encrypted() {
             let (client, keys, room) =
                 (self.client.clone(), self.room_keys.clone(), room_id.clone());
             tokio::spawn(async move { keys.download(&client, &room).await });
@@ -897,7 +897,7 @@ impl Session {
             .set_room_subscriptions(&[room_id])
             .await;
         let timeline = self
-            .room(room_id)?
+            .sdk_room(room_id)?
             .timeline()
             .await
             .map_err(timeline_error)?;

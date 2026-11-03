@@ -29,6 +29,7 @@ mod pins;
 mod presence;
 mod profile;
 mod push;
+mod room;
 mod room_colours;
 mod room_links;
 mod room_settings;
@@ -79,6 +80,7 @@ pub use presence::{
 };
 pub use profile::Profile;
 pub use push::{HttpPusher, PushNotification, PusherInfo};
+pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
 pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, SpaceLink};

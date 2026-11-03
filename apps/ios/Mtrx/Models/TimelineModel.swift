@@ -377,7 +377,7 @@ final class TimelineModel: ObservableObject {
         let (session, roomId) = (self.session, self.roomId)
         return Task {
             do {
-                try await session.setPinned(roomId: roomId, eventId: eventId, pin: pin)
+                try await session.room(roomId: roomId).setPinned(eventId: eventId, pin: pin)
             } catch {
                 self.error = errorMessage(error)
             }
