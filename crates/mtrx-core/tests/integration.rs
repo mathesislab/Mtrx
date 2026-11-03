@@ -12,6 +12,7 @@
 
 use std::{
     future::Future,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -37,7 +38,7 @@ async fn register(name: &str) -> Result<()> {
 
 /// A logged-in device with its own data directory.
 struct Device {
-    session: Session,
+    session: Arc<Session>,
     _dir: TempDir,
 }
 
@@ -46,7 +47,10 @@ async fn login(user: &str) -> Result<Device> {
     let profile = Profile::new("test", dir.path(), SecretStore::File)?;
     let session = Session::login(profile, &homeserver(), user, PASSWORD).await?;
     session.start_sync().await;
-    Ok(Device { session, _dir: dir })
+    Ok(Device {
+        session: Arc::new(session),
+        _dir: dir,
+    })
 }
 
 async fn new_user(prefix: &str) -> Result<(String, Device)> {
@@ -140,7 +144,7 @@ async fn room_list_shows_space_hierarchy() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    s.add_to_space(&space, &room).await?;
+    s.room(&space)?.add_child(&room).await?;
 
     let list = s.room_list().await?;
     let state = wait_for("room in space", list.updates(), |state| {
@@ -431,7 +435,7 @@ async fn scheduled_messages() -> Result<()> {
     register(&name).await?;
     let dir = TempDir::new()?;
     let profile = || Profile::new("p", dir.path(), SecretStore::File);
-    let session = Session::login(profile()?, &homeserver(), &name, PASSWORD).await?;
+    let session = Arc::new(Session::login(profile()?, &homeserver(), &name, PASSWORD).await?);
     session.start_sync().await;
     let room = session
         .create_room(NewRoom {
@@ -448,7 +452,8 @@ async fn scheduled_messages() -> Result<()> {
 
     assert!(matches!(
         session
-            .schedule(&room, "past", Vec::new(), SystemTime::now(), None)
+            .room(&room)?
+            .schedule("past", Vec::new(), SystemTime::now(), None)
             .await,
         Err(mtrx_core::Error::SendTimeInPast)
     ));
@@ -459,10 +464,12 @@ async fn scheduled_messages() -> Result<()> {
         bytes: b"sent late".to_vec(),
     };
     let late = session
-        .schedule(&room, "late", vec![file], in_secs(1), None)
+        .room(&room)?
+        .schedule("late", vec![file], in_secs(1), None)
         .await?;
     let cancelled = session
-        .schedule(&room, "cancelled", Vec::new(), in_secs(3600), None)
+        .room(&room)?
+        .schedule("cancelled", Vec::new(), in_secs(3600), None)
         .await?;
     session.unschedule(&cancelled.id).await?;
     session.stop_sync().await;
@@ -470,11 +477,12 @@ async fn scheduled_messages() -> Result<()> {
 
     // "late" passes its time while no scheduler runs.
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let session = Session::restore(profile()?).await?;
+    let session = Arc::new(Session::restore(profile()?).await?);
     assert_eq!(session.scheduled(), vec![late.clone()], "persisted");
     session.start_sync().await;
     let on_time = session
-        .schedule(&room, "on **time**", Vec::new(), in_secs(2), None)
+        .room(&room)?
+        .schedule("on **time**", Vec::new(), in_secs(2), None)
         .await?;
     session.start_scheduler_for_test(Duration::from_secs(1));
 
@@ -540,8 +548,8 @@ async fn pinned_messages() -> Result<()> {
         timeline.send_markdown("The plan", None).await?.sent(),
     )
     .await??;
-    assert!(s.can_pin(&room).await?);
-    s.set_pinned(&room, &plan, true).await?;
+    assert!(s.room(&room)?.can_pin().await?);
+    s.room(&room)?.set_pinned(&plan, true).await?;
     wait_for(
         "pinned in the list",
         s.room_list().await?.updates(),
@@ -564,7 +572,7 @@ async fn pinned_messages() -> Result<()> {
     })
     .await?;
 
-    s.set_pinned(&room, &plan, false).await?;
+    s.room(&room)?.set_pinned(&plan, false).await?;
     wait_for("unpinned", s.room_list().await?.updates(), |state| {
         (state.rooms.iter()).any(|r| r.id == room && r.pinned.is_empty())
     })
@@ -607,11 +615,12 @@ async fn call_links_and_space_services() -> Result<()> {
 
     // An old standing call link moves into the topic, first, once.
     let url = mtrx_core::Url::parse("https://meet.jit.si/mtrx-test")?;
-    assert!(s.can_change_topic(&room).await?);
-    s.set_room_topic(&room, "Meetings\n[link] https://example.org/")
+    assert!(s.room(&room)?.can_change_topic().await?);
+    s.room(&room)?
+        .set_topic("Meetings\n[link] https://example.org/")
         .await?;
-    s.set_old_call_link(&room, &url).await?;
-    s.move_call_link_to_topic(&room).await?;
+    s.room(&room)?.set_old_call_link(&url).await?;
+    s.room(&room)?.move_call_link_to_topic().await?;
     let moved = "Meetings\n[call] https://meet.jit.si/mtrx-test\n[link] https://example.org/";
     wait_for(
         "call in the topic",
@@ -620,7 +629,7 @@ async fn call_links_and_space_services() -> Result<()> {
     )
     .await?;
     // Removed once moved: the topic keeps a change made since.
-    s.set_room_topic(&room, "Meetings").await?;
+    s.room(&room)?.set_topic("Meetings").await?;
     let topic_is = |topic: &'static str| {
         let room = &room;
         move |state: &mtrx_core::RoomListState| {
@@ -633,7 +642,7 @@ async fn call_links_and_space_services() -> Result<()> {
         topic_is("Meetings"),
     )
     .await?;
-    s.move_call_link_to_topic(&room).await?;
+    s.room(&room)?.move_call_link_to_topic().await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
     wait_for(
         "topic kept",
@@ -643,9 +652,10 @@ async fn call_links_and_space_services() -> Result<()> {
     .await?;
 
     let service = CallService::jitsi("Lab Jitsi", "https://video.lab.example")?;
-    s.set_space_call_service(&space, Some(service.clone()))
+    s.room(&space)?
+        .set_call_service(Some(service.clone()))
         .await?;
-    assert_eq!(s.space_call_service(&space).await?, Some(service));
+    assert_eq!(s.room(&space)?.call_service().await?, Some(service));
 
     // In a moderated room, members cannot change room state.
     let bob_list = bob.session.room_list().await?;
@@ -663,9 +673,10 @@ async fn call_links_and_space_services() -> Result<()> {
     })
     .await?;
     // Power levels arrive with the joined room's state, after the join.
+    let joined = bob.session.room(&room)?;
     let can_set = timeout("power levels synced", async {
         loop {
-            match bob.session.can_change_topic(&room).await {
+            match joined.can_change_topic().await {
                 Ok(can_set) => return can_set,
                 Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
             }
@@ -692,8 +703,9 @@ async fn join_synced(user: &Device, room: &mtrx_core::OwnedRoomId, name: &str) -
             .any(|r| &r.id == room && !r.invited && r.name == name)
     })
     .await?;
+    let joined = user.session.room(room)?;
     timeout("power levels synced", async {
-        while user.session.permissions(room).await.is_err() {
+        while joined.permissions().await.is_err() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
@@ -720,10 +732,16 @@ async fn everyone_can_edit() -> Result<()> {
         .create_room(new_room("open", false, Permissions::Everyone))
         .await?;
     join_synced(&bob, &open, "open").await?;
-    assert_eq!(bob.session.permissions(&open).await?, Permissions::Everyone);
-    assert!(bob.session.can_change_topic(&open).await?);
-    assert!(!bob.session.can_change_permissions(&open).await?);
-    bob.session.invite(&open, &carol.session.user_id()).await?;
+    assert_eq!(
+        bob.session.room(&open)?.permissions().await?,
+        Permissions::Everyone
+    );
+    assert!(bob.session.room(&open)?.can_change_topic().await?);
+    assert!(!bob.session.room(&open)?.can_change_permissions().await?);
+    bob.session
+        .room(&open)?
+        .invite(&carol.session.user_id())
+        .await?;
 
     // A moderated space with a moderated room, opened by alice in one go.
     let space = s
@@ -732,13 +750,13 @@ async fn everyone_can_edit() -> Result<()> {
     let room = s
         .create_room(new_room("closed", false, Permissions::Moderators))
         .await?;
-    s.add_to_space(&space, &room).await?;
+    s.room(&space)?.add_child(&room).await?;
     join_synced(&bob, &room, "closed").await?;
     assert_eq!(
-        bob.session.permissions(&room).await?,
+        bob.session.room(&room)?.permissions().await?,
         Permissions::Moderators
     );
-    assert!(!bob.session.can_change_topic(&room).await?);
+    assert!(!bob.session.room(&room)?.can_change_topic().await?);
     wait_for("space synced", s.room_list().await?.updates(), |state| {
         state
             .rooms
@@ -747,7 +765,7 @@ async fn everyone_can_edit() -> Result<()> {
     })
     .await?;
 
-    let update = s.let_everyone_edit_space(&space).await?;
+    let update = s.room(&space)?.let_everyone_edit_all().await?;
     let mut changed = update.changed.clone();
     changed.sort();
     let mut expected = vec![space.clone(), room.clone()];
@@ -755,14 +773,15 @@ async fn everyone_can_edit() -> Result<()> {
     assert_eq!(changed, expected);
     assert!(update.not_allowed.is_empty());
 
+    let bobs = bob.session.room(&room)?;
     timeout("bob sees the change", async {
-        while bob.session.permissions(&room).await.ok() != Some(Permissions::Everyone) {
+        while bobs.permissions().await.ok() != Some(Permissions::Everyone) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await?;
-    assert!(bob.session.can_change_topic(&room).await?);
-    assert!(!bob.session.can_change_permissions(&room).await?);
+    assert!(bob.session.room(&room)?.can_change_topic().await?);
+    assert!(!bob.session.room(&room)?.can_change_permissions().await?);
     Ok(())
 }
 
@@ -795,8 +814,8 @@ async fn room_management() -> Result<()> {
     })
     .await?;
 
-    s.set_room_name(&room, "reading list").await?;
-    s.set_room_topic(&room, "Papers to read").await?;
+    s.room(&room)?.set_name("reading list").await?;
+    s.room(&room)?.set_topic("Papers to read").await?;
     wait_for("renamed", list.updates(), |state| {
         state.rooms.iter().any(|r| {
             r.id == room && r.name == "reading list" && r.topic.as_deref() == Some("Papers to read")
@@ -830,7 +849,7 @@ async fn room_management() -> Result<()> {
     })
     .await??;
 
-    s.leave(&room).await?;
+    s.room(&room)?.leave().await?;
     wait_for("left", list.updates(), |state| {
         !state.rooms.iter().any(|r| r.id == room)
     })
@@ -857,7 +876,7 @@ async fn co_owners() -> Result<()> {
     // Both owners: above every level, neither changed by the other.
     let members = timeout("bob joined", async {
         loop {
-            let members = s.members(&room).await?;
+            let members = s.room(&room)?.members().await?;
             if members.iter().any(|m| m.id == bob_id && !m.invited) {
                 return anyhow::Ok(members);
             }
@@ -897,7 +916,7 @@ async fn room_settings_and_space_links() -> Result<()> {
         let room = room.clone();
         timeout(what, async move {
             loop {
-                if let Ok(settings) = s.room_settings(&room).await
+                if let Ok(settings) = s.room(&room)?.settings().await
                     && done(&settings)
                 {
                     return anyhow::Ok(settings);
@@ -914,12 +933,12 @@ async fn room_settings_and_space_links() -> Result<()> {
     assert_eq!(settings.permissions, Permissions::Everyone);
 
     // Each change shows in the settings read straight after.
-    s.set_suggested(&first, &room, true).await?;
-    assert!(s.room_settings(&room).await?.spaces[0].suggested);
+    s.room(&first)?.set_suggested(&room, true).await?;
+    assert!(s.room(&room)?.settings().await?.spaces[0].suggested);
     // Moved: added to the second, out of the first.
-    s.add_to_space(&second, &room).await?;
-    s.remove_from_space(&first, &room).await?;
-    let moved = s.room_settings(&room).await?;
+    s.room(&second)?.add_child(&room).await?;
+    s.room(&first)?.remove_child(&room).await?;
+    let moved = s.room(&room)?.settings().await?;
     assert_eq!(
         (
             moved.spaces[0].space.clone(),
@@ -930,13 +949,15 @@ async fn room_settings_and_space_links() -> Result<()> {
     );
 
     let name = unique_name("moving");
-    s.set_address(&room, Some(&name)).await?;
-    let addressed = s.room_settings(&room).await?;
+    s.room(&room)?.set_address(Some(&name)).await?;
+    let addressed = s.room(&room)?.settings().await?;
     assert_eq!(addressed.address.context("address")?.alias(), name);
-    s.set_listed(&room, true).await?;
-    s.set_history(&room, History::Joined).await?;
-    s.set_permissions(&room, Permissions::Moderators).await?;
-    let changed = s.room_settings(&room).await?;
+    s.room(&room)?.set_listed(true).await?;
+    s.room(&room)?.set_history(History::Joined).await?;
+    s.room(&room)?
+        .set_permissions(Permissions::Moderators)
+        .await?;
+    let changed = s.room(&room)?.settings().await?;
     assert_eq!(
         (changed.listed, changed.history, changed.permissions),
         (Some(true), History::Joined, Permissions::Moderators)
@@ -972,7 +993,7 @@ async fn browse_and_join_space_rooms() -> Result<()> {
             .any(|r| r.id == open && r.parents.contains(&space))
     })
     .await?;
-    s.set_room_access(&open, Access::SpaceMembers).await?;
+    s.room(&open)?.set_join_rule(Access::SpaceMembers).await?;
     let asking = s
         .create_room(NewRoom {
             name: Some("thesis".into()),
@@ -980,8 +1001,8 @@ async fn browse_and_join_space_rooms() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    s.set_room_access(&asking, Access::Knock).await?;
-    s.invite(&space, &bob.session.user_id()).await?;
+    s.room(&asking)?.set_join_rule(Access::Knock).await?;
+    s.room(&space)?.invite(&bob.session.user_id()).await?;
     join_synced(&bob, &space, "Institute").await?;
 
     let b = &bob.session;
@@ -1029,7 +1050,7 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     let bob_id = b.user_id();
     let found = timeout("bob in coffee", async {
         loop {
-            let members = s.members(&open).await?;
+            let members = s.room(&open)?.members().await?;
             if let Some(bob) = members.into_iter().find(|m| m.id == bob_id && !m.invited) {
                 return anyhow::Ok(bob);
             }
@@ -1041,18 +1062,21 @@ async fn browse_and_join_space_rooms() -> Result<()> {
     // Rooms are created at version 12: their creator is above all levels,
     // gives any and keeps theirs.
     assert_eq!(found.manage.up_to, Some(9007199254740991));
-    let us = s.members(&open).await?;
+    let us = s.room(&open)?.members().await?;
     let us = us.iter().find(|m| m.id == s.user_id()).unwrap();
     assert_eq!((us.level, us.manage.up_to), (None, None));
     assert!(
-        b.members(&open)
+        b.room(&open)?
+            .members()
             .await?
             .iter()
             .all(|m| m.manage == Default::default())
     );
-    s.set_level(&open, &bob_id, Role::Moderator.level(0))
+    s.room(&open)?
+        .set_level(&bob_id, Role::Moderator.level(0))
         .await?;
-    s.remove_member(&open, &bob_id, Some("tidying up"), false)
+    s.room(&open)?
+        .remove(&bob_id, false, Some("tidying up"))
         .await?;
     // Our own server's directory: nothing published, but it answers.
     b.public_rooms(None, "", DirectoryKind::All, None).await?;
@@ -1289,7 +1313,7 @@ async fn members_and_notifications() -> Result<()> {
         .await?;
     join_synced(&bob, &room, "lab").await?;
 
-    let members = alice.session.members(&room).await?;
+    let members = alice.session.room(&room)?.members().await?;
     let role = |user: &Device| {
         members
             .iter()
@@ -1470,7 +1494,8 @@ async fn notifications_for_rooms_never_opened() -> Result<()> {
             .await?;
         join_synced(&bob, &room, name).await?;
         bob.session
-            .set_notify_mode(&room, NotifyMode::Mentions)
+            .room(&room)?
+            .set_notify(NotifyMode::Mentions)
             .await?;
         let timeline = alice.session.timeline(&room).await?;
         wait_for("bob joined", timeline.updates(), joined).await?;
@@ -1740,20 +1765,23 @@ async fn room_categories_and_tags() -> Result<()> {
     // Tags show in the room list.
     let list = s.room_list().await?;
     list.wait_for(|s| s.loaded).await;
-    s.set_room_tag(&room, mtrx_core::RoomTag::Favourite).await?;
+    s.room(&room)?
+        .set_tag(mtrx_core::RoomTag::Favourite)
+        .await?;
     let tag =
         |state: &mtrx_core::RoomListState| state.rooms.iter().find(|r| r.id == room).map(|r| r.tag);
     wait_for("favourite", list.updates(), |state| {
         tag(state) == Some(mtrx_core::RoomTag::Favourite)
     })
     .await?;
-    s.set_room_tag(&room, mtrx_core::RoomTag::LowPriority)
+    s.room(&room)?
+        .set_tag(mtrx_core::RoomTag::LowPriority)
         .await?;
     wait_for("low priority", list.updates(), |state| {
         tag(state) == Some(mtrx_core::RoomTag::LowPriority)
     })
     .await?;
-    s.set_room_tag(&room, mtrx_core::RoomTag::None).await?;
+    s.room(&room)?.set_tag(mtrx_core::RoomTag::None).await?;
     wait_for("untagged", list.updates(), |state| {
         tag(state) == Some(mtrx_core::RoomTag::None)
     })
@@ -1964,7 +1992,7 @@ async fn room_settings() -> Result<()> {
             .any(|r| r.id == room && r.name == "settings")
     })
     .await?;
-    let settings = s.room_settings(&room).await?;
+    let settings = s.room(&room)?.settings().await?;
     assert!(settings.can_rename && settings.can_change_topic && settings.can_change_picture);
     assert!(settings.can_invite);
     assert_eq!(settings.notify, NotifyMode::All);
@@ -1972,15 +2000,15 @@ async fn room_settings() -> Result<()> {
     // Each change returns once sync confirms it: well before its 10 s limit.
     for mode in [NotifyMode::Mute, NotifyMode::Mentions, NotifyMode::All] {
         let started = std::time::Instant::now();
-        s.set_notify_mode(&room, mode).await?;
+        s.room(&room)?.set_notify(mode).await?;
         assert!(started.elapsed() < Duration::from_secs(5), "not confirmed");
-        assert_eq!(s.room_settings(&room).await?.notify, mode);
+        assert_eq!(s.room(&room)?.settings().await?.notify, mode);
     }
 
     // Who can join: anyone, the space's members, invited people.
     assert!(settings.can_change_access);
     assert_eq!(settings.access, Access::Invite);
-    s.set_room_access(&room, Access::Public).await?;
+    s.room(&room)?.set_join_rule(Access::Public).await?;
     wait_for("public", list.updates(), |state| {
         state.rooms.iter().any(|r| r.id == room && r.public)
     })
@@ -1992,7 +2020,7 @@ async fn room_settings() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    s.add_to_space(&space, &room).await?;
+    s.room(&space)?.add_child(&room).await?;
     wait_for("in the space", list.updates(), |state| {
         state
             .rooms
@@ -2000,17 +2028,20 @@ async fn room_settings() -> Result<()> {
             .any(|r| r.id == room && r.parents.contains(&space))
     })
     .await?;
-    s.set_room_access(&room, Access::SpaceMembers).await?;
+    s.room(&room)?.set_join_rule(Access::SpaceMembers).await?;
     wait_for("space members", list.updates(), |state| {
         state.rooms.iter().any(|r| r.id == room && !r.public)
     })
     .await?;
-    assert_eq!(s.room_settings(&room).await?.access, Access::SpaceMembers);
-    s.set_room_access(&room, Access::Invite).await?;
+    assert_eq!(
+        s.room(&room)?.settings().await?.access,
+        Access::SpaceMembers
+    );
+    s.room(&room)?.set_join_rule(Access::Invite).await?;
     // Not told apart in the room list: check after each update.
     let mut updates = std::pin::pin!(list.updates());
     timeout("invite only", async {
-        while s.room_settings(&room).await?.access != Access::Invite {
+        while s.room(&room)?.settings().await?.access != Access::Invite {
             updates.next().await;
         }
         Ok::<_, anyhow::Error>(())
@@ -2202,7 +2233,10 @@ async fn someone_elses_public_room_is_public() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    bob.session.set_room_access(&room, Access::Public).await?;
+    bob.session
+        .room(&room)?
+        .set_join_rule(Access::Public)
+        .await?;
     let public = async |what: &str, device: &Device| -> Result<()> {
         let list = device.session.room_list().await?;
         wait_for(what, list.updates(), |state| {
@@ -2232,16 +2266,16 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     let other = s.create_room(NewRoom::default()).await?;
     let mut with_drafts = Box::pin(s.rooms_with_drafts_updates().updates());
     assert!(with_drafts.next().await.unwrap().is_empty());
-    assert_eq!(s.draft(&room).await?, None);
+    assert_eq!(s.room(&room)?.draft().await?, None);
 
     let reply_to = answered_event();
     let draft = Draft {
         text: "half a thought".into(),
         reply_to: Some(reply_to),
     };
-    s.save_draft(&room, &draft).await?;
-    assert_eq!(s.draft(&room).await?, Some(draft.clone()));
-    assert_eq!(s.draft(&other).await?, None, "per room");
+    s.room(&room)?.save_draft(&draft).await?;
+    assert_eq!(s.room(&room)?.draft().await?, Some(draft.clone()));
+    assert_eq!(s.room(&other)?.draft().await?, None, "per room");
     assert_eq!(
         with_drafts.next().await.unwrap(),
         std::collections::BTreeSet::from([room.clone()])
@@ -2250,8 +2284,8 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     // Kept on the device: back after a restart, and listed.
     let Device { session, _dir: dir } = alice;
     drop(session);
-    let s = Session::restore(Profile::new("test", dir.path(), SecretStore::File)?).await?;
-    assert_eq!(s.draft(&room).await?, Some(draft));
+    let s = Arc::new(Session::restore(Profile::new("test", dir.path(), SecretStore::File)?).await?);
+    assert_eq!(s.room(&room)?.draft().await?, Some(draft));
     let mut with_drafts = Box::pin(s.rooms_with_drafts_updates().updates());
     assert_eq!(
         with_drafts.next().await.unwrap(),
@@ -2259,8 +2293,8 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     );
 
     // Sending (an empty draft) clears it.
-    s.save_draft(&room, &Draft::default()).await?;
-    assert_eq!(s.draft(&room).await?, None);
+    s.room(&room)?.save_draft(&Draft::default()).await?;
+    assert_eq!(s.room(&room)?.draft().await?, None);
     assert!(with_drafts.next().await.unwrap().is_empty());
 
     // Kept by a keeper, as the composer changes.
@@ -2272,7 +2306,7 @@ async fn drafts_are_kept_per_room_across_restarts() -> Result<()> {
     };
     keeper.changed(elsewhere.clone());
     keeper.flush().await;
-    assert_eq!(s.draft(&other).await?, Some(elsewhere.clone()));
+    assert_eq!(s.room(&other)?.draft().await?, Some(elsewhere.clone()));
     assert_eq!(
         with_drafts.next().await.unwrap(),
         std::collections::BTreeSet::from([other.clone()])
@@ -2324,9 +2358,11 @@ async fn changes_show_before_sync_brings_them() -> Result<()> {
 
     // Without sync, the room list and the rows show our changes at once.
     s.stop_sync().await;
-    s.set_room_topic(&room, "About.").await?;
-    s.set_room_tag(&room, mtrx_core::RoomTag::Favourite).await?;
-    s.set_pinned(&room, &plan, true).await?;
+    s.room(&room)?.set_topic("About.").await?;
+    s.room(&room)?
+        .set_tag(mtrx_core::RoomTag::Favourite)
+        .await?;
+    s.room(&room)?.set_pinned(&plan, true).await?;
     wait_for("the changes listed", &mut lists, |l| {
         l.room(&room).is_some_and(|r| {
             r.topic.as_deref() == Some("About.")

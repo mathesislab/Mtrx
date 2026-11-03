@@ -24,7 +24,7 @@ use matrix_sdk::{
 };
 use serde_json::json;
 
-use crate::{Error, Result, Session, rooms::space_children, synced};
+use crate::{Error, Result, RoomHandle, Session, rooms::space_children, synced};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Permissions {
@@ -132,7 +132,7 @@ pub struct SpaceUpdate {
 impl Session {
     pub async fn permissions(&self, room_id: &RoomId) -> Result<Permissions> {
         Ok(
-            if everyone_can_edit(&power_levels(&self.room(room_id)?).await?) {
+            if everyone_can_edit(&power_levels(&self.sdk_room(room_id)?).await?) {
                 Permissions::Everyone
             } else {
                 Permissions::Moderators
@@ -142,19 +142,19 @@ impl Session {
 
     /// Whether we may change who may do what in the room.
     pub async fn can_change_permissions(&self, room_id: &RoomId) -> Result<bool> {
-        let levels = power_levels(&self.room(room_id)?).await?;
+        let levels = power_levels(&self.sdk_room(room_id)?).await?;
         Ok(levels.user_can_send_state(&self.user_id(), StateEventType::RoomPowerLevels))
     }
 
     /// Whether we may notify everyone in the room with `@room`.
     pub async fn can_mention_room(&self, room_id: &RoomId) -> Result<bool> {
-        let levels = power_levels(&self.room(room_id)?).await?;
+        let levels = power_levels(&self.sdk_room(room_id)?).await?;
         Ok(levels.user_can_trigger_room_notification(&self.user_id()))
     }
 
     /// Let every member invite and edit the room (see the module docs).
     pub async fn let_everyone_edit(&self, room_id: &RoomId) -> Result<()> {
-        let room = self.room(room_id)?;
+        let room = self.sdk_room(room_id)?;
         let mut content = power_levels_content(&room).await?;
         open_up(&mut content);
         synced::send_state(&room, &EmptyStateKey, content).await
@@ -165,7 +165,7 @@ impl Session {
         match permissions {
             Permissions::Everyone => self.let_everyone_edit(room_id).await,
             Permissions::Moderators => {
-                let room = self.room(room_id)?;
+                let room = self.sdk_room(room_id)?;
                 let mut content = power_levels_content(&room).await?;
                 close_down(&mut content);
                 synced::send_state(&room, &EmptyStateKey, content).await
@@ -191,6 +191,65 @@ impl Session {
                 update.unchanged.push(id);
             } else if self.can_change_permissions(&id).await? {
                 self.let_everyone_edit(&id).await?;
+                update.changed.push(id);
+            } else {
+                update.not_allowed.push(id);
+            }
+        }
+        Ok(update)
+    }
+}
+
+impl RoomHandle {
+    pub async fn permissions(&self) -> Result<Permissions> {
+        Ok(if everyone_can_edit(&power_levels(&self.room).await?) {
+            Permissions::Everyone
+        } else {
+            Permissions::Moderators
+        })
+    }
+
+    /// Whether we may change who may do what in the room.
+    pub async fn can_change_permissions(&self) -> Result<bool> {
+        let levels = power_levels(&self.room).await?;
+        Ok(levels.user_can_send_state(&self.session.user_id(), StateEventType::RoomPowerLevels))
+    }
+
+    /// Whether we may notify everyone in the room with `@room`.
+    pub async fn can_mention_room(&self) -> Result<bool> {
+        let levels = power_levels(&self.room).await?;
+        Ok(levels.user_can_trigger_room_notification(&self.session.user_id()))
+    }
+
+    /// Let every member invite and edit the room (see the module docs), or
+    /// only moderators.
+    pub async fn set_permissions(&self, permissions: Permissions) -> Result<()> {
+        let mut content = power_levels_content(&self.room).await?;
+        match permissions {
+            Permissions::Everyone => open_up(&mut content),
+            Permissions::Moderators => close_down(&mut content),
+        }
+        synced::send_state(&self.room, &EmptyStateKey, content).await
+    }
+
+    /// Let everyone edit this space and every room and space in it that we
+    /// have joined.
+    pub async fn let_everyone_edit_all(&self) -> Result<SpaceUpdate> {
+        let mut update = SpaceUpdate::default();
+        let mut seen = HashSet::new();
+        let mut pending = vec![self.id().to_owned()];
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let Ok(room) = self.session.room(&id) else {
+                continue;
+            };
+            pending.extend(space_children(&room.room).await);
+            if room.permissions().await? == Permissions::Everyone {
+                update.unchanged.push(id);
+            } else if room.can_change_permissions().await? {
+                room.set_permissions(Permissions::Everyone).await?;
                 update.changed.push(id);
             } else {
                 update.not_allowed.push(id);

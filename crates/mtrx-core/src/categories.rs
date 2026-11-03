@@ -9,11 +9,15 @@
 
 use std::{collections::BTreeMap, time::Instant};
 
-use matrix_sdk::ruma::{OwnedRoomId, RoomId, events::macros::EventContent};
+use matrix_sdk::{
+    Room,
+    ruma::{OwnedRoomId, RoomId, events::macros::EventContent},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Live, Result, RoomKind, RoomSummary, Session, account_data::AccountData, scheduled::random_id,
+    Live, Result, RoomHandle, RoomKind, RoomSummary, Session, account_data::AccountData,
+    scheduled::random_id,
 };
 
 /// The user's arrangement of the room list, for Home and each space.
@@ -367,21 +371,36 @@ impl Session {
     }
 
     async fn save_room_tag(&self, room: &RoomId, tag: RoomTag) -> Result<()> {
-        let room = self.room(room)?;
-        match tag {
-            RoomTag::Favourite => room.set_is_favourite(true, None).await?,
-            RoomTag::LowPriority => room.set_is_low_priority(true, None).await?,
-            RoomTag::None => {
-                if room.is_favourite() {
-                    room.set_is_favourite(false, None).await?;
-                }
-                if room.is_low_priority() {
-                    room.set_is_low_priority(false, None).await?;
-                }
+        save_tag(&self.sdk_room(room)?, tag).await
+    }
+}
+
+impl RoomHandle {
+    /// Set the room's favourite or low priority tag, or remove both. The
+    /// room list shows it at once ([`Session::room_lists`]).
+    pub async fn set_tag(&self, tag: RoomTag) -> Result<()> {
+        let echoes = &self.session.echoes;
+        echoes.set_tag(self.id(), tag);
+        let result = save_tag(&self.room, tag).await;
+        echoes.tag_answered(self.id(), tag, result.is_ok(), Instant::now());
+        result
+    }
+}
+
+async fn save_tag(room: &Room, tag: RoomTag) -> Result<()> {
+    match tag {
+        RoomTag::Favourite => room.set_is_favourite(true, None).await?,
+        RoomTag::LowPriority => room.set_is_low_priority(true, None).await?,
+        RoomTag::None => {
+            if room.is_favourite() {
+                room.set_is_favourite(false, None).await?;
+            }
+            if room.is_low_priority() {
+                room.set_is_low_priority(false, None).await?;
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[cfg(test)]

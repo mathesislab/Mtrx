@@ -19,6 +19,7 @@ mod error;
 mod manage;
 mod presence;
 mod push;
+mod room;
 mod room_list;
 mod rooms;
 mod runtime;
@@ -44,6 +45,7 @@ pub use presence::{
     presence_line,
 };
 pub use push::{NotificationContent, PusherInfo};
+pub use room::Room;
 pub use room_list::{
     Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,
     SpaceEntry, SpaceKey,

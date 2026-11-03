@@ -287,9 +287,7 @@ impl Session {
 
     /// Leave a room or space, or decline an invite to it.
     pub async fn leave(&self, room_id: String) -> Result<(), MtrxError> {
-        let room = crate::error::room_id(&room_id)?;
-        let session = self.core();
-        run(async move { Ok(session.leave(&room).await?) }).await
+        self.room(room_id)?.leave().await
     }
 
     /// Servers whose directories we browsed, most recent first.

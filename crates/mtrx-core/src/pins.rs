@@ -15,7 +15,7 @@ use matrix_sdk::{
 use matrix_sdk_ui::timeline::{RoomExt, TimelineFocus};
 use serde::Deserialize;
 
-use crate::{Result, RoomTimeline, Session, timeline::timeline_error};
+use crate::{Result, RoomHandle, RoomTimeline, Session, timeline::timeline_error};
 
 /// How a change of the pinned messages shows in the timeline: how many
 /// were pinned and how many unpinned.
@@ -50,7 +50,7 @@ impl Session {
     /// Pin the message `event_id` in the room, or unpin it. The room lists
     /// and the timelines' rows show it at once.
     pub async fn set_pinned(&self, room_id: &RoomId, event_id: &EventId, pin: bool) -> Result<()> {
-        let room = self.room(room_id)?;
+        let room = self.sdk_room(room_id)?;
         let mut pinned = (self.echoes.pending_pinned(room_id))
             .or_else(|| room.pinned_event_ids())
             .unwrap_or_default();
@@ -72,20 +72,50 @@ impl Session {
 
     /// Whether we may pin and unpin messages in the room.
     pub async fn can_pin(&self, room_id: &RoomId) -> Result<bool> {
-        can_pin(&self.room(room_id)?).await
+        can_pin(&self.sdk_room(room_id)?).await
     }
 
     /// The room's pinned messages, as a timeline of their own: loaded as
     /// needed, also from long ago, and kept up to date as pins change.
     pub async fn pinned_timeline(&self, room_id: &RoomId) -> Result<RoomTimeline> {
         let timeline = self
-            .room(room_id)?
+            .sdk_room(room_id)?
             .timeline_builder()
             .with_focus(TimelineFocus::PinnedEvents)
             .build()
             .await
             .map_err(timeline_error)?;
         Ok(self.room_timeline(room_id, timeline).await)
+    }
+}
+
+impl RoomHandle {
+    /// Pin the message `event_id`, or unpin it. The room lists and the
+    /// timelines' rows show it at once.
+    pub async fn set_pinned(&self, event_id: &EventId, pin: bool) -> Result<()> {
+        let (echoes, room) = (&self.session.echoes, &self.room);
+        let mut pinned = (echoes.pending_pinned(self.id()))
+            .or_else(|| room.pinned_event_ids())
+            .unwrap_or_default();
+        if !pin {
+            pinned.retain(|id| id != event_id);
+        } else if !pinned.iter().any(|id| id == event_id) {
+            pinned.push(event_id.to_owned());
+        }
+        echoes.set_pinned(self.id(), pinned.clone());
+        let result = if pin {
+            room.pin_event(event_id).await
+        } else {
+            room.unpin_event(event_id).await
+        };
+        echoes.pinned_answered(self.id(), &pinned, result.is_ok(), Instant::now());
+        result?;
+        Ok(())
+    }
+
+    /// Whether we may pin and unpin messages in the room.
+    pub async fn can_pin(&self) -> Result<bool> {
+        can_pin(&self.room).await
     }
 }
 

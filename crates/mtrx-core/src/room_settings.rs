@@ -29,7 +29,7 @@ use matrix_sdk::{
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    Error, Permissions, Result, Session,
+    Error, Permissions, Result, RoomHandle, Session,
     media::guess_mimetype,
     permissions::{everyone_can_edit, power_levels},
     rooms::space_children,
@@ -176,7 +176,7 @@ pub struct RoomSettings {
 
 impl Session {
     pub async fn room_settings(&self, room_id: &RoomId) -> Result<RoomSettings> {
-        let room = self.room(room_id)?;
+        let room = self.sdk_room(room_id)?;
         let levels = power_levels(&room).await?;
         let own = self.user_id();
         let can = |state| levels.user_can_send_state(&own, state);
@@ -322,7 +322,7 @@ impl Session {
     /// Change who may join; [`Access::SpaceMembers`] lets in members of the
     /// joined spaces the room is in.
     pub async fn set_room_access(&self, room_id: &RoomId, access: Access) -> Result<()> {
-        let room = self.room(room_id)?;
+        let room = self.sdk_room(room_id)?;
         let rule = match access {
             Access::Invite => JoinRule::Invite,
             Access::Public => JoinRule::Public,
@@ -343,7 +343,7 @@ impl Session {
 
     /// Give the room the address `#name:our.server`, or none.
     pub async fn set_address(&self, room_id: &RoomId, name: Option<&str>) -> Result<()> {
-        let room = self.room(room_id)?;
+        let room = self.sdk_room(room_id)?;
         let alias = match name {
             Some(name) => {
                 let alias = RoomAliasId::parse(format!("#{name}:{}", self.user_id().server_name()))
@@ -385,17 +385,17 @@ impl Session {
 
     pub async fn set_history(&self, room_id: &RoomId, history: History) -> Result<()> {
         let content = RoomHistoryVisibilityEventContent::new(history.into());
-        synced::send_state(&self.room(room_id)?, &EmptyStateKey, content).await
+        synced::send_state(&self.sdk_room(room_id)?, &EmptyStateKey, content).await
     }
 
     /// Encrypt the room's messages from now on; not to be undone.
     pub async fn encrypt_room(&self, room_id: &RoomId) -> Result<()> {
-        self.room(room_id)?.enable_encryption().await?;
+        self.sdk_room(room_id)?.enable_encryption().await?;
         Ok(())
     }
 
     pub async fn unban(&self, room_id: &RoomId, user: &UserId) -> Result<()> {
-        let room = self.room(room_id)?;
+        let room = self.sdk_room(room_id)?;
         let updates = self.client.subscribe_to_room_updates(room_id);
         room.unban_user(user, None).await?;
         synced::until(updates, || async {
@@ -415,7 +415,7 @@ impl Session {
         room_id: &RoomId,
         suggested: bool,
     ) -> Result<()> {
-        let space = self.room(space_id)?;
+        let space = self.sdk_room(space_id)?;
         let mut content = child_link(&space, room_id)
             .await
             .ok_or_else(|| Error::RoomNotFound(room_id.to_string()))?;
@@ -426,7 +426,7 @@ impl Session {
     /// Take the room out of the space: the space no longer lists it.
     pub async fn remove_from_space(&self, space_id: &RoomId, room_id: &RoomId) -> Result<()> {
         let removed = SpaceChildEventContent::new(Vec::new());
-        synced::send_state(&self.room(space_id)?, room_id, removed).await
+        synced::send_state(&self.sdk_room(space_id)?, room_id, removed).await
     }
 
     /// Joined spaces listing `room_id` as a child.
@@ -451,7 +451,7 @@ impl Session {
 
     /// Make the image at `path` the room's picture.
     pub async fn set_room_picture(&self, room_id: &RoomId, path: &Path) -> Result<()> {
-        let room = self.room(room_id)?;
+        let room = self.sdk_room(room_id)?;
         let mimetype = guess_mimetype(&path.to_string_lossy());
         if mimetype.type_() != mime_guess::mime::IMAGE {
             return Err(Error::InvalidMediaType(mimetype.to_string()));
@@ -462,7 +462,226 @@ impl Session {
     }
 
     pub async fn remove_room_picture(&self, room_id: &RoomId) -> Result<()> {
-        self.room(room_id)?.remove_avatar().await?;
+        self.sdk_room(room_id)?.remove_avatar().await?;
+        Ok(())
+    }
+}
+
+impl RoomHandle {
+    pub async fn settings(&self) -> Result<RoomSettings> {
+        let (session, room) = (&self.session, &self.room);
+        let levels = power_levels(room).await?;
+        let own = session.user_id();
+        let can = |state| levels.user_can_send_state(&own, state);
+        let listed = session
+            .client
+            .send(get_room_visibility::v3::Request::new(self.id().to_owned()))
+            .await
+            .ok()
+            .map(|response| response.visibility == Visibility::Public);
+        let banned = room
+            .members_no_sync(RoomMemberships::BAN)
+            .await?
+            .into_iter()
+            .map(|member| Banned {
+                id: member.user_id().to_owned(),
+                name: member.display_name().map(ToOwned::to_owned),
+                reason: member.event().reason().map(ToOwned::to_owned),
+            })
+            .collect();
+        let (spaces, can_add_to) = session.space_links(self.id()).await;
+        Ok(RoomSettings {
+            can_rename: can(StateEventType::RoomName),
+            can_change_topic: can(StateEventType::RoomTopic),
+            can_change_picture: can(StateEventType::RoomAvatar),
+            can_invite: levels.user_can_invite(&own),
+            access: room.join_rule().into(),
+            can_change_access: can(StateEventType::RoomJoinRules),
+            can_add_rooms: can(StateEventType::SpaceChild),
+            notify: session.notify_mode(room).await.into(),
+            address: room.canonical_alias(),
+            can_change_address: can(StateEventType::RoomCanonicalAlias),
+            listed,
+            history: room.history_visibility_or_default().into(),
+            can_change_history: can(StateEventType::RoomHistoryVisibility),
+            permissions: if everyone_can_edit(&levels) {
+                Permissions::Everyone
+            } else {
+                Permissions::Moderators
+            },
+            can_change_permissions: can(StateEventType::RoomPowerLevels),
+            encrypted: room.encryption_state().is_encrypted(),
+            can_encrypt: can(StateEventType::RoomEncryption),
+            version: room.version().map(|v| v.to_string()),
+            spaces,
+            can_add_to,
+            banned,
+            can_unban: levels.user_can_ban(&own),
+        })
+    }
+
+    /// Change when the room notifies, returning once the push rules that
+    /// sync brings back give it that mode (or after a while): a further
+    /// change then starts from the server's rules, not from older ones
+    /// still on their way.
+    ///
+    /// `notification_settings` applies a change to its rules as soon as the
+    /// server took it, before sync brings it back; a sync from midway
+    /// through the change (a rule added, the old one not yet removed) may
+    /// still replace them after that. So the change is confirmed by the
+    /// rules as last synced (the store's, kept before event handlers run),
+    /// once `notification_settings` applied that sync too.
+    pub async fn set_notify(&self, mode: NotifyMode) -> Result<()> {
+        let (session, room_id) = (&self.session, self.id());
+        let settings = &session.notification_settings;
+        let mode = RoomNotificationMode::from(mode);
+        let has_mode = || async {
+            settings
+                .get_user_defined_room_notification_mode(room_id)
+                .await
+                == Some(mode)
+        };
+        let synced_mode = || async {
+            let rules = session.client.account().push_rules().await.ok()?;
+            user_defined_mode(&rules, room_id)
+        };
+        if has_mode().await {
+            // Nothing to change, so nothing comes back.
+            return Ok(());
+        }
+        let mut synced = settings.subscribe_to_changes();
+        settings
+            .set_room_notification_mode(room_id, mode)
+            .await
+            .map_err(|e| Error::Notifications(e.to_string()))?;
+        let confirmed = async {
+            loop {
+                match synced.recv().await {
+                    Err(RecvError::Closed) => return,
+                    // A change missed while lagging still left its rules.
+                    _ if synced_mode().await == Some(mode) && has_mode().await => return,
+                    _ => {}
+                }
+            }
+        };
+        // The server took the change either way.
+        let _ = tokio::time::timeout(synced::CONFIRM, confirmed).await;
+        Ok(())
+    }
+
+    /// Change who may join; [`Access::SpaceMembers`] lets in members of the
+    /// joined spaces the room is in.
+    pub async fn set_join_rule(&self, access: Access) -> Result<()> {
+        let rule = match access {
+            Access::Invite => JoinRule::Invite,
+            Access::Public => JoinRule::Public,
+            Access::Knock => JoinRule::Knock,
+            Access::SpaceMembers => {
+                let spaces = self.session.parent_spaces(self.id()).await;
+                if spaces.is_empty() {
+                    return Err(Error::Permissions("the room is in no space".into()));
+                }
+                RoomJoinRulesEventContent::restricted(
+                    spaces.into_iter().map(AllowRule::room_membership).collect(),
+                )
+                .join_rule
+            }
+        };
+        let content = RoomJoinRulesEventContent::new(rule);
+        synced::send_state(&self.room, &EmptyStateKey, content).await
+    }
+
+    /// Give the room the address `#name:our.server`, or none.
+    pub async fn set_address(&self, name: Option<&str>) -> Result<()> {
+        let (client, room_id) = (&self.session.client, self.id());
+        let alias = match name {
+            Some(name) => {
+                let own = self.session.user_id();
+                let alias = RoomAliasId::parse(format!("#{name}:{}", own.server_name()))
+                    .map_err(|_| Error::Permissions(format!("“{name}” can't be an address")))?;
+                // Ours already if it was before; taken, the server says so.
+                let ours = client
+                    .resolve_room_alias(&alias)
+                    .await
+                    .is_ok_and(|r| r.room_id == room_id);
+                if !ours {
+                    client.create_room_alias(&alias, room_id).await?;
+                }
+                Some(alias)
+            }
+            None => None,
+        };
+        let mut content = RoomCanonicalAliasEventContent::new();
+        content.alias = alias;
+        content.alt_aliases = self.room.alt_aliases();
+        synced::send_state(&self.room, &EmptyStateKey, content).await
+    }
+
+    /// List the room in our server's directory, or not.
+    pub async fn set_listed(&self, listed: bool) -> Result<()> {
+        let visibility = if listed {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        };
+        let request = set_room_visibility::v3::Request::new(self.id().to_owned(), visibility);
+        self.session.client.send(request).await?;
+        Ok(())
+    }
+
+    pub async fn set_history(&self, history: History) -> Result<()> {
+        let content = RoomHistoryVisibilityEventContent::new(history.into());
+        synced::send_state(&self.room, &EmptyStateKey, content).await
+    }
+
+    /// Encrypt the room's messages from now on; not to be undone.
+    pub async fn encrypt(&self) -> Result<()> {
+        self.room.enable_encryption().await?;
+        Ok(())
+    }
+
+    pub async fn unban(&self, user: &UserId) -> Result<()> {
+        let room = &self.room;
+        let updates = self.session.client.subscribe_to_room_updates(self.id());
+        room.unban_user(user, None).await?;
+        synced::until(updates, || async {
+            !matches!(
+                room.get_member_no_sync(user).await,
+                Ok(Some(member)) if *member.membership() == MembershipState::Ban
+            )
+        })
+        .await;
+        Ok(())
+    }
+
+    /// Suggest `room` to this space's members, or not.
+    pub async fn set_suggested(&self, room: &RoomId, suggested: bool) -> Result<()> {
+        let mut content = child_link(&self.room, room)
+            .await
+            .ok_or_else(|| Error::RoomNotFound(room.to_string()))?;
+        content.suggested = suggested;
+        synced::send_state(&self.room, room, content).await
+    }
+
+    /// Take `room` out of this space: it no longer lists it.
+    pub async fn remove_child(&self, room: &RoomId) -> Result<()> {
+        let removed = SpaceChildEventContent::new(Vec::new());
+        synced::send_state(&self.room, room, removed).await
+    }
+
+    /// Make the image at `path` the room's picture.
+    pub async fn set_picture(&self, path: &Path) -> Result<()> {
+        let mimetype = guess_mimetype(&path.to_string_lossy());
+        if mimetype.type_() != mime_guess::mime::IMAGE {
+            return Err(Error::InvalidMediaType(mimetype.to_string()));
+        }
+        let data = tokio::fs::read(path).await?;
+        self.room.upload_avatar(&mimetype, data, None).await?;
+        Ok(())
+    }
+
+    pub async fn remove_picture(&self) -> Result<()> {
+        self.room.remove_avatar().await?;
         Ok(())
     }
 }

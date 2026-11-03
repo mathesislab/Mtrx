@@ -640,9 +640,8 @@ fn rooms_by_space_with_direct_chats_and_invites() {
             let profile = Profile::new(profile, dir.path(), SecretStore::File).unwrap();
             let name = name.to_owned();
             async move {
-                mtrx_core::Session::login(profile, &homeserver(), &name, PASSWORD)
-                    .await
-                    .unwrap()
+                let session = mtrx_core::Session::login(profile, &homeserver(), &name, PASSWORD);
+                Arc::new(session.await.unwrap())
             }
         };
         let (a, b, c) = (
@@ -668,7 +667,7 @@ fn rooms_by_space_with_direct_chats_and_invites() {
             .await
             .unwrap();
         let loose = a.create_room(make("Loose", false, None)).await.unwrap();
-        a.invite(&team, &b.user_id()).await.unwrap();
+        a.room(&team).unwrap().invite(&b.user_id()).await.unwrap();
         b.join(<&mtrx_core::RoomOrAliasId>::from(&*team), &[])
             .await
             .unwrap();
@@ -684,7 +683,7 @@ fn rooms_by_space_with_direct_chats_and_invites() {
             })
             .await
             .unwrap();
-        a.add_to_space(&team, &offer).await.unwrap();
+        a.room(&team).unwrap().add_child(&offer).await.unwrap();
         let with_carol = c.direct_chat(&a.user_id()).await.unwrap();
         let party = c
             .create_room(NewRoom {
@@ -864,7 +863,7 @@ fn rooms_made_set_up_joined_and_left() {
     );
 
     // Its settings: ours to change; the topic with a call link.
-    let settings = block_on(a.session.room_settings(room.clone())).unwrap();
+    let settings = block_on(a.session.room(room.clone()).unwrap().settings()).unwrap();
     assert!(settings.can_rename && settings.can_change_access && settings.encrypted);
     assert_eq!(settings.version.as_deref(), Some("12"));
     assert_eq!(settings.spaces[0].space_id, space);
@@ -878,18 +877,11 @@ fn rooms_made_set_up_joined_and_left() {
             name: String::new(),
         }],
     });
-    block_on(a.session.set_room_topic(room.clone(), topic)).unwrap();
-    block_on(
-        a.session
-            .set_notify_mode(room.clone(), mtrx_ffi::NotifyMode::Mentions),
-    )
-    .unwrap();
-    block_on(
-        a.session
-            .set_room_access(room.clone(), mtrx_ffi::Access::SpaceMembers),
-    )
-    .unwrap();
-    let settings = block_on(a.session.room_settings(room.clone())).unwrap();
+    let a_room = a.session.room(room.clone()).unwrap();
+    block_on(a_room.set_topic(topic)).unwrap();
+    block_on(a_room.set_notify(mtrx_ffi::NotifyMode::Mentions)).unwrap();
+    block_on(a_room.set_join_rule(mtrx_ffi::Access::SpaceMembers)).unwrap();
+    let settings = block_on(a.session.room(room.clone()).unwrap().settings()).unwrap();
     assert_eq!(
         (settings.notify, settings.access),
         (
@@ -942,7 +934,7 @@ fn rooms_made_set_up_joined_and_left() {
     let bob_id = b.session.user_id();
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
-        let members = block_on(a.session.members(room.clone())).unwrap();
+        let members = block_on(a_room.members()).unwrap();
         if let Some(bob) = members.iter().find(|m| m.user_id == bob_id && !m.invited) {
             assert!(bob.manage.up_to.is_some() && bob.manage.remove);
             break;
@@ -950,11 +942,12 @@ fn rooms_made_set_up_joined_and_left() {
         assert!(std::time::Instant::now() < deadline, "Bob joined");
         std::thread::sleep(Duration::from_millis(200));
     }
-    block_on(a.session.set_level(room.clone(), bob_id.clone(), level)).unwrap();
-    let members = block_on(b.session.members(room.clone())).unwrap();
+    block_on(a_room.set_level(bob_id.clone(), level)).unwrap();
+    let b_room = b.session.room(room.clone()).unwrap();
+    let members = block_on(b_room.members()).unwrap();
     assert!(members.iter().all(|m| !m.manage.remove));
 
-    block_on(b.session.leave(room.clone())).unwrap();
+    block_on(b_room.leave()).unwrap();
     wait_for("Bob left", &b_updates, |s: &Arc<RoomLists>| {
         !s.rooms().iter().any(|r| r.id == room)
     });
@@ -1348,7 +1341,8 @@ fn profiles_and_inviting_to_a_space() {
     // She invites him to the space; his room list shows the invite.
     let (rooms, updates) = forward();
     let _handle = block_on(bob.session.subscribe_room_lists(rooms)).unwrap();
-    block_on(alice.session.invite(space_id.clone(), bob_id.clone())).unwrap();
+    let space = alice.session.room(space_id.clone()).unwrap();
+    block_on(space.invite(bob_id.clone())).unwrap();
     // The invite can show before its state (the space's type and name)
     // has been read: wait for that too.
     let deadline = std::time::Instant::now() + TIMEOUT;
