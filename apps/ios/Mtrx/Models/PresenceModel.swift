@@ -47,20 +47,13 @@ final class PresenceModel: ObservableObject {
 
     /// The presence to show on a room: a direct chat's person (not ours).
     func presence(of room: RoomSummary) -> Presence? {
-        Self.person(of: room, ours: userId).flatMap(presence(of:))
-    }
-
-    /// The person of a direct chat whose presence is read: not the Notes
-    /// to self.
-    nonisolated static func person(of room: RoomSummary, ours: String) -> String? {
-        guard room.kind == .direct, let user = room.directUserId, user != ours else { return nil }
-        return user
+        room.person(ours: userId).flatMap { presence(of: $0.userId) }
     }
 
     /// Read the presence of the people of `rooms`' direct chats, from a
     /// loaded room list; subscribed anew only when they change.
     func follow(_ rooms: [RoomSummary]) {
-        let users = Set(rooms.compactMap { Self.person(of: $0, ours: userId) })
+        let users = Set(rooms.compactMap { $0.person(ours: userId)?.userId })
         guard available, users != self.users else { return }
         self.users = users
         if foreground {

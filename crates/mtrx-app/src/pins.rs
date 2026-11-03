@@ -97,10 +97,7 @@ impl Pins {
             let Some(id) = event.event_id.clone() else {
                 continue;
             };
-            let sender = event
-                .sender_name
-                .clone()
-                .unwrap_or_else(|| event.sender.to_string());
+            let sender = event.sender.display_name();
             let go = button(
                 column![
                     text(sender).size(12).font(fonts::SEMIBOLD),

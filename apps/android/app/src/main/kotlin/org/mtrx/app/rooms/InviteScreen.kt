@@ -56,7 +56,7 @@ fun InviteContent(room: RoomSummary, images: Images, busy: Boolean, onAccept: ()
             Avatar(
                 room.name,
                 room.avatarUrl,
-                room.directUserId ?: room.id,
+                room.directUser?.userId ?: room.id,
                 images,
                 size = 80.dp,
                 shape = if (space) RoundedCornerShape(16.dp) else CircleShape,

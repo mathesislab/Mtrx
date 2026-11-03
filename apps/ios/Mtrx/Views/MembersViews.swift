@@ -27,7 +27,7 @@ struct MembersSection: View {
     }
 
     private func rows(_ members: [Member]) -> some View {
-        ForEach(members, id: \.userId) { member in
+        ForEach(members, id: \.user.userId) { member in
             if member.manageable {
                 NavigationLink {
                     MemberMenu(member: member, model: model)
@@ -41,7 +41,7 @@ struct MembersSection: View {
     }
 }
 
-/// A member: picture, name (else ID) and role.
+/// A member: picture, name and user ID, and role.
 struct MemberRow: View {
     let member: Member
 
@@ -49,17 +49,15 @@ struct MemberRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AvatarView(name: member.shownName, uri: member.avatarUrl, size: avatarSize)
+            AvatarView(name: member.user.displayName, uri: member.user.avatarUrl, size: avatarSize)
             AdaptiveStack(spacing: 2) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(member.shownName)
+                    Text(member.user.displayName)
                         .lineLimit(1, accessibility: 3)
-                    if member.name != nil {
-                        Text(member.userId)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1, accessibility: 3)
-                    }
+                    Text(member.user.userId)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1, accessibility: 3)
                 }
                 Spacer(minLength: 8)
                 if let role = member.label {
@@ -71,11 +69,6 @@ struct MemberRow: View {
         }
         .contentShape(Rectangle())
     }
-}
-
-extension Member {
-    /// Their name, else their user ID.
-    var shownName: String { name ?? userId }
 }
 
 /// What we may do to a member: the levels we may give them (theirs
@@ -91,16 +84,16 @@ struct MemberMenu: View {
     @State private var removing: Bool?
     @State private var reason = ""
 
-    private var name: String { member.shownName }
+    private var name: String { member.user.displayName }
 
     var body: some View {
         List {
             Section {
                 HStack(spacing: 12) {
-                    AvatarView(name: name, uri: member.avatarUrl, size: 44)
+                    AvatarView(name: name, uri: member.user.avatarUrl, size: 44)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(name).font(.headline)
-                        Text(member.userId)
+                        Text(member.user.userId)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
@@ -153,7 +146,7 @@ struct MemberMenu: View {
             presenting: confirming
         ) { confirming in
             Button(confirming.confirmation.button, role: .destructive) {
-                model.setLevel(confirming.level, of: member.userId)
+                model.setLevel(confirming.level, of: member.user.userId)
                 dismiss()
             }
             Button("Cancel", role: .cancel) {}
@@ -178,7 +171,7 @@ struct MemberMenu: View {
         ) {
             TextField("Reason (optional, they see it)", text: $reason)
             Button(removing == true ? "Ban" : "Remove", role: .destructive) {
-                model.remove(member.userId, reason: reason, ban: removing == true)
+                model.remove(member.user.userId, reason: reason, ban: removing == true)
                 dismiss()
             }
             Button("Cancel", role: .cancel) {}
@@ -205,7 +198,7 @@ struct MemberMenu: View {
         if let confirmation = asking {
             confirming = (level, confirmation)
         } else {
-            model.setLevel(level, of: member.userId)
+            model.setLevel(level, of: member.user.userId)
             dismiss()
         }
     }

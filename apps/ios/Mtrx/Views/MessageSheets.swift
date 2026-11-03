@@ -5,7 +5,7 @@ import SwiftUI
 /// part until the name is known).
 struct PeopleSheet: View {
     let title: String
-    let people: [Reader]
+    let people: [User]
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {

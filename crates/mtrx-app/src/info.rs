@@ -8,9 +8,8 @@ use iced::{
     widget::{button, column, container, pick_list, row, space, stack, text, text_input, toggler},
 };
 use mtrx_core::{
-    Access, CallService, History, MxcUri, NotifyMode, OwnedMxcUri, OwnedRoomId, OwnedUserId,
-    Permissions, RoomHandle, RoomKind, RoomSettings, RoomSummary, RoomTag, Topic, UserInfo,
-    UserSummary,
+    Access, CallService, History, MxcUri, NotifyMode, OwnedRoomId, OwnedUserId, Permissions,
+    RoomHandle, RoomKind, RoomSettings, RoomSummary, RoomTag, Topic, User, UserInfo,
 };
 
 use crate::{
@@ -64,7 +63,7 @@ pub struct Shown<'a> {
 #[derive(Debug, Clone)]
 pub enum Target {
     /// With the name and picture known so far.
-    User(UserSummary),
+    User(User),
     /// The room's settings.
     Room(OwnedRoomId),
 }
@@ -353,7 +352,7 @@ impl Card {
             .then_some(app::Message::Info(Message::SaveDetails))
     }
 
-    fn user_view<'a>(&'a self, user: &'a UserSummary, shown: Shown<'a>) -> Framed<'a> {
+    fn user_view<'a>(&'a self, user: &'a User, shown: Shown<'a>) -> Framed<'a> {
         let Shown {
             rooms,
             avatars,
@@ -364,18 +363,18 @@ impl Card {
             ..
         } = shown;
         let presence = presences.get(&user.id);
-        let name = user.name.as_deref().unwrap_or(user.id.localpart());
+        let name = user.display_name();
         // The star favourites the direct chat, made if there is none.
-        let chat = rooms
-            .iter()
-            .find(|r| r.kind == RoomKind::Direct && r.direct_user.as_ref() == Some(&user.id));
+        let chat = rooms.iter().find(|r| {
+            r.kind == RoomKind::Direct && r.direct_user.as_ref().map(|u| &u.id) == Some(&user.id)
+        });
         let star = match chat {
             Some(chat) => sidebar::star_button(&chat.id, chat.tag == RoomTag::Favourite),
             None => sidebar::star_for(app::Message::FavouritePerson(user.id.clone()), false),
         };
         let picture = avatars.view(
             user.id.as_str(),
-            name,
+            &name,
             user.avatar.as_deref(),
             AVATAR,
             Shape::Circle,
@@ -1127,7 +1126,7 @@ fn apply(settings: &mut RoomSettings, change: &Change) {
                 link.suggested = *suggested;
             }
         }
-        Change::Unban(user) => settings.banned.retain(|b| &b.id != user),
+        Change::Unban(user) => settings.banned.retain(|b| &b.user.id != user),
     }
 }
 
@@ -1175,10 +1174,10 @@ fn facts(room: &RoomSummary, settings: &RoomSettings) -> String {
 /// Who is banned and why, each to let back where we may (`can_unban`).
 fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Message> {
     let rows = settings.banned.iter().map(|banned| {
-        let mut who = column![text(banned.name.as_deref().unwrap_or(banned.id.as_str())).size(13)];
+        let mut who = column![text(banned.user.display_name()).size(13)];
         let detail = match &banned.reason {
-            Some(reason) => format!("{} · {reason}", banned.id),
-            None => banned.id.to_string(),
+            Some(reason) => format!("{} · {reason}", banned.user.id),
+            None => banned.user.id.to_string(),
         };
         who = who.push(selectable_text(detail).size(12).style(text::secondary));
         let mut line = row![who.width(Length::Fill)].align_y(Alignment::Center);
@@ -1188,7 +1187,7 @@ fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Mes
                     .padding([3, 10])
                     .style(style::secondary_button)
                     .on_press_maybe(can_unban.then(|| {
-                        app::Message::Info(Message::Change(Change::Unban(banned.id.clone())))
+                        app::Message::Info(Message::Change(Change::Unban(banned.user.id.clone())))
                     })),
             );
         }
@@ -1299,16 +1298,7 @@ impl fmt::Display for Join {
 /// A card target for a room in the list: the person for a direct chat.
 pub fn target_of(room: &RoomSummary) -> Target {
     match (&room.direct_user, room.kind) {
-        (Some(user), RoomKind::Direct) => Target::User(UserSummary {
-            id: user.clone(),
-            name: Some(room.name.clone()),
-            avatar: room.avatar.clone(),
-        }),
+        (Some(user), RoomKind::Direct) => Target::User(user.clone()),
         _ => Target::Room(room.id.clone()),
     }
-}
-
-/// A card target for a message's sender.
-pub fn sender(id: OwnedUserId, name: Option<String>, avatar: Option<OwnedMxcUri>) -> Target {
-    Target::User(UserSummary { id, name, avatar })
 }

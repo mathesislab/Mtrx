@@ -213,7 +213,7 @@ final class FakeSession: Session, @unchecked Sendable {
     var encryptionListener: EncryptionStateListener?
     var encryptionSubscription: FakeTaskHandle?
     /// What `userProfile` returns, and for whom it was asked.
-    var profile: Result<UserProfile, Error> = .failure(MtrxError.Other(reason: "No connection"))
+    var profile: Result<User, Error> = .failure(MtrxError.Other(reason: "No connection"))
     var profileRequests: [String] = []
     var invites: [(roomId: String, userId: String)] = []
     var inviteError: Error?
@@ -286,7 +286,7 @@ final class FakeSession: Session, @unchecked Sendable {
         return handle
     }
 
-    override func userProfile(userId: String) async throws -> UserProfile {
+    override func userProfile(userId: String) async throws -> User {
         profileRequests.append(userId)
         return try profile.get()
     }
@@ -586,12 +586,11 @@ enum Make {
 
     static func event(
         _ sender: String, _ content: EventContent, at minutes: Double = 0, own: Bool = false,
-        state: SendState = .sent, eventId: String? = nil, editable: Bool = false, readBy: [Reader] = []
+        state: SendState = .sent, eventId: String? = nil, editable: Bool = false, readBy: [User] = []
     ) -> TimelineEvent {
         TimelineEvent(
-            eventId: eventId, senderId: "@\(sender):example.org", senderName: sender.capitalized,
-            senderAvatarUrl: nil, timestamp: start.addingTimeInterval(minutes * 60), own: own, content: content,
-            sendState: state, editable: editable, readBy: readBy)
+            eventId: eventId, sender: user(sender), timestamp: start.addingTimeInterval(minutes * 60), own: own,
+            content: content, sendState: state, editable: editable, readBy: readBy)
     }
 
     static func text(
@@ -619,8 +618,17 @@ enum Make {
         return presence
     }
 
-    static func reader(_ name: String, named: Bool = true) -> Reader {
-        Reader(userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil)
+    /// `@name:example.org`, named `Name` unless `named` is false; shown as
+    /// the library names them.
+    static func user(_ name: String, named: Bool = true) -> User {
+        User(
+            userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil,
+            displayName: named ? name.capitalized : name)
+    }
+
+    /// Someone known by their ID only, shown by its local part.
+    static func user(id userId: String) -> User {
+        User(userId: userId, name: nil, avatarUrl: nil, displayName: String(userId.dropFirst().prefix { $0 != ":" }))
     }
 
     /// The row of `event`, as the library gives it: the first of its group
@@ -666,7 +674,8 @@ enum Make {
         RoomSummary(
             id: id, name: name ?? id, avatarUrl: avatarUrl, topic: topic, kind: kind, invited: invited,
             encrypted: false, unreadMessages: unread, unreadMentions: mentions, unreadNotifications: 0,
-            lastActivity: lastActivity, directUserId: directUser, alias: alias, joinedMembers: members,
+            lastActivity: lastActivity, directUser: directUser.map { user(id: $0) }, alias: alias,
+            joinedMembers: members,
             parents: parents, public: false, pinned: pinned)
     }
 
@@ -698,7 +707,7 @@ enum Make {
                 .map { LevelChoice(title: $0.0, level: $0.1, current: $0.1 == level, confirmation: nil) }
         }
         return Member(
-            userId: "@\(name):example.org", name: named ? name.capitalized : nil, avatarUrl: nil,
+            user: user(name, named: named),
             role: level == 100 || level == nil ? .admin : level == 50 ? .moderator : .member, level: level,
             invited: invited, own: name == "me",
             manage: Manage(remove: remove, ban: ban, upTo: upTo, defaultLevel: 0, alone: false),

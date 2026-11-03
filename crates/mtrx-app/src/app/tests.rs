@@ -55,9 +55,11 @@ async fn user(prefix: &str, dir: &TempDir) -> (String, Session) {
 /// A member of a room, for mentions.
 fn person(id: &str, name: &str, role: mtrx_core::Role) -> mtrx_core::Member {
     mtrx_core::Member {
-        id: OwnedUserId::try_from(id).unwrap(),
-        name: Some(name.into()),
-        avatar: None,
+        user: mtrx_core::User {
+            id: OwnedUserId::try_from(id).unwrap(),
+            name: Some(name.into()),
+            avatar: None,
+        },
         role,
         level: Some(role.level(0)),
         invited: false,
@@ -675,9 +677,9 @@ async fn main_screen_with_math() {
     tokio::time::timeout(TIMEOUT, async {
         while let Some(entries) = entries.next().await {
             let joined = |user: &Session| {
-                entries
-                    .iter()
-                    .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == user.user_id()))
+                entries.iter().any(
+                    |e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == user.user_id()),
+                )
             };
             if joined(&bob) && joined(&carol) {
                 break;
@@ -776,7 +778,7 @@ async fn main_screen_with_math() {
                 })
             };
             let from_carol = events().any(|ev| {
-                ev.sender == carol.user_id() && matches!(ev.content, EventContent::Message(_))
+                ev.sender.id == carol.user_id() && matches!(ev.content, EventContent::Message(_))
             });
             let reply_loaded =
                 messages().any(|m| m.in_reply_to.as_ref().is_some_and(|r| r.preview.is_some()));
@@ -817,7 +819,7 @@ async fn main_screen_with_math() {
                 .unwrap()
                 .clone();
             notes.id = "!notes:localhost".try_into().unwrap();
-            notes.direct_user = Some(alice.user_id());
+            notes.direct_user = Some(mtrx_core::User::from(alice.user_id()));
             notes.unread_messages = 2;
             state.rooms.push(notes);
         }
@@ -924,7 +926,7 @@ async fn main_screen_with_math() {
             });
         } else {
             let carol_message = entries.iter().rev().find_map(|e| match e {
-                TimelineEntry::Event(ev) if ev.sender == carol.user_id() => Some(ev),
+                TimelineEntry::Event(ev) if ev.sender.id == carol.user_id() => Some(ev),
                 _ => None,
             });
             open.compose = Compose::Reply(
@@ -1763,7 +1765,7 @@ async fn room_management_screens() {
             dialog.update(dialog::Message::Name("model runs".into()));
             dialog.update(dialog::Message::OwnersOffered(true));
             let nils = OwnedUserId::try_from("@nils:example.org").unwrap();
-            dialog.update(dialog::Message::Pick(mtrx_core::UserSummary {
+            dialog.update(dialog::Message::Pick(mtrx_core::User {
                 id: nils.clone(),
                 name: Some("Nils".into()),
                 avatar: None,
@@ -2644,9 +2646,9 @@ async fn website_screenshots() {
     tokio::time::timeout(TIMEOUT, async {
         while let Some(entries) = entries.next().await {
             let joined = |user: &Session| {
-                entries
-                    .iter()
-                    .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender == user.user_id()))
+                entries.iter().any(
+                    |e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == user.user_id()),
+                )
             };
             if joined(&ben) && joined(&chloe) {
                 break;
@@ -2744,7 +2746,7 @@ async fn website_screenshots() {
                     _ => None,
                 })
             };
-            let named = messages().all(|(ev, _)| ev.sender_name.is_some());
+            let named = messages().all(|(ev, _)| ev.sender.name.is_some());
             let reply = messages()
                 .any(|(_, m)| m.in_reply_to.as_ref().is_some_and(|r| r.preview.is_some()));
             let reactions = messages().filter(|(_, m)| !m.reactions.is_empty()).count() == 2;

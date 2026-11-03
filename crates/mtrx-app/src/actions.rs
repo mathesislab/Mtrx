@@ -13,8 +13,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Event, EventKey, MessageAction, MessageRow, MxcUri, OwnedEventId, OwnedRoomId, Reaction,
-    Reader, Reply, SendState,
+    Event, EventKey, MessageAction, MessageRow, MxcUri, OwnedEventId, OwnedRoomId, Reaction, Reply,
+    SendState, User,
 };
 use mtrx_format::Document;
 
@@ -596,7 +596,8 @@ fn pill<'a>(
         .on_dismiss(act(room, Message::CloseReactors))
         .into();
     }
-    let names: Vec<_> = reaction.by.iter().map(reader_name).collect();
+    let names: Vec<_> = reaction.by.iter().map(User::display_name).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
     let label = row![
         text(reaction.key.clone()).size(12).font(fonts::EMOJI),
         text(named(&names)).size(12),
@@ -686,7 +687,7 @@ pub fn read_markers<'a>(
     for reader in event.read_by.iter().take(MAX_READERS) {
         markers = markers.push(avatars.view(
             reader.id.as_str(),
-            reader_name(reader),
+            &reader.display_name(),
             reader.avatar.as_deref(),
             READER_AVATAR,
             Shape::Circle,
@@ -712,7 +713,8 @@ pub fn read_markers<'a>(
                 .into(),
         );
     }
-    let names: Vec<_> = event.read_by.iter().map(reader_name).collect();
+    let names: Vec<_> = event.read_by.iter().map(User::display_name).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
     // The names show over the pictures.
     Some(hint(markers, read_by(&names), Position::Top))
 }
@@ -803,9 +805,10 @@ fn unsent_menu<'a>(room: &OwnedRoomId, event: &Event) -> Element<'a, app::Messag
 
 /// People who read up to a message or reacted to it; a click on one opens
 /// their card.
-fn people<'a>(people: &[Reader], avatars: &Avatars) -> Element<'a, app::Message> {
+fn people<'a>(people: &[User], avatars: &Avatars) -> Element<'a, app::Message> {
     let rows = people.iter().map(|reader| {
-        let mut label = column![ellipsis(reader_name(reader).to_owned()).size(13)];
+        let name = reader.display_name();
+        let mut label = column![ellipsis(name.clone()).size(13)];
         if reader.name.is_some() {
             label = label.push(
                 ellipsis(reader.id.to_string())
@@ -815,7 +818,7 @@ fn people<'a>(people: &[Reader], avatars: &Avatars) -> Element<'a, app::Message>
         }
         let picture = avatars.view(
             reader.id.as_str(),
-            reader_name(reader),
+            &name,
             reader.avatar.as_deref(),
             LISTED_AVATAR,
             Shape::Circle,
@@ -824,11 +827,7 @@ fn people<'a>(people: &[Reader], avatars: &Avatars) -> Element<'a, app::Message>
             .width(Length::Fill)
             .padding([4, 6])
             .style(style::list_item(false))
-            .on_press(app::Message::ShowInfo(info::sender(
-                reader.id.clone(),
-                reader.name.clone(),
-                reader.avatar.clone(),
-            )))
+            .on_press(app::Message::ShowInfo(info::Target::User(reader.clone())))
             .into()
     });
     container(scrollable(column(rows).spacing(2)))
@@ -862,10 +861,6 @@ fn named(names: &[&str]) -> String {
     }
 }
 
-fn reader_name(reader: &Reader) -> &str {
-    reader.name.as_deref().unwrap_or(reader.id.localpart())
-}
-
 /// Pictures of readers shown, with their sizes: in the markers, and of
 /// everyone while `listed`.
 pub fn reader_avatars(event: &Event, listed: bool) -> impl Iterator<Item = (&MxcUri, f32)> {
@@ -893,7 +888,7 @@ pub fn reactor_avatars<'a>(
     listed_avatars(by)
 }
 
-fn listed_avatars(people: &[Reader]) -> impl Iterator<Item = (&MxcUri, f32)> {
+fn listed_avatars(people: &[User]) -> impl Iterator<Item = (&MxcUri, f32)> {
     people
         .iter()
         .filter_map(|r| Some((r.avatar.as_deref()?, LISTED_AVATAR)))
@@ -944,8 +939,9 @@ mod tests {
 
         let reply = Reply {
             event_id: "$original:x".try_into().unwrap(),
-            sender: Some("@carol:x".try_into().unwrap()),
-            sender_name: None,
+            sender: Some(mtrx_core::User::from(
+                mtrx_core::OwnedUserId::try_from("@carol:x").unwrap(),
+            )),
             preview: Some("Where is the data from?".into()),
             kind: None,
             failed: false,

@@ -136,7 +136,7 @@ final class PinnedModel: ObservableObject {
             guard let event = row.messageRow?.event, case .message(let message) = event.content else {
                 return nil
             }
-            return Pin(id: row.id, eventId: event.eventId, sender: event.displayName, text: message.summary)
+            return Pin(id: row.id, eventId: event.eventId, sender: event.sender.displayName, text: message.summary)
         }
     }
 }

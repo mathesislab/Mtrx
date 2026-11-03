@@ -11,6 +11,7 @@ import org.junit.Test
 import org.mtrx.app.eventItem
 import org.mtrx.app.messageEvent
 import org.mtrx.app.textEvent
+import org.mtrx.app.user
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
@@ -19,7 +20,6 @@ import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Reaction
-import uniffi.mtrx.Reader
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.RowContent
 import uniffi.mtrx.SendState
@@ -54,14 +54,6 @@ class TimelineRowsTest {
         assertEquals("2", latestEventId(rows))
     }
 
-    @Test
-    fun localparts() {
-        assertEquals("alice", localpart("@alice:example.org"))
-        assertEquals("alice", localpart("alice"))
-    }
-
-    private fun reader(userId: String, name: String? = null) = Reader(userId = userId, name = name, avatarUrl = null)
-
     private fun text(body: String, edited: Boolean = false, reactions: List<Reaction> = emptyList(), replyTo: ReplyQuote? = null) =
         Message(kind = MessageKind.TEXT, body = body, edited = edited, media = null, reactions = reactions, replyTo = replyTo, rawBody = body)
 
@@ -70,8 +62,7 @@ class TimelineRowsTest {
     private fun quoted(state: QuoteState, kind: MessageKind? = null, body: String? = null) = ReplyQuote(
         eventId = "\$original",
         state = state,
-        senderId = if (state == QuoteState.LOADED) alice else null,
-        senderName = null,
+        sender = if (state == QuoteState.LOADED) user(alice) else null,
         kind = kind,
         body = body,
     )
@@ -79,10 +70,10 @@ class TimelineRowsTest {
     @Test
     fun rowsCarryReactionsQuotesEditsAndReaders() {
         val reactions = listOf(
-            Reaction(key = "👍", count = 2uL, byUs = true, senders = listOf(reader(me, "Me"), reader(bob))),
-            Reaction(key = "🎉", count = 1uL, byUs = false, senders = listOf(reader(bob, "Bob"))),
+            Reaction(key = "👍", count = 2uL, byUs = true, senders = listOf(user(me, "Me"), user(bob))),
+            Reaction(key = "🎉", count = 1uL, byUs = false, senders = listOf(user(bob, "Bob"))),
         )
-        val readers = listOf("a", "b", "c", "d", "e").map { reader("@$it:example.org") }
+        val readers = listOf("a", "b", "c", "d", "e").map { user("@$it:example.org") }
         val row = row(
             messageEvent(
                 "2",
@@ -99,9 +90,6 @@ class TimelineRowsTest {
         assertEquals(listOf("@a:example.org", "@b:example.org", "@c:example.org"), row.readers.shown.map { it.userId })
         assertEquals(2, row.readers.more)
         assertEquals(0, Readers(readers.take(3)).more)
-        // Names may come later: the ID's localpart until then.
-        assertEquals("bob", personName(reader(bob)))
-        assertEquals("Bob", personName(reader(bob, "Bob")))
 
         val plain = row(textEvent("3", bob, "plain"))
         assertFalse(plain.edited)

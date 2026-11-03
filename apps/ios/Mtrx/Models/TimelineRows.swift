@@ -51,7 +51,7 @@ struct MessageRow: Equatable {
     var quote: ReplyQuote? { message?.replyTo }
     var edited: Bool { message?.edited ?? false }
     /// The others who read up to here.
-    var readers: [Reader] { event.readBy }
+    var readers: [User] { event.readBy }
 
     /// What an undecryptable message says instead of its text; nil for
     /// others.
@@ -66,36 +66,17 @@ struct MessageRow: Equatable {
     }
 }
 
-/// `alice` of `@alice:example.org`.
-func localpart(_ userId: String) -> String {
-    let name = userId.hasPrefix("@") ? userId.dropFirst() : Substring(userId)
-    return String(name.prefix { $0 != ":" })
-}
-
 /// Who read up to a message, as its row shows them: at most `shown`
 /// avatars, then "+N".
 enum ReaderAvatars {
     static let shown = 3
 
-    static func split(_ readers: [Reader]) -> (shown: [Reader], more: Int) {
+    static func split(_ readers: [User]) -> (shown: [User], more: Int) {
         (Array(readers.prefix(shown)), max(0, readers.count - shown))
     }
 }
 
-extension Reader {
-    /// The display name, else the user ID's local part (until the name is
-    /// known).
-    var displayName: String {
-        name ?? localpart(userId)
-    }
-}
-
 extension ReplyQuote {
-    /// The original's sender, once loaded.
-    var senderLabel: String? {
-        senderName ?? senderId.map(localpart)
-    }
-
     /// The original in a few words: its text, or for a file the kind and
     /// its name; "Loading…" while it is fetched.
     var preview: String {
@@ -127,12 +108,5 @@ extension MessageKind {
         case .file: return "File"
         default: return nil
         }
-    }
-}
-
-extension TimelineEvent {
-    /// The sender's display name, else their user ID's local part.
-    var displayName: String {
-        senderName ?? localpart(senderId)
     }
 }

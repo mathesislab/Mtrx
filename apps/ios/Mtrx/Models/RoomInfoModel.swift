@@ -139,7 +139,7 @@ final class RoomInfoModel: ObservableObject {
 
     @discardableResult
     func unban(_ user: String) -> Task<Void, Never> {
-        change { $0.banned.removeAll { $0.userId == user } } call: { try await $0.unban(userId: user) }
+        change { $0.banned.removeAll { $0.user.userId == user } } call: { try await $0.unban(userId: user) }
     }
 
     // MARK: Members

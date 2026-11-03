@@ -29,7 +29,7 @@ import uniffi.mtrx.TaskHandle
 
 /** The person of a direct chat whose presence shows: not ours (the Notes to self). */
 fun directPerson(room: RoomSummary, ownUserId: String): String? =
-    room.takeIf { it.kind == RoomKind.DIRECT }?.directUserId?.takeIf { it != ownUserId }
+    room.takeIf { it.kind == RoomKind.DIRECT }?.directUser?.userId?.takeIf { it != ownUserId }
 
 /** The people of the direct chats in [lists], whose presence is read. */
 fun directPeople(lists: RoomListsInterface, ownUserId: String): Set<String> =

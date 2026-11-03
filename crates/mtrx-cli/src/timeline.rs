@@ -3,7 +3,9 @@
 use std::{fmt::Write, time::SystemTime};
 
 use chrono::{DateTime, Local};
-use mtrx_core::{Event, EventContent, MembershipChange, MessageKind, SendState, TimelineEntry};
+use mtrx_core::{
+    Event, EventContent, MembershipChange, MessageKind, SendState, TimelineEntry, User,
+};
 
 pub fn entry_line(entry: &TimelineEntry) -> String {
     match entry {
@@ -16,10 +18,7 @@ pub fn entry_line(entry: &TimelineEntry) -> String {
 
 pub fn event_line(event: &Event) -> String {
     let time = local(event.timestamp).format("%H:%M");
-    let who = event
-        .sender_name
-        .clone()
-        .unwrap_or_else(|| event.sender.to_string());
+    let who = event.sender.display_name();
     let text = match &event.content {
         EventContent::Message(m) => {
             let mut text = match m.kind {
@@ -27,7 +26,8 @@ pub fn event_line(event: &Event) -> String {
                 MessageKind::Text | MessageKind::Notice => match &m.in_reply_to {
                     Some(reply) => format!(
                         "{who} (replying to {}): {}",
-                        reply.sender_name.as_deref().unwrap_or("a message"),
+                        (reply.sender.as_ref())
+                            .map_or_else(|| "a message".into(), User::display_name),
                         m.body
                     ),
                     None => format!("{who}: {}", m.body),
