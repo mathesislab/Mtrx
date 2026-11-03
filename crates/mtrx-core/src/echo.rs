@@ -255,7 +255,7 @@ mod tests {
             owned_room_id!("!b:x"),
             owned_room_id!("!c:x"),
         );
-        let plain = |id: &OwnedRoomId| room(id.as_str(), RoomKind::Room, &[]);
+        let plain = |id: &OwnedRoomId| room(id.as_str(), RoomKind::Room);
         let mut rooms = vec![plain(&a), plain(&b), plain(&c)];
         let now = Instant::now();
         echoes.set_tag(&a, RoomTag::Favourite);
@@ -309,8 +309,8 @@ mod tests {
         let echoes = Echoes::default();
         let (a, b) = (owned_room_id!("!a:x"), owned_room_id!("!b:x"));
         let mut rooms = vec![
-            room(a.as_str(), RoomKind::Room, &[]),
-            room(b.as_str(), RoomKind::Room, &[]),
+            room(a.as_str(), RoomKind::Room),
+            room(b.as_str(), RoomKind::Room),
         ];
         rooms[1].topic = Some("Old".into());
         let now = Instant::now();
@@ -339,7 +339,7 @@ mod tests {
         let echoes = Echoes::default();
         let a = owned_room_id!("!a:x");
         let (one, two) = (owned_event_id!("$1"), owned_event_id!("$2"));
-        let mut rooms = vec![room(a.as_str(), RoomKind::Room, &[])];
+        let mut rooms = vec![room(a.as_str(), RoomKind::Room)];
         rooms[0].pinned = vec![one.clone()];
         let now = Instant::now();
         assert_eq!(echoes.pending_pinned(&a), None);
@@ -384,7 +384,7 @@ mod tests {
         }
         echoes.drop_joining(&failed);
         echoes.drop_joining(&left);
-        let mut rooms = vec![room(invite.as_str(), RoomKind::Room, &[])];
+        let mut rooms = vec![room(invite.as_str(), RoomKind::Room)];
         rooms[0].invited = true;
         echoes.lay_over(&mut rooms, Instant::now());
         assert_eq!(
@@ -394,7 +394,7 @@ mod tests {
 
         // Listed as joined: here, no longer coming.
         rooms[0].invited = false;
-        rooms.push(room(made.as_str(), RoomKind::Space, &[]));
+        rooms.push(room(made.as_str(), RoomKind::Space));
         echoes.lay_over(&mut rooms, Instant::now());
         assert!(echoes.joining().is_empty());
     }
