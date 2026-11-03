@@ -125,7 +125,7 @@ pub fn avatars_of<'a>(
 ) -> impl Iterator<Item = (&'a mtrx_core::MxcUri, f32)> {
     members
         .into_iter()
-        .filter_map(|m| Some((m.avatar.as_deref()?, AVATAR)))
+        .filter_map(|m| Some((m.user.avatar.as_deref()?, AVATAR)))
 }
 
 fn heading<'a>(label: String) -> Element<'a, Message> {
@@ -150,21 +150,22 @@ struct Common {
 /// Hovered, the role becomes a menu to change it and ⋯ one to remove or
 /// ban them, where we may.
 fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a, Message> {
-    let name = member.name.as_deref().unwrap_or(member.id.localpart());
+    let user = &member.user;
+    let name = user.display_name();
     let avatar = shown.avatars.view(
-        member.id.as_str(),
-        name,
-        member.avatar.as_deref(),
+        user.id.as_str(),
+        &name,
+        user.avatar.as_deref(),
         AVATAR,
         Shape::Circle,
     );
-    let presence = shown.presences.get(&member.id);
+    let presence = shown.presences.get(&user.id);
     let role = member.label();
     let line = row![
         presence::with_dot(avatar, presence, AVATAR, |theme| {
             theme.extended_palette().background.weak.color
         }),
-        ellipsis(name).size(13).width(Length::Fill),
+        ellipsis(name.clone()).size(13).width(Length::Fill),
         container(
             text(role.clone().unwrap_or_default())
                 .size(11)
@@ -174,7 +175,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    let menu_of = |menu| (shown.room.clone(), member.id.clone(), menu);
+    let menu_of = |menu| (shown.room.clone(), user.id.clone(), menu);
     let opened = |menu| shown.menu == Some(&menu_of(menu));
     // An open menu shows alone, without the row's hint.
     let menu_open = opened(Menu::Role) || opened(Menu::More);
@@ -185,15 +186,11 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
             .width(Length::Fill)
             .padding([3, 4])
             .style(style::list_item(menu_open))
-            .on_press(Message::ShowInfo(crate::info::sender(
-                member.id.clone(),
-                member.name.clone(),
-                member.avatar.clone(),
-            )));
+            .on_press(Message::ShowInfo(crate::info::Target::User(user.clone())));
         if menu_open {
             card.into()
         } else {
-            hint(card, member.id.to_string(), Position::Left)
+            hint(card, user.id.to_string(), Position::Left)
         }
     };
     let slot = |content: Element<'a, Message>| -> Element<'a, Message> {
@@ -240,7 +237,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
                 .padding([0, 6])
                 .style(style::list_item(open))
                 .on_press(toggle(Menu::More)),
-            open.then(|| more_menu(member, name, shown.room)),
+            open.then(|| more_menu(member, &name, shown.room)),
             Side::Below,
             Edge::Right,
         )
@@ -284,7 +281,7 @@ fn role_menu<'a>(member: &Member, room: &OwnedRoomId) -> Element<'a, Message> {
     for choice in member.level_choices() {
         let on_press = (!choice.current).then(|| match choice.confirmation {
             Some(asked) => Message::OpenDialog(Kind::Level(change(Some((choice.level, asked))))),
-            None => Message::SetLevel(room.clone(), member.id.clone(), choice.level),
+            None => Message::SetLevel(room.clone(), member.user.id.clone(), choice.level),
         });
         items = items.push(role_item(
             choice.title,
@@ -341,7 +338,7 @@ fn more_menu<'a>(member: &Member, name: &str, room: &OwnedRoomId) -> Element<'a,
     let remove = |ban| {
         Message::OpenDialog(Kind::RemoveMember {
             room: room.clone(),
-            user: member.id.clone(),
+            user: member.user.id.clone(),
             name: name.to_owned(),
             ban,
         })

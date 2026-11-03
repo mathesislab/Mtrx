@@ -136,10 +136,10 @@ pub fn candidates<'a>(
     let query = query.to_lowercase();
     let mut found: Vec<(bool, &Member)> = members
         .iter()
-        .filter(|m| *m.id != *own)
+        .filter(|m| *m.user.id != *own)
         .filter_map(|m| {
-            let name = m.name.as_deref().unwrap_or(m.id.localpart()).to_lowercase();
-            let user = m.id.localpart().to_lowercase();
+            let name = m.user.display_name().to_lowercase();
+            let user = m.user.localpart().to_lowercase();
             let starts = name.starts_with(&query)
                 || user.starts_with(&query)
                 || name.split_whitespace().any(|word| word.starts_with(&query));
@@ -152,9 +152,9 @@ pub fn candidates<'a>(
         .into_iter()
         .take(MAX)
         .map(|(_, member)| {
-            let mention = match member.name.as_deref() {
+            let mention = match member.user.name.as_deref() {
                 Some(name) if mentions.iter().any(|m| m == name) => format!("@{name}"),
-                _ => member.id.to_string(),
+                _ => member.user.id.to_string(),
             };
             Candidate::Member { member, mention }
         })
@@ -191,17 +191,18 @@ pub fn view<'a>(
     let rows = candidates.iter().enumerate().map(|(i, candidate)| {
         let (picture, name, detail): (Element<'a, app::Message>, String, String) = match candidate {
             Candidate::Member { member, .. } => {
-                let name = member.name.as_deref().unwrap_or(member.id.localpart());
+                let user = &member.user;
+                let name = user.display_name();
                 (
                     avatars.view(
-                        member.id.as_str(),
-                        name,
-                        member.avatar.as_deref(),
+                        user.id.as_str(),
+                        &name,
+                        user.avatar.as_deref(),
                         AVATAR,
                         Shape::Circle,
                     ),
-                    name.to_owned(),
-                    member.id.to_string(),
+                    name,
+                    user.id.to_string(),
                 )
             }
             Candidate::Room => (
@@ -238,10 +239,14 @@ pub fn view<'a>(
 /// The texts `@` may mention among `members`, for the fields' highlighter
 /// ([`crate::highlight`]) and [`candidates`].
 pub fn texts(members: &[Member]) -> Arc<[String]> {
-    mtrx_core::mention_targets(members.iter().map(|m| (&*m.id, m.name.as_deref())))
-        .into_iter()
-        .map(|(target, _)| target.text)
-        .collect()
+    mtrx_core::mention_targets(
+        members
+            .iter()
+            .map(|m| (&*m.user.id, m.user.name.as_deref())),
+    )
+    .into_iter()
+    .map(|(target, _)| target.text)
+    .collect()
 }
 
 fn is_word(c: char) -> bool {
@@ -257,9 +262,11 @@ mod tests {
 
     fn member(id: &str, name: Option<&str>) -> Member {
         Member {
-            id: OwnedUserId::try_from(id).unwrap(),
-            name: name.map(Into::into),
-            avatar: None,
+            user: mtrx_core::User {
+                id: OwnedUserId::try_from(id).unwrap(),
+                name: name.map(Into::into),
+                avatar: None,
+            },
             role: Role::Member,
             level: Some(0),
             invited: false,
@@ -299,7 +306,7 @@ mod tests {
             member("@ronja:x.org", None),
         ];
         let mentions = texts(&members);
-        let own = members[0].id.clone();
+        let own = members[0].user.id.clone();
         let offered = |query, room| {
             candidates(query, &members, &mentions, &own, room)
                 .iter()
