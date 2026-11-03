@@ -640,8 +640,10 @@ fn rooms_by_space_with_direct_chats_and_invites() {
             let profile = Profile::new(profile, dir.path(), SecretStore::File).unwrap();
             let name = name.to_owned();
             async move {
-                let session = mtrx_core::Session::login(profile, &homeserver(), &name, PASSWORD);
-                Arc::new(session.await.unwrap())
+                let session = mtrx_core::Session::login(profile, &homeserver(), &name, PASSWORD)
+                    .await
+                    .unwrap();
+                Arc::new(session)
             }
         };
         let (a, b, c) = (
