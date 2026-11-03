@@ -84,7 +84,7 @@ final class SelectedSpaceTests: XCTestCase {
 
         // Party and Loose gone: Home lists none.
         let inSpaces = Make.roomsBySpaceRooms.filter { !["!party", "!loose"].contains($0.id) }
-        await send(Make.lists(inSpaces), to: model)
+        await send(Make.lists(inSpaces, children: Make.roomsBySpaceChildren), to: model)
         XCTAssertNil(model.selectedSpace)
         XCTAssertEqual(model.spacesPath, [])
     }

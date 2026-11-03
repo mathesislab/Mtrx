@@ -5,8 +5,14 @@
 //! space may join, ones that take requests to join, and those the user is
 //! in or invited to. Invite-only rooms of others are never listed.
 
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+
 use matrix_sdk::{
-    RoomState,
+    Room, RoomState,
     ruma::{
         MatrixToUri, MatrixUri, OwnedMxcUri, OwnedRoomAliasId, OwnedRoomId, OwnedRoomOrAliasId,
         OwnedServerName, RoomId, ServerName, UInt,
@@ -23,7 +29,7 @@ use matrix_sdk::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{Live, Result, Role, Session, account_data::AccountData};
+use crate::{Child, Live, Result, Role, Session, SpaceGraph, account_data::AccountData};
 
 /// Who may join a room found in a space or a directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +104,44 @@ pub struct DirectoryServers {
 /// How many browsed servers are remembered.
 const REMEMBERED: usize = 8;
 
+/// How long a space's rooms as its server listed them are used again,
+/// rather than asking it.
+const LISTED_FOR: Duration = Duration::from_secs(60);
+
+/// Each space's rooms as its server last listed them
+/// ([`Session::space_children`]), kept for the session.
+#[derive(Default)]
+pub(crate) struct Listings(Mutex<HashMap<OwnedRoomId, Listing>>);
+
+struct Listing {
+    /// As the server listed them, and when.
+    listed: Vec<DirectoryRoom>,
+    at: Instant,
+    /// As last given: with the joined rooms the server left out.
+    shown: Vec<DirectoryRoom>,
+}
+
+impl Listings {
+    /// What `space`'s server listed lately, and when.
+    fn fresh(&self, space: &RoomId) -> Option<(Vec<DirectoryRoom>, Instant)> {
+        let listings = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let listing = listings
+            .get(space)
+            .filter(|l| l.at.elapsed() < LISTED_FOR)?;
+        Some((listing.listed.clone(), listing.at))
+    }
+
+    fn keep(&self, space: &RoomId, listing: Listing) {
+        let mut listings = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        listings.insert(space.to_owned(), listing);
+    }
+
+    fn shown(&self, space: &RoomId) -> Option<Vec<DirectoryRoom>> {
+        let listings = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        Some(listings.get(space)?.shown.clone())
+    }
+}
+
 impl DirectoryServers {
     /// Put `server` first.
     pub fn remember(&mut self, server: &str) {
@@ -170,6 +214,30 @@ fn kind_access(rule: &JoinRuleKind) -> JoinAccess {
     }
 }
 
+/// A room a space lists that we joined or are invited to, as we know it,
+/// without our membership or role.
+fn known_child(room: &Room, child: &Child, graph: &SpaceGraph) -> DirectoryRoom {
+    let alias = room.canonical_alias();
+    let name = room.cached_display_name().map(|n| n.to_string());
+    DirectoryRoom {
+        id: child.room.clone(),
+        name: display_name(name.as_deref(), alias.as_ref(), &child.room),
+        alias,
+        topic: room.topic(),
+        avatar: room.avatar_url(),
+        members: room.joined_members_count(),
+        is_space: room.is_space(),
+        children: graph.children(&child.room).len() as u64,
+        access: room
+            .join_rule()
+            .map_or(JoinAccess::Invite, |rule| kind_access(&rule.kind())),
+        membership: None,
+        role: None,
+        via: child.via.clone(),
+        suggested: child.suggested,
+    }
+}
+
 fn display_name(name: Option<&str>, alias: Option<&OwnedRoomAliasId>, id: &RoomId) -> String {
     name.filter(|n| !n.trim().is_empty())
         .map(str::to_owned)
@@ -198,8 +266,60 @@ impl Session {
     }
 
     /// The rooms and spaces `space` lists directly (subspaces' own rooms
-    /// are not included), suggested ones first, then by name.
+    /// are not included), suggested ones first, then by name: as its
+    /// server listed them in the last minute (else it is asked again), with
+    /// the joined rooms it leaves out.
     pub async fn space_children(&self, space: &RoomId) -> Result<Vec<DirectoryRoom>> {
+        let (listed, at) = match self.listings.fresh(space) {
+            Some(fresh) => fresh,
+            None => (self.list_space_children(space).await?, Instant::now()),
+        };
+        let shown = self.with_known(space, listed.clone()).await;
+        let listing = Listing {
+            listed,
+            at,
+            shown: shown.clone(),
+        };
+        self.listings.keep(space, listing);
+        Ok(shown)
+    }
+
+    /// `space`'s rooms as [`Self::space_children`] last gave them, however
+    /// long ago; none before.
+    pub fn listed_space_children(&self, space: &RoomId) -> Option<Vec<DirectoryRoom>> {
+        self.listings.shown(space)
+    }
+
+    /// `rooms`, of `space`, with the rooms it lists that we joined or are
+    /// invited to that they leave out, and our membership and role in each
+    /// now; suggested first, then by name.
+    async fn with_known(
+        &self,
+        space: &RoomId,
+        mut rooms: Vec<DirectoryRoom>,
+    ) -> Vec<DirectoryRoom> {
+        let graph = self.space_graph();
+        for child in graph.children(space) {
+            if rooms.iter().any(|r| r.id == child.room) {
+                continue;
+            }
+            let known = self.client.get_room(&child.room);
+            if let Some(room) =
+                known.filter(|r| matches!(r.state(), RoomState::Joined | RoomState::Invited))
+            {
+                rooms.push(known_child(&room, child, &graph));
+            }
+        }
+        for room in &mut rooms {
+            room.membership = self.membership(&room.id);
+            room.role = self.own_role(&room.id).await;
+        }
+        rooms.sort_by_cached_key(|r| (!r.suggested, r.name.to_lowercase()));
+        rooms
+    }
+
+    /// What `space`'s server lists, without our membership or role.
+    async fn list_space_children(&self, space: &RoomId) -> Result<Vec<DirectoryRoom>> {
         let mut rooms = Vec::new();
         let mut from = None;
         loop {
@@ -227,13 +347,13 @@ impl Session {
                 }
                 let child = children.iter().find(|c| c.state_key == summary.room_id);
                 rooms.push(DirectoryRoom {
-                    role: self.own_role(&summary.room_id).await,
+                    role: None,
                     name: display_name(
                         summary.name.as_deref(),
                         summary.canonical_alias.as_ref(),
                         &summary.room_id,
                     ),
-                    membership: self.membership(&summary.room_id),
+                    membership: None,
                     alias: summary.canonical_alias,
                     topic: summary.topic,
                     avatar: summary.avatar_url,
@@ -251,7 +371,6 @@ impl Session {
                 None => break,
             }
         }
-        rooms.sort_by_cached_key(|r| (!r.suggested, r.name.to_lowercase()));
         Ok(rooms)
     }
 

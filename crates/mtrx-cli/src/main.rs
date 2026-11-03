@@ -265,7 +265,7 @@ async fn main() -> Result<()> {
         }
         Command::Rooms { ids } => {
             let (session, list) = synced(profile).await?;
-            rooms::print_tree(&list.get().rooms, ids);
+            rooms::print_tree(&list.get(), ids);
             session.stop_sync().await;
         }
         Command::CreateRoom {

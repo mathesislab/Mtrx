@@ -62,7 +62,7 @@ final class PresenceModelTests: XCTestCase {
         var changed = Make.roomsBySpaceRooms + [Make.room("!notes", kind: .direct, directUser: "@me:example.org")]
         changed[3].unreadMessages = 5
         changed.removeAll { $0.id == "!lab" }
-        await push(Make.lists(changed, members: ["!team": [Self.bob]]))
+        await push(Make.lists(changed, children: Make.roomsBySpaceChildren, members: ["!team": [Self.bob]]))
         XCTAssertEqual(session.presenceSubscriptions.count, 1)
 
         // A new direct chat: subscribed anew, the old one cancelled.

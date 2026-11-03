@@ -146,8 +146,9 @@ class JoiningModel: ObservableObject {
     }
 }
 
-/// A space's rooms, as its server lists them (rooms only invited people
-/// may join left out): the last list at once, updated behind it.
+/// A space's rooms, as its server lists them with the joined ones it
+/// leaves out (rooms only invited people may join left out): the last
+/// list at once, updated behind it.
 @MainActor
 final class SpaceOverviewModel: JoiningModel {
     let spaceId: String
@@ -157,20 +158,16 @@ final class SpaceOverviewModel: JoiningModel {
     @Published private(set) var updating = false
     /// The list could not be read.
     @Published private(set) var failed = false
+    /// Never listed yet.
+    @Published private(set) var unknown: Bool
     @Published var filter = ""
 
-    private let cache: SpaceChildrenCache
-
-    init(session: Session, spaceId: String, cache: SpaceChildrenCache) {
+    init(session: Session, spaceId: String) {
         self.spaceId = spaceId
-        self.cache = cache
-        rooms = cache[spaceId] ?? []
+        let listed = session.listedSpaceChildren(spaceId: spaceId)
+        rooms = listed ?? []
+        unknown = listed == nil
         super.init(session: session)
-    }
-
-    /// Never listed yet.
-    var unknown: Bool {
-        cache[spaceId] == nil
     }
 
     /// The rooms whose name or topic has the filter, else all.
@@ -190,9 +187,8 @@ final class SpaceOverviewModel: JoiningModel {
         failed = false
         defer { updating = false }
         do {
-            let rooms = try await session.spaceChildren(spaceId: spaceId)
-            self.rooms = rooms
-            cache[spaceId] = rooms
+            rooms = try await session.spaceChildren(spaceId: spaceId)
+            unknown = false
             relisted()
         } catch {
             failed = true
