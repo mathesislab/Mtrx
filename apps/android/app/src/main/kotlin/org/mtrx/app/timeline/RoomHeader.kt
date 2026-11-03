@@ -37,7 +37,7 @@ fun roomHeader(
 ): RoomHeader = RoomHeader(
     name = room?.name ?: roomId,
     avatarUrl = room?.avatarUrl,
-    seed = room?.directUserId ?: roomId,
+    seed = room?.directUser?.userId ?: roomId,
     person = room?.let { directPerson(it, ownUserId) },
     topic = room?.topic?.takeIf { it.isNotBlank() }?.let(parseTopic) ?: NO_TOPIC,
     pinned = room?.pinned.orEmpty(),

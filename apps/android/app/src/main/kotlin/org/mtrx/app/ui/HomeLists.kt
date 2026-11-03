@@ -392,7 +392,7 @@ fun RoomRow(
                 Avatar(
                     name = room.name,
                     mxcUri = room.avatarUrl,
-                    seed = room.directUserId ?: room.id,
+                    seed = room.directUser?.userId ?: room.id,
                     images = images,
                     size = 36.dp,
                     // Spaces are squares, as on the desktop.

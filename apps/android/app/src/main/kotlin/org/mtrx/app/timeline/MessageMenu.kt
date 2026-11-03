@@ -46,7 +46,7 @@ import androidx.emoji2.emojipicker.EmojiPickerView
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
 import uniffi.mtrx.MessageAction
-import uniffi.mtrx.Reader
+import uniffi.mtrx.User
 
 /**
  * Holding a message: the common reactions (ours marked) and "+" for the
@@ -126,7 +126,7 @@ fun EmojiPickerDialog(onPick: (String) -> Unit, onDismiss: () -> Unit) {
 /** People with their avatars and names: who reacted, or read up to a message. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PeopleSheet(title: String, people: List<Reader>, images: Images, onDismiss: () -> Unit) {
+fun PeopleSheet(title: String, people: List<User>, images: Images, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Text(
             title,
@@ -135,7 +135,7 @@ fun PeopleSheet(title: String, people: List<Reader>, images: Images, onDismiss: 
         )
         LazyColumn {
             items(people, key = { it.userId }) { person ->
-                val name = personName(person)
+                val name = person.displayName
                 ListItem(
                     leadingContent = { Avatar(name, person.avatarUrl, seed = person.userId, images = images, size = 40.dp) },
                     headlineContent = { Text(name) },
