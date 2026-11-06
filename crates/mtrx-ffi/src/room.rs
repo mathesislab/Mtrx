@@ -43,12 +43,6 @@ impl Session {
 
 #[uniffi::export]
 impl Room {
-    /// The room's settings, and which we may change.
-    pub async fn settings(&self) -> Result<RoomSettings, MtrxError> {
-        let room = self.core();
-        run(async move { Ok(room.settings().await.get().into()) }).await
-    }
-
     /// Call `listener` with the room's settings once read, then after
     /// every change: to its state, who is banned, the notification rules
     /// and the spaces it is in. A change made here shows at once, before

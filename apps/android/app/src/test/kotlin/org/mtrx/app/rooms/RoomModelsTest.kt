@@ -22,7 +22,9 @@ import org.mtrx.app.FakeSession
 import org.mtrx.app.directoryRoom
 import org.mtrx.app.member
 import org.mtrx.app.roomSettings
+import org.mtrx.app.user
 import uniffi.mtrx.Address
+import uniffi.mtrx.Banned
 import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.DirectoryPage
 import uniffi.mtrx.JoinRule
@@ -47,27 +49,37 @@ class RoomModelsTest {
     // Room info
 
     @Test
-    fun roomInfoReadsTheSettingsAndMembers() = runTest {
+    fun roomInfoFollowsTheSettingsAndReadsTheMembers() = runTest {
         session.settings = roomSettings(joinRule = JoinRule.PUBLIC)
         session.memberList = listOf(member("@b:x"))
         val model = RoomInfoModel(room, session) { it.text }
         assertEquals(JoinRule.PUBLIC, model.settings.value?.joinRule)
         assertEquals(listOf("@b:x"), model.members.value?.map { it.user.userId })
+        // Changed elsewhere.
+        session.pushSettings(roomSettings(joinRule = JoinRule.KNOCK))
+        assertEquals(JoinRule.KNOCK, model.settings.value?.joinRule)
     }
 
     @Test
-    fun aChangeReadsTheSettingsAgain() = runTest {
+    fun aChangeShowsAtOnceAndAFailedOneGoesAgain() = runTest {
+        session.settings = roomSettings(banned = listOf(Banned(user("@c:x"), reason = null)))
         val model = RoomInfoModel(room, session) { "composed ${it.text}" }
-        val reads = session.settingsReads
-        session.settings = roomSettings(joinRule = JoinRule.KNOCK)
+        session.roomGate = CompletableDeferred()
         model.setJoinRule(JoinRule.KNOCK)
-        model.setTopic(Topic("Ice", emptyList()))
         model.setAddress(" #ice ")
-        model.setAddress("")
-        assertEquals(listOf("join rule KNOCK", "topic composed Ice", "address ice", "address null"), session.roomCalls)
-        assertEquals(reads + 4, session.settingsReads)
         assertEquals(JoinRule.KNOCK, model.settings.value?.joinRule)
+        assertEquals("#ice:example.org", model.settings.value?.address)
+        model.setTopic(Topic("Ice", emptyList()))
+        model.setAddress("")
         assertNull(model.busy.value)
+        session.roomGate!!.complete(Unit)
+        assertEquals(listOf("join rule KNOCK", "address ice", "topic composed Ice", "address null"), session.roomCalls)
+        assertNull(model.settings.value?.address)
+
+        session.roomError = MtrxException.Other("not allowed")
+        model.unban("@c:x")
+        assertEquals("not allowed", model.error.value)
+        assertEquals(listOf("@c:x"), model.settings.value?.banned?.map { it.user.userId })
     }
 
     @Test
@@ -80,8 +92,8 @@ class RoomModelsTest {
         assertEquals(50L, model.members.value?.single()?.level)
 
         session.roomGate = CompletableDeferred()
-        model.unban("@c:x")
-        assertEquals("Saving…", model.busy.value)
+        model.remove("@b:x", "", ban = false)
+        assertEquals("Removing…", model.busy.value)
         session.roomError = MtrxException.Other("not allowed")
         session.roomGate!!.complete(Unit)
         assertEquals("not allowed", model.error.value)

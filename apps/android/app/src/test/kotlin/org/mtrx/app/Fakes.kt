@@ -27,6 +27,7 @@ import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.DirectoryPage
 import uniffi.mtrx.DirectoryRoom
 import uniffi.mtrx.History
+import uniffi.mtrx.HistoryChoice
 import uniffi.mtrx.JoinAction
 import uniffi.mtrx.JoinButton
 import uniffi.mtrx.JoinRule
@@ -36,11 +37,14 @@ import uniffi.mtrx.Manage
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
 import uniffi.mtrx.NewRoom
+import uniffi.mtrx.NotifyChoice
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
+import uniffi.mtrx.PermissionsChoice
 import uniffi.mtrx.Rights
 import uniffi.mtrx.Role
 import uniffi.mtrx.RoomSettings
+import uniffi.mtrx.RoomSettingsListener
 import uniffi.mtrx.SpaceLink
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
@@ -316,7 +320,6 @@ class FakeSession : Session(NoHandle) {
     var roomError: MtrxException? = null
     var roomGate: CompletableDeferred<Unit>? = null
     var settings: RoomSettings = roomSettings()
-    var settingsReads = 0
     var memberList: List<Member> = emptyList()
     var pinnedRoomTimeline: FakeTimeline = FakeTimeline()
     var pinnedOpened = 0
@@ -338,6 +341,29 @@ class FakeSession : Session(NoHandle) {
         roomCalls += record
         roomGate?.await()
         roomError?.let { throw it }
+    }
+
+    /** The rooms' settings listeners, each with its handle; one [settings] for all rooms. */
+    val settingsSubscriptions = mutableListOf<Pair<RoomSettingsListener, FakeHandle>>()
+
+    /** The library reports new settings to the listeners not cancelled. */
+    fun pushSettings(new: RoomSettings) {
+        settings = new
+        for ((listener, handle) in settingsSubscriptions.toList()) {
+            if (!handle.cancelled) listener.onUpdate(new)
+        }
+    }
+
+    /** A change to the settings, as the library makes it: shown at once, then [call]; a failed one goes again. */
+    suspend fun changeSettings(record: String, update: (RoomSettings) -> RoomSettings) {
+        val before = settings
+        pushSettings(update(before))
+        try {
+            call(record)
+        } catch (e: MtrxException) {
+            pushSettings(before)
+            throw e
+        }
     }
 
     override fun room(roomId: String): Room = FakeRoom(this, roomId)
@@ -416,14 +442,16 @@ class FakeSession : Session(NoHandle) {
 }
 
 /**
- * A room of [session]: it reads the session's settings and members, and
- * records its changes in [FakeSession.roomCalls] (invites in
- * [FakeSession.invites]).
+ * A room of [session]: it follows the session's settings and reads its
+ * members, and records its changes in [FakeSession.roomCalls] (invites in
+ * [FakeSession.invites]). A change to the settings shows at once, as the
+ * library's.
  */
 class FakeRoom(private val session: FakeSession, private val roomId: String) : Room(NoHandle) {
-    override suspend fun settings(): RoomSettings {
-        session.settingsReads++
-        return session.settings
+    // As the library: the settings now, then after each change.
+    override fun subscribeSettings(listener: RoomSettingsListener): TaskHandle {
+        listener.onUpdate(session.settings)
+        return FakeHandle().also { session.settingsSubscriptions += listener to it }
     }
 
     override suspend fun members(): List<Member> = session.memberList
@@ -434,34 +462,45 @@ class FakeRoom(private val session: FakeSession, private val roomId: String) : R
 
     override suspend fun setName(name: String) = session.call("name $name")
 
-    override suspend fun setNotify(mode: NotifyMode) = session.call("notify $mode")
+    override suspend fun setNotify(mode: NotifyMode) = session.changeSettings("notify $mode") { it.copy(notify = mode) }
 
-    override suspend fun setJoinRule(rule: JoinRule) = session.call("join rule $rule")
+    override suspend fun setJoinRule(rule: JoinRule) =
+        session.changeSettings("join rule $rule") { it.copy(joinRule = rule, joinRuleFact = ruleFact(rule)) }
 
-    override suspend fun setListed(listed: Boolean) = session.call("listed $listed")
+    override suspend fun setListed(listed: Boolean) = session.changeSettings("listed $listed") { it.copy(listed = listed) }
 
-    override suspend fun setHistory(history: History) = session.call("history $history")
+    override suspend fun setHistory(history: History) = session.changeSettings("history $history") { it.copy(history = history) }
 
-    override suspend fun setPermissions(permissions: Permissions) = session.call("permissions $permissions")
+    override suspend fun setPermissions(permissions: Permissions) =
+        session.changeSettings("permissions $permissions") { it.copy(permissions = permissions) }
 
-    override suspend fun encrypt() = session.call("encrypt")
+    override suspend fun encrypt() = session.changeSettings("encrypt") { it.copy(encrypted = true) }
 
-    override suspend fun setAddress(name: String?) = session.call("address $name")
+    /** The address `#name:example.org`. */
+    override suspend fun setAddress(name: String?) =
+        session.changeSettings("address $name") { it.copy(address = name?.let { local -> "#$local:example.org" }) }
 
     /** On a space's room, as the following two. */
     override suspend fun setSuggested(roomId: String, suggested: Boolean) =
-        session.call("suggested ${this.roomId} $suggested")
+        session.changeSettings("suggested ${this.roomId} $suggested") { settings ->
+            settings.copy(spaces = settings.spaces.map { if (it.spaceId == this.roomId) it.copy(suggested = suggested) else it })
+        }
 
-    override suspend fun addChild(roomId: String) = session.call("add ${this.roomId}")
+    override suspend fun addChild(roomId: String) = session.changeSettings("add ${this.roomId}") {
+        it.copy(spaces = it.spaces + SpaceLink(this.roomId, suggested = false, canChange = true), canAddTo = it.canAddTo - this.roomId)
+    }
 
-    override suspend fun removeChild(roomId: String) = session.call("take out ${this.roomId}")
+    override suspend fun removeChild(roomId: String) = session.changeSettings("take out ${this.roomId}") { settings ->
+        settings.copy(spaces = settings.spaces.filter { it.spaceId != this.roomId }, canAddTo = settings.canAddTo + this.roomId)
+    }
 
     override suspend fun setLevel(userId: String, level: Long) = session.call("level $userId $level")
 
     override suspend fun remove(userId: String, ban: Boolean, reason: String?) =
         session.call("${if (ban) "ban" else "remove"} $userId $reason")
 
-    override suspend fun unban(userId: String) = session.call("unban $userId")
+    override suspend fun unban(userId: String) =
+        session.changeSettings("unban $userId") { settings -> settings.copy(banned = settings.banned.filter { it.user.userId != userId }) }
 
     override suspend fun invite(userId: String) {
         session.inviteGate?.await()
@@ -525,6 +564,11 @@ fun roomSettings(
 ): RoomSettings = RoomSettings(
     rights = rights(may),
     notify = NotifyMode.ALL,
+    notifyChoices = listOf(
+        NotifyChoice(NotifyMode.ALL, "All messages", "Every message notifies you."),
+        NotifyChoice(NotifyMode.MENTIONS, "Mentions", "Only mentions of you and your keywords notify you."),
+        NotifyChoice(NotifyMode.MUTE, "Mute", "Nothing here notifies you."),
+    ),
     joinRule = joinRule,
     joinRuleFact = ruleFact(joinRule),
     joinRuleChoices = JoinRule.entries
@@ -533,7 +577,17 @@ fun roomSettings(
     address = address,
     listed = listed,
     history = History.JOINED,
+    historyChoices = listOf(
+        HistoryChoice(History.JOINED, "Since joining", "Members, from when they joined."),
+        HistoryChoice(History.INVITED, "Since invited", "Members, from when they were invited."),
+        HistoryChoice(History.MEMBERS, "Members", "Members, all of it, also from before they joined."),
+        HistoryChoice(History.ANYONE, "Anyone", "Anyone, without joining."),
+    ),
     permissions = Permissions.EVERYONE,
+    permissionsChoices = listOf(
+        PermissionsChoice(Permissions.EVERYONE, "Everyone", "Everyone can invite, rename and change the topic."),
+        PermissionsChoice(Permissions.MODERATORS, "Moderators", "Invite, rename, change the topic and picture, and pin messages."),
+    ),
     encrypted = encrypted,
     version = "12",
     spaces = spaces,
