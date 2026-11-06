@@ -637,8 +637,7 @@ extension View {
 }
 
 /// The back button of a room: a chevron and the unread messages in the
-/// other rooms. Swiping from the edge still goes back
-/// (`UINavigationController` extension).
+/// other rooms. Swiping from the edge still goes back (`swipeBack`).
 private struct BackWithUnread: ViewModifier {
     let count: Int
     let back: () -> Void
@@ -646,6 +645,7 @@ private struct BackWithUnread: ViewModifier {
     func body(content: Content) -> some View {
         content
             .navigationBarBackButtonHidden(true)
+            .swipeBack()
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: back) {
