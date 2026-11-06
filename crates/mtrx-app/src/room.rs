@@ -50,7 +50,7 @@ use crate::{
     popover::{Edge, Side, popover},
     presence::{self, Presences},
     rows::{self, Part, time},
-    selectable::{self, selectable},
+    selectable::{self, text::selectable},
     selectable_image::selectable_image,
     selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
     send_later, sidebar,
@@ -697,7 +697,7 @@ impl Room {
             return Task::none();
         };
         let room = self.id.clone();
-        selectable::line_edge(focus.pos.offset, forward).and_then(move |offset| {
+        selectable::text::line_edge(focus.pos.offset, forward).and_then(move |offset| {
             Task::done(
                 Message::Select(selection::Message::LineMoved(
                     focus.clone(),
@@ -746,7 +746,7 @@ impl Room {
             return Task::none();
         };
         let room = self.id.clone();
-        selectable::line_step(focus.pos.offset, up).map(move |moved| {
+        selectable::text::line_step(focus.pos.offset, up).map(move |moved| {
             Message::Select(selection::Message::LineMoved(
                 focus.clone(),
                 up,
@@ -2168,14 +2168,10 @@ fn sender_line<'a>(
     let time = span(units[1].text.clone());
     row![
         select
-            .apply(selectable(vec![name], 0), 0, units[0].text.len())
+            .apply(selectable(vec![name], 0), 0)
             .on_click(open.clone()),
         select
-            .apply(
-                selectable(vec![time], 1).size(11).style(text::secondary),
-                1,
-                units[1].text.len(),
-            )
+            .apply(selectable(vec![time], 1).size(11).style(text::secondary), 1)
             .on_click(open),
     ]
     .spacing(8)
@@ -2218,13 +2214,12 @@ fn muted<'a>(
     part: &Part<'_>,
     size: f32,
     context: &Context<'a, '_>,
-) -> selectable::Selectable<'a, app::Message> {
+) -> selectable::text::Selectable<'a, app::Message> {
     let line = part.units(&Shown::default()).remove(0).text;
-    let len = line.len();
     let unit = selectable(vec![span(line)], 0)
         .size(size)
         .style(text::secondary);
-    context.select(&part.key).apply(unit, 0, len)
+    context.select(&part.key).apply(unit, 0)
 }
 
 /// A row of one muted line in the text column, e.g. for state events.

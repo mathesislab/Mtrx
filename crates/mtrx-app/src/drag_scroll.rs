@@ -256,7 +256,7 @@ mod tests {
         };
         use iced_test::simulator::Simulator;
 
-        use crate::{selectable::selectable, selection::Gesture};
+        use crate::{selectable::text::selectable, selection::Gesture};
 
         for active in [false, true] {
             let lines = column((0..100).map(|i| {

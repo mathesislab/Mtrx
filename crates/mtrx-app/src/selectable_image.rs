@@ -21,7 +21,7 @@ use crate::{
     find::{self, Found},
     link_status,
     message::TextMap,
-    selectable::CLICK_SLOP,
+    selectable::geometry::CLICK_SLOP,
     selection::{Gesture, Pos, unit_range},
     style,
 };

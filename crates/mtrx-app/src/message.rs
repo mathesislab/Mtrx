@@ -18,7 +18,7 @@ use crate::{
     emoji,
     find::Found,
     fonts,
-    selectable::{Selectable, selectable},
+    selectable::text::{Selectable, selectable},
     selection::{Gesture, Pos, Unit, unit_range, units_text},
     style,
 };
@@ -302,7 +302,6 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
     ) -> Element<'a, M> {
         let index = self.map.units.len();
         let text: String = spans.iter().map(|s| s.text.as_ref()).collect();
-        let len = text.len();
         let gap = if index == 0 { "" } else { gap };
         self.map.units.push(Unit {
             text,
@@ -321,24 +320,24 @@ impl<'a, M: Clone + 'a> Walk<'_, 'a, M> {
             unit = unit.on_link(links.open).on_link_menu(links.menu.clone());
         }
         if let Some(select) = &self.select {
-            unit = select.apply(unit, index, len);
+            unit = select.apply(unit, index);
         }
         unit.into()
     }
 }
 
 impl<'a, M: 'a> Select<'a, M> {
-    /// `unit`, unit `index` (of `len` bytes) of the text, selected and
-    /// with the find bar's matches as this says.
-    pub fn apply(&self, unit: Selectable<'a, M>, index: usize, len: usize) -> Selectable<'a, M> {
-        unit.selected(self.range.and_then(|range| unit_range(range, index, len)))
+    /// `unit`, unit `index` of the text, selected and with the find bar's
+    /// matches as this says.
+    pub fn apply(&self, unit: Selectable<'a, M>, index: usize) -> Selectable<'a, M> {
+        unit.selected(self.range)
             .focus(self.focus.is_some_and(|focus| focus.unit == index))
             .dragging(self.dragging)
             .on_gesture(self.on_gesture.clone())
             .found(
                 (self.found.iter())
                     .filter(|found| found.unit == index)
-                    .map(|found| (found.range.clone(), found.current))
+                    .cloned()
                     .collect(),
             )
     }
