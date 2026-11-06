@@ -55,7 +55,6 @@ private final class UITestCore: Mtrx, @unchecked Sendable {
 
 private final class UITestHandle: TaskHandle, @unchecked Sendable {
     override func cancel() {}
-    override func isFinished() -> Bool { false }
 }
 
 private final class UITestSession: Session, @unchecked Sendable {
@@ -84,10 +83,6 @@ private final class UITestSession: Session, @unchecked Sendable {
     override func subscribeEncryptionState(listener: EncryptionStateListener) -> TaskHandle {
         listener.onUpdate(state: EncryptionState(deviceVerified: true, recovery: .enabled))
         return UITestHandle(noHandle: .init())
-    }
-
-    override func encryptionState() async throws -> EncryptionState {
-        EncryptionState(deviceVerified: true, recovery: .enabled)
     }
 
     override func subscribeVerificationRequests(listener: VerificationRequestListener) -> TaskHandle {

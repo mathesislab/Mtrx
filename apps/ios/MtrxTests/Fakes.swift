@@ -12,7 +12,6 @@ import XCTest
 final class FakeTaskHandle: TaskHandle, @unchecked Sendable {
     var cancelled = false
     override func cancel() { cancelled = true }
-    override func isFinished() -> Bool { cancelled }
 }
 
 final class FakeTimeline: Timeline, @unchecked Sendable {
@@ -210,9 +209,8 @@ final class FakeSession: Session, @unchecked Sendable {
     var verificationRequestListener: VerificationRequestListener?
     var syncStarts = 0
     var syncStops = 0
-    /// What `encryptionState()` returns, and the subscription's first state.
+    /// The subscription's first state.
     var encryption = EncryptionState(deviceVerified: false, recovery: .unknown)
-    var encryptionRequests = 0
     var encryptionListener: EncryptionStateListener?
     var encryptionSubscription: FakeTaskHandle?
     /// What `userProfile` returns, and for whom it was asked.
@@ -325,11 +323,6 @@ final class FakeSession: Session, @unchecked Sendable {
         let handle = FakeTaskHandle(noHandle: .init())
         presenceSubscriptions.append((userIds, listener, handle))
         return handle
-    }
-
-    override func encryptionState() async throws -> EncryptionState {
-        encryptionRequests += 1
-        return encryption
     }
 
     override func devices() async throws -> [DeviceInfo] { deviceList }
@@ -664,7 +657,7 @@ enum Make {
         case .offline: nil
         }
         var presence = Presence(
-            state: state, lastActive: lastActive, currentlyActive: state == .online, statusMessage: status, dot: dot)
+            state: state, lastActive: lastActive, statusMessage: status, dot: dot)
         presence.line = presenceLine(presence: presence, now: Date())
         return presence
     }
@@ -822,7 +815,7 @@ enum Make {
         }
         return Member(
             user: user(name, named: named),
-            role: level == 100 || level == nil ? .admin : level == 50 ? .moderator : .member, level: level,
+            level: level,
             membership: membership, own: name == "me",
             manage: Manage(remove: remove, ban: ban, upTo: upTo, defaultLevel: 0, alone: false),
             label: label.isEmpty ? nil : label, choices: choices ?? [],
