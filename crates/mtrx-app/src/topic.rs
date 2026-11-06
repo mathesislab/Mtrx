@@ -42,8 +42,6 @@ pub enum Message {
     Save,
     Cancel,
     Saved(Result<(), String>),
-    /// Whether we may change the topic; `None` if unknown.
-    CanEdit(Option<bool>),
 }
 
 /// The topic panel, dropping below the room header: open or not, and the
@@ -52,7 +50,6 @@ pub enum Message {
 pub struct Panel {
     pub open: bool,
     pub editor: Option<Editor>,
-    pub can_edit: Option<bool>,
     pub saving: bool,
     pub error: Option<String>,
     /// Cancel and Save stand out, after the click outside numbered so.
@@ -111,7 +108,6 @@ impl Panel {
                 self.saving = false;
                 self.error = Some(e);
             }
-            Message::CanEdit(can) => self.can_edit = can,
             // The app saves.
             Message::Save => {}
         }
@@ -119,11 +115,12 @@ impl Panel {
     }
 
     /// The topic in full and its links, or the editor, below the room
-    /// header.
+    /// header; to edit, if `can_edit`.
     pub fn view<'a>(
         &'a self,
         topic: &Topic,
         services: &'a [CallService],
+        can_edit: bool,
         message: impl Fn(Message) -> app::Message + Clone + 'a,
     ) -> Element<'a, app::Message> {
         let mut panel = match &self.editor {
@@ -153,7 +150,7 @@ impl Panel {
             }
             None => {
                 let details = details(topic, services);
-                if self.can_edit == Some(true) {
+                if can_edit {
                     // In the corner, clear of the text and links.
                     let edit = button(
                         row![icons::pencil(12.0, secondary), text("Edit").size(13)]

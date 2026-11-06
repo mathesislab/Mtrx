@@ -66,7 +66,7 @@ impl RoomHandle {
     /// member list from the server if it is not complete yet.
     pub async fn members(&self) -> Result<Vec<Member>> {
         let room = &self.room;
-        let levels = crate::permissions::power_levels(room).await.ok();
+        let levels = crate::permissions::levels(room).await;
         let own = self.session.user_id();
         let mut members: Vec<Member> = room
             .members(RoomMemberships::JOIN | RoomMemberships::INVITE)

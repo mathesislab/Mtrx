@@ -38,6 +38,7 @@ import uniffi.mtrx.Membership
 import uniffi.mtrx.NewRoom
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
+import uniffi.mtrx.Rights
 import uniffi.mtrx.Role
 import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.SpaceLink
@@ -522,32 +523,45 @@ fun roomSettings(
     address: String? = null,
     listed: Boolean? = false,
 ): RoomSettings = RoomSettings(
-    canRename = may,
-    canChangeTopic = may,
-    canChangePicture = may,
-    canInvite = may,
+    rights = rights(may),
     notify = NotifyMode.ALL,
     joinRule = joinRule,
     joinRuleFact = ruleFact(joinRule),
     joinRuleChoices = JoinRule.entries
         .filter { it != JoinRule.SPACE_MEMBERS || inSpace || joinRule == JoinRule.SPACE_MEMBERS }
         .map { JoinRuleChoice(it, ruleTitle(it), ruleFact(it)) },
-    canChangeAccess = may,
-    canAddRooms = may,
     address = address,
-    canChangeAddress = may,
     listed = listed,
     history = History.JOINED,
-    canChangeHistory = may,
     permissions = Permissions.EVERYONE,
-    canChangePermissions = may,
     encrypted = encrypted,
-    canEncrypt = may && !encrypted,
     version = "12",
     spaces = spaces,
     canAddTo = canAddTo,
     banned = banned,
-    canUnban = may,
+)
+
+/** Our rights in a room: everything, unless [may] is false, at a plain member's level 0. */
+fun rights(may: Boolean = true): Rights = Rights(
+    send = may,
+    redactOthers = may,
+    pin = may,
+    mentionRoom = may,
+    rename = may,
+    changeTopic = may,
+    changePicture = may,
+    invite = may,
+    kick = may,
+    ban = may,
+    changeJoinRule = may,
+    changeHistory = may,
+    changeAddress = may,
+    changeLevels = may,
+    encrypt = may,
+    addRooms = may,
+    setCallService = may,
+    level = 0,
+    defaultLevel = 0,
 )
 
 /** A member at [level] (null for an owner), and what we may do to them; their label and level choices as the library gives them, without what it asks. */
@@ -729,6 +743,7 @@ fun summary(
     topic: String? = null,
     pinned: List<String> = emptyList(),
     mentions: Long = 0,
+    rights: Rights = org.mtrx.app.rights(),
 ): RoomSummary = RoomSummary(
     id = id,
     name = name,
@@ -747,6 +762,7 @@ fun summary(
     joinRule = JoinRule.INVITE,
     joinRuleFact = ruleFact(JoinRule.INVITE),
     pinned = pinned,
+    rights = rights,
 )
 
 class FakeMtrx(private val restored: Session?) : MtrxInterface {

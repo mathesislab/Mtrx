@@ -38,6 +38,91 @@ pub enum Permissions {
     Moderators,
 }
 
+/// What we may do in a room, from its power levels. All false while they
+/// are not known yet, and in a room we have not joined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct Rights {
+    pub send: bool,
+    /// Delete others' messages.
+    pub redact_others: bool,
+    pub pin: bool,
+    /// Notify everyone with `@room`.
+    pub mention_room: bool,
+    pub rename: bool,
+    pub change_topic: bool,
+    pub change_picture: bool,
+    pub invite: bool,
+    pub kick: bool,
+    pub ban: bool,
+    pub change_join_rule: bool,
+    pub change_history: bool,
+    pub change_address: bool,
+    /// Change who may do what (the permissions).
+    pub change_levels: bool,
+    pub encrypt: bool,
+    /// For a space: list rooms in it.
+    pub add_rooms: bool,
+    /// For a space: set the call service of the rooms in it.
+    pub set_call_service: bool,
+    /// Our power level; `None` for a creator of the room (an owner, above
+    /// every level).
+    pub level: Option<i64>,
+    /// A plain member's level.
+    pub default_level: i64,
+}
+
+impl From<core::Rights> for Rights {
+    fn from(r: core::Rights) -> Self {
+        Self {
+            send: r.send,
+            redact_others: r.redact_others,
+            pin: r.pin,
+            mention_room: r.mention_room,
+            rename: r.rename,
+            change_topic: r.change_topic,
+            change_picture: r.change_picture,
+            invite: r.invite,
+            kick: r.kick,
+            ban: r.ban,
+            change_join_rule: r.change_join_rule,
+            change_history: r.change_history,
+            change_address: r.change_address,
+            change_levels: r.change_levels,
+            encrypt: r.encrypt,
+            add_rooms: r.add_rooms,
+            set_call_service: r.set_call_service,
+            level: r.level,
+            default_level: r.default_level,
+        }
+    }
+}
+
+impl From<Rights> for core::Rights {
+    fn from(r: Rights) -> Self {
+        Self {
+            send: r.send,
+            redact_others: r.redact_others,
+            pin: r.pin,
+            mention_room: r.mention_room,
+            rename: r.rename,
+            change_topic: r.change_topic,
+            change_picture: r.change_picture,
+            invite: r.invite,
+            kick: r.kick,
+            ban: r.ban,
+            change_join_rule: r.change_join_rule,
+            change_history: r.change_history,
+            change_address: r.change_address,
+            change_levels: r.change_levels,
+            encrypt: r.encrypt,
+            add_rooms: r.add_rooms,
+            set_call_service: r.set_call_service,
+            level: r.level,
+            default_level: r.default_level,
+        }
+    }
+}
+
 /// A space a room is in.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct SpaceLink {
@@ -58,10 +143,8 @@ pub struct Banned {
 /// A room's settings, and which we may change.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct RoomSettings {
-    pub can_rename: bool,
-    pub can_change_topic: bool,
-    pub can_change_picture: bool,
-    pub can_invite: bool,
+    /// What we may change; the same as `RoomSummary.rights`.
+    pub rights: Rights,
     pub notify: NotifyMode,
     pub join_rule: JoinRule,
     /// Who may join, in words: "Public: anyone can join"…
@@ -69,20 +152,13 @@ pub struct RoomSettings {
     /// The rules to offer, in order, with their words: Space members only
     /// for a room in a space, or already so.
     pub join_rule_choices: Vec<JoinRuleChoice>,
-    pub can_change_access: bool,
-    /// For a space: we may list rooms in it.
-    pub can_add_rooms: bool,
     /// `#name:server`, if it has one.
     pub address: Option<String>,
-    pub can_change_address: bool,
     /// Listed in our server's directory; `None` if it would not say.
     pub listed: Option<bool>,
     pub history: History,
-    pub can_change_history: bool,
     pub permissions: Permissions,
-    pub can_change_permissions: bool,
     pub encrypted: bool,
-    pub can_encrypt: bool,
     /// The room version, as "12".
     pub version: Option<String>,
     /// The joined spaces it is in.
@@ -90,16 +166,12 @@ pub struct RoomSettings {
     /// Joined spaces it is not in whose rooms we may change.
     pub can_add_to: Vec<String>,
     pub banned: Vec<Banned>,
-    pub can_unban: bool,
 }
 
 impl From<core::RoomSettings> for RoomSettings {
     fn from(s: core::RoomSettings) -> Self {
         Self {
-            can_rename: s.can_rename,
-            can_change_topic: s.can_change_topic,
-            can_change_picture: s.can_change_picture,
-            can_invite: s.can_invite,
+            rights: s.rights.into(),
             notify: match s.notify {
                 core::NotifyMode::All => NotifyMode::All,
                 core::NotifyMode::Mentions => NotifyMode::Mentions,
@@ -108,10 +180,7 @@ impl From<core::RoomSettings> for RoomSettings {
             join_rule: s.join_rule.into(),
             join_rule_fact: s.join_rule.fact().to_owned(),
             join_rule_choices: s.join_rule_choices.into_iter().map(Into::into).collect(),
-            can_change_access: s.can_change_access,
-            can_add_rooms: s.can_add_rooms,
             address: s.address.map(|a| a.to_string()),
-            can_change_address: s.can_change_address,
             listed: s.listed,
             history: match s.history {
                 core::History::Joined => History::Joined,
@@ -119,14 +188,11 @@ impl From<core::RoomSettings> for RoomSettings {
                 core::History::Members => History::Members,
                 core::History::Anyone => History::Anyone,
             },
-            can_change_history: s.can_change_history,
             permissions: match s.permissions {
                 core::Permissions::Everyone => Permissions::Everyone,
                 core::Permissions::Moderators => Permissions::Moderators,
             },
-            can_change_permissions: s.can_change_permissions,
             encrypted: s.encrypted,
-            can_encrypt: s.can_encrypt,
             version: s.version,
             spaces: s
                 .spaces
@@ -146,7 +212,6 @@ impl From<core::RoomSettings> for RoomSettings {
                     reason: b.reason,
                 })
                 .collect(),
-            can_unban: s.can_unban,
         }
     }
 }

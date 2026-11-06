@@ -678,13 +678,24 @@ enum Make {
         _ id: String, kind: RoomKind = .room, membership: Membership = .joined, name: String? = nil, unread: UInt64 = 0,
         directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil, topic: String? = nil,
         pinned: [String] = [], alias: String? = nil, members: UInt64 = 2,
-        mentions: UInt64 = 0
+        mentions: UInt64 = 0, rights: Rights = Make.rights()
     ) -> RoomSummary {
         RoomSummary(
             id: id, name: name ?? id, avatarUrl: avatarUrl, topic: topic, kind: kind, membership: membership,
             encrypted: false, unreadMessages: unread, unreadMentions: mentions, unreadNotifications: 0,
             lastActivity: lastActivity, directUser: directUser.map { user(id: $0) }, alias: alias,
-            joinedMembers: members, joinRule: .invite, joinRuleFact: fact(.invite), pinned: pinned)
+            joinedMembers: members, joinRule: .invite, joinRuleFact: fact(.invite), pinned: pinned,
+            rights: rights)
+    }
+
+    /// Our rights in a room: everything, unless not `may`, at a plain
+    /// member's level 0.
+    static func rights(_ may: Bool = true) -> Rights {
+        Rights(
+            send: may, redactOthers: may, pin: may, mentionRoom: may, rename: may, changeTopic: may,
+            changePicture: may, invite: may, kick: may, ban: may, changeJoinRule: may, changeHistory: may,
+            changeAddress: may, changeLevels: may, encrypt: may, addRooms: may, setCallService: may,
+            level: 0, defaultLevel: 0)
     }
 
     /// A join rule's title in the settings' menu, as the library words it.
@@ -717,13 +728,10 @@ enum Make {
             .filter { $0 != .spaceMembers || inSpace || joinRule == .spaceMembers }
             .map { JoinRuleChoice(rule: $0, title: title($0), fact: fact($0)) }
         return RoomSettings(
-            canRename: canChange, canChangeTopic: canChange, canChangePicture: canChange, canInvite: canChange,
-            notify: .all, joinRule: joinRule, joinRuleFact: fact(joinRule), joinRuleChoices: choices,
-            canChangeAccess: canChange,
-            canAddRooms: canChange, address: address,
-            canChangeAddress: canChange, listed: listed, history: .joined, canChangeHistory: canChange,
-            permissions: .everyone, canChangePermissions: canChange, encrypted: encrypted, canEncrypt: canChange,
-            version: "12", spaces: spaces, canAddTo: canAddTo, banned: banned, canUnban: canChange)
+            rights: rights(canChange), notify: .all, joinRule: joinRule, joinRuleFact: fact(joinRule),
+            joinRuleChoices: choices, address: address, listed: listed, history: .joined,
+            permissions: .everyone, encrypted: encrypted, version: "12", spaces: spaces, canAddTo: canAddTo,
+            banned: banned)
     }
 
     /// A member at `level` (nil: an owner); `upTo`: the highest level we

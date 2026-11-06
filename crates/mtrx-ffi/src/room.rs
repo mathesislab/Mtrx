@@ -136,12 +136,6 @@ impl Room {
         run(async move { Ok(room.set_pinned(&event, pin).await?) }).await
     }
 
-    /// Whether we may pin and unpin messages.
-    pub async fn can_pin(&self) -> Result<bool, MtrxError> {
-        let room = self.core();
-        run(async move { Ok(room.can_pin().await?) }).await
-    }
-
     /// Invite `user_id`.
     pub async fn invite(&self, user_id: String) -> Result<(), MtrxError> {
         let user = crate::error::user_id(&user_id)?;

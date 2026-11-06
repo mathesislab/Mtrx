@@ -173,11 +173,6 @@ struct CallServiceEventContent {
 }
 
 impl RoomHandle {
-    /// Whether we may change the room's topic, and so its calls and links.
-    pub async fn can_change_topic(&self) -> Result<bool> {
-        self.can_send_state("m.room.topic").await
-    }
-
     /// The call service set for this space, else for the nearest space it
     /// is in (through nested spaces too).
     pub async fn call_service(&self) -> Result<Option<CallService>> {
@@ -206,11 +201,6 @@ impl RoomHandle {
         Ok(())
     }
 
-    /// Whether we may change the call service of this space.
-    pub async fn can_set_call_service(&self) -> Result<bool> {
-        self.can_send_state(CallServiceEventContent::TYPE).await
-    }
-
     /// Post a call link as a message.
     pub async fn post_call(&self, service: &str, url: &Url) -> Result<()> {
         send_message(
@@ -222,11 +212,6 @@ impl RoomHandle {
         )
         .await?;
         Ok(())
-    }
-
-    async fn can_send_state(&self, event_type: &str) -> Result<bool> {
-        let levels = (self.room.power_levels().await).map_err(matrix_sdk::Error::from)?;
-        Ok(levels.user_can_send_state(&self.session.user_id(), StateEventType::from(event_type)))
     }
 }
 

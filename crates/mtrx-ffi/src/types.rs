@@ -150,6 +150,8 @@ pub struct RoomSummary {
     /// Event IDs of its pinned messages, first pinned first.
     #[uniffi(default)]
     pub pinned: Vec<String>,
+    /// What we may do in it.
+    pub rights: crate::Rights,
 }
 
 impl From<&core::RoomSummary> for RoomSummary {
@@ -176,6 +178,7 @@ impl From<&core::RoomSummary> for RoomSummary {
             join_rule: room.join_rule.into(),
             join_rule_fact: room.join_rule.fact().to_owned(),
             pinned: room.pinned.iter().map(ToString::to_string).collect(),
+            rights: room.rights.into(),
         }
     }
 }
@@ -1011,6 +1014,7 @@ mod tests {
             alias: None,
             joined_members: 2,
             pinned: Vec::new(),
+            rights: core::Rights::default(),
         };
         let summary = RoomSummary::from(&room);
         assert_eq!(summary.id, "!room:example.org");

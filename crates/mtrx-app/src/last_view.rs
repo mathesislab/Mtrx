@@ -85,6 +85,7 @@ mod tests {
             alias: None,
             joined_members: 1,
             pinned: Vec::new(),
+            rights: mtrx_core::Rights::default(),
         };
         assert_eq!(view.found(&[]), None);
         assert_eq!(view.found(&[summary(&room)]), Some((None, room.clone())));

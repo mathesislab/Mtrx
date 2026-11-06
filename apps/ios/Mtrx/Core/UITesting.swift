@@ -133,8 +133,15 @@ private final class UITestSession: Session, @unchecked Sendable {
             unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0,
             lastActivity: Date().addingTimeInterval(-ago), directUser: kind == .direct ? annUser : nil,
             alias: nil, joinedMembers: 3, joinRule: .invite,
-            joinRuleFact: "Private: by invitation", pinned: [])
+            joinRuleFact: "Private: by invitation", pinned: [], rights: noRights)
     }
+
+    /// Nothing to change: as before the room's power levels are known.
+    private static let noRights = Rights(
+        send: false, redactOthers: false, pin: false, mentionRoom: false, rename: false, changeTopic: false,
+        changePicture: false, invite: false, kick: false, ban: false, changeJoinRule: false,
+        changeHistory: false, changeAddress: false, changeLevels: false, encrypt: false, addRooms: false,
+        setCallService: false, level: 0, defaultLevel: 0)
 
     /// Room `id`'s timeline, the same each time.
     private func timeline(_ id: String) -> UITestTimeline {

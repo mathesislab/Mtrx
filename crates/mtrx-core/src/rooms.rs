@@ -1,6 +1,7 @@
 //! Live room list (rooms, spaces, DMs) and room management.
 
 use std::{
+    collections::HashMap,
     sync::Arc,
     time::{Instant, SystemTime},
 };
@@ -33,8 +34,8 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use crate::{
-    Error, Live, Result, RoomHandle, RoomTag, Session, SpaceGraph, User,
-    permissions::{Permissions, open_power_levels_raw},
+    Error, Live, Result, Rights, RoomHandle, RoomTag, Session, SpaceGraph, User,
+    permissions::{self, Permissions, open_power_levels_raw},
     system_time,
 };
 
@@ -219,6 +220,8 @@ pub struct RoomSummary {
     pub joined_members: u64,
     /// The pinned messages, in the order they were pinned.
     pub pinned: Vec<OwnedEventId>,
+    /// What we may do in it.
+    pub rights: Rights,
 }
 
 impl RoomSummary {
@@ -268,6 +271,7 @@ async fn run_room_list(
     pin_mut!(entries, graphs);
 
     let mut items: Vector<RoomListItem> = Vector::new();
+    let mut rights = RightsCache::default();
     loop {
         tokio::select! {
             diffs = entries.next() => match diffs {
@@ -292,7 +296,7 @@ async fn run_room_list(
                     maximum_number_of_rooms,
                 } => items.len() >= maximum_number_of_rooms.unwrap_or(0) as usize,
             };
-        let rooms = summarize(&items).await;
+        let rooms = summarize(&items, &mut rights).await;
         tx.send_replace(RoomListState {
             rooms,
             loaded,
@@ -301,7 +305,30 @@ async fn run_room_list(
     }
 }
 
-async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
+/// Each listed room's rights, with the power levels event they were read
+/// from: only rooms whose levels changed are read again.
+#[derive(Default)]
+struct RightsCache(HashMap<OwnedRoomId, (OwnedEventId, Rights)>);
+
+impl RightsCache {
+    /// `room`'s rights, read again only if its levels changed; kept in
+    /// `next`.
+    async fn rights(&self, room: &Room, next: &mut RightsCache) -> Rights {
+        let Some(event) = permissions::levels_event(room).await else {
+            return Rights::default();
+        };
+        let rights = match self.0.get(room.room_id()) {
+            Some((seen, rights)) if *seen == event => *rights,
+            _ => permissions::rights(room).await,
+        };
+        next.0.insert(room.room_id().to_owned(), (event, rights));
+        rights
+    }
+}
+
+async fn summarize(items: &Vector<RoomListItem>, cache: &mut RightsCache) -> Vec<RoomSummary> {
+    // Rooms no longer listed are forgotten.
+    let mut next = RightsCache::default();
     let mut rooms = Vec::with_capacity(items.len());
     for room in items.iter() {
         // Left since the list filtered it.
@@ -349,8 +376,10 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             alias: room.canonical_alias().map(|a| a.to_string()),
             joined_members: room.joined_members_count(),
             pinned: room.pinned_event_ids().unwrap_or_default(),
+            rights: cache.rights(room, &mut next).await,
         });
     }
+    *cache = next;
     rooms
 }
 

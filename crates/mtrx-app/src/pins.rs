@@ -21,8 +21,6 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// Whether we may pin; `None` if unknown.
-    CanPin(Option<bool>),
     /// The pinned messages' timeline, made.
     Loaded(Result<Shared<RoomTimeline>, String>),
     Updated(Vec<TimelineEntry>),
@@ -33,7 +31,6 @@ pub enum Message {
 /// The open room's pinned messages, as far as loaded.
 #[derive(Default)]
 pub struct Pins {
-    pub can_pin: Option<bool>,
     /// Their own timeline, once made.
     pub timeline: Option<Arc<RoomTimeline>>,
     /// The timeline was asked for: once while the room is open.
@@ -53,7 +50,6 @@ impl Pins {
 
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::CanPin(can) => self.can_pin = can,
             Message::Loaded(Ok(Shared(timeline))) => {
                 self.events = events(timeline.current());
                 self.timeline = Some(timeline);
@@ -66,16 +62,17 @@ impl Pins {
     }
 
     /// The pinned messages, most recently pinned first, from `pinned` (the
-    /// room's list): the "Pinned" part of the topic panel, if any.
+    /// room's list): the "Pinned" part of the topic panel, if any; to
+    /// unpin, if `can_pin`.
     pub fn view<'a>(
         &'a self,
         room: &OwnedRoomId,
         pinned: &[OwnedEventId],
+        can_pin: bool,
     ) -> Option<Element<'a, app::Message>> {
         if pinned.is_empty() {
             return None;
         }
-        let can_pin = self.can_pin == Some(true);
         let mut list = column![
             text("Pinned")
                 .size(11)

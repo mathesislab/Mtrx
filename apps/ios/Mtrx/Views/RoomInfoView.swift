@@ -74,7 +74,7 @@ struct RoomInfoHeader: View {
             VStack(spacing: 8) {
                 AvatarView(
                     name: room.name, uri: room.avatarUrl, size: 64, shape: room.kind == .space ? .square : .circle)
-                if model.settings?.canRename == true {
+                if room.rights.rename {
                     HStack {
                         TextField("Room name", text: $name)
                             .font(.title3.weight(.semibold))
@@ -131,7 +131,7 @@ struct InviteLeaveButtons: View {
 
     var body: some View {
         AdaptiveStack(spacing: 10) {
-            if model.settings?.canInvite == true {
+            if room.rights.invite {
                 Button {
                     inviting = true
                 } label: {
@@ -184,7 +184,7 @@ struct TopicSection: View {
             HStack {
                 Text("Topic")
                 Spacer()
-                if model.settings?.canChangeTopic == true {
+                if room.rights.changeTopic {
                     NavigationLink("Edit") {
                         TopicEditor(draft: TopicDraft(topic), info: model)
                     }
@@ -237,14 +237,14 @@ struct RoomSettingsSections: View {
                 Text("Mentions").tag(NotifyMode.mentions)
                 Text("Mute").tag(NotifyMode.mute)
             }
-            if settings.canChangeAccess && !direct {
+            if room.rights.changeJoinRule && !direct {
                 Picker("Who can join", selection: Binding(get: { settings.joinRule }, set: { model.setJoinRule($0) })) {
                     ForEach(settings.joinRuleChoices, id: \.rule) { choice in
                         Text(choice.title).tag(choice.rule)
                     }
                 }
             }
-            if let listed = settings.listed, settings.canChangeAccess, settings.joinRule == .public || listed {
+            if let listed = settings.listed, room.rights.changeJoinRule, settings.joinRule == .public || listed {
                 Toggle("Listed in the directory", isOn: Binding(get: { listed }, set: { model.setListed($0) }))
             }
             ForEach(settings.spaces.filter(\.canChange), id: \.spaceId) { link in
@@ -252,7 +252,7 @@ struct RoomSettingsSections: View {
                     "Suggested in \(session.room(link.spaceId)?.name ?? "the space")",
                     isOn: Binding(get: { link.suggested }, set: { model.setSuggested(in: link.spaceId, $0) }))
             }
-            if settings.canChangeHistory && !direct {
+            if room.rights.changeHistory && !direct {
                 Picker(
                     "Who can read the history",
                     selection: Binding(get: { settings.history }, set: { model.setHistory($0) })
@@ -263,7 +263,7 @@ struct RoomSettingsSections: View {
                     Text("Anyone").tag(History.anyone)
                 }
             }
-            if settings.canChangePermissions && !direct {
+            if room.rights.changeLevels && !direct {
                 Picker(
                     "Who can edit",
                     selection: Binding(get: { settings.permissions }, set: { model.setPermissions($0) })
@@ -276,7 +276,7 @@ struct RoomSettingsSections: View {
                 LabeledContent("Encryption") {
                     if settings.encrypted {
                         Text("On")
-                    } else if settings.canEncrypt {
+                    } else if room.rights.encrypt {
                         Button("Turn on…") { encrypting = true }
                     } else {
                         Text("Off")
@@ -294,7 +294,7 @@ struct RoomSettingsSections: View {
 
     @ViewBuilder
     private func addressRow(_ settings: RoomSettings) -> some View {
-        if settings.canChangeAddress && room.kind != .direct {
+        if room.rights.changeAddress && room.kind != .direct {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Address")
                 HStack(spacing: 2) {
@@ -380,7 +380,7 @@ struct RoomSettingsSections: View {
                             .textSelection(.enabled)
                     }
                     Spacer()
-                    if settings.canUnban {
+                    if room.rights.ban {
                         Button("Unban") { model.unban(banned.user.userId) }
                             .buttonStyle(.bordered)
                             .controlSize(.small)

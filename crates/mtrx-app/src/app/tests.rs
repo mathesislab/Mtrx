@@ -842,9 +842,10 @@ async fn main_screen_with_math() {
         if let Some(summary) = state.rooms.iter_mut().find(|r| r.id == room) {
             summary.topic = Some(TOPIC.into());
             summary.pinned = vec![first];
+            summary.rights.pin = true;
+            summary.rights.change_topic = true;
         }
         main.show_rooms(state);
-        open.pins.update(pins::Message::CanPin(Some(true)));
         open.pins.update(pins::Message::Updated(entries.clone()));
         open.calls.space_service =
             Some(CallService::jitsi("Lab Jitsi", "https://video.lab.example").unwrap());
@@ -856,7 +857,6 @@ async fn main_screen_with_math() {
         }
         if mode == Mode::Light {
             open.topic.open = true;
-            open.topic.can_edit = Some(true);
             open.topic.editor = Some(topic::Editor::new(TOPIC));
             // The hovered message's menu, from its toolbar.
             main.popup = Some(Popup::MessageMenu {
@@ -1193,7 +1193,7 @@ fn composer_keeps_focus(app: &mut App) {
         ("members close", |app| main(app).show_members = false),
         ("mentions offered", |app| {
             let member = person("@ana:example.org", "Ana", mtrx_core::Role::Member);
-            room(app).members_loaded(Ok((vec![member], false)));
+            room(app).members_loaded(Ok(vec![member]));
             room(app).set_composer(typed("Thanks @an"));
         }),
         ("one picked", |app| room(app).complete("@Ana")),
@@ -1469,16 +1469,13 @@ async fn send_later_bar() {
         && let Some(open) = main.pane.room_mut()
     {
         use mtrx_core::Role::{Admin, Member};
-        open.members_loaded(Ok((
-            vec![
-                person("@anna:example.org", "Anna Lindqvist", Admin),
-                person("@jan:example.org", "Jan Hansen", Member),
-                person("@andreas:example.org", "Andreas Born", Member),
-                person("@ana:example.org", "Ana", Member),
-                person("@ana:other.org", "Ana", Member),
-            ],
-            true,
-        )));
+        open.members_loaded(Ok(vec![
+            person("@anna:example.org", "Anna Lindqvist", Admin),
+            person("@jan:example.org", "Jan Hansen", Member),
+            person("@andreas:example.org", "Andreas Born", Member),
+            person("@ana:example.org", "Ana", Member),
+            person("@ana:other.org", "Ana", Member),
+        ]));
         open.set_composer(typed(
             "Thanks @Anna Lindqvist! Who can take the Monday slot? @an",
         ));
@@ -1501,14 +1498,19 @@ async fn send_later_bar() {
         open.set_composer(typed("Who can take the Monday slot? ❤"));
     }
     let mut panel = settings::Panel::default();
+    let rights = mtrx_core::Rights {
+        change_levels: true,
+        ..Default::default()
+    };
     panel.room = Some(settings::Access::new(
         room.clone(),
         "ice-sheets".into(),
         false,
+        rights,
     ));
     panel.update(
         &mut app.settings,
-        settings::Message::AccessLoaded(room.clone(), Some(Permissions::Moderators), Some(true)),
+        settings::Message::AccessLoaded(room.clone(), Some(Permissions::Moderators)),
     );
     if let Screen::Main(main) = &mut app.screen {
         main.modal = Some(Modal::Settings(panel));
@@ -1805,7 +1807,7 @@ async fn room_management_screens() {
             main.filter = "ice".into();
             main.show_members = true;
             let room = main.pane.room_mut().unwrap();
-            room.members_loaded(Ok((members.clone(), true)));
+            room.members_loaded(Ok(members.clone()));
         }),
         "members-search",
     );
@@ -1814,7 +1816,7 @@ async fn room_management_screens() {
     let mut app = main_with(&|main| {
         main.show_members = true;
         let room = main.pane.room_mut().unwrap();
-        room.members_loaded(Ok((members.clone(), true)));
+        room.members_loaded(Ok(members.clone()));
     });
     let _ = app.update(Message::OpenRoom(other.clone()));
     snapshot(&app, "members-opening");
@@ -1939,9 +1941,9 @@ async fn room_management_screens() {
                          [link Shared drive] https://drive.google.com/drive/folders/xyz"
                             .into(),
                     );
+                    summary.rights.change_topic = true;
                 }
                 main.show_rooms(state);
-                main.space_topic.can_edit = Some(true);
                 main.space_topic.open = open;
             }),
             name,
@@ -3011,6 +3013,7 @@ fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
         alias: None,
         joined_members: 1,
         pinned: Vec::new(),
+        rights: mtrx_core::Rights::default(),
     }
 }
 

@@ -23,7 +23,6 @@ import org.mtrx.app.model.describe
 import uniffi.mtrx.Draft
 import uniffi.mtrx.DraftKeeper
 import uniffi.mtrx.MtrxException
-import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
@@ -52,9 +51,9 @@ import uniffi.mtrx.composeTopic as libraryComposeTopic
  * meanwhile (as a reply once the message it answers is in the rows), told
  * every change (saved once typing stops), saved at once when the room is
  * left or the app stops ([keepDraft]), cleared on send; during an edit,
- * the text from before it. The room's settings say whether we may
- * edit its topic (saved as [composeTopic] makes it, the library's); the
- * pinned messages load while the topic panel shows them.
+ * the text from before it. The topic is saved as [composeTopic] makes it
+ * (the library's); the pinned messages load while the topic panel shows
+ * them.
  */
 class TimelineViewModel(
     private val roomId: String,
@@ -101,10 +100,6 @@ class TimelineViewModel(
     val sharedRooms: StateFlow<List<String>?> = _sharedRooms.asStateFlow()
     private var sharedJob: Job? = null
 
-    /** The room's settings, for what we may change; null until read. */
-    private val _settings = MutableStateFlow<RoomSettings?>(null)
-    val settings: StateFlow<RoomSettings?> = _settings.asStateFlow()
-
     /** The pinned messages, while the topic panel shows them; null while loading. */
     private val _pinned = MutableStateFlow<List<EventRow>?>(null)
     val pinned: StateFlow<List<EventRow>?> = _pinned.asStateFlow()
@@ -141,7 +136,6 @@ class TimelineViewModel(
 
     init {
         viewModelScope.launch { restoreDraft() }
-        viewModelScope.launch { loadSettings() }
         viewModelScope.launch {
             try {
                 val opened = session.timeline(roomId)
@@ -167,14 +161,6 @@ class TimelineViewModel(
         }
     }
 
-    private suspend fun loadSettings() {
-        try {
-            _settings.value = session.room(roomId).use { it.settings() }
-        } catch (e: MtrxException) {
-            // Then we may not edit; the timeline works without.
-        }
-    }
-
     /** Save the room's topic, its text and links. */
     override fun saveTopic(topic: Topic) {
         actions.launch {
@@ -183,7 +169,6 @@ class TimelineViewModel(
             } catch (e: MtrxException) {
                 _error.value = describe(e)
             }
-            loadSettings()
         }
     }
 

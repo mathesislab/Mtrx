@@ -415,6 +415,7 @@ mod tests {
             alias: None,
             joined_members: 0,
             pinned: Vec::new(),
+            rights: crate::Rights::default(),
         }
     }
 

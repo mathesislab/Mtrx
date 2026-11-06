@@ -68,7 +68,7 @@ pub use members::{
 pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, User, UserInfo};
-pub use permissions::{Permissions, SpaceUpdate};
+pub use permissions::{Permissions, Rights, SpaceUpdate};
 pub use pins::PinsChange;
 pub use presence::{
     Activity, IDLE_AFTER, OwnPresence, Presence, PresenceDot, PresenceState, PresenceWatcher,

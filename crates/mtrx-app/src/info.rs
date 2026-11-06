@@ -447,7 +447,8 @@ impl Card {
         let settings = self.settings.as_ref();
         // They decide what may be changed: until then, only that it loads.
         let loading = settings.is_none() && self.error.is_none();
-        let allowed = |can: fn(&RoomSettings) -> bool| settings.is_some_and(can) && !self.saving;
+        let rights = room.rights;
+        let allowed = |can: bool| settings.is_some() && can && !self.saving;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
         let picture = avatars.view(
             room.id.as_str(),
@@ -456,13 +457,13 @@ impl Card {
             AVATAR,
             Shape::Circle,
         );
-        let picture = if allowed(|s| s.can_change_picture) {
+        let picture = if allowed(rights.change_picture) {
             self.picture_button(picture, room.avatar.is_some())
         } else {
             picture
         };
         // The name is edited where it is shown.
-        let name: Element<'a, app::Message> = if allowed(|s| s.can_rename) {
+        let name: Element<'a, app::Message> = if allowed(rights.rename) {
             hint(
                 spelling::checked(text_input("Room name", &self.name), &self.name)
                     .style(style::title_input)
@@ -494,7 +495,7 @@ impl Card {
             .spacing(12)
             .align_y(Alignment::Center)
             .into();
-        let about = self.about(room, call_services, allowed(|s| s.can_change_topic));
+        let about = self.about(room, call_services, allowed(rights.change_topic));
         let body = if loading {
             frame::loading()
         } else {
@@ -504,7 +505,7 @@ impl Card {
         let mut actions = Vec::new();
         let joined = room.membership == Membership::Joined;
         if joined {
-            if settings.is_some_and(|s| s.can_invite) {
+            if rights.invite {
                 let invite = match &self.overview {
                     Some(_) => app::Message::Info(Message::Overview(overview::Message::Tab(
                         overview::Tab::Members,
@@ -548,13 +549,7 @@ impl Card {
             actions,
             status: overview.status(shown),
             bar: Some(bar.into()),
-            body: overview.view(
-                room,
-                shown,
-                settings.is_some_and(|s| s.can_add_rooms),
-                settings.is_some_and(|s| s.can_invite) && joined,
-                body,
-            ),
+            body: overview.view(room, shown, rights.add_rooms, rights.invite && joined, body),
         }
     }
 
@@ -610,7 +605,8 @@ impl Card {
             return card.into();
         };
         let direct = room.kind == RoomKind::Direct;
-        if settings.can_change_access && !direct {
+        let rights = room.rights;
+        if rights.change_join_rule && !direct {
             let choices: Vec<Join> = (settings.join_rule_choices.iter().copied())
                 .map(Join)
                 .collect();
@@ -627,7 +623,7 @@ impl Card {
         }
         // Listing a room only others may join would only tease.
         if let Some(listed) = settings.listed
-            && settings.can_change_access
+            && rights.change_join_rule
             && (settings.join_rule == JoinRule::Public || listed)
         {
             card = card.push(settings::option(
@@ -658,7 +654,7 @@ impl Card {
                     .into(),
             ));
         }
-        if settings.can_change_history && !direct {
+        if rights.change_history && !direct {
             card = card.push(settings::option(
                 "Who can read the history",
                 match settings.history {
@@ -677,7 +673,7 @@ impl Card {
                 .into(),
             ));
         }
-        if settings.can_change_permissions && !direct {
+        if rights.change_levels && !direct {
             card = card.push(settings::option(
                 "Who can edit",
                 "Invite, rename, change the topic and picture, and pin messages.",
@@ -694,7 +690,7 @@ impl Card {
         if room.kind != RoomKind::Space {
             let control: Element<'a, app::Message> = if settings.encrypted {
                 text("On").size(13).style(text::secondary).into()
-            } else if settings.can_encrypt {
+            } else if rights.encrypt {
                 button(text("Turn on…").size(13))
                     .padding([4, 10])
                     .style(style::secondary_button)
@@ -726,7 +722,7 @@ impl Card {
                 .style(text::secondary),
         );
         if !settings.banned.is_empty() {
-            card = card.push(banned_view(settings, enabled(settings.can_unban)));
+            card = card.push(banned_view(settings, rights.ban, enabled(true)));
         }
         if let Some(error) = &self.error {
             card = card.push(text(error).size(12).style(text::danger));
@@ -748,7 +744,7 @@ impl Card {
             .map(ToString::to_string)
             .unwrap_or_else(|| room.id.to_string());
         let link = self.copyable("Link", format!("https://matrix.to/#/{address}"));
-        if !settings.can_change_address || room.kind == RoomKind::Direct {
+        if !room.rights.change_address || room.kind == RoomKind::Direct {
             return column![
                 self.copyable(
                     if settings.address.is_some() {
@@ -1154,8 +1150,13 @@ fn facts(room: &RoomSummary, settings: &RoomSettings) -> String {
     facts.join(" · ")
 }
 
-/// Who is banned and why, each to let back where we may (`can_unban`).
-fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Message> {
+/// Who is banned and why, each to let back if we may (`can_unban`), while
+/// not saving (`enabled`).
+fn banned_view(
+    settings: &RoomSettings,
+    can_unban: bool,
+    enabled: bool,
+) -> Element<'_, app::Message> {
     let rows = settings.banned.iter().map(|banned| {
         let mut who = column![text(banned.user.display_name()).size(13)];
         let detail = match &banned.reason {
@@ -1164,12 +1165,12 @@ fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Mes
         };
         who = who.push(selectable_text(detail).size(12).style(text::secondary));
         let mut line = row![who.width(Length::Fill)].align_y(Alignment::Center);
-        if settings.can_unban {
+        if can_unban {
             line = line.push(
                 button(text("Unban").size(12))
                     .padding([3, 10])
                     .style(style::secondary_button)
-                    .on_press_maybe(can_unban.then(|| {
+                    .on_press_maybe(enabled.then(|| {
                         app::Message::Info(Message::Change(Change::Unban(banned.user.id.clone())))
                     })),
             );

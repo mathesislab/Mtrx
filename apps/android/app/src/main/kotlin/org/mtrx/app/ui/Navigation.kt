@@ -334,7 +334,7 @@ private fun RoomPane(
             header,
             viewModel,
             signedIn.images,
-            spaces = remember(rooms) { rooms.topLevelSpaces() },
+            spaces = remember(rooms) { rooms.topLevelSpaces().filter { it.rights.invite } },
             rooms = rooms,
             presences = presences,
             refreshPresence = signedIn.presence::refresh,
@@ -448,4 +448,5 @@ private fun infoHeader(roomId: String, room: uniffi.mtrx.RoomSummary?): RoomInfo
     avatarUrl = room?.avatarUrl,
     topic = room?.topic?.takeIf { it.isNotBlank() }?.let { parseTopic(it) } ?: org.mtrx.app.rooms.NO_TOPIC,
     space = room?.kind == RoomKind.SPACE,
+    rights = room?.rights ?: org.mtrx.app.rooms.NO_RIGHTS,
 )

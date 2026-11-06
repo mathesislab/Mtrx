@@ -72,18 +72,31 @@ import org.mtrx.app.ui.SwitchRow
 import uniffi.mtrx.LevelConfirmation
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
+import uniffi.mtrx.Rights
 import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Topic
 import uniffi.mtrx.levelConfirmation
 import uniffi.mtrx.typedLevel
 
-/** What Room info shows of a room or space, besides its settings and members. */
+/** Nothing to change: a room not in the room list, or its power levels not known yet. */
+val NO_RIGHTS = Rights(
+    send = false, redactOthers = false, pin = false, mentionRoom = false, rename = false,
+    changeTopic = false, changePicture = false, invite = false, kick = false, ban = false,
+    changeJoinRule = false, changeHistory = false, changeAddress = false, changeLevels = false,
+    encrypt = false, addRooms = false, setCallService = false, level = 0, defaultLevel = 0,
+)
+
+/**
+ * What Room info shows of a room or space, besides its settings and
+ * members; [rights], ours, say what we may change (the room list's).
+ */
 data class RoomInfoHeader(
     val roomId: String,
     val name: String,
     val avatarUrl: String?,
     val topic: Topic,
     val space: Boolean,
+    val rights: Rights = NO_RIGHTS,
 )
 
 /**
@@ -134,7 +147,7 @@ fun RoomInfoContent(
                 InfoHeader(header, settings, images, busy, actions, onLeave)
             }
             item(key = "topic") {
-                TopicBox(header.topic, settings?.canChangeTopic == true, actions::setTopic, onOpenLink)
+                TopicBox(header.topic, header.rights.changeTopic, actions::setTopic, onOpenLink)
             }
             if (settings == null) {
                 item(key = "loading") { Loading() }
@@ -189,7 +202,7 @@ fun InfoHeader(
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(header.name, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (settings?.canRename == true) {
+                if (header.rights.rename) {
                     IconButton(onClick = { renaming = header.name }) {
                         Icon(Icons.Filled.Edit, contentDescription = "Rename", modifier = Modifier.size(18.dp))
                     }
@@ -202,7 +215,7 @@ fun InfoHeader(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 6.dp)) {
-            if (settings?.canInvite == true) {
+            if (header.rights.invite) {
                 FilledTonalButton(onClick = { inviting = true }) { Text("Invite…") }
             }
             OutlinedButton(
@@ -329,7 +342,7 @@ fun SettingsColumn(
             enabled = true,
             onChoose = actions::setNotify,
         )
-        if (settings.canChangeAccess) {
+        if (header.rights.changeJoinRule) {
             ChoiceRow(
                 "Who can join",
                 settings.joinRule,
@@ -339,7 +352,7 @@ fun SettingsColumn(
                 onChoose = actions::setJoinRule,
             )
         }
-        if (settings.canChangeAccess && showsListed(settings)) {
+        if (header.rights.changeJoinRule && showsListed(settings)) {
             SwitchRow(
                 "Listed in the directory",
                 checked = settings.listed == true,
@@ -356,7 +369,7 @@ fun SettingsColumn(
                 onChange = { actions.setSuggested(link.spaceId, it) },
             )
         }
-        if (settings.canChangeHistory) {
+        if (header.rights.changeHistory) {
             ChoiceRow(
                 "Who can read the history",
                 settings.history,
@@ -366,7 +379,7 @@ fun SettingsColumn(
                 onChoose = actions::setHistory,
             )
         }
-        if (settings.canChangePermissions) {
+        if (header.rights.changeLevels) {
             ChoiceRow(
                 "Who can edit",
                 settings.permissions,
@@ -376,7 +389,7 @@ fun SettingsColumn(
                 onChoose = actions::setPermissions,
             )
         }
-        if (!header.space && (settings.encrypted || settings.canEncrypt)) {
+        if (!header.space && (settings.encrypted || header.rights.encrypt)) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -400,7 +413,7 @@ fun SettingsColumn(
                 }
             }
         }
-        if (settings.canChangeAddress) AddressRow(settings.address, serverOf(ownUserId), actions::setAddress)
+        if (header.rights.changeAddress) AddressRow(settings.address, serverOf(ownUserId), actions::setAddress)
         if (settings.spaces.isNotEmpty() || settings.canAddTo.isNotEmpty()) {
             Text(
                 "Spaces",
@@ -451,7 +464,7 @@ fun SettingsColumn(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    if (settings.canUnban) TextButton(onClick = { actions.unban(person.user.userId) }) { Text("Unban") }
+                    if (header.rights.ban) TextButton(onClick = { actions.unban(person.user.userId) }) { Text("Unban") }
                 }
             }
         }

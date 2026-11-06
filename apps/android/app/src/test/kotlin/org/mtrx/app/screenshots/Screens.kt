@@ -18,6 +18,7 @@ import org.mtrx.app.listSection
 import org.mtrx.app.member
 import org.mtrx.app.messageRow
 import org.mtrx.app.model.Images
+import org.mtrx.app.rights
 import org.mtrx.app.roomSettings
 import org.mtrx.app.rooms.JoinActions
 import org.mtrx.app.rooms.NewRoomActions
@@ -267,13 +268,14 @@ val iceMembers = listOf(
     member("@eve:example.org", "Eve Ek", level = 0, membership = Membership.INVITED),
 )
 
-val iceHeader = RoomInfoHeader(roomId = ICE, name = "Ice sheets", avatarUrl = null, topic = iceTopic, space = false)
+val iceHeader = RoomInfoHeader(roomId = ICE, name = "Ice sheets", avatarUrl = null, topic = iceTopic, space = false, rights = rights())
 val teamHeader = RoomInfoHeader(
     roomId = TEAM,
     name = "Ice team",
     avatarUrl = null,
     topic = Topic("The ice sheet group: modelling, field work and papers.", emptyList()),
     space = true,
+    rights = rights(),
 )
 
 val teamChildren = listOf(

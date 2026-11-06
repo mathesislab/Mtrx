@@ -10,7 +10,8 @@ struct PersonInfoView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let spaces = session.lists.topLevelSpaces()
+        // Those we may invite to.
+        let spaces = session.lists.topLevelSpaces().filter(\.rights.invite)
         NavigationStack {
             List {
                 Section {
