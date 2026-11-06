@@ -474,8 +474,7 @@ pub enum MessageKind {
     Other,
 }
 
-/// A file sent in a message. Pass it to `Session.media_preview` or
-/// `Session.media_file`.
+/// A file sent in a message. Pass it to `Session.media_preview`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct Media {
     pub kind: MediaKind,

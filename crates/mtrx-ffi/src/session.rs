@@ -1,15 +1,8 @@
 //! A signed-in account: sync, the room list, media, signing out.
 
-use std::{
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::sync::Arc;
 
 use mtrx_core::{self as core, OwnedMxcUri, OwnedRoomId, OwnedUserId};
-use sha2::{Digest, Sha256};
 
 use crate::{
     ConnectionState, Media, MtrxError, TaskHandle, Timeline, User,
@@ -115,23 +108,6 @@ impl Session {
         run(async move { Ok(session.media_preview(&source).await?) }).await
     }
 
-    /// The whole file of a message, decrypted, saved in the cache directory
-    /// (once); returns its path. Deleted when signing out.
-    pub async fn media_file(&self, media: Media) -> Result<String, MtrxError> {
-        let source = media.media_ref()?;
-        let session = self.core();
-        run(async move {
-            let dir = session.profile().cache_dir().join("media");
-            let path = dir.join(media_file_name(source.uri().as_str(), &media.filename));
-            if !tokio::fs::try_exists(&path).await? {
-                let bytes = session.media_content(&source).await?;
-                write_atomically(&dir, &path, &bytes).await?;
-            }
-            Ok(path.to_string_lossy().into_owned())
-        })
-        .await
-    }
-
     /// Someone's name and picture from their profile on the server.
     pub async fn user_profile(&self, user_id: String) -> Result<User, MtrxError> {
         let user = OwnedUserId::try_from(user_id.as_str()).map_err(MtrxError::invalid)?;
@@ -152,72 +128,5 @@ impl Session {
     pub async fn forget(&self) -> Result<(), MtrxError> {
         let session = self.core();
         run(async move { Ok(session.forget().await?) }).await
-    }
-}
-
-/// A media file's name in the cache: from its URI (so each is downloaded
-/// once), with the extension of its file name (so other apps can open it).
-fn media_file_name(uri: &str, filename: &str) -> String {
-    let hash: String = Sha256::digest(uri.as_bytes())[..16]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let extension = Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .filter(|e| e.len() <= 10 && e.chars().all(|c| c.is_ascii_alphanumeric()));
-    match extension {
-        Some(extension) => format!("{hash}.{}", extension.to_ascii_lowercase()),
-        None => hash,
-    }
-}
-
-/// Through a temporary file, so a reader never sees half a file.
-async fn write_atomically(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    tokio::fs::create_dir_all(dir).await?;
-    let partial = dir.join(format!(".{}.part", COUNT.fetch_add(1, Ordering::Relaxed)));
-    tokio::fs::write(&partial, bytes).await?;
-    tokio::fs::rename(&partial, path).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn media_files_are_named_by_uri_with_a_safe_extension() {
-        let name = media_file_name("mxc://example.org/abc", "Ice Sheet.PNG");
-        assert_eq!(name.len(), 32 + 4);
-        assert!(name.ends_with(".png"));
-        assert_eq!(name, media_file_name("mxc://example.org/abc", "other.png"));
-        assert_ne!(
-            name,
-            media_file_name("mxc://example.org/abd", "Ice Sheet.PNG")
-        );
-        assert_eq!(
-            media_file_name("mxc://example.org/abc", "no-extension").len(),
-            32
-        );
-        assert_eq!(
-            media_file_name("mxc://example.org/abc", "evil.p/../ng").len(),
-            32
-        );
-    }
-
-    #[test]
-    fn atomic_writes_replace_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let media = dir.path().join("media");
-        let path = media.join("file.txt");
-        futures_executor::block_on(crate::runtime::run({
-            let (media, path) = (media.clone(), path.clone());
-            async move {
-                write_atomically(&media, &path, b"one").await.unwrap();
-                write_atomically(&media, &path, b"two").await.unwrap();
-            }
-        }));
-        assert_eq!(std::fs::read(&path).unwrap(), b"two");
-        assert_eq!(std::fs::read_dir(&media).unwrap().count(), 1);
     }
 }
