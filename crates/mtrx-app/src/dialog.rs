@@ -131,8 +131,6 @@ pub enum Opened {
     Left(OwnedRoomId),
     /// A room's members changed.
     Members(OwnedRoomId),
-    /// A room's settings changed.
-    Settings(OwnedRoomId),
     SignedOut,
 }
 

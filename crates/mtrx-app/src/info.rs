@@ -1,10 +1,15 @@
 //! Cards: who someone is, with their address to copy; a room's settings.
 //! Opened by clicking a name or from the room and member lists.
 
-use std::{fmt, time::SystemTime};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    time::SystemTime,
+};
 
 use iced::{
-    Alignment, Element, Length, Theme,
+    Alignment, Element, Length, Subscription, Theme,
+    futures::{StreamExt, stream},
     widget::{button, column, container, pick_list, row, space, stack, text, text_input, toggler},
 };
 use mtrx_core::{
@@ -72,7 +77,9 @@ pub enum Target {
 #[derive(Debug, Clone)]
 pub enum Message {
     UserLoaded(OwnedUserId, Result<UserInfo, String>),
-    SettingsLoaded(OwnedRoomId, Result<RoomSettings, String>),
+    /// The room's settings, once read and after each change (those made
+    /// here at once); or why they can't be read.
+    Settings(OwnedRoomId, Result<RoomSettings, String>),
     Copy(String),
     Name(String),
     Topic(topic::Edit),
@@ -93,6 +100,10 @@ pub enum Message {
     Change(Change),
     /// The menu of spaces to add the room to.
     SpacesMenu(bool),
+    /// Let every member invite and edit the space and the rooms in it.
+    LetEveryoneEdit,
+    /// What that changed, or why it failed.
+    Opened(Result<String, String>),
     Overview(overview::Message),
     Close,
 }
@@ -111,6 +122,34 @@ pub enum Change {
     Unban(OwnedUserId),
 }
 
+/// A room whose settings a card follows, as a subscription's key: one per
+/// room.
+pub struct Followed(pub RoomHandle);
+
+impl Hash for Followed {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.id().hash(state);
+    }
+}
+
+impl Card {
+    /// The room's settings, once read and after each change, while the
+    /// card shows them.
+    pub fn subscription(&self) -> Subscription<app::Message> {
+        let Some(handle) = &self.handle else {
+            return Subscription::none();
+        };
+        Subscription::run_with(Followed(handle.clone()), |room| {
+            let (room, id) = (room.0.clone(), room.0.id().to_owned());
+            stream::once(async move { room.settings().await })
+                .flat_map(|settings| settings.updates())
+                .map(move |settings| {
+                    app::Message::Info(Message::Settings(id.clone(), Ok(settings)))
+                })
+        })
+    }
+}
+
 /// A card's parts, for its [`frame::frame`].
 struct Framed<'a> {
     title: Element<'a, app::Message>,
@@ -124,18 +163,18 @@ struct Framed<'a> {
 
 pub struct Card {
     pub target: Target,
-    /// The room's, to read and change its settings; set by the app.
+    /// The room's, to follow and change its settings; set by the app.
     pub handle: Option<RoomHandle>,
     /// Spaces and rooms shared with the person, once loaded.
     shared: Option<Vec<OwnedRoomId>>,
-    /// The room's settings, once loaded.
+    /// The room's settings, once read.
     pub settings: Option<RoomSettings>,
     /// The room's name and topic as edited.
     name: String,
     topic: topic::Editor,
-    /// A change is being saved.
-    pub saving: bool,
     error: Option<String>,
+    /// What letting everyone edit the space and its rooms changed.
+    opened: Option<String>,
     /// The text last copied, to confirm it.
     copied: Option<String>,
     /// For a space: its rooms and members too.
@@ -169,8 +208,8 @@ impl Card {
             handle: None,
             shared: None,
             settings: None,
-            saving: false,
             error: None,
+            opened: None,
             copied: None,
         }
     }
@@ -222,47 +261,26 @@ impl Card {
                     self.shared = Some(info.shared);
                 }
             }
-            Message::SettingsLoaded(id, Ok(settings)) => {
+            Message::Settings(id, Ok(settings)) => {
                 if self.room() == Some(&id) {
-                    // The address as saved, unless it is being edited.
-                    let saved = self.settings.as_ref().map(address_name);
-                    if saved.is_none_or(|saved| saved == self.address) {
+                    // The address as shown, unless it is being edited.
+                    let shown = self.settings.as_ref().map(address_name);
+                    if shown.is_none_or(|shown| shown == self.address) {
                         self.address = address_name(&settings);
                     }
                     self.settings = Some(settings);
                 }
             }
-            Message::UserLoaded(_, Err(e)) | Message::SettingsLoaded(_, Err(e)) => {
-                self.error = Some(e)
-            }
+            Message::UserLoaded(_, Err(e)) | Message::Settings(_, Err(e)) => self.error = Some(e),
             Message::Copy(copied) => self.copied = Some(copied),
             Message::Name(name) => self.name = name,
             Message::Topic(edit) => self.topic.update(edit),
-            Message::Notify(mode) => {
-                if let Some(settings) = &mut self.settings {
-                    settings.notify = mode;
-                }
-                self.saving = true;
-                self.error = None;
-            }
-            Message::JoinRule(rule) => {
-                if let Some(settings) = &mut self.settings {
-                    settings.join_rule = rule;
-                }
-                self.saving = true;
-                self.error = None;
-            }
+            Message::Notify(_) | Message::JoinRule(_) | Message::SaveDetails => self.error = None,
             Message::ChangePicture | Message::RemovePicture => {
                 self.picture_menu = false;
-                self.saving = true;
-                self.error = None;
-            }
-            Message::SaveDetails => {
-                self.saving = true;
                 self.error = None;
             }
             Message::Saved(result) => {
-                self.saving = false;
                 if result.is_ok() {
                     self.editing_topic = false;
                 }
@@ -271,14 +289,16 @@ impl Card {
             Message::PictureMenu(open) => self.picture_menu = open,
             Message::SpacesMenu(open) => self.spaces_menu = open,
             Message::AddressName(name) => self.address = name,
-            Message::Change(change) => {
+            Message::Change(_) => {
                 self.spaces_menu = false;
-                self.saving = true;
                 self.error = None;
-                if let Some(settings) = &mut self.settings {
-                    apply(settings, &change);
-                }
             }
+            Message::LetEveryoneEdit => {
+                self.opened = None;
+                self.error = None;
+            }
+            Message::Opened(Ok(summary)) => self.opened = Some(summary),
+            Message::Opened(Err(e)) => self.error = Some(e),
             Message::EditTopic => self.editing_topic = true,
             Message::CancelTopic(topic) => {
                 self.topic = topic::Editor::new(&topic);
@@ -336,7 +356,8 @@ impl Card {
         if name.is_some() || topic.is_some() {
             Some(frame::primary(
                 "Save",
-                (!self.saving && self.topic.valid())
+                self.topic
+                    .valid()
                     .then_some(app::Message::Info(Message::SaveDetails)),
             ))
         } else {
@@ -349,7 +370,7 @@ impl Card {
     pub fn submit(&self, rooms: &[RoomSummary]) -> Option<app::Message> {
         let room = rooms.iter().find(|r| Some(&r.id) == self.room())?;
         let (name, topic) = self.changed_details(room);
-        ((name.is_some() || topic.is_some()) && !self.saving && self.topic.valid())
+        ((name.is_some() || topic.is_some()) && self.topic.valid())
             .then_some(app::Message::Info(Message::SaveDetails))
     }
 
@@ -448,7 +469,7 @@ impl Card {
         // They decide what may be changed: until then, only that it loads.
         let loading = settings.is_none() && self.error.is_none();
         let rights = room.rights;
-        let allowed = |can: bool| settings.is_some() && can && !self.saving;
+        let allowed = |can: bool| settings.is_some() && can;
         let star = sidebar::star_button(&room.id, room.tag == RoomTag::Favourite);
         let picture = avatars.view(
             room.id.as_str(),
@@ -564,18 +585,13 @@ impl Card {
         let rooms: &'a [RoomSummary] = &shown.lists.rooms;
         let settings = self.settings.as_ref();
         let change = |change| app::Message::Info(Message::Change(change));
-        let enabled = |can: bool| can && !self.saving;
         let mut card = column![].spacing(14);
         if let Some(settings) = settings {
             card = card.push(settings::option(
                 "Notifications",
-                match settings.notify {
-                    NotifyMode::All => "Every message notifies you.",
-                    NotifyMode::Mentions => "Only mentions of you and your keywords notify you.",
-                    NotifyMode::Mute => "Nothing here notifies you.",
-                },
+                settings.notify.explanation(),
                 pick_list(
-                    Notify::ALL,
+                    NotifyMode::ALL.map(Notify),
                     Some(Notify(settings.notify)),
                     |Notify(mode)| app::Message::Info(Message::Notify(mode)),
                 )
@@ -633,7 +649,7 @@ impl Card {
                     shown.own_user.server_name()
                 ),
                 toggler(listed)
-                    .on_toggle_maybe(enabled(true).then_some(move |on| change(Change::Listed(on))))
+                    .on_toggle(move |on| change(Change::Listed(on)))
                     .into(),
             ));
         }
@@ -647,24 +663,16 @@ impl Card {
                 format!("Suggested in {space}"),
                 "Offered first to the space's members, and to people who join it.",
                 toggler(link.suggested)
-                    .on_toggle_maybe(
-                        enabled(true)
-                            .then_some(move |on| change(Change::Suggested(id.clone(), on))),
-                    )
+                    .on_toggle(move |on| change(Change::Suggested(id.clone(), on)))
                     .into(),
             ));
         }
         if rights.change_history && !direct {
             card = card.push(settings::option(
                 "Who can read the history",
-                match settings.history {
-                    History::Joined => "Members, from when they joined.",
-                    History::Invited => "Members, from when they were invited.",
-                    History::Members => "Members, all of it, also from before they joined.",
-                    History::Anyone => "Anyone, without joining.",
-                },
+                settings.history.explanation(),
                 pick_list(
-                    Reading::ALL,
+                    History::ALL.map(Reading),
                     Some(Reading(settings.history)),
                     move |Reading(history)| change(Change::History(history)),
                 )
@@ -676,15 +684,29 @@ impl Card {
         if rights.change_levels && !direct {
             card = card.push(settings::option(
                 "Who can edit",
-                "Invite, rename, change the topic and picture, and pin messages.",
+                settings.permissions.explanation(),
                 pick_list(
-                    Editing::ALL,
+                    Permissions::ALL.map(Editing),
                     Some(Editing(settings.permissions)),
                     move |Editing(permissions)| change(Change::Permissions(permissions)),
                 )
                 .text_size(13)
                 .padding(6)
                 .into(),
+            ));
+        }
+        // A space is opened room by room, so offered even if it is open.
+        if rights.change_levels && room.kind == RoomKind::Space {
+            card = card.push(settings::option(
+                "Its rooms",
+                self.opened.as_deref().unwrap_or(
+                    "Let everyone invite and edit this space and the rooms in it you have joined.",
+                ),
+                button(text("Let everyone edit").size(13))
+                    .padding([4, 10])
+                    .style(style::secondary_button)
+                    .on_press(app::Message::Info(Message::LetEveryoneEdit))
+                    .into(),
             ));
         }
         if room.kind != RoomKind::Space {
@@ -694,11 +716,9 @@ impl Card {
                 button(text("Turn on…").size(13))
                     .padding([4, 10])
                     .style(style::secondary_button)
-                    .on_press_maybe(enabled(true).then(|| {
-                        app::Message::OpenDialog(Kind::Encrypt {
-                            room: room.id.clone(),
-                            name: room.name.clone(),
-                        })
+                    .on_press(app::Message::OpenDialog(Kind::Encrypt {
+                        room: room.id.clone(),
+                        name: room.name.clone(),
                     }))
                     .into()
             } else {
@@ -722,7 +742,7 @@ impl Card {
                 .style(text::secondary),
         );
         if !settings.banned.is_empty() {
-            card = card.push(banned_view(settings, rights.ban, enabled(true)));
+            card = card.push(banned_view(settings, rights.ban));
         }
         if let Some(error) = &self.error {
             card = card.push(text(error).size(12).style(text::danger));
@@ -781,7 +801,7 @@ impl Card {
                 button(text("Save").size(13))
                     .padding([4, 10])
                     .style(style::primary_button)
-                    .on_press_maybe((!self.saving).then(|| self.save_address())),
+                    .on_press(self.save_address()),
             );
         }
         column![
@@ -833,10 +853,7 @@ impl Card {
                     button(icons::cross(9.0, directory::secondary))
                         .padding(4)
                         .style(style::list_item(false))
-                        .on_press_maybe(
-                            (!self.saving)
-                                .then(|| change(Change::RemoveFromSpace(link.space.clone()))),
-                        ),
+                        .on_press(change(Change::RemoveFromSpace(link.space.clone()))),
                     "Take it out of this space",
                     Position::Bottom,
                 ));
@@ -864,10 +881,7 @@ impl Card {
                     button(text("Add to space…").size(13))
                         .padding([4, 10])
                         .style(style::text_button)
-                        .on_press_maybe(
-                            (!self.saving)
-                                .then_some(app::Message::Info(Message::SpacesMenu(!open))),
-                        ),
+                        .on_press(app::Message::Info(Message::SpacesMenu(!open))),
                     open.then(|| context_menu::menu(others)),
                     Side::Below,
                     Edge::Left,
@@ -1101,22 +1115,6 @@ fn address_name(settings: &RoomSettings) -> String {
         .unwrap_or_default()
 }
 
-/// A change as the card shows it until the settings come back.
-fn apply(settings: &mut RoomSettings, change: &Change) {
-    match change {
-        Change::Address(_) | Change::AddToSpace(_) | Change::RemoveFromSpace(_) => {}
-        Change::Listed(listed) => settings.listed = Some(*listed),
-        Change::History(history) => settings.history = *history,
-        Change::Permissions(permissions) => settings.permissions = *permissions,
-        Change::Suggested(space, suggested) => {
-            if let Some(link) = settings.spaces.iter_mut().find(|l| &l.space == space) {
-                link.suggested = *suggested;
-            }
-        }
-        Change::Unban(user) => settings.banned.retain(|b| &b.user.id != user),
-    }
-}
-
 /// "Room · Public: anyone can join · 4 members · encrypted · version 12".
 fn facts(room: &RoomSummary, settings: &RoomSettings) -> String {
     let mut facts = vec![
@@ -1150,13 +1148,8 @@ fn facts(room: &RoomSummary, settings: &RoomSettings) -> String {
     facts.join(" · ")
 }
 
-/// Who is banned and why, each to let back if we may (`can_unban`), while
-/// not saving (`enabled`).
-fn banned_view(
-    settings: &RoomSettings,
-    can_unban: bool,
-    enabled: bool,
-) -> Element<'_, app::Message> {
+/// Who is banned and why, each to let back if we may (`can_unban`).
+fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Message> {
     let rows = settings.banned.iter().map(|banned| {
         let mut who = column![text(banned.user.display_name()).size(13)];
         let detail = match &banned.reason {
@@ -1170,9 +1163,9 @@ fn banned_view(
                 button(text("Unban").size(12))
                     .padding([3, 10])
                     .style(style::secondary_button)
-                    .on_press_maybe(enabled.then(|| {
-                        app::Message::Info(Message::Change(Change::Unban(banned.user.id.clone())))
-                    })),
+                    .on_press(app::Message::Info(Message::Change(Change::Unban(
+                        banned.user.id.clone(),
+                    )))),
             );
         }
         line.into()
@@ -1184,21 +1177,9 @@ fn banned_view(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Notify(NotifyMode);
 
-impl Notify {
-    const ALL: [Self; 3] = [
-        Self(NotifyMode::All),
-        Self(NotifyMode::Mentions),
-        Self(NotifyMode::Mute),
-    ];
-}
-
 impl fmt::Display for Notify {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            NotifyMode::All => "All messages",
-            NotifyMode::Mentions => "Mentions",
-            NotifyMode::Mute => "Mute",
-        })
+        f.write_str(self.0.title())
     }
 }
 
@@ -1206,23 +1187,9 @@ impl fmt::Display for Notify {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Reading(History);
 
-impl Reading {
-    const ALL: [Self; 4] = [
-        Self(History::Joined),
-        Self(History::Invited),
-        Self(History::Members),
-        Self(History::Anyone),
-    ];
-}
-
 impl fmt::Display for Reading {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            History::Joined => "Since joining",
-            History::Invited => "Since invited",
-            History::Members => "Members",
-            History::Anyone => "Anyone",
-        })
+        f.write_str(self.0.title())
     }
 }
 
@@ -1230,16 +1197,9 @@ impl fmt::Display for Reading {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Editing(Permissions);
 
-impl Editing {
-    const ALL: [Self; 2] = [Self(Permissions::Everyone), Self(Permissions::Moderators)];
-}
-
 impl fmt::Display for Editing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            Permissions::Everyone => "Everyone",
-            Permissions::Moderators => "Moderators",
-        })
+        f.write_str(self.0.title())
     }
 }
 

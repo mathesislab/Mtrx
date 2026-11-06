@@ -12,9 +12,9 @@ use futures_util::StreamExt;
 use iced::Size;
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    Attachment, Connection, EventContent, NewRoom, OwnedEventId, Permissions, Profile, RoomKind,
-    RoomOrAliasId, RoomTag, Row, RowContext, ScheduledFile, SecretStore, Section, SendState,
-    Session, TimelineEntry,
+    Attachment, Connection, EventContent, NewRoom, OwnedEventId, Profile, RoomKind, RoomOrAliasId,
+    RoomTag, Row, RowContext, ScheduledFile, SecretStore, Section, SendState, Session,
+    TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -1497,23 +1497,8 @@ async fn send_later_bar() {
         assert_eq!(open.completion, None);
         open.set_composer(typed("Who can take the Monday slot? ❤"));
     }
-    let mut panel = settings::Panel::default();
-    let rights = mtrx_core::Rights {
-        change_levels: true,
-        ..Default::default()
-    };
-    panel.room = Some(settings::Access::new(
-        room.clone(),
-        "ice-sheets".into(),
-        false,
-        rights,
-    ));
-    panel.update(
-        &mut app.settings,
-        settings::Message::AccessLoaded(room.clone(), Some(Permissions::Moderators)),
-    );
     if let Screen::Main(main) = &mut app.screen {
-        main.modal = Some(Modal::Settings(panel));
+        main.modal = Some(Modal::Settings(settings::Panel::default()));
     }
     // A newer version, also the dot on the gear behind the panel.
     app.updater.available = Some(update::Update {
@@ -1857,10 +1842,7 @@ async fn room_management_screens() {
                 &main.lists.rooms,
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::SettingsLoaded(
-                room.clone(),
-                Ok(settings.clone()),
-            ));
+            card.update(info::Message::Settings(room.clone(), Ok(settings.clone())));
             // A link being added.
             card.update(info::Message::Topic(topic::Edit::Add(false)));
             main.card = Some(card);
@@ -1920,7 +1902,7 @@ async fn room_management_screens() {
                 &main.lists.rooms,
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::SettingsLoaded(
+            card.update(info::Message::Settings(
                 space.clone(),
                 Ok(space_settings.clone()),
             ));

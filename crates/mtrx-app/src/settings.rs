@@ -15,8 +15,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    AtHome, CallService, Grouping, OwnedRoomId, Permissions, Rights, RoomCategories,
-    RoomListColours, ServiceKind,
+    AtHome, CallService, Grouping, OwnedRoomId, Rights, RoomCategories, RoomListColours,
+    ServiceKind,
 };
 use mtrx_google::GoogleClient;
 use serde::{Deserialize, Serialize};
@@ -172,11 +172,6 @@ pub enum Message {
     SpaceSaved(Result<(), String>),
     /// A room list colour was saved in the account, or not.
     ColourSaved(Result<(), String>),
-    /// Who may edit a room or space.
-    AccessLoaded(OwnedRoomId, Option<Permissions>),
-    LetEveryoneEdit(OwnedRoomId),
-    /// Opened, with a summary of what changed.
-    Opened(OwnedRoomId, Result<String, String>),
     GoogleClientId(String),
     GoogleClientSecret(String),
     GoogleSignIn,
@@ -206,11 +201,6 @@ pub enum Action {
     /// on it.
     CheckUpdates,
     SetSpaceService(OwnedRoomId, Option<CallService>),
-    /// Open a room, or a space with its rooms, to every member.
-    LetEveryoneEdit {
-        id: OwnedRoomId,
-        space: bool,
-    },
     GoogleSignIn(GoogleClient),
     GoogleSignOut,
     /// Set the room list's colour in a space, or at home, in the account.
@@ -227,8 +217,6 @@ pub struct Panel {
     /// Saving failed.
     pub error: Option<String>,
     form: ServiceForm,
-    /// The open room, while one is.
-    pub room: Option<Access>,
     /// The selected space, while one is.
     pub space: Option<SpaceCalls>,
     pub google: GoogleState,
@@ -248,93 +236,10 @@ pub struct GoogleState {
     pub error: Option<String>,
 }
 
-/// Who may edit a room or space, as shown in the panel.
-pub struct Access {
-    pub id: OwnedRoomId,
-    pub name: String,
-    space: bool,
-    /// `None` until loaded.
-    permissions: Option<Permissions>,
-    /// We may change the permissions.
-    can_change: bool,
-    busy: bool,
-    /// What the last change did, or why it failed.
-    status: Option<Result<String, String>>,
-}
-
-impl Access {
-    /// For a room or `space` where we have `rights`.
-    pub fn new(id: OwnedRoomId, name: String, space: bool, rights: Rights) -> Self {
-        Self {
-            id,
-            name,
-            space,
-            permissions: None,
-            can_change: rights.change_levels,
-            busy: false,
-            status: None,
-        }
-    }
-
-    fn view(&self) -> Element<'_, app::Message> {
-        let what = if self.space {
-            "this space and its rooms"
-        } else {
-            "this room"
-        };
-        let state = match self.permissions {
-            None => "Loading…".to_owned(),
-            Some(Permissions::Everyone) => format!("Everyone can invite and edit {what}."),
-            Some(Permissions::Moderators) => {
-                format!(
-                    "Only moderators can edit {}.",
-                    if self.space {
-                        "this space"
-                    } else {
-                        "this room"
-                    }
-                )
-            }
-        };
-        let mut line = row![text(state).size(13).width(Length::Fill)]
-            .spacing(8)
-            .align_y(Alignment::Center);
-        // A space is opened room by room, so offer it even if the space itself is open.
-        let offer = self.space || self.permissions == Some(Permissions::Moderators);
-        if offer && self.can_change {
-            line = line.push(
-                button(text("Let everyone edit").size(13))
-                    .padding([4, 10])
-                    .style(style::secondary_button)
-                    .on_press_maybe(
-                        (!self.busy).then(|| message(Message::LetEveryoneEdit(self.id.clone()))),
-                    ),
-            );
-        }
-        let mut section = column![line].spacing(4);
-        if !self.can_change && self.permissions == Some(Permissions::Moderators) {
-            section = section.push(
-                text("Only an admin can change this.")
-                    .size(12)
-                    .style(text::secondary),
-            );
-        }
-        match &self.status {
-            Some(Ok(summary)) => {
-                section = section.push(text(summary).size(12).style(text::secondary))
-            }
-            Some(Err(e)) => section = section.push(text(e).size(12).style(text::danger)),
-            None => {}
-        }
-        section.into()
-    }
-}
-
-/// A space's settings in the panel: call service and who may edit.
+/// A space's call service in the panel.
 pub struct SpaceCalls {
     pub id: OwnedRoomId,
     pub name: String,
-    pub access: Access,
     /// `None` until loaded.
     service: Option<Option<CallService>>,
     /// We may change the call service.
@@ -346,7 +251,6 @@ impl SpaceCalls {
     /// For a space where we have `rights`.
     pub fn new(id: OwnedRoomId, name: String, rights: Rights) -> Self {
         Self {
-            access: Access::new(id.clone(), name.clone(), true, rights),
             id,
             name,
             service: None,
@@ -504,30 +408,6 @@ impl Panel {
             Message::SpaceSaved(result) => {
                 if let Some(space) = &mut self.space {
                     space.error = result.err();
-                }
-            }
-            Message::AccessLoaded(id, permissions) => {
-                if let Some(access) = self.access_mut(&id) {
-                    access.permissions = permissions;
-                }
-            }
-            Message::LetEveryoneEdit(id) => {
-                if let Some(access) = self.access_mut(&id) {
-                    access.busy = true;
-                    access.status = None;
-                    return Action::LetEveryoneEdit {
-                        space: access.space,
-                        id,
-                    };
-                }
-            }
-            Message::Opened(id, result) => {
-                if let Some(access) = self.access_mut(&id) {
-                    access.busy = false;
-                    if result.is_ok() {
-                        access.permissions = Some(Permissions::Everyone);
-                    }
-                    access.status = Some(result);
                 }
             }
             Message::GoogleClientId(id) => self.google.client_id = id,
@@ -703,15 +583,9 @@ impl Panel {
         ]
         .spacing(14);
         panel = panel.push(heading("Google Meet")).push(self.google.view());
-        if let Some(room) = &self.room {
-            panel = panel
-                .push(heading(&format!("Room: {}", room.name)))
-                .push(room.view());
-        }
         if let Some(space) = &self.space {
             panel = panel
                 .push(heading(&format!("Space: {}", space.name)))
-                .push(space.access.view())
                 .push(space.view(settings));
         }
         if let Some(account) = &self.account {
@@ -780,18 +654,6 @@ impl Panel {
         )
         .spacing(8)
         .into()
-    }
-}
-
-impl Panel {
-    fn access_mut(&mut self, id: &OwnedRoomId) -> Option<&mut Access> {
-        let room = self.room.as_mut().filter(|a| &a.id == id);
-        room.or_else(|| {
-            self.space
-                .as_mut()
-                .map(|s| &mut s.access)
-                .filter(|a| &a.id == id)
-        })
     }
 }
 
