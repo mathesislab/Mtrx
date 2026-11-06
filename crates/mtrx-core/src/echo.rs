@@ -769,7 +769,7 @@ mod tests {
             .map(|l| (&l.space, l.suggested))
             .collect();
         assert_eq!(spaces, [(&other, false)]);
-        assert_eq!(shown.can_add_to, [team.clone()]);
+        assert_eq!(shown.can_add_to, std::slice::from_ref(&team));
         assert!(shown.banned.is_empty());
 
         // Out of every space: Space members no longer offered.
