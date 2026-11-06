@@ -856,7 +856,7 @@ fn rooms_made_set_up_joined_and_left() {
     assert_eq!(block_on(keeper.restore()), None, "once");
     keeper.changed(Default::default());
     block_on(keeper.flush());
-    wait_for("no drafts", &a_updates, |s: &Arc<RoomLists>| {
+    let lists = wait_for("no drafts", &a_updates, |s: &Arc<RoomLists>| {
         s.drafts().is_empty()
     });
     assert_eq!(
@@ -868,10 +868,8 @@ fn rooms_made_set_up_joined_and_left() {
     let settings = block_on(a.session.room(room.clone()).unwrap().settings()).unwrap();
     assert!(settings.rights.rename && settings.rights.change_join_rule && settings.encrypted);
     // The room list has the same rights.
-    wait_for("the room's rights", &a_updates, |s: &Arc<RoomLists>| {
-        s.room(room.clone())
-            .is_some_and(|r| r.rights == settings.rights)
-    });
+    let listed = lists.room(room.clone()).map(|r| r.rights);
+    assert_eq!(listed, Some(settings.rights));
     assert_eq!(settings.version.as_deref(), Some("12"));
     assert_eq!(settings.spaces[0].space_id, space);
     let topic = mtrx_ffi::compose_topic(mtrx_ffi::Topic {

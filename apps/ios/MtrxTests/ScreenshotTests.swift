@@ -197,7 +197,7 @@ final class ScreenshotTests: XCTestCase {
         session.memberList = Screens.members
         let info = model.info(for: Screens.ice)
         await info.load()
-        try await snap("08-member-menu", NavigationStack { MemberMenu(member: Screens.members[2], model: info) })
+        try await snap("08-member-menu", NavigationStack { MemberMenu(member: Screens.members[2], rights: Screens.ice.rights, model: info) })
     }
 
     // MARK: Spaces: overview, joining, making
