@@ -114,18 +114,21 @@ it happens.
 
 ### Widgets
 
-- `selectable.rs`: rich text as iced's `rich_text` draws it, plus
-  hit-testing and highlighting through the paragraph's cosmic-text layout
-  (`iced_graphics`, same version as iced). It reports `Press` (with the
-  word or paragraph for double and triple clicks) and, while dragging,
-  `Drag` when the cursor is beside its lines. A press and release on a
-  link without moving still opens it, and `on_click` does the same for
-  all its text (a sender's name, a quote). `lines` cuts it to fit a few
-  lines, and `id` reports the text it shows. It uses the cursor's
-  position, not the event's, because a scrollable only moves the cursor
-  into its content's coordinates.
-- `selectable_image.rs`: the same for a typeset math message, over the
-  image.
+- `selectable/geometry.rs`: what the two below share. `Geometry`
+  hit-tests and highlights laid-out text in the units of `Pos`. `Pointer`
+  reports `Press` (with the word or the unit for double and triple
+  clicks; a double click just after a word selects it) and, while
+  dragging, `Drag` when the cursor is beside the lines. A press and
+  release on a link without moving still opens it, and `on_click` does
+  the same for all the text (a sender's name, a quote). It uses the
+  cursor's position, not the event's, because a scrollable only moves
+  the cursor into its content's coordinates.
+- `selectable/text.rs`: rich text as iced's `rich_text` draws it, its
+  geometry through the paragraph's cosmic-text layout (`iced_graphics`,
+  same version as iced). `lines` cuts it to fit a few lines, and `id`
+  reports the text it shows.
+- `selectable/image.rs`: a typeset math message, its geometry from the
+  pieces of text over the image.
 - `drag_scroll.rs`: wraps the timeline. While dragging past its edge it
   asks for scrolling each frame, and passes a cursor at the edge to the
   text, since the content moves under a cursor that does not.
@@ -162,18 +165,20 @@ link's menu.
 ## Tests
 
 - Unit: units and their copy text (`message.rs`, `selection.rs`), hit
-  testing and highlighting over an image (`selectable_image.rs`), edge
+  testing and highlighting over an image (`selectable/image.rs`), double
+  clicks, the cursor and the find bar's current match
+  (`selectable/geometry.rs`), edge
   scrolling speed (`drag_scroll.rs`).
 - Simulated mouse: clicking, hovering and right-clicking a link in a
-  typeset message, and its cursor (`selectable_image.rs`).
+  typeset message, and its cursor (`selectable/image.rs`).
 - Simulated mouse: dragging, double and triple clicks, and dragging in a
   scrolled timeline (`message.rs`).
 - Renderer: pieces in reading order and in the right places, code by
   character (`mtrx-format/tests/format.rs`), tabs (`render.rs`); in the
-  app, code in a typeset message by character (`selectable_image.rs`).
+  app, code in a typeset message by character (`selectable/image.rs`).
 - Rows and parts, and the copied text with names put once and quotes as
   shown (`rows.rs`); a click and a drag on text with an action, and text
-  cut to its lines (`selectable.rs`); a click and a drag on a quote
+  cut to its lines (`selectable/text.rs`); a click and a drag on a quote
   (`actions.rs`).
 - Snapshot: a selection from inside a math message across three senders
   and a reply's quote, with its copied text (`app/tests.rs`).

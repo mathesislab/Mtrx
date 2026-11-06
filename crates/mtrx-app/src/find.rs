@@ -1,8 +1,8 @@
 //! Finding text in the room's loaded messages (⌘F), as Safari and Mail
 //! do: case and accents ignored, every match highlighted where a selection
-//! would be ([`crate::selectable`], [`crate::selectable_image`]), the
-//! current one distinct and scrolled into view. Matches are counted from the
-//! newest message, where the timeline sits, and the next one is older.
+//! would be ([`crate::selectable`]), the current one distinct and scrolled
+//! into view. Matches are counted from the newest message, where the
+//! timeline sits, and the next one is older.
 
 use std::{collections::HashMap, ops::Range};
 

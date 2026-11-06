@@ -11,19 +11,15 @@ use iced::{
         Clipboard, Layout, Shell, Widget,
         layout::{Limits, Node},
         mouse, overlay, renderer,
-        widget::{Id, Operation, Tree, tree},
+        widget::{Operation, Tree, tree},
     },
-    keyboard,
 };
-use unicode_segmentation::UnicodeSegmentation;
 
+use super::geometry::{self, Geometry, Handlers, Pointer};
 use crate::{
-    find::{self, Found},
-    link_status,
+    find::Found,
     message::TextMap,
-    selectable::geometry::CLICK_SLOP,
     selection::{Gesture, Pos, unit_range},
-    style,
 };
 
 /// A piece of text in the image: its bytes in a unit, and where it is drawn
@@ -75,9 +71,13 @@ impl Text {
         let units = map.units.iter().map(|u| u.text.clone()).collect();
         Self { pieces, units }
     }
+}
 
-    /// The place nearest to `point`: on the line under it (else the nearest
-    /// line), before or after the piece there.
+/// Its paragraphs are its units; it steps a line up or down by paragraph
+/// (see `docs/text-selection.md`), so it has no lines of its own.
+impl Geometry for Text {
+    /// On the line under `point` (else the nearest line), before or after
+    /// the piece there.
     fn hit(&self, point: Point) -> Option<Pos> {
         let nearest = self.pieces.iter().min_by(|a, b| {
             vertical_distance(&a.rect, point.y).total_cmp(&vertical_distance(&b.rect, point.y))
@@ -107,7 +107,6 @@ impl Text {
         })
     }
 
-    /// The link under `point`, if any.
     fn link_at(&self, point: Point) -> Option<&str> {
         self.pieces
             .iter()
@@ -115,27 +114,33 @@ impl Text {
             .and_then(|p| p.link.as_deref())
     }
 
-    /// The word at `pos`, or the formula there.
     fn word_at(&self, pos: Pos) -> Range<usize> {
-        if let Some(piece) = self.pieces.iter().find(|p| {
+        let formula = self.pieces.iter().find(|p| {
             p.whole && p.unit == pos.unit && (p.range.start..=p.range.end).contains(&pos.offset)
-        }) {
-            return piece.range.clone();
+        });
+        match formula {
+            Some(formula) => formula.range.clone(),
+            None => geometry::word_at(
+                self.units.get(pos.unit).map_or("", String::as_str),
+                pos.offset,
+            ),
         }
-        let text = self.units.get(pos.unit).map_or("", String::as_str);
-        text.split_word_bound_indices()
-            .map(|(start, word)| start..start + word.len())
-            .find(|word| word.contains(&pos.offset) || word.end == pos.offset)
-            .unwrap_or(pos.offset..pos.offset)
     }
 
-    /// Rectangles of the pieces in the selected part.
-    fn highlight(&self, selected: (Pos, Pos)) -> impl Iterator<Item = Rectangle> + '_ {
-        self.pieces.iter().filter_map(move |piece| {
-            let len = self.units.get(piece.unit)?.len();
-            let range = unit_range(selected, piece.unit, len)?;
-            (range.start < piece.range.end && piece.range.start < range.end).then_some(piece.rect)
-        })
+    fn unit_len(&self, unit: usize) -> usize {
+        self.units.get(unit).map_or(0, String::len)
+    }
+
+    /// The rectangles of the pieces in it.
+    fn highlight(&self, from: Pos, to: Pos) -> Vec<Rectangle> {
+        (self.pieces.iter())
+            .filter(|piece| {
+                unit_range((from, to), piece.unit, self.unit_len(piece.unit)).is_some_and(|range| {
+                    range.start < piece.range.end && piece.range.start < range.end
+                })
+            })
+            .map(|piece| piece.rect)
+            .collect()
     }
 }
 
@@ -169,10 +174,7 @@ pub struct SelectableImage<'a, Message> {
     selected: Option<(Pos, Pos)>,
     /// Matches of the find bar.
     found: Vec<Found>,
-    dragging: bool,
-    on_link: Option<fn(String) -> Message>,
-    on_link_menu: Option<Rc<dyn Fn(String) -> Message + 'a>>,
-    on_gesture: Option<Rc<dyn Fn(Gesture) -> Message + 'a>>,
+    handlers: Handlers<'a, Message>,
 }
 
 /// `image` showing `text`.
@@ -185,20 +187,8 @@ pub fn selectable_image<'a, Message>(
         text,
         selected: None,
         found: Vec::new(),
-        dragging: false,
-        on_link: None,
-        on_link_menu: None,
-        on_gesture: None,
+        handlers: Handlers::default(),
     }
-}
-
-/// The part of a message a match covers.
-fn found_part(found: &Found) -> (Pos, Pos) {
-    let at = |offset| Pos {
-        unit: found.unit,
-        offset,
-    };
-    (at(found.range.start), at(found.range.end))
 }
 
 impl<'a, Message> SelectableImage<'a, Message> {
@@ -214,47 +204,37 @@ impl<'a, Message> SelectableImage<'a, Message> {
         self
     }
 
+    /// A selection is being dragged: report where the cursor is.
     pub fn dragging(mut self, dragging: bool) -> Self {
-        self.dragging = dragging;
+        self.handlers.dragging = dragging;
         self
     }
 
     /// Sent when a link is clicked (pressed and released without moving).
     pub fn on_link(mut self, on_link: fn(String) -> Message) -> Self {
-        self.on_link = Some(on_link);
+        self.handlers.on_link = Some(on_link);
         self
     }
 
     /// Sent when a link is right-clicked, for its menu.
     pub fn on_link_menu(mut self, on_link_menu: Rc<dyn Fn(String) -> Message + 'a>) -> Self {
-        self.on_link_menu = Some(on_link_menu);
+        self.handlers.on_link_menu = Some(on_link_menu);
         self
     }
 
     pub fn on_gesture(mut self, on_gesture: Rc<dyn Fn(Gesture) -> Message + 'a>) -> Self {
-        self.on_gesture = Some(on_gesture);
+        self.handlers.on_gesture = Some(on_gesture);
         self
     }
 }
 
-#[derive(Default)]
-struct State {
-    last_click: Option<mouse::Click>,
-    modifiers: keyboard::Modifiers,
-    /// The link pressed, and where.
-    link_pressed: Option<(String, Point)>,
-    hovered_link: Option<String>,
-    /// The hovered link's address in the window's corner.
-    link_status: link_status::Status,
-}
-
 impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State>()
+        tree::Tag::of::<Pointer>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(State::default())
+        tree::State::new(Pointer::default())
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -285,33 +265,9 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        use iced::advanced::Renderer as _;
-        let bounds = layout.bounds();
-        let translation = bounds.position() - Point::ORIGIN;
-        for found in &self.found {
-            let (color, border) = style::found(theme, found.current);
-            for rect in self.text.highlight(found_part(found)) {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: rect + translation,
-                        border,
-                        ..Default::default()
-                    },
-                    color,
-                );
-            }
-        }
-        if let Some(selected) = self.selected {
-            for rect in self.text.highlight(selected) {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: rect + translation,
-                        ..Default::default()
-                    },
-                    style::selection(theme),
-                );
-            }
-        }
+        let at = layout.bounds().position() - Point::ORIGIN;
+        let text = &*self.text;
+        geometry::draw_highlights(renderer, theme, text, self.selected, &self.found, at);
         self.image.as_widget().draw(
             &tree.children[0],
             renderer,
@@ -334,102 +290,9 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        let state = tree.state.downcast_mut::<State>();
-        let bounds = layout.bounds();
-        let origin = bounds.position() - Point::ORIGIN;
-        let hovered_link = cursor
-            .position_in(bounds)
-            .and_then(|at| self.text.link_at(at));
-        if hovered_link != state.hovered_link.as_deref() {
-            state.hovered_link = hovered_link.map(str::to_owned);
-            shell.request_redraw();
-        }
-        match event {
-            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
-                state.modifiers = *modifiers;
-            }
-            // The link's menu rather than whatever the image is in offers.
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
-                if let Some(on_link_menu) = &self.on_link_menu
-                    && let Some(link) = hovered_link
-                {
-                    shell.publish(on_link_menu(link.to_owned()));
-                    shell.capture_event();
-                }
-            }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let Some(at) = cursor.position_in(bounds) else {
-                    return;
-                };
-                let position = cursor.position().unwrap_or_default();
-                state.link_pressed =
-                    (self.text.link_at(at)).map(|link| (link.to_owned(), position));
-                let Some(on_gesture) = &self.on_gesture else {
-                    if state.link_pressed.is_some() {
-                        shell.capture_event();
-                    }
-                    return;
-                };
-                let Some(pos) = self.text.hit(at) else {
-                    return;
-                };
-                let click = mouse::Click::new(position, mouse::Button::Left, state.last_click);
-                state.last_click = Some(click);
-                let (unit, from, to) = match click.kind() {
-                    mouse::click::Kind::Single => (pos.unit, pos.offset, pos.offset),
-                    mouse::click::Kind::Double => {
-                        let word = self.text.word_at(pos);
-                        (pos.unit, word.start, word.end)
-                    }
-                    mouse::click::Kind::Triple => {
-                        let len = self.text.units.get(pos.unit).map_or(0, String::len);
-                        (pos.unit, 0, len)
-                    }
-                };
-                shell.publish(on_gesture(Gesture::Press {
-                    unit,
-                    from,
-                    to,
-                    extend: state.modifiers.shift(),
-                }));
-                shell.capture_event();
-            }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                // The cursor: inside a scrollable, it is in the content's
-                // coordinates.
-                let Some(position) = cursor.land().position() else {
-                    return;
-                };
-                if let Some((_, pressed)) = &state.link_pressed
-                    && pressed.distance(position) > CLICK_SLOP
-                {
-                    state.link_pressed = None;
-                }
-                let beside = position.y >= bounds.y && position.y < bounds.y + bounds.height;
-                if self.dragging
-                    && beside
-                    && let Some(on_gesture) = &self.on_gesture
-                    && let Some(pos) = self.text.hit(position - origin)
-                {
-                    shell.publish(on_gesture(Gesture::Drag {
-                        unit: pos.unit,
-                        offset: pos.offset,
-                    }));
-                }
-            }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                if let Some((link, _)) = state.link_pressed.take()
-                    && let Some(on_link) = self.on_link
-                    && cursor
-                        .position_in(bounds)
-                        .and_then(|at| self.text.link_at(at))
-                        == Some(link.as_str())
-                {
-                    shell.publish(on_link(link));
-                }
-            }
-            _ => {}
-        }
+        let pointer = tree.state.downcast_mut::<Pointer>();
+        let text = &*self.text;
+        pointer.update(text, &self.handlers, event, layout.bounds(), cursor, shell);
     }
 
     fn operate(
@@ -439,18 +302,9 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         _renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        let Some(current) = self.found.iter().find(|found| found.current) else {
-            return;
-        };
-        // The pieces it is in, or else the whole image.
-        let bounds = layout.bounds();
-        let rect = (self.text.highlight(found_part(current)))
-            .reduce(|a, b| a.union(&b))
-            .map_or(bounds, |rect| rect + (bounds.position() - Point::ORIGIN));
-        operation.custom(Some(&Id::new(find::CURRENT)), rect, &mut ());
+        geometry::report_found(operation, &*self.text, &self.found, layout.bounds());
     }
 
-    /// The address of the hovered link, if it can be clicked.
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
@@ -459,13 +313,7 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         _viewport: &Rectangle,
         _translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        let State {
-            hovered_link,
-            link_status,
-            ..
-        } = tree.state.downcast_mut::<State>();
-        let url = hovered_link.as_deref().filter(|_| self.on_link.is_some())?;
-        Some(link_status::overlay(url, link_status))
+        tree.state.downcast_mut::<Pointer>().overlay(&self.handlers)
     }
 
     fn mouse_interaction(
@@ -476,20 +324,7 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectableImage<'_, Message> 
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
-        let bounds = layout.bounds();
-        let over_link = || {
-            cursor
-                .position_in(bounds)
-                .and_then(|at| self.text.link_at(at))
-                .is_some()
-        };
-        if self.on_link.is_some() && over_link() {
-            mouse::Interaction::Pointer
-        } else if self.on_gesture.is_some() && (self.dragging || cursor.is_over(bounds)) {
-            mouse::Interaction::Text
-        } else {
-            mouse::Interaction::None
-        }
+        geometry::interaction(&*self.text, &self.handlers, cursor, layout.bounds())
     }
 }
 
@@ -502,6 +337,7 @@ impl<'a, Message: 'a> From<SelectableImage<'a, Message>> for Element<'a, Message
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style;
 
     fn piece(unit: usize, range: Range<usize>, whole: bool, x: f32, y: f32, w: f32) -> Piece {
         Piece {
@@ -552,13 +388,17 @@ mod tests {
         // Words and formulas for double clicks.
         assert_eq!(text.word_at(pos(0, 2)), 0..4);
         assert_eq!(text.word_at(pos(0, 5)), 5..8);
+        // Just after a word, and at a word's start after a space.
+        assert_eq!(text.word_at(pos(0, 4)), 0..4);
+        assert_eq!(text.word_at(pos(0, 9)), 9..11);
     }
 
     #[test]
     fn highlights_the_selected_pieces() {
         let text = text();
         let lit: Vec<f32> = text
-            .highlight((pos(0, 3), pos(1, 2)))
+            .highlight(pos(0, 3), pos(1, 2))
+            .iter()
             .map(|rect| rect.x)
             .collect();
         assert_eq!(lit, [30.0, 40.0, 45.0, 75.0, 80.0, 90.0, 0.0]);

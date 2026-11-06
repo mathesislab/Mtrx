@@ -23,7 +23,7 @@ use crate::{
 
 /// How far the cursor may move between pressing and releasing for it to
 /// count as a click rather than the start of a selection.
-pub const CLICK_SLOP: f32 = 4.0;
+const CLICK_SLOP: f32 = 4.0;
 
 /// Hit-testing and highlighting of laid-out text, in the units of
 /// [`Pos`]. Points are relative to the text.
