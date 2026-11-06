@@ -25,7 +25,7 @@ pub struct Room {
 }
 
 impl Room {
-    fn core(&self) -> core::RoomHandle {
+    pub(crate) fn core(&self) -> core::RoomHandle {
         (*self.inner).clone()
     }
 }

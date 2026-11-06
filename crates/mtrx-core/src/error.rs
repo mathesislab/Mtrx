@@ -46,6 +46,9 @@ pub enum Error {
     Permissions(String),
     #[error("invalid media type `{0}`")]
     InvalidMediaType(String),
+    /// A download failed or was cancelled (why, in English).
+    #[error("{0}")]
+    Download(String),
     #[error("notifications: {0}")]
     Notifications(String),
     /// The server does not share presence: it refuses ours and others'

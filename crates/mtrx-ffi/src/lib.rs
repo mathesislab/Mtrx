@@ -13,6 +13,7 @@ uniffi::setup_scaffolding!("mtrx");
 #[cfg(target_os = "android")]
 mod android;
 mod client;
+mod downloads;
 mod drafts;
 mod encryption;
 mod error;
@@ -29,6 +30,7 @@ mod timeline;
 mod types;
 
 pub use client::{Mtrx, OAuthLogin};
+pub use downloads::{Download, DownloadState, DownloadsListener};
 pub use drafts::{Draft, DraftKeeper};
 pub use encryption::{
     DeviceInfo, EncryptionState, EncryptionStateListener, RecoveryListener, RecoveryStatus,

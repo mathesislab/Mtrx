@@ -35,6 +35,7 @@ use matrix_sdk_ui::timeline::{
     MembershipChange as SdkMembershipChange, MsgLikeKind, RoomExt, Timeline, TimelineDetails,
     TimelineEventItemId, TimelineItem, TimelineItemContent, TimelineItemKind, VirtualTimelineItem,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
@@ -276,7 +277,7 @@ pub struct Media {
     pub source: MediaRef,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MediaKind {
     Image,
     Video,

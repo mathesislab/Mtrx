@@ -26,7 +26,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-sha2.workspace = true
 
 # The platform TLS verifier (rustls-platform-verifier, through reqwest)
 # needs the app's Context on Android: see `src/android.rs`.

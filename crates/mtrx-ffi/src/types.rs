@@ -475,7 +475,7 @@ pub enum MessageKind {
 }
 
 /// A file sent in a message. Pass it to `Session.media_preview` or
-/// `Session.media_file`.
+/// `Room.download`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct Media {
     pub kind: MediaKind,
@@ -684,12 +684,7 @@ fn message_kind(kind: core::MessageKind) -> MessageKind {
 impl From<&core::Media> for Media {
     fn from(media: &core::Media) -> Self {
         Self {
-            kind: match media.kind {
-                core::MediaKind::Image => MediaKind::Image,
-                core::MediaKind::Video => MediaKind::Video,
-                core::MediaKind::Audio => MediaKind::Audio,
-                core::MediaKind::File => MediaKind::File,
-            },
+            kind: media.kind.into(),
             filename: media.filename.clone(),
             size: media.size,
             mimetype: media.mimetype.clone(),
@@ -700,10 +695,39 @@ impl From<&core::Media> for Media {
     }
 }
 
+impl From<core::MediaKind> for MediaKind {
+    fn from(kind: core::MediaKind) -> Self {
+        match kind {
+            core::MediaKind::Image => Self::Image,
+            core::MediaKind::Video => Self::Video,
+            core::MediaKind::Audio => Self::Audio,
+            core::MediaKind::File => Self::File,
+        }
+    }
+}
+
 impl Media {
     /// The core's reference to the file, from [`Media::source`].
     pub(crate) fn media_ref(&self) -> Result<core::MediaRef, crate::MtrxError> {
         serde_json::from_str(&self.source).map_err(crate::MtrxError::invalid)
+    }
+
+    /// The core's message file.
+    pub(crate) fn to_core(&self) -> Result<core::Media, crate::MtrxError> {
+        Ok(core::Media {
+            kind: match self.kind {
+                MediaKind::Image => core::MediaKind::Image,
+                MediaKind::Video => core::MediaKind::Video,
+                MediaKind::Audio => core::MediaKind::Audio,
+                MediaKind::File => core::MediaKind::File,
+            },
+            filename: self.filename.clone(),
+            size: self.size,
+            mimetype: self.mimetype.clone(),
+            width: self.width,
+            height: self.height,
+            source: self.media_ref()?,
+        })
     }
 }
 
