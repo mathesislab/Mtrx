@@ -2084,7 +2084,7 @@ async fn signed_out_elsewhere() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
-async fn failed_sends_are_retried_or_discarded() -> Result<()> {
+async fn unsent_messages_come_back_as_drafts() -> Result<()> {
     let (_, alice) = new_user("alice").await?;
     let room = alice
         .session
@@ -2094,6 +2094,8 @@ async fn failed_sends_are_retried_or_discarded() -> Result<()> {
         })
         .await?;
     let timeline = alice.session.timeline(&room).await?;
+    let first = timeline.send_markdown("first", None).await?;
+    let first = timeout("first sent", first.sent()).await??;
     // The server refuses events over 64 KiB, whatever we try.
     let too_long = "x".repeat(70_000);
     let failed = |entries: &Vec<TimelineEntry>| {
@@ -2105,6 +2107,29 @@ async fn failed_sends_are_retried_or_discarded() -> Result<()> {
     let entries = wait_for("shown as failed", timeline.updates(), failed).await?;
     let key = find_message(&entries, &too_long).unwrap().key.clone();
 
+    // Queued behind it, it waits: taken back, its Markdown and reply come
+    // back, and it is gone.
+    let reply = "**queued** reply";
+    timeline.send_markdown(reply, Some(&first)).await?;
+    let entries = wait_for("queued", timeline.updates(), |entries| {
+        find_message(entries, reply).is_some()
+    })
+    .await?;
+    let queued = find_message(&entries, reply).unwrap();
+    assert_eq!(queued.send_state, mtrx_core::SendState::Sending);
+    let draft = timeline.unsend(&queued.key).await?;
+    assert_eq!(
+        draft,
+        Some(Draft {
+            text: reply.into(),
+            reply_to: Some(first.clone()),
+        })
+    );
+    wait_for("its echo gone", timeline.updates(), |entries| {
+        find_message(entries, reply).is_none()
+    })
+    .await?;
+
     // Sent again: sending, then failed again.
     let mut updates = std::pin::pin!(timeline.updates());
     timeline.retry(&key).await?;
@@ -2115,16 +2140,18 @@ async fn failed_sends_are_retried_or_discarded() -> Result<()> {
     .await?;
     wait_for("failed again", &mut updates, failed).await?;
 
-    // What is queued after it waits for it; once it is dropped, it is sent.
+    // What is queued after it waits for it; once it is taken back, it is
+    // sent.
     let later = timeline.send_markdown("after the long one", None).await?;
-    timeline.discard(&key).await?;
-    timeout("sent after discarding", later.sent()).await??;
+    let draft = timeline.unsend(&key).await?;
+    assert_eq!(draft.map(|d| d.text), Some(too_long.clone()));
+    timeout("sent after unsending", later.sent()).await??;
     let entries = timeline.current();
     assert!(find_message(&entries, &too_long).is_none());
     // A sent message is no longer a local echo.
     let sent = find_message(&entries, "after the long one").unwrap();
     assert!(timeline.retry(&sent.key).await.is_err());
-    assert!(timeline.discard(&sent.key).await.is_err());
+    assert!(timeline.unsend(&sent.key).await.is_err());
     Ok(())
 }
 

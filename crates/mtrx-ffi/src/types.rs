@@ -283,8 +283,9 @@ pub enum MessageAction {
     Delete,
     /// Send it again after the server refused it: `Timeline.retry`.
     Retry,
-    /// Drop it after the server refused it: `Timeline.discard`.
-    Discard,
+    /// Take it out of the send queue (sending, waiting or refused), its
+    /// text back in the composer: `Timeline.unsend`.
+    Unsend,
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
@@ -365,7 +366,7 @@ pub enum SendState {
     Sending,
     /// Not sent because the server is unreachable; sent once it is back.
     Waiting,
-    /// The server refused it: `Timeline.retry` or `Timeline.discard` it.
+    /// The server refused it: `Timeline.retry` or `Timeline.unsend` it.
     /// Later messages wait until then.
     Failed {
         error: String,
@@ -562,7 +563,7 @@ impl From<core::MessageAction> for MessageAction {
             core::MessageAction::Unpin => Self::Unpin,
             core::MessageAction::Delete => Self::Delete,
             core::MessageAction::Retry => Self::Retry,
-            core::MessageAction::Discard => Self::Discard,
+            core::MessageAction::Unsend => Self::Unsend,
         }
     }
 }

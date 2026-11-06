@@ -78,8 +78,9 @@ pub enum MessageAction {
     Delete,
     /// Send it again after the server refused it.
     Retry,
-    /// Drop it after the server refused it.
-    Discard,
+    /// Take it out of the send queue (sending, waiting or refused), its
+    /// text back in the composer.
+    Unsend,
 }
 
 /// What the rows depend on besides the timeline.
@@ -161,7 +162,8 @@ fn message_row(event: &Event, first_in_group: bool, context: &RowContext) -> Mes
 /// What holding `event` offers: React and Reply once it is sent, Copy and
 /// Select text with a text (a file's caption, not its name), Edit where
 /// allowed, Pin or Unpin where we may,
-/// Delete for our own sent ones, Retry and Discard after a refused send.
+/// Delete for our own sent ones; Unsend while not sent, and Retry before it
+/// after a refused send.
 fn actions(event: &Event, context: &RowContext) -> Vec<MessageAction> {
     let mut actions = Vec::new();
     let sent = event.event_id.as_ref();
@@ -193,8 +195,10 @@ fn actions(event: &Event, context: &RowContext) -> Vec<MessageAction> {
     if event.own && sent.is_some() && event.content != EventContent::Redacted {
         actions.push(MessageAction::Delete);
     }
-    if let SendState::Failed(_) = event.send_state {
-        actions.extend([MessageAction::Retry, MessageAction::Discard]);
+    match event.send_state {
+        SendState::Failed(_) => actions.extend([MessageAction::Retry, MessageAction::Unsend]),
+        SendState::Sending | SendState::Waiting => actions.push(MessageAction::Unsend),
+        SendState::Sent => {}
     }
     actions
 }
@@ -602,15 +606,20 @@ mod tests {
             [React, Reply, Copy, SelectText, Edit, Delete]
         );
         // Not sent yet: no event ID, so no reaction, reply or deletion.
+        // Until sent, it can be taken back; sent again once refused.
         assert_eq!(
             actions(unsent("3", SendState::Sending)),
-            [Copy, SelectText, Edit]
+            [Copy, SelectText, Edit, Unsend]
+        );
+        assert_eq!(
+            actions(unsent("3", SendState::Waiting)),
+            [Copy, SelectText, Edit, Unsend]
         );
         let refused = Event {
             editable: false,
             ..unsent("4", SendState::Failed("Too large".into()))
         };
-        assert_eq!(actions(refused), [Copy, SelectText, Retry, Discard]);
+        assert_eq!(actions(refused), [Copy, SelectText, Retry, Unsend]);
         let deleted = Event {
             content: EventContent::Redacted,
             ..message("5", "me", 0)

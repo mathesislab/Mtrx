@@ -5,7 +5,7 @@ use std::sync::Arc;
 use mtrx_core::{self as core, OwnedEventId, RoomTimeline};
 
 use crate::{
-    MtrxError, TaskHandle, TimelineRow,
+    Draft, MtrxError, TaskHandle, TimelineRow,
     runtime::{self, InRuntime, follow, run},
 };
 
@@ -160,12 +160,22 @@ impl Timeline {
         run(async move { Ok(timeline.retry(&event.key).await?) }).await
     }
 
-    /// Drop row `item_id`'s message, not sent (yet), e.g. after sending
-    /// failed; it disappears, and the messages queued after it are sent.
-    /// Fails if it was sent already.
-    pub async fn discard(&self, item_id: String) -> Result<(), MtrxError> {
+    /// Take row `item_id`'s message out of the send queue (sending,
+    /// waiting or failed): it disappears, and the messages queued after it
+    /// are sent; one the server is receiving right now is deleted once it
+    /// arrives. Returns its text as a draft, in the Markdown it was written
+    /// in where known, with the message it answers: put it in the composer
+    /// (after a blank line if the composer has text, and the reply only if
+    /// it has none). None for a file. Fails if it was sent already.
+    pub async fn unsend(&self, item_id: String) -> Result<Option<Draft>, MtrxError> {
         let (timeline, event) = (self.core(), self.event(&item_id)?);
-        run(async move { Ok(timeline.discard(&event.key).await?) }).await
+        run(async move { Ok(timeline.unsend(&event.key).await?.map(Draft::from)) }).await
+    }
+
+    /// The old name of [`Timeline::unsend`], without its draft; goes once
+    /// the apps call `unsend`.
+    pub async fn discard(&self, item_id: String) -> Result<(), MtrxError> {
+        self.unsend(item_id).await.map(|_| ())
     }
 
     /// Tell the others we are typing (while the composer has text), or
