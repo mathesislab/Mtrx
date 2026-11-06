@@ -572,11 +572,6 @@ impl RoomTimeline {
         Ok(unsent_draft(&item, source))
     }
 
-    /// [`Self::unsend`] without its draft, until the desktop calls that.
-    pub async fn discard(&self, event: &EventKey) -> Result<()> {
-        self.unsend(event).await.map(|_| ())
-    }
-
     /// The room's send queue stops after any failed send, also one that
     /// cannot succeed; the connection watch resumes it only after network
     /// errors.

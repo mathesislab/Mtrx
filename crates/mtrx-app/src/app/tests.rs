@@ -1021,7 +1021,7 @@ async fn main_screen_with_math() {
                 unreachable!()
             };
             main.popup = readers;
-            // Alice's first message not sent, offered to retry or delete,
+            // Alice's first message not sent, offered to retry or take back,
             // instead of the list of readers.
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()

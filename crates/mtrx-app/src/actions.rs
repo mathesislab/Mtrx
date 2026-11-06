@@ -3,18 +3,18 @@
 //! place.
 
 use iced::{
-    Alignment, Element, Length, Padding, Theme,
+    Alignment, Color, Element, Length, Padding, Theme,
     advanced::widget::Id,
     keyboard::{Key, key::Named},
     mouse,
     widget::{
-        button, column, container, mouse_area, row, scrollable, space, span, text, text::Wrapping,
-        text_editor,
+        button, column, container, hover, mouse_area, row, scrollable, space, span, text,
+        text::Wrapping, text_editor,
     },
 };
 use mtrx_core::{
-    Event, EventKey, MessageAction, MessageRow, MxcUri, OwnedEventId, OwnedRoomId, Reaction, Reply,
-    SendState, User,
+    Draft, Event, EventKey, MessageAction, MessageRow, MxcUri, OwnedEventId, OwnedRoomId, Reaction,
+    Reply, SendState, User,
 };
 use mtrx_format::Document;
 
@@ -91,13 +91,16 @@ pub enum Message {
     /// List everyone who reacted to a timeline row's message with a key.
     OpenReactors(String, String),
     CloseReactors,
-    /// Offer to retry or delete a timeline row's message that was not sent.
+    /// Offer to retry a timeline row's message that was not sent, or to
+    /// take it back.
     OpenUnsent(String),
     CloseUnsent,
     /// Send again a message that was not sent.
     Retry(EventKey),
-    /// Drop a message that was not sent.
-    Discard(EventKey),
+    /// Take a message out of the send queue, its text back in the composer.
+    Unsend(EventKey),
+    /// It was taken out: its text, if not a file's, to put back.
+    Unsent(Result<Option<Draft>, String>),
     /// Open a link from its menu.
     OpenLink(String),
     /// Put a message's text on the clipboard, as text and HTML.
@@ -726,7 +729,7 @@ pub struct Status {
     pub newest: bool,
     /// Being sent long enough to show the clock.
     pub slow: bool,
-    /// Its menu to retry or delete is open.
+    /// Its menu to retry or take it back is open.
     pub open: bool,
 }
 
@@ -734,8 +737,9 @@ pub struct Status {
 /// was): a clock while it is being sent (only once that takes a while) or
 /// waits for the connection, a tick once it is sent (only on our newest
 /// message: the older ones were sent too), a red cross if it could not be.
-/// The same size as a read marker. A click on the cross offers to retry or
-/// delete.
+/// The same size as a read marker. Until sent, a click on the cross (over
+/// the clock while hovered) offers to take it back, and to retry it if it
+/// could not be sent.
 pub fn send_status<'a>(
     room: &OwnedRoomId,
     event: &Event,
@@ -744,7 +748,8 @@ pub fn send_status<'a>(
     if !event.own || !event.read_by.is_empty() {
         return None;
     }
-    let grey = |theme: &Theme| theme.extended_palette().secondary.base.color;
+    let grey: fn(&Theme) -> Color = |theme| theme.extended_palette().secondary.base.color;
+    let red: fn(&Theme) -> Color = |theme| theme.palette().danger;
     let (icon, label) = match &event.send_state {
         SendState::Sending if status.slow => {
             (icons::clock(READER_AVATAR, grey), "Sending…".to_owned())
@@ -758,49 +763,63 @@ pub fn send_status<'a>(
             (icons::check_circle(READER_AVATAR, grey), "Sent".to_owned())
         }
         SendState::Sent => return None,
-        SendState::Failed(e) => {
-            // While open, a click on it closes the menu as any outside click.
-            let cross = button(icons::x_circle(READER_AVATAR, |theme| {
-                theme.palette().danger
-            }))
-            .padding(0)
-            .style(style::text_button)
-            .on_press_maybe(
-                (!status.open).then(|| act(room, Message::OpenUnsent(event.id.clone()))),
-            );
-            if status.open {
-                return Some(
-                    popover(
-                        cross,
-                        Some(unsent_menu(room, event)),
-                        Side::Above,
-                        Edge::Right,
-                    )
-                    .on_dismiss(act(room, Message::CloseUnsent))
-                    .into(),
-                );
-            }
-            (cross.into(), format!("Not sent: {e}"))
-        }
+        SendState::Failed(e) => (
+            icons::x_circle(READER_AVATAR, red),
+            format!("Not sent: {e}"),
+        ),
+    };
+    if event.send_state == SendState::Sent {
+        return Some(hint(icon, label, Position::Top));
+    }
+    let failed = matches!(event.send_state, SendState::Failed(_));
+    // While open, a click on it closes the menu as any outside click.
+    let cross = button(icons::x_circle(
+        READER_AVATAR,
+        if failed { red } else { grey },
+    ))
+    .padding(0)
+    .style(style::text_button)
+    .on_press_maybe((!status.open).then(|| act(room, Message::OpenUnsent(event.id.clone()))));
+    if status.open {
+        return Some(
+            popover(
+                cross,
+                Some(unsent_menu(room, event, failed)),
+                Side::Above,
+                Edge::Right,
+            )
+            .on_dismiss(act(room, Message::CloseUnsent))
+            .into(),
+        );
+    }
+    // The clock, and the cross over it while hovered.
+    let icon = if failed {
+        cross.into()
+    } else {
+        hover(icon, cross)
     };
     Some(hint(icon, label, Position::Top))
 }
 
-/// Retry or delete a message that was not sent.
-fn unsent_menu<'a>(room: &OwnedRoomId, event: &Event) -> Element<'a, app::Message> {
-    let choices = row![
-        button(text("Retry").size(12))
-            .padding([2, 8])
-            .style(style::text_button)
-            .on_press(act(room, Message::Retry(event.key.clone()))),
-        button(text("Delete").size(12))
-            .padding([2, 8])
-            .style(style::danger_button)
-            .on_press(act(room, Message::Discard(event.key.clone()))),
-    ]
-    .spacing(4)
-    .align_y(Alignment::Center);
-    container(choices).padding(4).style(style::toolbar).into()
+/// Retry a message that could not be sent (`failed`), or take back one not
+/// sent: its text goes back to the composer.
+fn unsent_menu<'a>(room: &OwnedRoomId, event: &Event, failed: bool) -> Element<'a, app::Message> {
+    let retry = button(text("Retry").size(12))
+        .padding([2, 8])
+        .style(style::text_button)
+        .on_press(act(room, Message::Retry(event.key.clone())));
+    let unsend = button(text("Cancel and put back").size(12))
+        .padding([2, 8])
+        .style(style::text_button)
+        .on_press(act(room, Message::Unsend(event.key.clone())));
+    let mut choices = row![].spacing(4).align_y(Alignment::Center);
+    if failed {
+        choices = choices.push(retry);
+    }
+    container(choices.push(unsend))
+        .padding(4)
+        .style(style::toolbar)
+        .into()
 }
 
 /// People who read up to a message or reacted to it; a click on one opens
