@@ -125,8 +125,7 @@ pub enum Message {
     Typing(Vec<String>),
     /// Completing a mention in the composer.
     Mention(mention::Message),
-    /// The members, and whether we may mention everyone (`@room`).
-    MembersLoaded(Result<(Vec<Member>, bool), String>),
+    MembersLoaded(Result<Vec<Member>, String>),
     Calls(calls::Message),
     /// The topic and links, in the topic panel.
     Topic(topic::Message),
@@ -217,8 +216,6 @@ pub struct Room {
     pub loading_members: bool,
     /// What `@` may mention, see [`mention::texts`].
     pub mentions: Arc<[String]>,
-    /// We may mention everyone with `@room`.
-    pub can_mention_room: bool,
     /// Completing a mention in the composer.
     pub completion: Option<Completion>,
     /// How many of the newest rows are rendered.
@@ -266,7 +263,6 @@ impl Room {
             member_list: None,
             loading_members: false,
             mentions: Default::default(),
-            can_mention_room: false,
             completion: None,
             id,
             handle,
@@ -349,28 +345,26 @@ impl Room {
         self.completion = Completion::of(&self.composer, self.completion.as_ref());
     }
 
-    /// Who the mention being completed may be.
-    pub fn candidates(&self, own: &UserId) -> Vec<Candidate<'_>> {
+    /// Who the mention being completed may be; `@room` too if
+    /// `mention_room` (our right).
+    pub fn candidates(&self, own: &UserId, mention_room: bool) -> Vec<Candidate<'_>> {
         match (&self.completion, &self.member_list) {
             (Some(completion), Some(Ok(members))) => mention::candidates(
                 &completion.query.text,
                 members,
                 &self.mentions,
                 own,
-                self.can_mention_room,
+                mention_room,
             ),
             _ => Vec::new(),
         }
     }
 
-    /// The members were loaded (with whether we may mention the room), or
-    /// not.
-    pub fn members_loaded(&mut self, result: Result<(Vec<Member>, bool), String>) {
+    /// The members were loaded, or not.
+    pub fn members_loaded(&mut self, result: Result<Vec<Member>, String>) {
         self.loading_members = false;
-        self.member_list = Some(result.map(|(members, can_mention_room)| {
-            self.mentions = mention::texts(&members);
-            self.can_mention_room = can_mention_room;
-            members
+        self.member_list = Some(result.inspect(|members| {
+            self.mentions = mention::texts(members);
         }));
     }
 
@@ -614,8 +608,9 @@ impl Room {
             _ => &[],
         };
         let members = members::avatars(listed);
+        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
         let candidates = self
-            .candidates(own)
+            .candidates(own, mention_room)
             .into_iter()
             .filter_map(|candidate| match candidate {
                 Candidate::Member { member, .. } => Some(member),
@@ -955,7 +950,8 @@ impl Room {
         );
 
         let cancellable = self.compose.cancellable();
-        let candidates = self.candidates(look.own_user);
+        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
+        let candidates = self.candidates(look.own_user, mention_room);
         let completing = !candidates.is_empty();
         let selected = self.composer.selection().is_some();
         let empty = self.composer.text().is_empty();
@@ -1169,6 +1165,7 @@ impl Room {
             body = body.push(members::view(
                 self.member_list.as_ref(),
                 name,
+                summary.is_some_and(|s| s.rights.invite),
                 members::Shown {
                     room: &self.id,
                     avatars: look.avatars,
@@ -1191,7 +1188,8 @@ impl Room {
         let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
         let topic = Topic::parse(summary.and_then(|s| s.topic.as_deref()).unwrap_or_default());
-        let can_edit = self.topic.can_edit == Some(true);
+        let rights = summary.map(|s| s.rights).unwrap_or_default();
+        let can_edit = rights.change_topic;
         // A direct chat's person, as long as their presence is known.
         let presence = summary
             .filter(|s| s.kind == RoomKind::Direct && !s.is_notes(look.own_user))
@@ -1335,13 +1333,15 @@ impl Room {
         // The topic in full and its links, or their editor, dropping over
         // the timeline below the room's picture.
         let panel = self.topic.open.then(|| {
-            let topic = self.topic.view(&topic, look.call_services, move |message| {
-                Message::Topic(message).to(&self.id)
-            });
+            let topic = self
+                .topic
+                .view(&topic, look.call_services, can_edit, move |message| {
+                    Message::Topic(message).to(&self.id)
+                });
             let mut content = column![topic].spacing(14);
             // Not while the topic is edited.
             if self.topic.editor.is_none() {
-                content = content.push(self.pins.view(&self.id, pinned));
+                content = content.push(self.pins.view(&self.id, pinned, rights.pin));
             }
             container(scrollable(container(content).padding(14)).height(Length::Shrink))
                 .width(Length::Fill)

@@ -914,24 +914,15 @@ impl App {
                 main.popup.take_if(|popup| popup.in_field(Field::Edit));
             }
         }
-        // Another space, however chosen: its topic, closed, and whether we
-        // may edit it.
-        let topic = match self
-            .selected_space()
-            .filter(|_| self.selected_space() != space)
+        // Another space, however chosen: its topic, closed.
+        let selected = self.selected_space();
+        if selected.is_some()
+            && selected != space
+            && let Screen::Main(main) = &mut self.screen
         {
-            Some(space) => match &mut self.screen {
-                Screen::Main(main) => {
-                    main.space_topic = topic::Panel::default();
-                    load_can_edit_topic(&main.session, space.clone(), move |message| {
-                        Message::SpaceTopic(space, message)
-                    })
-                }
-                _ => Task::none(),
-            },
-            None => Task::none(),
-        };
-        let task = Task::batch([task, topic, self.move_notes_at_top()]);
+            main.space_topic = topic::Panel::default();
+        }
+        let task = Task::batch([task, self.move_notes_at_top()]);
         if remember {
             self.remember_view();
         }
@@ -1246,7 +1237,7 @@ impl App {
                             self.render_math(),
                             self.load_avatars(),
                             self.load_previews(),
-                            self.load_room_calls(&id),
+                            self.load_call_service(&id),
                             self.load_pinned(),
                         ])
                     }
@@ -1726,7 +1717,13 @@ impl App {
                     None if main.popup.is_some() => main.popup = None,
                     None if main.card.is_some() => main.card = None,
                     None => match main.pane.room_mut() {
-                        Some(room) if !room.candidates(&main.own_user).is_empty() => {
+                        Some(room)
+                            if !(room.candidates(
+                                &main.own_user,
+                                mention_room(&main.lists, &room.id),
+                            ))
+                            .is_empty() =>
+                        {
                             room.completion = None;
                         }
                         Some(room) if room.find.is_some() => room.find = None,
@@ -2345,7 +2342,8 @@ impl App {
                 let Some(room) = main.pane.open_mut(&id) else {
                     return Task::none();
                 };
-                let count = room.candidates(&main.own_user).len();
+                let everyone = mention_room(&main.lists, &id);
+                let count = room.candidates(&main.own_user, everyone).len();
                 let mention = match message {
                     mention::Message::Close => {
                         room.completion = None;
@@ -2364,7 +2362,7 @@ impl App {
                     }
                     mention::Message::Choose => {
                         let selected = room.completion.as_ref().map_or(0, |c| c.selected);
-                        match room.candidates(&main.own_user).get(selected) {
+                        match room.candidates(&main.own_user, everyone).get(selected) {
                             Some(candidate) => candidate.mention(),
                             None => return Task::none(),
                         }
@@ -2588,7 +2586,7 @@ impl App {
                             self.render_math(),
                             self.load_avatars(),
                             self.load_previews(),
-                            self.load_room_calls(&id),
+                            self.load_call_service(&id),
                         ])
                     }
                     Err(e) => {
@@ -2970,28 +2968,32 @@ impl App {
             let name = |id: &OwnedRoomId| {
                 (main.lists.room(id)).map_or_else(|| id.to_string(), |r| r.name.clone())
             };
+            let rights =
+                |id: &OwnedRoomId| main.lists.room(id).map(|r| r.rights).unwrap_or_default();
             if let Some(room) = main.pane.room() {
                 panel.room = Some(settings::Access::new(
                     room.id.clone(),
                     name(&room.id),
                     false,
+                    rights(&room.id),
                 ));
-                tasks.push(load_access(main.session.clone(), room.id.clone()));
+                tasks.push(load_permissions(main.session.clone(), room.id.clone()));
             }
             if let Some(space) = &main.space {
-                panel.space = Some(settings::SpaceCalls::new(space.clone(), name(space)));
-                tasks.push(load_access(main.session.clone(), space.clone()));
+                panel.space = Some(settings::SpaceCalls::new(
+                    space.clone(),
+                    name(space),
+                    rights(space),
+                ));
+                tasks.push(load_permissions(main.session.clone(), space.clone()));
                 let (session, space) = (main.session.clone(), space.clone());
                 tasks.push(Task::perform(
                     async move {
-                        let (service, can_set) = match session.room(&space) {
-                            Ok(room) => (
-                                room.call_service().await.ok().flatten(),
-                                room.can_set_call_service().await.ok(),
-                            ),
-                            Err(_) => (None, None),
+                        let service = match session.room(&space) {
+                            Ok(room) => room.call_service().await.ok().flatten(),
+                            Err(_) => None,
                         };
-                        settings::Message::SpaceLoaded(space, service, can_set)
+                        settings::Message::SpaceLoaded(space, service)
                     },
                     Message::Settings,
                 ));
@@ -3367,43 +3369,25 @@ impl App {
         }
     }
 
-    /// Whether we may change a newly opened room's topic, and the call
-    /// service of its space.
-    fn load_room_calls(&self, room_id: &OwnedRoomId) -> Task<Message> {
+    /// The call service of a newly opened room's space.
+    fn load_call_service(&self, room_id: &OwnedRoomId) -> Task<Message> {
         let Screen::Main(main) = &self.screen else {
             return Task::none();
         };
         let session = main.session.clone();
-        let room = room_id.clone();
-        let can_edit = load_can_edit_topic(&session, room.clone(), {
-            let room = room.clone();
-            move |message| room::Message::Topic(message).to(&room)
-        });
-        let can_pin = {
-            let (session, room, reply) = (session.clone(), room.clone(), room.clone());
-            Task::perform(
-                async move { session.room(&room).ok()?.can_pin().await.ok() },
-                move |can| room::Message::Pins(pins::Message::CanPin(can)).to(&reply),
-            )
-        };
-        let space_service = {
-            let reply = room.clone();
-            Task::perform(
-                async move {
-                    session
-                        .room(&room)
-                        .ok()?
-                        .call_service()
-                        .await
-                        .ok()
-                        .flatten()
-                },
-                move |service| {
-                    room::Message::Calls(calls::Message::SpaceService(service)).to(&reply)
-                },
-            )
-        };
-        Task::batch([can_edit, can_pin, space_service])
+        let (room, reply) = (room_id.clone(), room_id.clone());
+        Task::perform(
+            async move {
+                session
+                    .room(&room)
+                    .ok()?
+                    .call_service()
+                    .await
+                    .ok()
+                    .flatten()
+            },
+            move |service| room::Message::Calls(calls::Message::SpaceService(service)).to(&reply),
+        )
     }
 
     /// Make the open room's pinned messages' timeline, once it has pins.
@@ -4471,15 +4455,13 @@ impl App {
                     container(text("Opening…").style(text::secondary)).center(Length::Fill);
                 // The member list stays where it is, loading.
                 if main.show_members {
-                    let name = rooms
-                        .iter()
-                        .find(|r| &r.id == id)
-                        .map_or("", |r| r.name.as_str());
+                    let listed = rooms.iter().find(|r| &r.id == id);
                     row![
                         opening,
                         members::view(
                             None,
-                            name,
+                            listed.map_or("", |r| r.name.as_str()),
+                            listed.is_some_and(|r| r.rights.invite),
                             members::Shown {
                                 room: id,
                                 avatars: &main.avatars,
@@ -5086,8 +5068,6 @@ fn attach(room: OwnedRoomId, paths: Vec<PathBuf>) -> Task<Message> {
     })
 }
 
-/// Load the room's members, for its member list and mentions, and whether
-/// we may mention everyone.
 /// A message to `panel`, the topic panel of room or space `room` with
 /// topic `listed` in the room list, answered with `reply`.
 fn topic_update(
@@ -5105,16 +5085,7 @@ fn topic_update(
         let topic = editor.topic();
         return save_topic(session, panel, room, topic, reply);
     }
-    let opening = matches!(message, topic::Message::Toggle) && !panel.open;
-    // Not known when it was asked (the room's permissions not synced yet):
-    // asked again as the panel opens.
-    let ask = opening && panel.can_edit.is_none();
-    let task = (panel.update(message, listed.unwrap_or_default())).map(reply.clone());
-    if ask {
-        Task::batch([task, load_can_edit_topic(session, room, reply)])
-    } else {
-        task
-    }
+    (panel.update(message, listed.unwrap_or_default())).map(reply)
 }
 
 /// Save `topic` as `room`'s, which the room list shows at once; its topic
@@ -5134,20 +5105,6 @@ fn save_topic(
             saved.await.map_err(|e| e.to_string())
         },
         move |result| reply(topic::Message::Saved(result)),
-    )
-}
-
-/// Whether we may change `room`'s topic, for its topic panel, answered
-/// with `reply`.
-fn load_can_edit_topic(
-    session: &Arc<Session>,
-    room: OwnedRoomId,
-    reply: impl FnOnce(topic::Message) -> Message + Send + 'static,
-) -> Task<Message> {
-    let session = session.clone();
-    Task::perform(
-        async move { session.room(&room).ok()?.can_change_topic().await.ok() },
-        move |can| reply(topic::Message::CanEdit(can)),
     )
 }
 
@@ -5243,20 +5200,19 @@ async fn join_listed(
     }
 }
 
+/// Load the room's members, for its member list and mentions.
 fn load_members(room: &mut Room) -> Task<Message> {
     room.loading_members = true;
     let (handle, id) = (room.handle.clone(), room.id.clone());
     Task::perform(
-        async move {
-            let (members, everyone) =
-                futures_util::join!(handle.members(), handle.can_mention_room());
-            Ok((
-                members.map_err(|e| e.to_string())?,
-                everyone.unwrap_or(false),
-            ))
-        },
+        async move { handle.members().await.map_err(|e| e.to_string()) },
         move |result| room::Message::MembersLoaded(result).to(&id),
     )
+}
+
+/// Whether we may mention everyone in `room` with `@room`.
+fn mention_room(lists: &RoomLists, room: &OwnedRoomId) -> bool {
+    lists.room(room).is_some_and(|r| r.rights.mention_room)
 }
 
 /// macOS asks once whether Mtrx may show notifications; only for the app
@@ -5319,18 +5275,15 @@ async fn notify(notification: Notification) -> bool {
     }
 }
 
-/// Who may edit `room`, and whether we may change that, for the settings panel.
-fn load_access(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
+/// Who may edit `room`, for the settings panel.
+fn load_permissions(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
     Task::perform(
         async move {
-            let (permissions, can_change) = match session.room(&room) {
-                Ok(handle) => (
-                    handle.permissions().await.ok(),
-                    handle.can_change_permissions().await.ok(),
-                ),
-                Err(_) => (None, None),
+            let permissions = match session.room(&room) {
+                Ok(handle) => handle.permissions().await.ok(),
+                Err(_) => None,
             };
-            settings::Message::AccessLoaded(room, permissions, can_change)
+            settings::Message::AccessLoaded(room, permissions)
         },
         Message::Settings,
     )

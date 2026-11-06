@@ -143,6 +143,7 @@ mod tests {
             alias: None,
             joined_members: 2,
             pinned: Vec::new(),
+            rights: mtrx_core::Rights::default(),
         }
     }
 

@@ -14,8 +14,8 @@ use iced::{
 };
 use mtrx_core::{
     CallService, DirectoryRoom, Grouping, Layout, Membership, MxcUri, OwnedRoomId, OwnedUserId,
-    RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, Topic,
-    UserId,
+    Rights, RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey,
+    Topic, UserId,
 };
 
 use crate::{
@@ -247,9 +247,10 @@ pub fn space_bar<'a>(
         let entry_button: Element<'a, Message> = match target {
             Some(space) => {
                 let open = menu == Some(&SpaceMenu::Of(space.clone()));
+                let invite = lists.room(&space).is_some_and(|r| r.rights.invite);
                 context_menu(
                     entry_button,
-                    open.then(|| space_menu(space.clone(), title)),
+                    open.then(|| space_menu(space.clone(), title, invite)),
                     Message::SpaceMenu(Some(SpaceMenu::Of(space))),
                 )
                 .on_dismiss(Message::SpaceMenu(None))
@@ -395,11 +396,9 @@ fn space_topic<'a>(
     top: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let panel = view.space_topic;
-    let listed = (view.rooms().iter())
-        .find(|r| &r.id == space)
-        .and_then(|r| r.topic.as_deref());
-    let parsed = Topic::parse(listed.unwrap_or_default());
-    let can_edit = panel.can_edit == Some(true);
+    let listed = (view.rooms().iter()).find(|r| &r.id == space);
+    let parsed = Topic::parse(listed.and_then(|r| r.topic.as_deref()).unwrap_or_default());
+    let can_edit = listed.is_some_and(|r| r.rights.change_topic);
     let Some(preview) = topic::preview(&parsed, view.call_services, can_edit) else {
         return top;
     };
@@ -436,7 +435,8 @@ fn space_topic<'a>(
     let shown = open.then(|| {
         container(
             scrollable(
-                container(panel.view(&parsed, view.call_services, message.clone())).padding(14),
+                container(panel.view(&parsed, view.call_services, can_edit, message.clone()))
+                    .padding(14),
             )
             .height(Length::Shrink),
         )
@@ -505,7 +505,10 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     };
     let mut list = column![top].padding(8);
     if add_menu {
-        let space = selected_space.map(|id| (id.clone(), title.to_owned()));
+        let space = selected_space.map(|id| {
+            let rights = rooms.iter().find(|r| &r.id == id).map(|r| r.rights);
+            (id.clone(), title.to_owned(), rights.unwrap_or_default())
+        });
         list = list.push(add_menu_view(space));
     }
     list = list.push(
@@ -1101,20 +1104,22 @@ pub fn drag_preview<'a>(
     )
 }
 
-/// A space's menu in the space bar.
-fn space_menu<'a>(space: OwnedRoomId, name: String) -> Element<'a, Message> {
-    context_menu::menu([
-        (
-            "Overview".to_owned(),
-            Message::ShowSpace(space.clone(), overview::Tab::Rooms),
-        ),
-        (
+/// A space's menu in the space bar; Invite only if we may (`invite`).
+fn space_menu<'a>(space: OwnedRoomId, name: String, invite: bool) -> Element<'a, Message> {
+    let mut items = vec![(
+        "Overview".to_owned(),
+        Message::ShowSpace(space.clone(), overview::Tab::Rooms),
+    )];
+    if invite {
+        items.push((
             "Invite people…".to_owned(),
             Message::OpenDialog(Kind::Invite {
                 room: space.clone(),
                 name: name.clone(),
             }),
-        ),
+        ));
+    }
+    items.extend([
         (
             "Space settings…".to_owned(),
             Message::ShowSpace(space.clone(), overview::Tab::Settings),
@@ -1123,11 +1128,13 @@ fn space_menu<'a>(space: OwnedRoomId, name: String) -> Element<'a, Message> {
             "Leave the space…".to_owned(),
             Message::OpenDialog(Kind::Leave { room: space, name }),
         ),
-    ])
+    ]);
+    context_menu::menu(items)
 }
 
-/// What the room list's "+" offers; more inside a space.
-fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Message> {
+/// What the room list's "+" offers; more inside a space, as our `Rights`
+/// there allow.
+fn add_menu_view<'a>(space: Option<(OwnedRoomId, String, Rights)>) -> Element<'a, Message> {
     let item = |label: String, message: Message| {
         button(text(label).size(14))
             .width(Length::Fill)
@@ -1137,17 +1144,19 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
     };
     let dialog = |label: String, kind: Kind| item(label, Message::OpenDialog(kind));
     let mut menu = column![].spacing(1);
+    // In the space only if we may add rooms to it.
+    let parent = (space.as_ref())
+        .filter(|(_, _, rights)| rights.add_rooms)
+        .map(|(id, name, _)| (id.clone(), name.clone()));
     menu = menu.push(dialog(
-        match &space {
+        match &parent {
             Some((_, name)) => format!("New room in {name}…"),
             None => "New room…".into(),
         },
-        Kind::NewRoom {
-            space: space.clone(),
-        },
+        Kind::NewRoom { space: parent },
     ));
     // In a space, its own rooms to join; at Home, any.
-    if let Some((id, name)) = &space {
+    if let Some((id, name, _)) = &space {
         menu = menu.push(item(
             format!("Browse rooms in {name}…"),
             Message::ShowSpace(id.clone(), overview::Tab::Rooms),
@@ -1158,23 +1167,26 @@ fn add_menu_view<'a>(space: Option<(OwnedRoomId, String)>) -> Element<'a, Messag
         .push(dialog(
             "New category…".into(),
             Kind::Category {
-                space: space.as_ref().map(|(id, _)| id.clone()),
+                space: space.as_ref().map(|(id, _, _)| id.clone()),
                 category: None,
                 room: None,
             },
         ));
     match space {
         None => menu = menu.push(item("Join a space or room…".into(), Message::OpenJoin)),
-        Some((id, name)) => {
-            menu = menu
-                .push(container(rule::horizontal(1).style(style::separator)).padding([4, 6]))
-                .push(dialog(
+        Some((id, name, rights)) => {
+            menu =
+                menu.push(container(rule::horizontal(1).style(style::separator)).padding([4, 6]));
+            if rights.invite {
+                menu = menu.push(dialog(
                     "Invite people…".into(),
                     Kind::Invite {
                         room: id.clone(),
                         name: name.clone(),
                     },
-                ))
+                ));
+            }
+            menu = menu
                 .push(item(
                     "Space settings…".into(),
                     Message::ShowSpace(id.clone(), overview::Tab::Settings),
@@ -1729,6 +1741,7 @@ mod tests {
             alias: None,
             joined_members: 0,
             pinned: Vec::new(),
+            rights: mtrx_core::Rights::default(),
         }
     }
 

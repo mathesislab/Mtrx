@@ -15,8 +15,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    AtHome, CallService, Grouping, OwnedRoomId, Permissions, RoomCategories, RoomListColours,
-    ServiceKind,
+    AtHome, CallService, Grouping, OwnedRoomId, Permissions, Rights, RoomCategories,
+    RoomListColours, ServiceKind,
 };
 use mtrx_google::GoogleClient;
 use serde::{Deserialize, Serialize};
@@ -166,14 +166,14 @@ pub enum Message {
     AddService,
     MakeDefault(usize),
     RemoveService(usize),
-    /// The selected space's call service and whether we may change it.
-    SpaceLoaded(OwnedRoomId, Option<CallService>, Option<bool>),
+    /// The selected space's call service.
+    SpaceLoaded(OwnedRoomId, Option<CallService>),
     SetSpaceService(SpaceChoice),
     SpaceSaved(Result<(), String>),
     /// A room list colour was saved in the account, or not.
     ColourSaved(Result<(), String>),
-    /// Who may edit a room or space, and whether we may change that.
-    AccessLoaded(OwnedRoomId, Option<Permissions>, Option<bool>),
+    /// Who may edit a room or space.
+    AccessLoaded(OwnedRoomId, Option<Permissions>),
     LetEveryoneEdit(OwnedRoomId),
     /// Opened, with a summary of what changed.
     Opened(OwnedRoomId, Result<String, String>),
@@ -255,20 +255,22 @@ pub struct Access {
     space: bool,
     /// `None` until loaded.
     permissions: Option<Permissions>,
-    can_change: Option<bool>,
+    /// We may change the permissions.
+    can_change: bool,
     busy: bool,
     /// What the last change did, or why it failed.
     status: Option<Result<String, String>>,
 }
 
 impl Access {
-    pub fn new(id: OwnedRoomId, name: String, space: bool) -> Self {
+    /// For a room or `space` where we have `rights`.
+    pub fn new(id: OwnedRoomId, name: String, space: bool, rights: Rights) -> Self {
         Self {
             id,
             name,
             space,
             permissions: None,
-            can_change: None,
+            can_change: rights.change_levels,
             busy: false,
             status: None,
         }
@@ -299,7 +301,7 @@ impl Access {
             .align_y(Alignment::Center);
         // A space is opened room by room, so offer it even if the space itself is open.
         let offer = self.space || self.permissions == Some(Permissions::Moderators);
-        if offer && self.can_change != Some(false) {
+        if offer && self.can_change {
             line = line.push(
                 button(text("Let everyone edit").size(13))
                     .padding([4, 10])
@@ -310,7 +312,7 @@ impl Access {
             );
         }
         let mut section = column![line].spacing(4);
-        if self.can_change == Some(false) && self.permissions == Some(Permissions::Moderators) {
+        if !self.can_change && self.permissions == Some(Permissions::Moderators) {
             section = section.push(
                 text("Only an admin can change this.")
                     .size(12)
@@ -335,18 +337,20 @@ pub struct SpaceCalls {
     pub access: Access,
     /// `None` until loaded.
     service: Option<Option<CallService>>,
-    can_set: Option<bool>,
+    /// We may change the call service.
+    can_set: bool,
     error: Option<String>,
 }
 
 impl SpaceCalls {
-    pub fn new(id: OwnedRoomId, name: String) -> Self {
+    /// For a space where we have `rights`.
+    pub fn new(id: OwnedRoomId, name: String, rights: Rights) -> Self {
         Self {
-            access: Access::new(id.clone(), name.clone(), true),
+            access: Access::new(id.clone(), name.clone(), true, rights),
             id,
             name,
             service: None,
-            can_set: None,
+            can_set: rights.set_call_service,
             error: None,
         }
     }
@@ -484,10 +488,9 @@ impl Panel {
                 return Action::Save;
             }
             Message::MakeDefault(_) | Message::RemoveService(_) => {}
-            Message::SpaceLoaded(id, service, can_set) => {
+            Message::SpaceLoaded(id, service) => {
                 if let Some(space) = self.space.as_mut().filter(|s| s.id == id) {
                     space.service = Some(service);
-                    space.can_set = can_set;
                 }
             }
             Message::SetSpaceService(SpaceChoice(service)) => {
@@ -503,10 +506,9 @@ impl Panel {
                     space.error = result.err();
                 }
             }
-            Message::AccessLoaded(id, permissions, can_change) => {
+            Message::AccessLoaded(id, permissions) => {
                 if let Some(access) = self.access_mut(&id) {
                     access.permissions = permissions;
-                    access.can_change = can_change;
                 }
             }
             Message::LetEveryoneEdit(id) => {
@@ -945,7 +947,7 @@ impl SpaceCalls {
                         .cloned()
                         .map(|s| SpaceChoice(Some(s))),
                 );
-                let allowed = self.can_set != Some(false);
+                let allowed = self.can_set;
                 let picker =
                     pick_list(choices, Some(SpaceChoice(current.clone())), move |choice| {
                         message(Message::SetSpaceService(choice))

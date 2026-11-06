@@ -47,19 +47,25 @@ pub struct Shown<'a> {
     pub menu: Option<&'a MenuKey>,
 }
 
-/// The panel: the members once loaded (`list`), or why loading failed.
+/// The panel: the members once loaded (`list`), or why loading failed;
+/// Invite if we may (`invite`).
 pub fn view<'a>(
     list: Option<&'a Result<Vec<Member>, String>>,
     room_name: &str,
+    invite: bool,
     shown: Shown<'_>,
 ) -> Element<'a, Message> {
     let room = shown.room;
-    let panel = column![
-        row![
-            text("Members")
-                .size(14)
-                .font(fonts::SEMIBOLD)
-                .width(Length::Fill),
+    let mut header = row![
+        text("Members")
+            .size(14)
+            .font(fonts::SEMIBOLD)
+            .width(Length::Fill)
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+    if invite {
+        header = header.push(
             button(text("Invite…").size(12))
                 .padding([2, 8])
                 .style(style::soft_button)
@@ -67,16 +73,15 @@ pub fn view<'a>(
                     room: room.clone(),
                     name: room_name.to_owned(),
                 })),
-            button(text("×").size(14))
-                .padding([0, 6])
-                .style(style::text_button)
-                .on_press(Message::ToggleMembers),
-        ]
-        .spacing(4)
-        .align_y(Alignment::Center)
-    ]
-    .spacing(2)
-    .padding(8);
+        );
+    }
+    header = header.push(
+        button(text("×").size(14))
+            .padding([0, 6])
+            .style(style::text_button)
+            .on_press(Message::ToggleMembers),
+    );
+    let panel = column![header].spacing(2).padding(8);
     container(frame::scroll(panel.push(rows(list, shown))))
         .width(WIDTH)
         .height(Length::Fill)
