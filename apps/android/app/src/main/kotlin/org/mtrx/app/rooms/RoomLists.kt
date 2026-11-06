@@ -1,8 +1,12 @@
 package org.mtrx.app.rooms
 
 import uniffi.mtrx.Badges
+import uniffi.mtrx.DirectoryRoom
+import uniffi.mtrx.JoinButton
 import uniffi.mtrx.ListSection
+import uniffi.mtrx.Membership
 import uniffi.mtrx.RoomKind
+import uniffi.mtrx.RoomLists
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomSort
 import uniffi.mtrx.RoomSummary
@@ -30,6 +34,13 @@ object NoRooms : RoomListsInterface {
     override fun firstSpaceOf(roomId: String): RoomSummary? = null
 
     override fun joining(): List<String> = emptyList()
+
+    override fun membership(roomId: String): Membership? = null
+
+    /** As the library's empty lists give it: not a member. */
+    override fun joinButton(room: DirectoryRoom): JoinButton = empty.joinButton(room)
+
+    private val empty by lazy { RoomLists.empty() }
 
     override fun loaded() = false
 
@@ -107,7 +118,7 @@ fun shownRoom(lists: RoomListsInterface, roomId: String?): String? {
 }
 
 /** Rooms and invites open on the Rooms tab; direct chats on Chats. */
-fun opensOnRoomsTab(room: RoomSummary): Boolean = room.kind != RoomKind.DIRECT && (room.kind != RoomKind.SPACE || room.invited)
+fun opensOnRoomsTab(room: RoomSummary): Boolean = room.kind != RoomKind.DIRECT && (room.kind != RoomKind.SPACE || room.membership == Membership.INVITED)
 
 /** The unread count to show, and whether it counts mentions; null if none. */
 fun unreadBadge(room: RoomSummary): Pair<Long, Boolean>? = when {

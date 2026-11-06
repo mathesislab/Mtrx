@@ -6,9 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.mtrx.app.model.describe
 import uniffi.mtrx.DirectoryRoom
-import uniffi.mtrx.Membership
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Session
 
@@ -17,7 +15,7 @@ import uniffi.mtrx.Session
  * its server lists them, with the joined ones it leaves out. The library's
  * last list shows at once while it updates behind; a failed update offers
  * Try again. Joining or asking to join stays on the overview, the row
- * changing (Open as the room list has it, at once; Asked). Methods are
+ * changing as the room list has it, at once (Open, Asked). Methods are
  * called on the main thread.
  */
 class SpaceOverviewModel(
@@ -35,12 +33,13 @@ class SpaceOverviewModel(
     private val _failed = MutableStateFlow(false)
     val failed: StateFlow<Boolean> = _failed.asStateFlow()
 
-    /** Rooms being joined or asked to join. */
-    private val _pending = MutableStateFlow<Set<String>>(emptySet())
-    val pending: StateFlow<Set<String>> = _pending.asStateFlow()
-
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    private val joining = Joining(viewModelScope, session) { _error.value = it }
+
+    /** Rooms being joined or asked to join. */
+    val pending: StateFlow<Set<String>> = joining.pending
 
     init {
         refresh()
@@ -62,26 +61,10 @@ class SpaceOverviewModel(
     }
 
     /** Join [room] (or accept its invite): its row opens, as the room list has it at once. */
-    fun join(room: DirectoryRoom) = act(room, after = null) { session.join(room.id, room.via) }
+    fun join(room: DirectoryRoom) = joining.join(room)
 
-    /** Ask to join [room]: its row becomes Asked. */
-    fun knock(room: DirectoryRoom) = act(room, Membership.ASKED) { session.knock(room.id, room.via) }
-
-    private fun act(room: DirectoryRoom, after: Membership?, call: suspend () -> Unit) {
-        if (room.id in _pending.value) return
-        _pending.value += room.id
-        viewModelScope.launch {
-            try {
-                call()
-                if (after == null) return@launch
-                _rooms.value = withMembership(_rooms.value.orEmpty(), room.id, after)
-            } catch (e: MtrxException) {
-                _error.value = describe(e)
-            } finally {
-                _pending.value -= room.id
-            }
-        }
-    }
+    /** Ask to join [room]: its row becomes Asked, as the room list has it at once. */
+    fun knock(room: DirectoryRoom) = joining.knock(room)
 
     fun clearError() {
         _error.value = null

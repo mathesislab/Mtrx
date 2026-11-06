@@ -45,6 +45,7 @@ import org.mtrx.app.rooms.RoomGroup
 import org.mtrx.app.rooms.name
 import org.mtrx.app.rooms.unreadBadge
 import uniffi.mtrx.ListSection
+import uniffi.mtrx.Membership
 import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomSummary
@@ -375,10 +376,10 @@ fun RoomRow(
     val badge = unreadBadge(room)
     val activity = room.lastActivity
     val line = when {
-        spaces != null -> listOfNotNull("Invited".takeIf { room.invited }, spaces.joinToString(", ").ifEmpty { null })
+        spaces != null -> listOfNotNull("Invited".takeIf { room.membership == Membership.INVITED }, spaces.joinToString(", ").ifEmpty { null })
             .joinToString(" · ")
             .ifEmpty { null }
-        room.invited -> "Invited"
+        room.membership == Membership.INVITED -> "Invited"
         room.kind == RoomKind.SPACE -> "Space"
         else -> room.topic?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: room.alias
     }

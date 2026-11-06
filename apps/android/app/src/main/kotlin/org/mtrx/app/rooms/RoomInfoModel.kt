@@ -7,8 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.describe
-import uniffi.mtrx.Access
 import uniffi.mtrx.History
+import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Member
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.NotifyMode
@@ -80,7 +80,7 @@ class RoomInfoModel(
 
     override fun setNotify(mode: NotifyMode) = change("Saving…") { it.setNotify(mode) }
 
-    override fun setAccess(access: Access) = change("Saving…") { it.setJoinRule(access) }
+    override fun setJoinRule(rule: JoinRule) = change("Saving…") { it.setJoinRule(rule) }
 
     override fun setListed(listed: Boolean) = change("Saving…") { it.setListed(listed) }
 

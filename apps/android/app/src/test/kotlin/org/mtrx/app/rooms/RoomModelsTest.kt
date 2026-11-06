@@ -22,12 +22,10 @@ import org.mtrx.app.FakeSession
 import org.mtrx.app.directoryRoom
 import org.mtrx.app.member
 import org.mtrx.app.roomSettings
-import uniffi.mtrx.Access
 import uniffi.mtrx.Address
 import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.DirectoryPage
-import uniffi.mtrx.JoinAccess
-import uniffi.mtrx.Membership
+import uniffi.mtrx.JoinRule
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Topic
 
@@ -50,10 +48,10 @@ class RoomModelsTest {
 
     @Test
     fun roomInfoReadsTheSettingsAndMembers() = runTest {
-        session.settings = roomSettings(access = Access.PUBLIC)
+        session.settings = roomSettings(joinRule = JoinRule.PUBLIC)
         session.memberList = listOf(member("@b:x"))
         val model = RoomInfoModel(room, session) { it.text }
-        assertEquals(Access.PUBLIC, model.settings.value?.access)
+        assertEquals(JoinRule.PUBLIC, model.settings.value?.joinRule)
         assertEquals(listOf("@b:x"), model.members.value?.map { it.user.userId })
     }
 
@@ -61,14 +59,14 @@ class RoomModelsTest {
     fun aChangeReadsTheSettingsAgain() = runTest {
         val model = RoomInfoModel(room, session) { "composed ${it.text}" }
         val reads = session.settingsReads
-        session.settings = roomSettings(access = Access.KNOCK)
-        model.setAccess(Access.KNOCK)
+        session.settings = roomSettings(joinRule = JoinRule.KNOCK)
+        model.setJoinRule(JoinRule.KNOCK)
         model.setTopic(Topic("Ice", emptyList()))
         model.setAddress(" #ice ")
         model.setAddress("")
-        assertEquals(listOf("access KNOCK", "topic composed Ice", "address ice", "address null"), session.roomCalls)
+        assertEquals(listOf("join rule KNOCK", "topic composed Ice", "address ice", "address null"), session.roomCalls)
         assertEquals(reads + 4, session.settingsReads)
-        assertEquals(Access.KNOCK, model.settings.value?.access)
+        assertEquals(JoinRule.KNOCK, model.settings.value?.joinRule)
         assertNull(model.busy.value)
     }
 
@@ -95,7 +93,7 @@ class RoomModelsTest {
     @Test
     fun theLastListShowsAtOnceAndUpdatesBehind() = runTest {
         session.listed["!team:x"] = listOf(directoryRoom("!old:x"))
-        session.children["!team:x"] = listOf(directoryRoom("!lab:x"), directoryRoom("!ask:x", access = JoinAccess.KNOCK))
+        session.children["!team:x"] = listOf(directoryRoom("!lab:x"), directoryRoom("!ask:x", joinRule = JoinRule.KNOCK))
         session.childrenGate = CompletableDeferred()
         val model = SpaceOverviewModel("!team:x", session)
         assertEquals(listOf("!old:x"), model.rooms.value?.map { it.id })
@@ -128,19 +126,17 @@ class RoomModelsTest {
     }
 
     @Test
-    fun joiningStaysOnTheOverviewAndTheRowOpens() = runTest {
+    fun joiningStaysOnTheOverview() = runTest {
         val lab = directoryRoom("!lab:x")
-        val ask = directoryRoom("!ask:x", access = JoinAccess.KNOCK)
+        val ask = directoryRoom("!ask:x", joinRule = JoinRule.KNOCK)
         session.children["!team:x"] = listOf(lab, ask)
         val model = SpaceOverviewModel("!team:x", session)
         model.join(lab)
         model.knock(ask)
+        // Open and Asked as the room list has them (at once, the library's).
         assertEquals(listOf("join !lab:x", "knock !ask:x"), session.roomCalls)
-        // Asked here; joined as the room list has it (at once, the library's).
-        assertEquals(listOf(RowAction.JOIN, RowAction.ASKED), model.rooms.value!!.map { rowAction(it) })
-        val joined = setOf(lab.id)
-        assertEquals(listOf(RowAction.OPEN, RowAction.ASKED), model.rooms.value!!.map { rowAction(it, it.id in joined) })
         assertTrue(model.pending.value.isEmpty())
+        assertNull(model.error.value)
     }
 
     // Joining from a directory
@@ -173,7 +169,7 @@ class RoomModelsTest {
     fun typingWaitsAndAnAddressShowsItsPreview() = runTest {
         val dispatcher: TestDispatcher = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(dispatcher)
-        session.previews["#ice:x"] = directoryRoom("!ice:x", access = JoinAccess.KNOCK)
+        session.previews["#ice:x"] = directoryRoom("!ice:x", joinRule = JoinRule.KNOCK)
         val model = JoinModel(session, parseAddress = { text -> Address(text, emptyList()).takeIf { text.startsWith("#") } })
         advanceUntilIdle()
         session.roomCalls.clear()
@@ -185,7 +181,8 @@ class RoomModelsTest {
         val preview = model.results.value as JoinResults.Preview
         model.knock(preview.room)
         advanceUntilIdle()
-        assertEquals(Membership.ASKED, (model.results.value as JoinResults.Preview).room.membership)
+        assertEquals(listOf("preview #ice:x", "knock !ice:x"), session.roomCalls)
+        assertTrue(model.pending.value.isEmpty())
     }
 
     @Test

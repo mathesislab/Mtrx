@@ -27,12 +27,11 @@ import org.mtrx.app.rooms.RoomInfoHeader
 import org.mtrx.app.summary
 import org.mtrx.app.user
 import org.mtrx.app.timeline.TimelineActions
-import uniffi.mtrx.Access
 import uniffi.mtrx.Badges
 import uniffi.mtrx.Banned
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.History
-import uniffi.mtrx.JoinAccess
+import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Membership
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
@@ -91,10 +90,10 @@ val iceTopic = Topic(
 val roomList = listOf(
     summary("!with-bob:example.org", RoomKind.DIRECT, unread = 2, directUserId = "@bob:example.org", name = "Bob Berg", lastActivity = at(10, 42)),
     summary(ICE, unread = 3, name = "Ice sheets", lastActivity = at(10, 30), topic = iceTopic.text, pinned = listOf("\$p1", "\$p2")),
-    summary("!with-carol:example.org", RoomKind.DIRECT, invited = true, directUserId = "@carol:example.org", name = "Carol Chen"),
+    summary("!with-carol:example.org", RoomKind.DIRECT, Membership.INVITED, directUserId = "@carol:example.org", name = "Carol Chen"),
     summary(SEA, name = "Sea ice", lastActivity = at(9, 5), topic = "Sea ice and the ocean"),
     summary(PAPERS, unread = 1, mentions = 1, name = "Papers", lastActivity = at(17, 20, daysAgo = 1)),
-    summary(WORKSHOP, invited = true, name = "Workshop 2027"),
+    summary(WORKSHOP, membership = Membership.INVITED, name = "Workshop 2027"),
     summary("!notes:example.org", RoomKind.DIRECT, directUserId = ME, name = "Notes to self", lastActivity = at(8, 0, daysAgo = 2)),
     summary(TEACHING, unread = 5, name = "Teaching", lastActivity = at(14, 0, daysAgo = 3)),
     summary(LOOSE, name = "Coffee", lastActivity = at(12, 0, daysAgo = 9)),
@@ -104,7 +103,7 @@ val roomList = listOf(
     summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = "Radargrams from the traverse"),
     summary(CODE, unread = 4, name = "Model code", lastActivity = at(11, 0, daysAgo = 1)),
     summary(ARCHIVE, name = "Archive 2025", lastActivity = at(9, 0, daysAgo = 40)),
-    summary(SUMMIT, invited = true, name = "Ice summit 2027"),
+    summary(SUMMIT, membership = Membership.INVITED, name = "Ice summit 2027"),
 )
 
 fun listed(id: String) = roomList.first { it.id == id }
@@ -250,7 +249,7 @@ val pinnedMessages = listOf(
 )
 
 val iceSettings = roomSettings(
-    access = Access.SPACE_MEMBERS,
+    joinRule = JoinRule.SPACE_MEMBERS,
     encrypted = true,
     address = "#ice:example.org",
     listed = false,
@@ -265,7 +264,7 @@ val iceMembers = listOf(
     member(bob, "Bob Berg", level = 50, upTo = 100, remove = true, ban = true),
     member("@carol:example.org", "Carol Chen", level = 20, upTo = 100, remove = true, ban = true),
     member("@dan:example.org", "Dan Dahl", level = 0, upTo = 100, remove = true, ban = true),
-    member("@eve:example.org", "Eve Ek", level = 0, invited = true),
+    member("@eve:example.org", "Eve Ek", level = 0, membership = Membership.INVITED),
 )
 
 val iceHeader = RoomInfoHeader(roomId = ICE, name = "Ice sheets", avatarUrl = null, topic = iceTopic, space = false)
@@ -280,10 +279,10 @@ val teamHeader = RoomInfoHeader(
 val teamChildren = listOf(
     directoryRoom("!ice:example.org", "Ice sheets", membership = Membership.JOINED, members = 12, topic = iceTopic.text, role = Role.ADMIN),
     directoryRoom("!field:example.org", "Field work 2027", members = 7, topic = "Planning the Greenland traverse"),
-    directoryRoom("!models:example.org", "Model development", access = JoinAccess.KNOCK, members = 5),
-    directoryRoom("!review:example.org", "Reviews", access = JoinAccess.KNOCK, membership = Membership.ASKED, members = 3),
-    directoryRoom("!board:example.org", "Board", access = JoinAccess.INVITE, members = 4),
-    directoryRoom("!sub:example.org", "Students", space = true, members = 9, access = JoinAccess.SPACE_MEMBERS),
+    directoryRoom("!models:example.org", "Model development", joinRule = JoinRule.KNOCK, members = 5),
+    directoryRoom("!review:example.org", "Reviews", joinRule = JoinRule.KNOCK, membership = Membership.ASKED, members = 3),
+    directoryRoom("!board:example.org", "Board", joinRule = JoinRule.INVITE, members = 4),
+    directoryRoom("!sub:example.org", "Students", space = true, members = 9, joinRule = JoinRule.SPACE_MEMBERS),
 )
 
 /** Actions that do nothing. */
@@ -313,7 +312,7 @@ object NoRoomInfoActions : RoomInfoActions {
     override fun rename(name: String) {}
     override fun setTopic(topic: Topic) {}
     override fun setNotify(mode: NotifyMode) {}
-    override fun setAccess(access: Access) {}
+    override fun setJoinRule(rule: JoinRule) {}
     override fun setListed(listed: Boolean) {}
     override fun setSuggested(spaceId: String, suggested: Boolean) {}
     override fun setHistory(history: History) {}
@@ -329,7 +328,7 @@ object NoRoomInfoActions : RoomInfoActions {
     override fun clearError() {}
 }
 
-val noRowActions = OverviewRowActions(join = {}, knock = {}, open = {}, retry = {})
+val noRowActions = OverviewRowActions(join = {}, knock = {}, open = {}, answer = {}, retry = {})
 
 val noJoinActions = JoinActions(
     setServer = {},

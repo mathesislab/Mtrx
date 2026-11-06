@@ -64,8 +64,11 @@ import org.mtrx.app.ui.BAR_TEXT_SCALE
 import org.mtrx.app.ui.TextScaleAtMost
 import org.mtrx.app.ui.linesHeight
 import uniffi.mtrx.DirectoryRoom
-import uniffi.mtrx.JoinAccess
+import uniffi.mtrx.JoinAction
+import uniffi.mtrx.JoinButton
+import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Member
+import uniffi.mtrx.Membership
 import uniffi.mtrx.RoomSettings
 
 /** The tabs of a space's overview. */
@@ -79,8 +82,8 @@ data class OverviewRooms(
     val failed: Boolean,
     /** Rooms being joined or asked to join. */
     val pending: Set<String>,
-    /** Rooms the room list has us in. */
-    val joined: Set<String>,
+    /** What a row offers, with our membership as the room lists have it (the library's joinButton). */
+    val buttonOf: (DirectoryRoom) -> JoinButton,
 )
 
 /** What the Rooms tab's rows do. */
@@ -88,6 +91,8 @@ class OverviewRowActions(
     val join: (DirectoryRoom) -> Unit,
     val knock: (DirectoryRoom) -> Unit,
     val open: (DirectoryRoom) -> Unit,
+    /** Show the invite, to accept or decline. */
+    val answer: (DirectoryRoom) -> Unit,
     val retry: () -> Unit,
 )
 
@@ -180,7 +185,7 @@ fun SpaceOverviewContent(
                     OverviewTab.SETTINGS -> if (settings == null) {
                         item(key = "loading") { Spinner() }
                     } else {
-                        settingsSection(header, settings, members?.count { !it.invited }, spaceNames, ownUserId, infoActions)
+                        settingsSection(header, settings, members?.count { it.membership == Membership.JOINED }, spaceNames, ownUserId, infoActions)
                     }
                 }
             }
@@ -281,7 +286,7 @@ private fun LazyListScope.roomsTab(
         }
     }
     items(shown, key = { "child:" + it.id }) { room ->
-        DirectoryRow(room, rowAction(room, room.id in rooms.joined), room.id in rooms.pending, images, actions)
+        DirectoryRow(room, rooms.buttonOf(room), room.id in rooms.pending, images, actions)
     }
     item(key = "invite-only") {
         Text(
@@ -295,15 +300,16 @@ private fun LazyListScope.roomsTab(
 
 /**
  * A room to join or open: its picture or who may join, name, details and
- * our role; Join and Ask to join in the primary colour, Open, or what
- * stops us. A joined row opens on a tap.
+ * our role; Join and Ask to join in the primary colour, Open and Invited,
+ * or what stops us. A joined row opens on a tap.
  */
 @Composable
-fun DirectoryRow(room: DirectoryRoom, action: RowAction, pending: Boolean, images: Images, actions: OverviewRowActions) {
+fun DirectoryRow(room: DirectoryRoom, button: JoinButton, pending: Boolean, images: Images, actions: OverviewRowActions) {
+    val action = button.action
     CompactRow(
         title = room.name,
         subtitle = rowDetails(room),
-        onClick = if (action == RowAction.OPEN) ({ actions.open(room) }) else null,
+        onClick = if (action == JoinAction.OPEN && !pending) ({ actions.open(room) }) else null,
         leading = { RoomPicture(room, images) },
         trailing = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -312,12 +318,14 @@ fun DirectoryRow(room: DirectoryRoom, action: RowAction, pending: Boolean, image
                 roleTag(room)?.let {
                     Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                val label = button.title
                 when {
                     pending -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    action == RowAction.JOIN -> Button(onClick = { actions.join(room) }, Modifier.height(buttonHeight), contentPadding = ROW_BUTTON) { Text(action.label) }
-                    action == RowAction.ASK -> Button(onClick = { actions.knock(room) }, Modifier.height(buttonHeight), contentPadding = ROW_BUTTON) { Text(action.label) }
-                    action == RowAction.OPEN -> OutlinedButton(onClick = { actions.open(room) }, Modifier.height(buttonHeight), contentPadding = ROW_BUTTON) { Text(action.label) }
-                    else -> Text(action.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    action == JoinAction.JOIN -> Button(onClick = { actions.join(room) }, Modifier.height(buttonHeight), contentPadding = ROW_BUTTON) { Text(label) }
+                    action == JoinAction.ASK_TO_JOIN -> Button(onClick = { actions.knock(room) }, Modifier.height(buttonHeight), contentPadding = ROW_BUTTON) { Text(label) }
+                    action == JoinAction.OPEN -> OutlinedButton(onClick = { actions.open(room) }, Modifier.height(buttonHeight), contentPadding = ROW_BUTTON) { Text(label) }
+                    action == JoinAction.INVITED -> OutlinedButton(onClick = { actions.answer(room) }, Modifier.height(buttonHeight), contentPadding = ROW_BUTTON) { Text(label) }
+                    else -> Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         },
@@ -345,8 +353,8 @@ private fun RoomPicture(room: DirectoryRoom, images: Images) {
         Icon(
             when {
                 room.isSpace -> MtrxIcons.Spaces
-                room.access == JoinAccess.PUBLIC -> MtrxIcons.Hash
-                room.access == JoinAccess.SPACE_MEMBERS -> Icons.Filled.Person
+                room.joinRule == JoinRule.PUBLIC -> MtrxIcons.Hash
+                room.joinRule == JoinRule.SPACE_MEMBERS -> Icons.Filled.Person
                 else -> Icons.Filled.Lock
             },
             contentDescription = null,
