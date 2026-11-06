@@ -931,9 +931,14 @@ fn trim(list: &mut Vec<Download>) {
 
 /// The stored list as the app starts: downloads running when it quit
 /// failed (their partial files deleted), and done ones whose file is gone
-/// need downloading again. Whether anything changed.
+/// need downloading again; in the cache, which the OS may clear, they just
+/// go. Whether anything changed.
 fn reopened(mut list: Vec<Download>, places: &Places) -> (Vec<Download>, bool) {
-    let mut changed = false;
+    let before = list.len();
+    list.retain(|d| {
+        d.to != SaveTo::Cache || !matches!(&d.state, DownloadState::Done { path } if !path.exists())
+    });
+    let mut changed = list.len() != before;
     for download in &mut list {
         let failed = match &download.state {
             DownloadState::Downloading { .. } => {

@@ -165,7 +165,15 @@ fn reopening_fails_interrupted_downloads_and_missing_files() {
     fs::create_dir_all(places.ciphertext(3).parent().unwrap()).unwrap();
     fs::write(places.ciphertext(3), "half").unwrap();
     running.target = Some(target.clone());
+    let mut cleared = download(
+        4,
+        DownloadState::Done {
+            path: places.cache.join("media/cleared.pdf"),
+        },
+    );
+    cleared.to = SaveTo::Cache;
     let list = vec![
+        cleared,
         running,
         download(2, DownloadState::Done { path: kept.clone() }),
         download(
@@ -178,6 +186,8 @@ fn reopening_fails_interrupted_downloads_and_missing_files() {
 
     let (list, changed) = reopened(list, &places);
     assert!(changed);
+    // The OS cleared the cache: that one just goes.
+    assert_eq!(list.iter().map(|d| d.id).collect::<Vec<_>>(), [3, 2, 1]);
     assert_eq!(list[0].state, DownloadState::Failed(QUIT.into()));
     assert_eq!(list[0].target, None);
     assert!(!part_path(&target).exists());
