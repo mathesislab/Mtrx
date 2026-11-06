@@ -77,6 +77,9 @@ struct RowActions {
     /// The status of a message not sent yet was tapped: retry it or take
     /// it back.
     let unsent: (String) -> Void
+    /// A message's file was tapped (with the message's event ID): show it
+    /// once downloaded.
+    let open: (Media, String?) -> Void
 }
 
 /// A message: in a bubble on the right if ours, else on the left with the
@@ -189,15 +192,22 @@ struct MessageView: View {
                             .background(bubbleColor, in: RoundedRectangle(cornerRadius: 18))
                     }
                     MediaImageView(media: media)
+                        .overlay {
+                            DownloadBadge(media: media)
+                        }
                         .overlay(alignment: .bottomTrailing) {
                             footer.padding(6).background(.ultraThinMaterial, in: Capsule()).padding(6)
                         }
+                        .onTapGesture { actions.open(media, event.eventId) }
+                        .accessibilityAddTraits(.isButton)
                     if message.body != media.filename && !message.body.isEmpty {
                         bubble(text(message), quote: nil, muted: message.kind == .notice)
                     }
                 }
             } else if let media = message.media {
                 bubble(FileView(media: media), quote: message.replyTo)
+                    .onTapGesture { actions.open(media, event.eventId) }
+                    .accessibilityAddTraits(.isButton)
             } else {
                 bubble(text(message), quote: message.replyTo, muted: message.kind == .notice)
             }

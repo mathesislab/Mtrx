@@ -260,7 +260,8 @@ final class ScreenshotTests: XCTestCase {
                 .environmentObject(app)
                 .environmentObject(model)
                 .environmentObject(model.images)
-                .environmentObject(model.presence))
+                .environmentObject(model.presence)
+                .environmentObject(model.downloads))
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
         try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))

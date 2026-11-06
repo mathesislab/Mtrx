@@ -15,6 +15,7 @@ struct RootView: View {
                 .environmentObject(model)
                 .environmentObject(model.images)
                 .environmentObject(model.presence)
+                .environmentObject(model.downloads)
         case .failed(let message):
             VStack(spacing: 16) {
                 Image(systemName: "exclamationmark.triangle")
