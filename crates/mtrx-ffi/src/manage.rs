@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use mtrx_core as core;
 
-use crate::{MtrxError, Session, Timeline, User, runtime::run};
+use crate::{
+    JoinRule, JoinRuleChoice, Membership, MtrxError, Session, Timeline, User, runtime::run,
+};
 
 /// When a room notifies (on all our devices).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -14,18 +16,6 @@ pub enum NotifyMode {
     /// Only for mentions and keywords.
     Mentions,
     Mute,
-}
-
-/// Who may join a room.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum Access {
-    /// Only invited people.
-    Invite,
-    /// Members of the spaces it is in.
-    SpaceMembers,
-    /// Anyone may ask; members let them in.
-    Knock,
-    Public,
 }
 
 /// Who may read a room's history.
@@ -73,7 +63,12 @@ pub struct RoomSettings {
     pub can_change_picture: bool,
     pub can_invite: bool,
     pub notify: NotifyMode,
-    pub access: Access,
+    pub join_rule: JoinRule,
+    /// Who may join, in words: "Public: anyone can join"…
+    pub join_rule_fact: String,
+    /// The rules to offer, in order, with their words: Space members only
+    /// for a room in a space, or already so.
+    pub join_rule_choices: Vec<JoinRuleChoice>,
     pub can_change_access: bool,
     /// For a space: we may list rooms in it.
     pub can_add_rooms: bool,
@@ -110,12 +105,9 @@ impl From<core::RoomSettings> for RoomSettings {
                 core::NotifyMode::Mentions => NotifyMode::Mentions,
                 core::NotifyMode::Mute => NotifyMode::Mute,
             },
-            access: match s.access {
-                core::Access::Invite => Access::Invite,
-                core::Access::SpaceMembers => Access::SpaceMembers,
-                core::Access::Knock => Access::Knock,
-                core::Access::Public => Access::Public,
-            },
+            join_rule: s.join_rule.into(),
+            join_rule_fact: s.join_rule.fact().to_owned(),
+            join_rule_choices: s.join_rule_choices.into_iter().map(Into::into).collect(),
             can_change_access: s.can_change_access,
             can_add_rooms: s.can_add_rooms,
             address: s.address.map(|a| a.to_string()),
@@ -242,8 +234,8 @@ pub struct Member {
     /// Their power level; `None` for a creator of the room (an owner, above
     /// every level).
     pub level: Option<i64>,
-    /// Invited, not joined yet.
-    pub invited: bool,
+    /// Joined, or invited and not joined yet.
+    pub membership: Membership,
     /// Ourselves.
     pub own: bool,
     pub manage: Manage,
@@ -274,7 +266,7 @@ impl From<core::Member> for Member {
             user: User::from(&m.user),
             role: m.role.into(),
             level: m.level,
-            invited: m.invited,
+            membership: m.membership.into(),
             own: m.own,
             manage: Manage {
                 remove: m.manage.remove,

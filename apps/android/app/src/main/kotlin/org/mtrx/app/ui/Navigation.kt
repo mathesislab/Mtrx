@@ -50,6 +50,8 @@ import org.mtrx.app.timeline.TimelineScreen
 import org.mtrx.app.timeline.TimelineViewModel
 import org.mtrx.app.timeline.roomHeader
 import uniffi.mtrx.DirectoryRoom
+import uniffi.mtrx.JoinButton
+import uniffi.mtrx.Membership
 import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.parseAddress
@@ -171,7 +173,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
                     kind = kind,
                     results = results,
                     pending = pending,
-                    joined = joinedIds(rooms),
+                    buttonOf = buttonOf(rooms),
                     error = error,
                 ),
                 signedIn.images,
@@ -241,11 +243,10 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
     }
 }
 
-/** The rooms the room list has us in (not invited), and those coming (just joined or made here). */
-private fun joinedIds(rooms: RoomListsInterface): Set<String> =
-    rooms.rooms().filter { !it.invited }.map { it.id }.toSet() + rooms.joining()
+/** What a listed room's row offers, with our membership as [rooms] have it (joined once joining, asked once asked). */
+private fun buttonOf(rooms: RoomListsInterface): (DirectoryRoom) -> JoinButton = { room -> rooms.joinButton(room) }
 
-/** Rows of rooms to join: a joined space opens its overview, a room on the home. */
+/** Rows of rooms to join: a joined space opens its overview, a room on the home; an invite shows to be answered. */
 private fun rowActions(
     join: (DirectoryRoom) -> Unit,
     knock: (DirectoryRoom) -> Unit,
@@ -258,6 +259,7 @@ private fun rowActions(
     open = { room ->
         if (room.isSpace) nav.navigate("space/${Uri.encode(room.id)}") else openRoom(room.id)
     },
+    answer = { room -> openRoom(room.id) },
     retry = retry,
 )
 
@@ -284,7 +286,7 @@ private fun RoomPane(
     onRoomInfo: () -> Unit,
 ) {
     val room = rooms.room(roomId)
-    if (room?.invited == true) {
+    if (room?.membership == Membership.INVITED) {
         var busy by remember(roomId) { mutableStateOf(false) }
         InviteContent(
             room,
@@ -413,7 +415,7 @@ private fun OverviewScreen(
     var leaving by remember { mutableStateOf(false) }
     SpaceOverviewContent(
         header,
-        OverviewRooms(children, updating, failed, pending, joinedIds(rooms)),
+        OverviewRooms(children, updating, failed, pending, buttonOf(rooms)),
         settings,
         members,
         busy,

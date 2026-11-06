@@ -2,13 +2,16 @@
 
 use std::{collections::HashMap, fmt::Write};
 
-use mtrx_core::{OwnedRoomId, RoomKind, RoomListState, RoomSummary};
+use mtrx_core::{Membership, OwnedRoomId, RoomKind, RoomListState, RoomSummary};
 
 /// Print spaces as a tree with their rooms, then rooms outside any space,
-/// then direct messages and invites.
+/// then direct messages, invites and rooms asked to join.
 pub fn print_tree(state: &RoomListState, ids: bool) {
     let (rooms, graph) = (&state.rooms, &state.graph);
-    let by_id: HashMap<&OwnedRoomId, &RoomSummary> = rooms.iter().map(|r| (&r.id, r)).collect();
+    let by_id: HashMap<&OwnedRoomId, &RoomSummary> = (rooms.iter())
+        .filter(|r| r.membership != Membership::Asked)
+        .map(|r| (&r.id, r))
+        .collect();
     let in_list = |r: &RoomSummary| graph.parents(&r.id).iter().any(|p| by_id.contains_key(p));
 
     for space in graph.top_level(rooms) {
@@ -23,7 +26,9 @@ pub fn print_tree(state: &RoomListState, ids: bool) {
         }
     }
 
-    let loose = |r: &&RoomSummary, kind| !r.invited && r.kind == kind && !in_list(r);
+    let loose = |r: &&RoomSummary, kind| {
+        r.membership == Membership::Joined && r.kind == kind && !in_list(r)
+    };
     print_section(
         "Rooms",
         rooms.iter().filter(|r| loose(r, RoomKind::Room)),
@@ -34,7 +39,9 @@ pub fn print_tree(state: &RoomListState, ids: bool) {
         rooms.iter().filter(|r| loose(r, RoomKind::Direct)),
         ids,
     );
-    print_section("Invites", rooms.iter().filter(|r| r.invited), ids);
+    let with = |membership: Membership| rooms.iter().filter(move |r| r.membership == membership);
+    print_section("Invites", with(Membership::Invited), ids);
+    print_section("Asked to join", with(Membership::Asked), ids);
 }
 
 fn print_section<'a>(title: &str, rooms: impl Iterator<Item = &'a RoomSummary>, ids: bool) {

@@ -20,8 +20,8 @@ use tokio_stream::wrappers::WatchStream;
 use tracing::warn;
 
 use crate::{
-    Grouping, Layout, Live, Result, RoomCategories, RoomKind, RoomListState, RoomSummary, Section,
-    Session, SpaceGraph,
+    Grouping, Layout, Live, Membership, Result, RoomCategories, RoomKind, RoomListState,
+    RoomSummary, Section, Session, SpaceGraph,
     spaces::{SpaceMembers, home_rooms, space_rooms},
 };
 
@@ -137,6 +137,9 @@ pub struct RoomLists {
     /// Rooms and spaces joined or made here that `rooms` does not list as
     /// joined yet: coming, not gone.
     pub joining: BTreeSet<OwnedRoomId>,
+    /// Rooms and spaces we asked to join, as the room list has them or
+    /// asked here: not in `rooms`, which lists none of them.
+    pub asked: BTreeSet<OwnedRoomId>,
     pub badges: Badges,
     /// The joined members of the top-level spaces loaded so far.
     members: HashMap<OwnedRoomId, HashSet<OwnedUserId>>,
@@ -146,7 +149,8 @@ impl RoomLists {
     /// The key of the Rooms tab's group of [`SpaceKey::Outside`].
     pub const OUTSIDE_GROUP: &str = "home";
 
-    /// A space whose `members` are not known lists no direct chats.
+    /// A space whose `members` are not known lists no direct chats. The
+    /// rooms asked to join go to `asked`.
     pub fn new(
         state: RoomListState,
         categories: RoomCategories,
@@ -159,6 +163,8 @@ impl RoomLists {
             loaded,
             graph,
         } = state;
+        let (asked, rooms): (Vec<RoomSummary>, Vec<RoomSummary>) =
+            (rooms.into_iter()).partition(|r| r.membership == Membership::Asked);
         let notes = (rooms.iter())
             .find(|r| r.is_notes(own_user))
             .filter(|_| categories.notes_at_top())
@@ -177,6 +183,7 @@ impl RoomLists {
             spaces: Vec::new(),
             drafts,
             joining: BTreeSet::new(),
+            asked: asked.into_iter().map(|r| r.id).collect(),
             badges: Badges::default(),
             members,
         };
@@ -234,6 +241,18 @@ impl RoomLists {
 
     pub fn room(&self, id: &RoomId) -> Option<&RoomSummary> {
         self.rooms.iter().find(|r| r.id == id)
+    }
+
+    /// Our membership of `room` to show: joined once joining here (before
+    /// the list has it), else as listed, else asked if we asked to join.
+    pub fn membership(&self, room: &RoomId) -> Option<Membership> {
+        if self.joining.contains(room) {
+            return Some(Membership::Joined);
+        }
+        match self.room(room) {
+            Some(listed) => Some(listed.membership),
+            None => self.asked.contains(room).then_some(Membership::Asked),
+        }
     }
 
     fn rooms_of<'a>(&'a self, ids: &'a [OwnedRoomId]) -> impl Iterator<Item = &'a RoomSummary> {
@@ -303,7 +322,8 @@ impl RoomLists {
         match self.layout(key) {
             Some(layout) => layout.group(listed, grouping),
             None => {
-                let (invites, joined): (Vec<_>, Vec<_>) = listed.partition(|r| r.invited);
+                let (invites, joined): (Vec<_>, Vec<_>) =
+                    listed.partition(|r| r.membership == Membership::Invited);
                 let (direct, rooms) = joined.into_iter().partition(|r| r.kind == RoomKind::Direct);
                 vec![
                     (Section::Invites, invites),
@@ -623,11 +643,11 @@ impl SectionLayout {
 /// Whether a room list may show `room`: rooms and direct chats, and spaces
 /// only when invited to, to be answered.
 fn listed(room: &RoomSummary) -> bool {
-    room.kind != RoomKind::Space || room.invited
+    room.kind != RoomKind::Space || room.membership == Membership::Invited
 }
 
 fn joined_room(room: &RoomSummary) -> bool {
-    room.kind == RoomKind::Room && !room.invited
+    room.kind == RoomKind::Room && room.membership == Membership::Joined
 }
 
 fn unread(room: &RoomSummary) -> bool {
@@ -663,7 +683,7 @@ fn search_by<T>(items: Vec<T>, filter: &str, name: impl Fn(&T) -> &str) -> Vec<T
 impl Session {
     /// The room lists from `list`, kept up to date while held: as the list,
     /// the categories, the drafts and the changes made here (tags, topics,
-    /// pinned messages, rooms joined) change. Spaces list their direct
+    /// pinned messages, rooms joined or asked to join) change. Spaces list their direct
     /// chats once their members are loaded, in a later update.
     pub fn room_lists(&self, list: &Live<RoomListState>) -> Live<Arc<RoomLists>> {
         let categories = self.room_categories_updates();
@@ -757,6 +777,7 @@ impl Follow {
         let members = self.members.known().clone();
         let mut lists = RoomLists::new(state, categories, members, &self.own_user, drafts);
         lists.joining = self.echoes.joining();
+        lists.asked.extend(self.echoes.knocking());
         (lists, timeout)
     }
 }
@@ -1136,6 +1157,33 @@ mod tests {
             .map(|(depth, room)| (depth, room.name.as_str()))
             .collect();
         assert_eq!(tree, [(0, "Offer"), (0, "Sub"), (1, "Deep"), (0, "Lab")]);
+    }
+
+    /// Rooms asked to join are in no list; rooms being joined show as
+    /// joined before the list has them.
+    #[test]
+    fn memberships_as_shown() {
+        let asked = RoomSummary {
+            membership: Membership::Asked,
+            ..room("!door", RoomKind::Room)
+        };
+        let rooms = vec![
+            room("!lab", RoomKind::Room),
+            invited(room("!offer", RoomKind::Room)),
+            asked,
+        ];
+        let mut lists = lists(state(rooms, &[]), &[]);
+        assert_eq!(lists.room(&id("!door")), None);
+        assert_eq!(strs(&lists.spaces[0].rooms), ["!lab", "!offer"]);
+        let membership = |lists: &RoomLists, room| lists.membership(&id(room));
+        assert_eq!(membership(&lists, "!lab"), Some(Membership::Joined));
+        assert_eq!(membership(&lists, "!offer"), Some(Membership::Invited));
+        assert_eq!(membership(&lists, "!door"), Some(Membership::Asked));
+        assert_eq!(membership(&lists, "!new"), None);
+
+        lists.joining = BTreeSet::from([id("!offer"), id("!new")]);
+        assert_eq!(membership(&lists, "!offer"), Some(Membership::Joined));
+        assert_eq!(membership(&lists, "!new"), Some(Membership::Joined));
     }
 
     /// A space's list, with Lab and Bob never active.

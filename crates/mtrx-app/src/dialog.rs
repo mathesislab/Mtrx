@@ -12,8 +12,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Confirmation, Contact, Grouping, Member, NewRoom, OwnedRoomId, OwnedUserId, Permissions,
-    RoomCategories, RoomKind, RoomLists, SpaceKey, User, UserId, a_role, typed_level,
+    Confirmation, Contact, Grouping, Member, Membership, NewRoom, OwnedRoomId, OwnedUserId,
+    Permissions, RoomCategories, RoomKind, RoomLists, SpaceKey, User, UserId, a_role, typed_level,
 };
 
 use crate::{
@@ -895,7 +895,7 @@ impl Dialog {
     ) -> Element<'a, app::Message> {
         let candidates: Vec<_> = (lists.rooms.iter())
             .filter(|r| {
-                !r.invited
+                r.membership == Membership::Joined
                     && r.kind != RoomKind::Direct
                     && r.id != *space
                     && !lists.graph.parents(&r.id).contains(space)
@@ -964,7 +964,7 @@ impl Dialog {
         };
         let key = space.map_or(SpaceKey::Home, |space| SpaceKey::Space(space.clone()));
         let found: Vec<_> = (lists.search(Some(&key), grouping, &self.query).into_iter())
-            .filter(|r| !r.invited)
+            .filter(|r| r.membership == Membership::Joined)
             .collect();
         let unticked: Vec<OwnedRoomId> = (found.iter())
             .filter(|r| !self.rooms.contains(&r.id))

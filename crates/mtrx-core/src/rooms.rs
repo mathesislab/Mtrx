@@ -18,10 +18,10 @@ use matrix_sdk::{
         },
         events::{
             InitialStateEvent,
-            room::encryption::RoomEncryptionEventContent,
+            room::{encryption::RoomEncryptionEventContent, join_rules::JoinRule as SdkJoinRule},
             space::{child::SpaceChildEventContent, parent::SpaceParentEventContent},
         },
-        room::RoomType,
+        room::{JoinRuleKind, JoinRuleSummary, RoomType},
         serde::Raw,
     },
 };
@@ -45,6 +45,156 @@ pub enum RoomKind {
     Direct,
 }
 
+/// Who may join a room: one type for its settings, directory rows and the
+/// room list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinRule {
+    /// Only invited people.
+    Invite,
+    /// Anyone may ask to join; members let them in.
+    Knock,
+    /// Members of the spaces the room names (and invited people).
+    SpaceMembers,
+    /// Anyone.
+    Public,
+}
+
+impl From<Option<&SdkJoinRule>> for JoinRule {
+    fn from(rule: Option<&SdkJoinRule>) -> Self {
+        match rule {
+            Some(SdkJoinRule::Public) => Self::Public,
+            Some(SdkJoinRule::Restricted(_) | SdkJoinRule::KnockRestricted(_)) => {
+                Self::SpaceMembers
+            }
+            Some(SdkJoinRule::Knock) => Self::Knock,
+            _ => Self::Invite,
+        }
+    }
+}
+
+impl From<&JoinRuleSummary> for JoinRule {
+    fn from(rule: &JoinRuleSummary) -> Self {
+        match rule {
+            JoinRuleSummary::Public => Self::Public,
+            JoinRuleSummary::Restricted(_) | JoinRuleSummary::KnockRestricted(_) => {
+                Self::SpaceMembers
+            }
+            JoinRuleSummary::Knock => Self::Knock,
+            _ => Self::Invite,
+        }
+    }
+}
+
+impl From<&JoinRuleKind> for JoinRule {
+    fn from(rule: &JoinRuleKind) -> Self {
+        match rule {
+            JoinRuleKind::Public => Self::Public,
+            JoinRuleKind::Restricted | JoinRuleKind::KnockRestricted => Self::SpaceMembers,
+            JoinRuleKind::Knock => Self::Knock,
+            _ => Self::Invite,
+        }
+    }
+}
+
+impl JoinRule {
+    /// As the settings' menu names it: "Invited people", "Ask to join",
+    /// "Space members", "Anyone".
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Invite => "Invited people",
+            Self::Knock => "Ask to join",
+            Self::SpaceMembers => "Space members",
+            Self::Public => "Anyone",
+        }
+    }
+
+    /// As a room's facts say it: "Public: anyone can join", "Private: by
+    /// invitation".
+    pub fn fact(self) -> &'static str {
+        match self {
+            Self::Invite => "Private: by invitation",
+            Self::Knock => "Private: people ask to join",
+            Self::SpaceMembers => "Private: space members can join",
+            Self::Public => "Public: anyone can join",
+        }
+    }
+
+    /// The rules a room's settings offer, in the menu's order, its rule
+    /// `current`: Space members only for a room in a space (`in_space`),
+    /// or already so.
+    pub(crate) fn choices(current: JoinRule, in_space: bool) -> Vec<JoinRule> {
+        [Self::Invite, Self::Knock, Self::SpaceMembers, Self::Public]
+            .into_iter()
+            .filter(|&rule| rule != Self::SpaceMembers || in_space || current == rule)
+            .collect()
+    }
+}
+
+/// Our membership of a room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Membership {
+    Joined,
+    Invited,
+    /// We asked to join, and wait to be let in.
+    Asked,
+}
+
+impl Membership {
+    /// Ours as the store has it; none once left or banned.
+    pub(crate) fn of(state: RoomState) -> Option<Self> {
+        match state {
+            RoomState::Joined => Some(Self::Joined),
+            RoomState::Invited => Some(Self::Invited),
+            RoomState::Knocked => Some(Self::Asked),
+            _ => None,
+        }
+    }
+}
+
+/// What a listed room's button does, as the room lets us in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinAction {
+    /// We are in: open it.
+    Open,
+    Join,
+    AskToJoin,
+    /// An invite, to answer.
+    Invited,
+    /// We asked, and wait: nothing to do.
+    Asked,
+    /// Only invited people may join: nothing to do.
+    InviteOnly,
+}
+
+impl JoinAction {
+    /// For a room `rule` lets in, with our `membership` of it.
+    pub fn new(rule: JoinRule, membership: Option<Membership>) -> Self {
+        match membership {
+            Some(Membership::Joined) => Self::Open,
+            Some(Membership::Invited) => Self::Invited,
+            Some(Membership::Asked) => Self::Asked,
+            None => match rule {
+                JoinRule::Public | JoinRule::SpaceMembers => Self::Join,
+                JoinRule::Knock => Self::AskToJoin,
+                JoinRule::Invite => Self::InviteOnly,
+            },
+        }
+    }
+
+    /// Its button's or note's words: "Join", "Ask to join", "Open",
+    /// "Invited", "Asked", "Invite only".
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::Join => "Join",
+            Self::AskToJoin => "Ask to join",
+            Self::Invited => "Invited",
+            Self::Asked => "Asked",
+            Self::InviteOnly => "Invite only",
+        }
+    }
+}
+
 /// What a frontend needs to show one entry of the room list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RoomSummary {
@@ -54,11 +204,9 @@ pub struct RoomSummary {
     pub avatar: Option<OwnedMxcUri>,
     pub topic: Option<String>,
     pub kind: RoomKind,
-    /// We are invited but have not joined yet.
-    pub invited: bool,
+    pub membership: Membership,
     pub encrypted: bool,
-    /// Anyone may join (else only invited people, or members of a space).
-    pub public: bool,
+    pub join_rule: JoinRule,
     pub unread_messages: u64,
     pub unread_mentions: u64,
     pub unread_notifications: u64,
@@ -85,7 +233,8 @@ impl RoomSummary {
 /// The room list now, see [`Session::room_list`].
 #[derive(Clone, Debug, Default)]
 pub struct RoomListState {
-    /// Joined and invited rooms, most recently active first.
+    /// Joined and invited rooms, and those we asked to join, most recently
+    /// active first.
     pub rooms: Vec<RoomSummary>,
     /// Synced with the server since the list was created, and every room the
     /// server reported is in `rooms`. Before that, `rooms` may be a stale cache.
@@ -155,6 +304,10 @@ async fn run_room_list(
 async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
     let mut rooms = Vec::with_capacity(items.len());
     for room in items.iter() {
+        // Left since the list filtered it.
+        let Some(membership) = Membership::of(room.state()) else {
+            continue;
+        };
         let kind = if room.is_space() {
             RoomKind::Space
         } else if room.is_direct().await.unwrap_or(false) {
@@ -184,12 +337,9 @@ async fn summarize(items: &Vector<RoomListItem>) -> Vec<RoomSummary> {
             avatar,
             topic: room.topic().filter(|t| !t.trim().is_empty()),
             kind,
-            invited: room.state() == RoomState::Invited,
+            membership,
             encrypted: room.encryption_state().is_encrypted(),
-            public: matches!(
-                room.join_rule(),
-                Some(matrix_sdk::ruma::events::room::join_rules::JoinRule::Public)
-            ),
+            join_rule: room.join_rule().as_ref().into(),
             unread_messages: room.num_unread_messages(),
             unread_mentions: room.num_unread_mentions(),
             unread_notifications: room.num_unread_notifications(),
@@ -255,8 +405,8 @@ pub struct NewRoom {
 }
 
 impl Session {
-    /// The joined and invited rooms, kept up to date while held. Sync must
-    /// be running for it to fill.
+    /// The joined and invited rooms, and those we asked to join, kept up to
+    /// date while held. Sync must be running for it to fill.
     pub async fn room_list(&self) -> Result<Live<RoomListState>> {
         let (client, service) = (self.client.clone(), self.sync.room_list_service());
         let spaces = self.spaces.clone();
@@ -490,5 +640,37 @@ impl RoomHandle {
     pub async fn add_child(&self, room: &RoomId) -> Result<()> {
         let content = SpaceChildEventContent::new(self.session.via());
         self.session.set_child(&self.room, room, content).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn space_members_are_offered_in_a_space_or_when_so() {
+        use JoinRule::*;
+        assert_eq!(JoinRule::choices(Invite, false), [Invite, Knock, Public]);
+        let all = [Invite, Knock, SpaceMembers, Public];
+        assert_eq!(JoinRule::choices(Invite, true), all);
+        assert_eq!(JoinRule::choices(SpaceMembers, false), all);
+    }
+
+    /// Our membership first, then what the room lets us do.
+    #[test]
+    fn join_actions() {
+        let action = JoinAction::new;
+        assert_eq!(action(JoinRule::Public, None), JoinAction::Join);
+        assert_eq!(action(JoinRule::SpaceMembers, None), JoinAction::Join);
+        assert_eq!(action(JoinRule::Knock, None), JoinAction::AskToJoin);
+        assert_eq!(action(JoinRule::Invite, None), JoinAction::InviteOnly);
+        let joined = Some(Membership::Joined);
+        assert_eq!(action(JoinRule::Knock, joined), JoinAction::Open);
+        let invited = Some(Membership::Invited);
+        assert_eq!(action(JoinRule::Invite, invited), JoinAction::Invited);
+        let asked = Some(Membership::Asked);
+        assert_eq!(action(JoinRule::Knock, asked), JoinAction::Asked);
+        assert_eq!(JoinAction::AskToJoin.title(), "Ask to join");
+        assert_eq!(JoinRule::Knock.fact(), "Private: people ask to join");
     }
 }

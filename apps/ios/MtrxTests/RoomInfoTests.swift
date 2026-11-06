@@ -30,8 +30,8 @@ final class RoomInfoModelTests: XCTestCase {
 
     func testAFailedChangeIsTakenBackWithWhy() async {
         session.changeError = MtrxError.Other(reason: "Not allowed")
-        await model.setAccess(.public).value
-        XCTAssertEqual(model.settings?.access, .invite)
+        await model.setJoinRule(.public).value
+        XCTAssertEqual(model.settings?.joinRule, .invite)
         XCTAssertEqual(model.error, "Not allowed")
     }
 
@@ -77,10 +77,10 @@ final class RoomInfoModelTests: XCTestCase {
     func testFacts() {
         let room = Make.room("!r", members: 4)
         XCTAssertEqual(
-            RoomFacts.line(room, Make.settings(access: .public)),
+            RoomFacts.line(room, Make.settings(joinRule: .public)),
             "Room · Public: anyone can join · 4 members · encrypted · room version 12")
         XCTAssertEqual(
-            RoomFacts.line(Make.room("!s", kind: .space, members: 1), Make.settings(access: .knock)),
+            RoomFacts.line(Make.room("!s", kind: .space, members: 1), Make.settings(joinRule: .knock)),
             "Space · Private: people ask to join · 1 member · room version 12")
     }
 }

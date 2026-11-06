@@ -71,6 +71,7 @@ import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.SwitchRow
 import uniffi.mtrx.LevelConfirmation
 import uniffi.mtrx.Member
+import uniffi.mtrx.Membership
 import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Topic
 import uniffi.mtrx.levelConfirmation
@@ -138,7 +139,7 @@ fun RoomInfoContent(
             if (settings == null) {
                 item(key = "loading") { Loading() }
             } else {
-                settingsSection(header, settings, members?.count { !it.invited }, spaceNames, ownUserId, actions)
+                settingsSection(header, settings, members?.count { it.membership == Membership.JOINED }, spaceNames, ownUserId, actions)
             }
             membersSection(members, images, actions)
         }
@@ -329,14 +330,13 @@ fun SettingsColumn(
             onChoose = actions::setNotify,
         )
         if (settings.canChangeAccess) {
-            val options = accessOptions(settings.spaces.isNotEmpty(), settings.access)
             ChoiceRow(
                 "Who can join",
-                settings.access,
-                options.map { it.value to it.label },
-                options.firstOrNull { it.value == settings.access }?.explanation,
+                settings.joinRule,
+                settings.joinRuleChoices.map { it.rule to it.title },
+                settings.joinRuleFact,
                 enabled = true,
-                onChoose = actions::setAccess,
+                onChoose = actions::setJoinRule,
             )
         }
         if (settings.canChangeAccess && showsListed(settings)) {
@@ -522,7 +522,7 @@ private fun AddToSpace(spaces: List<String>, spaceNames: Map<String, String>, on
 /** The members: each with their role; tapped, the menu of what we may do to them. */
 fun LazyListScope.membersSection(members: List<Member>?, images: Images, actions: RoomInfoActions) {
     item(key = "members-heading") {
-        SectionHeading(if (members == null) "Members" else "Members · ${members.count { !it.invited }}")
+        SectionHeading(if (members == null) "Members" else "Members · ${members.count { it.membership == Membership.JOINED }}")
     }
     if (members == null) {
         item(key = "members-loading") { Loading() }
@@ -542,7 +542,7 @@ fun MemberRow(member: Member, images: Images, actions: RoomInfoActions) {
     val name = member.user.displayName
     org.mtrx.app.ui.CompactRow(
         title = if (member.own) "$name (you)" else name,
-        subtitle = if (member.invited) "Invited" else member.user.userId,
+        subtitle = if (member.membership == Membership.INVITED) "Invited" else member.user.userId,
         onClick = if (member.manageable) ({ menu = true }) else null,
         leading = { Avatar(name, member.user.avatarUrl, member.user.userId, images, size = 36.dp) },
         trailing = {

@@ -77,9 +77,11 @@ final class NavigationTests: XCTestCase {
         model.open("!new", kind: .space)
         await send(Make.roomsBySpace(joining: ["!new"]), to: model)
         XCTAssertEqual(model.selectedSpace, .space(id: "!new"))
-        XCTAssertTrue(model.joined("!new"))
-        XCTAssertTrue(model.joined("!lab"))
-        XCTAssertFalse(model.joined("!party"))
+        let action = { (id: String) in model.button(for: Make.directoryRoom(id)).action }
+        XCTAssertEqual(action("!new"), .open)
+        XCTAssertEqual(action("!lab"), .open)
+        XCTAssertEqual(action("!party"), .invited)
+        XCTAssertEqual(action("!elsewhere"), .join)
         // Not coming any more, nor listed: gone.
         await send(Make.roomsBySpace(), to: model)
         XCTAssertNil(model.selectedSpace)
@@ -88,7 +90,7 @@ final class NavigationTests: XCTestCase {
     func testAcceptingAnInviteOpensTheRoom() async throws {
         let model = await launch()
         await send(Make.roomsBySpace(), to: model)
-        try await model.accept(Make.room("!party", invited: true))
+        try await model.accept(Make.room("!party", membership: .invited))
         XCTAssertEqual(session.changes, ["join !party"])
         XCTAssertEqual(model.tab, .rooms)
         XCTAssertEqual(model.roomsPath, ["!party"])
@@ -98,7 +100,7 @@ final class NavigationTests: XCTestCase {
         let model = await launch()
         await send(Make.roomsBySpace(), to: model)
         model.open("!party")
-        try await model.decline(Make.room("!party", invited: true))
+        try await model.decline(Make.room("!party", membership: .invited))
         XCTAssertEqual(session.changes, ["leave !party"])
         XCTAssertEqual(model.roomsPath, [])
     }

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mtrx_core::{OwnedRoomId, Profile, RoomSummary};
+use mtrx_core::{Membership, OwnedRoomId, Profile, RoomSummary};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -40,7 +40,7 @@ impl LastView {
     /// still joined, and the space if it still is one.
     pub fn found(&self, rooms: &[RoomSummary]) -> Option<(Option<OwnedRoomId>, OwnedRoomId)> {
         let room = self.room.as_ref()?;
-        rooms.iter().find(|r| &r.id == room && !r.invited)?;
+        (rooms.iter()).find(|r| &r.id == room && r.membership == Membership::Joined)?;
         let space = self
             .space
             .clone()
@@ -73,9 +73,9 @@ mod tests {
             avatar: None,
             topic: None,
             kind: mtrx_core::RoomKind::Room,
-            invited: false,
+            membership: mtrx_core::Membership::Joined,
             encrypted: false,
-            public: false,
+            join_rule: mtrx_core::JoinRule::Invite,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,

@@ -1,7 +1,7 @@
 package org.mtrx.app.rooms
 
-import uniffi.mtrx.Access
 import uniffi.mtrx.History
+import uniffi.mtrx.JoinRule
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.Topic
@@ -17,7 +17,7 @@ interface RoomInfoActions {
 
     fun setNotify(mode: NotifyMode)
 
-    fun setAccess(access: Access)
+    fun setJoinRule(rule: JoinRule)
 
     fun setListed(listed: Boolean)
 

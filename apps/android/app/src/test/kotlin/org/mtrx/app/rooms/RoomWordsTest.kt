@@ -8,9 +8,7 @@ import org.junit.Test
 import org.mtrx.app.FakeSession
 import org.mtrx.app.directoryRoom
 import org.mtrx.app.roomSettings
-import uniffi.mtrx.Access
-import uniffi.mtrx.JoinAccess
-import uniffi.mtrx.Membership
+import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Role
 import uniffi.mtrx.RoomLink
 import uniffi.mtrx.Topic
@@ -47,26 +45,13 @@ class RoomWordsTest {
 
     @Test
     fun settingsWords() {
-        val settings = roomSettings(access = Access.PUBLIC, encrypted = true)
-        assertEquals("Room · Public · 4 members · encrypted · room version 12", factsLine(false, settings, 4))
-        assertEquals("Space · Private · 1 member · room version 12", factsLine(true, roomSettings(), 1))
-        assertEquals(listOf(Access.INVITE, Access.KNOCK, Access.PUBLIC), accessOptions(inSpace = false, Access.INVITE).map { it.value })
-        assertEquals(4, accessOptions(inSpace = true, Access.INVITE).size)
+        val settings = roomSettings(joinRule = JoinRule.PUBLIC, encrypted = true)
+        assertEquals("Room · Public: anyone can join · 4 members · encrypted · room version 12", factsLine(false, settings, 4))
+        assertEquals("Space · Private: by invitation · 1 member · room version 12", factsLine(true, roomSettings(), 1))
         assertTrue(showsListed(settings))
         assertFalse(showsListed(roomSettings(listed = null)))
         assertEquals("ice", addressName("#ice:example.org"))
         assertEquals("example.org", serverOf(FakeSession.USER_ID))
-    }
-
-    @Test
-    fun listedRoomsOfferWhatTheyAllow() {
-        assertEquals(RowAction.JOIN, rowAction(directoryRoom("!a:x")))
-        assertEquals(RowAction.ASK, rowAction(directoryRoom("!a:x", access = JoinAccess.KNOCK)))
-        assertEquals(RowAction.INVITE_ONLY, rowAction(directoryRoom("!a:x", access = JoinAccess.INVITE)))
-        assertEquals(RowAction.JOIN, rowAction(directoryRoom("!a:x", access = JoinAccess.INVITE, membership = Membership.INVITED)))
-        assertEquals(RowAction.ASKED, rowAction(directoryRoom("!a:x", access = JoinAccess.KNOCK, membership = Membership.ASKED)))
-        assertEquals(RowAction.OPEN, rowAction(directoryRoom("!a:x", membership = Membership.JOINED)))
-        assertEquals(RowAction.OPEN, rowAction(directoryRoom("!a:x"), joined = true))
     }
 
     @Test
@@ -82,7 +67,7 @@ class RoomWordsTest {
     @Test
     fun thePillShowsWhileUpdatingAShownListOrAfterNoAnswer() {
         fun pill(rooms: List<uniffi.mtrx.DirectoryRoom>?, updating: Boolean, failed: Boolean) =
-            statusPill(OverviewRooms(rooms, updating, failed, emptySet(), emptySet()))
+            statusPill(OverviewRooms(rooms, updating, failed, emptySet(), { org.mtrx.app.joinButton(it) }))
         val list = listOf(directoryRoom("!a:x"))
         assertEquals(OverviewPill.UPDATING, pill(list, updating = true, failed = false))
         // The first listing shows a spinner instead.

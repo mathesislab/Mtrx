@@ -8,8 +8,9 @@ use iced::{
     widget::{button, column, container, pick_list, row, space, stack, text, text_input, toggler},
 };
 use mtrx_core::{
-    Access, CallService, History, MxcUri, NotifyMode, OwnedRoomId, OwnedUserId, Permissions,
-    RoomHandle, RoomKind, RoomSettings, RoomSummary, RoomTag, SpaceGraph, Topic, User, UserInfo,
+    CallService, History, JoinRule, Membership, MxcUri, NotifyMode, OwnedRoomId, OwnedUserId,
+    Permissions, RoomHandle, RoomKind, RoomLists, RoomSettings, RoomSummary, RoomTag, Topic, User,
+    UserInfo,
 };
 
 use crate::{
@@ -44,9 +45,7 @@ const SHARED_HEIGHT: f32 = 200.0;
 /// room's calls.
 #[derive(Clone, Copy)]
 pub struct Shown<'a> {
-    pub rooms: &'a [RoomSummary],
-    /// The joined spaces and what they list.
-    pub graph: &'a SpaceGraph,
+    pub lists: &'a RoomLists,
     pub avatars: &'a Avatars,
     pub own_user: &'a OwnedUserId,
     pub presences: &'a Presences,
@@ -80,7 +79,7 @@ pub enum Message {
     /// Save the changed name and topic.
     SaveDetails,
     Notify(NotifyMode),
-    Access(Access),
+    JoinRule(JoinRule),
     ChangePicture,
     RemovePicture,
     /// A change was saved on the server, or not.
@@ -246,9 +245,9 @@ impl Card {
                 self.saving = true;
                 self.error = None;
             }
-            Message::Access(access) => {
+            Message::JoinRule(rule) => {
                 if let Some(settings) = &mut self.settings {
-                    settings.access = access;
+                    settings.join_rule = rule;
                 }
                 self.saving = true;
                 self.error = None;
@@ -304,7 +303,7 @@ impl Card {
             status,
         } = match &self.target {
             Target::User(user) => self.user_view(user, shown),
-            Target::Room(id) => match shown.rooms.iter().find(|r| &r.id == id) {
+            Target::Room(id) => match shown.lists.room(id) {
                 Some(room) => self.room_view(room, shown),
                 None => Framed {
                     title: frame::title("Room"),
@@ -341,7 +340,7 @@ impl Card {
                     .then_some(app::Message::Info(Message::SaveDetails)),
             ))
         } else {
-            (room.kind != RoomKind::Space && !room.invited)
+            (room.kind != RoomKind::Space && room.membership == Membership::Joined)
                 .then(|| frame::primary("Open", Some(app::Message::OpenRoom(room.id.clone()))))
         }
     }
@@ -356,7 +355,7 @@ impl Card {
 
     fn user_view<'a>(&'a self, user: &'a User, shown: Shown<'a>) -> Framed<'a> {
         let Shown {
-            rooms,
+            lists,
             avatars,
             own_user,
             presences,
@@ -364,6 +363,7 @@ impl Card {
             pinned_notes,
             ..
         } = shown;
+        let rooms: &'a [RoomSummary] = &lists.rooms;
         let presence = presences.get(&user.id);
         let name = user.display_name();
         // The star favourites the direct chat, made if there is none.
@@ -502,7 +502,8 @@ impl Card {
         };
         // Invite and Leave on every tab; Invite where the people are.
         let mut actions = Vec::new();
-        if !room.invited {
+        let joined = room.membership == Membership::Joined;
+        if joined {
             if settings.is_some_and(|s| s.can_invite) {
                 let invite = match &self.overview {
                     Some(_) => app::Message::Info(Message::Overview(overview::Message::Tab(
@@ -551,7 +552,7 @@ impl Card {
                 room,
                 shown,
                 settings.is_some_and(|s| s.can_add_rooms),
-                settings.is_some_and(|s| s.can_invite) && !room.invited,
+                settings.is_some_and(|s| s.can_invite) && joined,
                 body,
             ),
         }
@@ -565,7 +566,7 @@ impl Card {
         room: &'a RoomSummary,
         shown: Shown<'a>,
     ) -> Element<'a, app::Message> {
-        let rooms = shown.rooms;
+        let rooms: &'a [RoomSummary] = &shown.lists.rooms;
         let settings = self.settings.as_ref();
         let change = |change| app::Message::Info(Message::Change(change));
         let enabled = |can: bool| can && !self.saving;
@@ -610,26 +611,14 @@ impl Card {
         };
         let direct = room.kind == RoomKind::Direct;
         if settings.can_change_access && !direct {
-            // Space members only for a room in a space.
-            let choices: Vec<Join> = [
-                Access::Invite,
-                Access::Knock,
-                Access::SpaceMembers,
-                Access::Public,
-            ]
-            .into_iter()
-            .filter(|&access| {
-                access != Access::SpaceMembers
-                    || !shown.graph.parents(&room.id).is_empty()
-                    || settings.access == access
-            })
-            .map(Join)
-            .collect();
+            let choices: Vec<Join> = (settings.join_rule_choices.iter().copied())
+                .map(Join)
+                .collect();
             card = card.push(settings::option(
                 "Who can join",
-                access_description(settings.access, &parent_names(room, shown.graph, rooms)),
-                pick_list(choices, Some(Join(settings.access)), |Join(access)| {
-                    app::Message::Info(Message::Access(access))
+                settings.join_rule.fact(),
+                pick_list(choices, Some(Join(settings.join_rule)), |Join(rule)| {
+                    app::Message::Info(Message::JoinRule(rule))
                 })
                 .text_size(13)
                 .padding(6)
@@ -639,7 +628,7 @@ impl Card {
         // Listing a room only others may join would only tease.
         if let Some(listed) = settings.listed
             && settings.can_change_access
-            && (settings.access == Access::Public || listed)
+            && (settings.join_rule == JoinRule::Public || listed)
         {
             card = card.push(settings::option(
                 "Listed in the directory",
@@ -1143,15 +1132,7 @@ fn facts(room: &RoomSummary, settings: &RoomSettings) -> String {
         .to_owned(),
     ];
     if room.kind != RoomKind::Direct {
-        facts.push(
-            match settings.access {
-                Access::Public => "Public: anyone can join",
-                Access::SpaceMembers => "Private: space members can join",
-                Access::Knock => "Private: people ask to join",
-                Access::Invite => "Private: by invitation",
-            }
-            .to_owned(),
-        );
+        facts.push(settings.join_rule.fact().to_owned());
     }
     facts.push(match room.joined_members {
         1 => "1 member".to_owned(),
@@ -1196,30 +1177,6 @@ fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Mes
         line.into()
     });
     labelled("Banned", column(rows).spacing(6))
-}
-
-/// The names of the joined spaces that list `room`.
-fn parent_names<'a>(
-    room: &RoomSummary,
-    graph: &SpaceGraph,
-    rooms: &'a [RoomSummary],
-) -> Vec<&'a str> {
-    (graph.parents(&room.id).iter())
-        .filter_map(|p| rooms.iter().find(|r| &r.id == p))
-        .map(|r| r.name.as_str())
-        .collect()
-}
-
-fn access_description(access: Access, spaces: &[&str]) -> String {
-    match access {
-        Access::Invite => "Only people invited can join.".into(),
-        Access::SpaceMembers if spaces.is_empty() => {
-            "Members of the room's spaces can find and join it.".into()
-        }
-        Access::SpaceMembers => format!("Members of {} can find and join it.", spaces.join(", ")),
-        Access::Public => "Anyone can find and join it.".into(),
-        Access::Knock => "Anyone can ask to join; members let them in.".into(),
-    }
 }
 
 /// A room's notifications, as its menu names them.
@@ -1287,16 +1244,11 @@ impl fmt::Display for Editing {
 
 /// Who can join a room, as its menu names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Join(Access);
+struct Join(JoinRule);
 
 impl fmt::Display for Join {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            Access::Invite => "Invited people",
-            Access::SpaceMembers => "Space members",
-            Access::Knock => "Ask to join",
-            Access::Public => "Anyone",
-        })
+        f.write_str(self.0.title())
     }
 }
 

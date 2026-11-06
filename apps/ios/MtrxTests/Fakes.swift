@@ -489,9 +489,9 @@ final class FakeRoom: Room, @unchecked Sendable {
         session.settings.notify = mode
     }
 
-    override func setJoinRule(rule: Access) async throws {
-        try session.change("access \(rule)")
-        session.settings.access = rule
+    override func setJoinRule(rule: JoinRule) async throws {
+        try session.change("join rule \(rule)")
+        session.settings.joinRule = rule
     }
 
     override func setName(name: String) async throws { try session.change("name \(name)") }
@@ -675,26 +675,52 @@ enum Make {
     }
 
     static func room(
-        _ id: String, kind: RoomKind = .room, invited: Bool = false, name: String? = nil, unread: UInt64 = 0,
+        _ id: String, kind: RoomKind = .room, membership: Membership = .joined, name: String? = nil, unread: UInt64 = 0,
         directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil, topic: String? = nil,
         pinned: [String] = [], alias: String? = nil, members: UInt64 = 2,
         mentions: UInt64 = 0
     ) -> RoomSummary {
         RoomSummary(
-            id: id, name: name ?? id, avatarUrl: avatarUrl, topic: topic, kind: kind, invited: invited,
+            id: id, name: name ?? id, avatarUrl: avatarUrl, topic: topic, kind: kind, membership: membership,
             encrypted: false, unreadMessages: unread, unreadMentions: mentions, unreadNotifications: 0,
             lastActivity: lastActivity, directUser: directUser.map { user(id: $0) }, alias: alias,
-            joinedMembers: members, public: false, pinned: pinned)
+            joinedMembers: members, joinRule: .invite, joinRuleFact: fact(.invite), pinned: pinned)
     }
 
-    /// A room's settings, all ours to change unless said otherwise.
+    /// A join rule's title in the settings' menu, as the library words it.
+    static func title(_ rule: JoinRule) -> String {
+        switch rule {
+        case .invite: return "Invited people"
+        case .knock: return "Ask to join"
+        case .spaceMembers: return "Space members"
+        case .public: return "Anyone"
+        }
+    }
+
+    /// A join rule as a room's facts say it, as the library words it.
+    static func fact(_ rule: JoinRule) -> String {
+        switch rule {
+        case .invite: return "Private: by invitation"
+        case .knock: return "Private: people ask to join"
+        case .spaceMembers: return "Private: space members can join"
+        case .public: return "Public: anyone can join"
+        }
+    }
+
+    /// A room's settings, all ours to change unless said otherwise; Space
+    /// members offered as the library offers it.
     static func settings(
-        canChange: Bool = true, access: Access = .invite, encrypted: Bool = true, listed: Bool? = false,
-        spaces: [SpaceLink] = [], canAddTo: [String] = [], banned: [Banned] = [], address: String? = nil
+        canChange: Bool = true, joinRule: JoinRule = .invite, inSpace: Bool = false, encrypted: Bool = true,
+        listed: Bool? = false, spaces: [SpaceLink] = [], canAddTo: [String] = [], banned: [Banned] = [], address: String? = nil
     ) -> RoomSettings {
-        RoomSettings(
+        let choices = [JoinRule.invite, .knock, .spaceMembers, .public]
+            .filter { $0 != .spaceMembers || inSpace || joinRule == .spaceMembers }
+            .map { JoinRuleChoice(rule: $0, title: title($0), fact: fact($0)) }
+        return RoomSettings(
             canRename: canChange, canChangeTopic: canChange, canChangePicture: canChange, canInvite: canChange,
-            notify: .all, access: access, canChangeAccess: canChange, canAddRooms: canChange, address: address,
+            notify: .all, joinRule: joinRule, joinRuleFact: fact(joinRule), joinRuleChoices: choices,
+            canChangeAccess: canChange,
+            canAddRooms: canChange, address: address,
             canChangeAddress: canChange, listed: listed, history: .joined, canChangeHistory: canChange,
             permissions: .everyone, canChangePermissions: canChange, encrypted: encrypted, canEncrypt: canChange,
             version: "12", spaces: spaces, canAddTo: canAddTo, banned: banned, canUnban: canChange)
@@ -705,7 +731,7 @@ enum Make {
     /// level choices as the library gives them, without what it asks.
     static func member(
         _ name: String, level: Int64?, upTo: Int64? = nil, remove: Bool = false, ban: Bool = false,
-        invited: Bool = false, named: Bool = true
+        membership: Membership = .joined, named: Bool = true
     ) -> Member {
         let labels: [Int64: String] = [100: "Admin", 50: "Mod", 0: ""]
         let label = level.map { labels[$0] ?? "Level \($0)" } ?? "Owner"
@@ -717,20 +743,20 @@ enum Make {
         return Member(
             user: user(name, named: named),
             role: level == 100 || level == nil ? .admin : level == 50 ? .moderator : .member, level: level,
-            invited: invited, own: name == "me",
+            membership: membership, own: name == "me",
             manage: Manage(remove: remove, ban: ban, upTo: upTo, defaultLevel: 0, alone: false),
             label: label.isEmpty ? nil : label, choices: choices ?? [],
             manageable: upTo != nil || remove || ban)
     }
 
     static func directoryRoom(
-        _ id: String, name: String? = nil, access: JoinAccess = .public, membership: Membership? = nil,
+        _ id: String, name: String? = nil, joinRule: JoinRule = .public, membership: Membership? = nil,
         space: Bool = false, members: UInt64 = 5, topic: String? = nil, role: Role? = nil, children: UInt64 = 0
     ) -> DirectoryRoom {
         DirectoryRoom(
             id: id, alias: nil, name: name ?? id, topic: topic, avatarUrl: nil, members: members, isSpace: space,
-            children: children, access: access, membership: membership, role: role, via: ["example.org"],
-            suggested: false)
+            children: children, joinRule: joinRule, joinRuleFact: fact(joinRule), membership: membership, role: role,
+            via: ["example.org"], suggested: false)
     }
 
     /// The library's lists of `rooms` (most recently active first), with
@@ -754,9 +780,9 @@ enum Make {
     /// (unread); invites to Offer, in Team, and from Carol, in no space, to a
     /// direct chat and Party. Loose is unread.
     static let roomsBySpaceRooms = [
-        room("!carol", kind: .direct, invited: true, name: "Carol", directUser: "@carol:example.org"),
-        room("!party", invited: true, name: "Party"),
-        room("!offer", invited: true, name: "Offer"),
+        room("!carol", kind: .direct, membership: .invited, name: "Carol", directUser: "@carol:example.org"),
+        room("!party", membership: .invited, name: "Party"),
+        room("!offer", membership: .invited, name: "Offer"),
         room("!bob", kind: .direct, name: "Bob", unread: 2, directUser: "@bob:example.org"),
         room("!loose", name: "Loose", unread: 1),
         room("!deep", name: "Deep"),

@@ -77,8 +77,8 @@ final class RoomInfoModel: ObservableObject {
     }
 
     @discardableResult
-    func setAccess(_ access: Access) -> Task<Void, Never> {
-        change { $0.access = access } call: { try await $0.setJoinRule(rule: access) }
+    func setJoinRule(_ rule: JoinRule) -> Task<Void, Never> {
+        change { $0.joinRule = rule } call: { try await $0.setJoinRule(rule: rule) }
     }
 
     @discardableResult

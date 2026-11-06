@@ -19,8 +19,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Access, Activity, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent,
-    History, JoinAccess, Membership, MembershipChange, MessageAction, NewRoom, NotifyMode,
+    Activity, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent, History,
+    JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom, NotifyMode,
     Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Role, RoomKind, SecretStore,
     Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
@@ -181,7 +181,9 @@ async fn encrypted_messages_between_users() -> Result<()> {
 
     let bob_list = bob.session.room_list().await?;
     wait_for("bob invited", bob_list.updates(), |s| {
-        s.rooms.iter().any(|r| r.id == room && r.invited)
+        s.rooms
+            .iter()
+            .any(|r| r.id == room && r.membership == Membership::Invited)
     })
     .await?;
     bob.session
@@ -266,7 +268,9 @@ async fn avatars_in_room_list_and_timeline() -> Result<()> {
         .await?;
     let bob_list = bob.session.room_list().await?;
     wait_for("bob invited", bob_list.updates(), |s| {
-        s.rooms.iter().any(|r| r.id == room && r.invited)
+        s.rooms
+            .iter()
+            .any(|r| r.id == room && r.membership == Membership::Invited)
     })
     .await?;
     bob.session
@@ -633,7 +637,7 @@ async fn space_call_services() -> Result<()> {
     wait_for("bob joined", bob_list.updates(), |s| {
         s.rooms
             .iter()
-            .any(|r| r.id == room && !r.invited && r.name == "meetings")
+            .any(|r| r.id == room && r.membership == Membership::Joined && r.name == "meetings")
     })
     .await?;
     // Power levels arrive with the joined room's state, after the join.
@@ -664,7 +668,7 @@ async fn join_synced(user: &Device, room: &mtrx_core::OwnedRoomId, name: &str) -
     wait_for("joined", list.updates(), |s| {
         s.rooms
             .iter()
-            .any(|r| &r.id == room && !r.invited && r.name == name)
+            .any(|r| &r.id == room && r.membership == Membership::Joined && r.name == name)
     })
     .await?;
     let joined = user.session.room(room)?;
@@ -835,7 +839,7 @@ async fn co_owners() -> Result<()> {
     let members = timeout("bob joined", async {
         loop {
             let members = s.room(&room)?.members().await?;
-            if members.iter().any(|m| m.user.id == bob_id && !m.invited) {
+            if (members.iter()).any(|m| m.user.id == bob_id && m.membership == Membership::Joined) {
                 return anyhow::Ok(members);
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -948,7 +952,7 @@ async fn browse_and_join_space_rooms() -> Result<()> {
         state.rooms.iter().any(|r| r.id == open) && state.graph.parents(&open).contains(&space)
     })
     .await?;
-    s.room(&open)?.set_join_rule(Access::SpaceMembers).await?;
+    s.room(&open)?.set_join_rule(JoinRule::SpaceMembers).await?;
     let asking = s
         .create_room(NewRoom {
             name: Some("thesis".into()),
@@ -956,7 +960,7 @@ async fn browse_and_join_space_rooms() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    s.room(&asking)?.set_join_rule(Access::Knock).await?;
+    s.room(&asking)?.set_join_rule(JoinRule::Knock).await?;
     s.room(&space)?.invite(&bob.session.user_id()).await?;
     join_synced(&bob, &space, "Institute").await?;
 
@@ -966,15 +970,30 @@ async fn browse_and_join_space_rooms() -> Result<()> {
         .iter()
         .find(|r| r.id == open)
         .context("coffee listed")?;
-    assert_eq!(coffee.access, JoinAccess::SpaceMembers);
+    assert_eq!(coffee.join_rule, JoinRule::SpaceMembers);
+    assert_eq!(coffee.action(None), JoinAction::Join);
     assert_eq!(coffee.membership, None);
     assert_eq!(coffee.role, None);
     let thesis = children
         .iter()
         .find(|r| r.id == asking)
         .context("thesis listed")?;
-    assert_eq!(thesis.access, JoinAccess::Knock);
+    assert_eq!(thesis.join_rule, JoinRule::Knock);
+    let bob_list = b.room_list().await?;
+    let bob_lists = b.room_lists(&bob_list);
     b.knock(&asking.clone().into(), thesis.via.clone()).await?;
+    // Asked at once. The room list lists rooms asked to join too: as asked,
+    // in none of the lists.
+    let asked =
+        |lists: &Arc<mtrx_core::RoomLists>| lists.membership(&asking) == Some(Membership::Asked);
+    let lists = timeout("asked", bob_lists.wait_for(asked)).await?;
+    assert_eq!(thesis.action(lists.membership(&asking)), JoinAction::Asked);
+    wait_for("listed as asked", bob_list.updates(), |state| {
+        (state.rooms.iter()).any(|r| r.id == asking && r.membership == Membership::Asked)
+    })
+    .await?;
+    let lists = bob_lists.get();
+    assert!(asked(&lists) && lists.room(&asking).is_none());
     assert!(!coffee.via.is_empty());
     let preview = b.preview(&open.clone().into(), coffee.via.clone()).await?;
     assert_eq!(preview.name, "coffee");
@@ -1008,7 +1027,7 @@ async fn browse_and_join_space_rooms() -> Result<()> {
             let members = s.room(&open)?.members().await?;
             if let Some(bob) = members
                 .into_iter()
-                .find(|m| m.user.id == bob_id && !m.invited)
+                .find(|m| m.user.id == bob_id && m.membership == Membership::Joined)
             {
                 return anyhow::Ok(bob);
             }
@@ -1276,11 +1295,12 @@ async fn members_and_notifications() -> Result<()> {
         members
             .iter()
             .find(|m| m.user.id == user.session.user_id())
-            .map(|m| (m.role, m.invited))
+            .map(|m| (m.role, m.membership))
     };
-    assert_eq!(role(&alice), Some((mtrx_core::Role::Admin, false)));
-    assert_eq!(role(&bob), Some((mtrx_core::Role::Member, false)));
-    assert_eq!(role(&carol), Some((mtrx_core::Role::Member, true)));
+    let (joined, invited) = (Membership::Joined, Membership::Invited);
+    assert_eq!(role(&alice), Some((mtrx_core::Role::Admin, joined)));
+    assert_eq!(role(&bob), Some((mtrx_core::Role::Member, joined)));
+    assert_eq!(role(&carol), Some((mtrx_core::Role::Member, invited)));
     assert_eq!(
         members.last().map(|m| m.user.id.clone()),
         Some(carol.session.user_id())
@@ -1503,9 +1523,9 @@ async fn notifications_for_rooms_never_opened() -> Result<()> {
     }
     let bob_list = bob.session.room_list().await?;
     wait_for("bob in all rooms", bob_list.updates(), |s| {
-        others
-            .iter()
-            .all(|room| s.rooms.iter().any(|r| &r.id == room && !r.invited))
+        others.iter().all(|room| {
+            (s.rooms.iter()).any(|r| &r.id == room && r.membership == Membership::Joined)
+        })
     })
     .await?;
 
@@ -1965,12 +1985,20 @@ async fn room_settings() -> Result<()> {
         assert_eq!(s.room(&room)?.settings().await?.notify, mode);
     }
 
-    // Who can join: anyone, the space's members, invited people.
+    // Who can join: anyone, the space's members, invited people. Space
+    // members only for a room in a space.
     assert!(settings.can_change_access);
-    assert_eq!(settings.access, Access::Invite);
-    s.room(&room)?.set_join_rule(Access::Public).await?;
+    assert_eq!(settings.join_rule, JoinRule::Invite);
+    assert_eq!(
+        settings.join_rule_choices,
+        [JoinRule::Invite, JoinRule::Knock, JoinRule::Public]
+    );
+    s.room(&room)?.set_join_rule(JoinRule::Public).await?;
+    let has_rule = |state: &mtrx_core::RoomListState, rule| {
+        (state.rooms.iter()).any(|r| r.id == room && r.join_rule == rule)
+    };
     wait_for("public", list.updates(), |state| {
-        state.rooms.iter().any(|r| r.id == room && r.public)
+        has_rule(state, JoinRule::Public)
     })
     .await?;
     let space = s
@@ -1985,25 +2013,19 @@ async fn room_settings() -> Result<()> {
         state.rooms.iter().any(|r| r.id == room) && state.graph.parents(&room).contains(&space)
     })
     .await?;
-    s.room(&room)?.set_join_rule(Access::SpaceMembers).await?;
+    s.room(&room)?.set_join_rule(JoinRule::SpaceMembers).await?;
     wait_for("space members", list.updates(), |state| {
-        state.rooms.iter().any(|r| r.id == room && !r.public)
+        has_rule(state, JoinRule::SpaceMembers)
     })
     .await?;
-    assert_eq!(
-        s.room(&room)?.settings().await?.access,
-        Access::SpaceMembers
-    );
-    s.room(&room)?.set_join_rule(Access::Invite).await?;
-    // Not told apart in the room list: check after each update.
-    let mut updates = std::pin::pin!(list.updates());
-    timeout("invite only", async {
-        while s.room(&room)?.settings().await?.access != Access::Invite {
-            updates.next().await;
-        }
-        Ok::<_, anyhow::Error>(())
+    let settings = s.room(&room)?.settings().await?;
+    assert_eq!(settings.join_rule, JoinRule::SpaceMembers);
+    assert_eq!(settings.join_rule_choices.len(), 4);
+    s.room(&room)?.set_join_rule(JoinRule::Invite).await?;
+    wait_for("invite only", list.updates(), |state| {
+        has_rule(state, JoinRule::Invite)
     })
-    .await??;
+    .await?;
     Ok(())
 }
 
@@ -2192,12 +2214,12 @@ async fn someone_elses_public_room_is_public() -> Result<()> {
         .await?;
     bob.session
         .room(&room)?
-        .set_join_rule(Access::Public)
+        .set_join_rule(JoinRule::Public)
         .await?;
     let public = async |what: &str, device: &Device| -> Result<()> {
         let list = device.session.room_list().await?;
         wait_for(what, list.updates(), |state| {
-            state.rooms.iter().any(|r| r.id == room && r.public)
+            (state.rooms.iter()).any(|r| r.id == room && r.join_rule == JoinRule::Public)
         })
         .await?;
         Ok(())

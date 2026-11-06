@@ -129,10 +129,11 @@ private final class UITestSession: Session, @unchecked Sendable {
         _ id: String, _ name: String, kind: RoomKind = .room, unread: UInt64 = 0, ago: TimeInterval = 0
     ) -> RoomSummary {
         RoomSummary(
-            id: id, name: name, avatarUrl: nil, topic: nil, kind: kind, invited: false, encrypted: false,
+            id: id, name: name, avatarUrl: nil, topic: nil, kind: kind, membership: .joined, encrypted: false,
             unreadMessages: unread, unreadMentions: 0, unreadNotifications: 0,
             lastActivity: Date().addingTimeInterval(-ago), directUser: kind == .direct ? annUser : nil,
-            alias: nil, joinedMembers: 3, public: false, pinned: [])
+            alias: nil, joinedMembers: 3, joinRule: .invite,
+            joinRuleFact: "Private: by invitation", pinned: [])
     }
 
     /// Room `id`'s timeline, the same each time.

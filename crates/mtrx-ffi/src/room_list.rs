@@ -10,7 +10,7 @@ use std::{
 use mtrx_core::{self as core, OwnedRoomId};
 
 use crate::{
-    MtrxError, RoomKind, RoomSummary, Session, TaskHandle,
+    DirectoryRoom, JoinButton, Membership, MtrxError, RoomKind, RoomSummary, Session, TaskHandle,
     runtime::{follow, run},
 };
 
@@ -170,6 +170,7 @@ impl RoomLists {
     /// by space ID, in order) and the members of the spaces by space ID,
     /// for their direct chats; the rooms tagged `favourites` and
     /// `low_priority` by ID, the `categories`, and the rooms `joining`.
+    /// Rooms whose membership is `Asked` are asked to join, not listed.
     #[uniffi::constructor]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -280,6 +281,20 @@ impl RoomLists {
     pub fn room(&self, room_id: String) -> Option<RoomSummary> {
         let id = OwnedRoomId::try_from(room_id).ok()?;
         self.inner.room(&id).map(RoomSummary::from)
+    }
+
+    /// Our membership of a room to show: joined once joining here, else as
+    /// listed, else asked if we asked to join; none if none of these.
+    pub fn membership(&self, room_id: String) -> Option<Membership> {
+        let id = OwnedRoomId::try_from(room_id).ok()?;
+        self.inner.membership(&id).map(Membership::from)
+    }
+
+    /// A listed room's button, with our `membership` of it as shown.
+    pub fn join_button(&self, room: DirectoryRoom) -> JoinButton {
+        let id = OwnedRoomId::try_from(room.id).ok();
+        let membership = id.and_then(|id| self.inner.membership(&id));
+        core::JoinAction::new(room.join_rule.into(), membership).into()
     }
 
     /// Synced with the server since the list was created. Before that,
@@ -558,9 +573,9 @@ impl TryFrom<&RoomSummary> for core::RoomSummary {
                 RoomKind::Space => core::RoomKind::Space,
                 RoomKind::Direct => core::RoomKind::Direct,
             },
-            invited: room.invited,
+            membership: room.membership.into(),
             encrypted: room.encrypted,
-            public: room.public,
+            join_rule: room.join_rule.into(),
             unread_messages: room.unread_messages,
             unread_mentions: room.unread_mentions,
             unread_notifications: room.unread_notifications,
@@ -598,6 +613,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::JoinAction;
 
     fn summary(id: &str, kind: RoomKind, name: &str) -> RoomSummary {
         RoomSummary {
@@ -606,7 +622,7 @@ mod tests {
             avatar_url: None,
             topic: None,
             kind,
-            invited: false,
+            membership: Membership::Joined,
             encrypted: false,
             unread_messages: 0,
             unread_mentions: 0,
@@ -615,7 +631,8 @@ mod tests {
             direct_user: None,
             alias: None,
             joined_members: 0,
-            public: false,
+            join_rule: crate::JoinRule::Invite,
+            join_rule_fact: String::new(),
             pinned: Vec::new(),
         }
     }
@@ -654,5 +671,63 @@ mod tests {
             .map(|entry| (entry.depth, entry.room.name))
             .collect();
         assert_eq!(tree, [(0, "Sub".to_owned()), (1, "Deep".to_owned())]);
+    }
+
+    /// A room asked to join is not listed; one joining shows as joined.
+    #[test]
+    fn memberships_as_shown() {
+        let asked = RoomSummary {
+            membership: Membership::Asked,
+            ..summary("!door:x", RoomKind::Room, "Door")
+        };
+        let lists = RoomLists::new(
+            vec![summary("!lab:x", RoomKind::Room, "Lab"), asked],
+            true,
+            "@me:x".into(),
+            true,
+            HashMap::new(),
+            HashMap::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec!["!new:x".into()],
+        )
+        .unwrap();
+        assert_eq!(lists.rooms().len(), 1);
+        assert_eq!(lists.room("!door:x".into()), None);
+        let membership = |id: &str| lists.membership(id.into());
+        assert_eq!(membership("!lab:x"), Some(Membership::Joined));
+        assert_eq!(membership("!door:x"), Some(Membership::Asked));
+        assert_eq!(membership("!new:x"), Some(Membership::Joined));
+        assert_eq!(membership("!other:x"), None);
+
+        // Buttons with their words, as the membership shown has it.
+        let listed = |id: &str| DirectoryRoom {
+            id: id.into(),
+            alias: None,
+            name: id.into(),
+            topic: None,
+            avatar_url: None,
+            members: 1,
+            is_space: false,
+            children: 0,
+            join_rule: crate::JoinRule::Knock,
+            join_rule_fact: String::new(),
+            membership: None,
+            role: None,
+            via: Vec::new(),
+            suggested: false,
+        };
+        let button = |id: &str| {
+            let button = lists.join_button(listed(id));
+            (button.action, button.title)
+        };
+        assert_eq!(button("!door:x"), (JoinAction::Asked, "Asked".into()));
+        assert_eq!(button("!lab:x"), (JoinAction::Open, "Open".into()));
+        assert_eq!(
+            button("!other:x"),
+            (JoinAction::AskToJoin, "Ask to join".into())
+        );
     }
 }

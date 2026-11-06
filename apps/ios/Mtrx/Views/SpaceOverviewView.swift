@@ -209,10 +209,8 @@ private struct SpaceRoomsSection: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(model.shown, id: \.id) { room in
-                let joined = session.joined(room.id)
                 DirectoryRoomRow(
-                    room: model.shown(room, joined: joined), action: model.action(room, joined: joined),
-                    linksSubspaces: true
+                    room: room, button: session.button(for: room), busy: model.isBusy(room), linksSubspaces: true
                 ) {
                     act(on: room)
                 }
@@ -223,7 +221,8 @@ private struct SpaceRoomsSection: View {
     }
 
     private func act(on room: DirectoryRoom) {
-        switch model.action(room, joined: session.joined(room.id)) {
+        guard !model.isBusy(room) else { return }
+        switch session.button(for: room).action {
         case .join, .askToJoin:
             Task { await model.join(room) }
         case .open:
@@ -231,7 +230,7 @@ private struct SpaceRoomsSection: View {
         case .invited:
             close()
             session.invite = RoomRef(id: room.id)
-        case .asked, .inviteOnly, .busy:
+        case .asked, .inviteOnly:
             break
         }
     }
@@ -250,7 +249,9 @@ private struct SpaceRoomsSection: View {
 /// name, details and our role, and what we may do.
 struct DirectoryRoomRow: View {
     let room: DirectoryRoom
-    let action: DirectoryRows.Action
+    let button: JoinButton
+    /// Joining or asking to join, on its way.
+    let busy: Bool
     /// A joined subspace not in the Spaces tab links to its overview (in an
     /// overview's navigation stack).
     var linksSubspaces = false
@@ -281,13 +282,13 @@ struct DirectoryRoomRow: View {
                 }
                 Spacer(minLength: 8)
             }
-            button
+            trailing
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            if action == .open { act() }
+            if button.action == .open && !busy { act() }
         }
-        .modifier(OpensSubspace(room: room, action: action, enabled: linksSubspaces))
+        .modifier(OpensSubspace(room: room, action: button.action, enabled: linksSubspaces))
     }
 
     @ViewBuilder
@@ -295,56 +296,50 @@ struct DirectoryRoomRow: View {
         if room.avatarUrl != nil {
             AvatarView(name: room.name, uri: room.avatarUrl, size: avatarSize, shape: room.isSpace ? .square : .circle)
         } else {
-            Image(systemName: Self.symbol(room.access))
+            Image(systemName: Self.symbol(room.joinRule))
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .frame(width: avatarSize, height: avatarSize)
                 .background(
                     Color.secondary.opacity(0.12),
                     in: RoundedRectangle(cornerRadius: avatarSize * (room.isSpace ? 0.25 : 0.5)))
-                .accessibilityLabel(Self.accessLabel(room.access))
+                .accessibilityLabel(room.joinRuleFact)
         }
     }
 
     @ViewBuilder
-    private var button: some View {
-        if action.pressable {
+    private var trailing: some View {
+        let action = button.action
+        if busy {
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.small)
+                Text(room.joinRule == .knock ? "Asking…" : "Joining…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if action.pressable {
             if action.primary {
-                Button(action.title, action: act)
+                Button(button.title, action: act)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
             } else {
-                Button(action.title, action: act)
+                Button(button.title, action: act)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
         } else {
-            HStack(spacing: 4) {
-                if case .busy = action {
-                    ProgressView().controlSize(.small)
-                }
-                Text(action.title)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(button.title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
-    static func symbol(_ access: JoinAccess) -> String {
-        switch access {
+    static func symbol(_ rule: JoinRule) -> String {
+        switch rule {
         case .public: return "number"
         case .spaceMembers: return "person.2"
         case .knock: return "door.left.hand.open"
         case .invite: return "lock"
-        }
-    }
-
-    static func accessLabel(_ access: JoinAccess) -> String {
-        switch access {
-        case .public: return "Anyone can join"
-        case .spaceMembers: return "Space members can join"
-        case .knock: return "Ask to join"
-        case .invite: return "Invited people only"
         }
     }
 }
@@ -353,7 +348,7 @@ struct DirectoryRoomRow: View {
 /// the overview's navigation stack.
 private struct OpensSubspace: ViewModifier {
     let room: DirectoryRoom
-    let action: DirectoryRows.Action
+    let action: JoinAction
     let enabled: Bool
     @EnvironmentObject private var session: SessionModel
 

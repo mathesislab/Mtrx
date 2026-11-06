@@ -1,7 +1,7 @@
 package org.mtrx.app.rooms
 
-import uniffi.mtrx.Access
 import uniffi.mtrx.History
+import uniffi.mtrx.JoinRule
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.RoomSettings
@@ -15,15 +15,6 @@ val NOTIFY_OPTIONS = listOf(
     Option(NotifyMode.ALL, "All messages", "Every message notifies you."),
     Option(NotifyMode.MENTIONS, "Mentions", "Only mentions of you and your keywords notify you."),
     Option(NotifyMode.MUTE, "Mute", "Nothing here notifies you."),
-)
-
-/** Who can join; Space members only for a room in a space (or already so). */
-fun accessOptions(inSpace: Boolean, current: Access): List<Option<Access>> = listOfNotNull(
-    Option(Access.INVITE, "Invited people", "Only people invited can join."),
-    Option(Access.KNOCK, "Ask to join", "Anyone can ask to join; members let them in."),
-    Option(Access.SPACE_MEMBERS, "Space members", "Members of the room's spaces can find and join it.")
-        .takeIf { inSpace || current == Access.SPACE_MEMBERS },
-    Option(Access.PUBLIC, "Anyone", "Anyone can find and join it."),
 )
 
 val HISTORY_OPTIONS = listOf(
@@ -41,17 +32,17 @@ val PERMISSION_OPTIONS = listOf(
 /** The label of [value] among [options]. */
 fun <T> labelOf(options: List<Option<T>>, value: T): String = options.firstOrNull { it.value == value }?.label.orEmpty()
 
-/** "Room · Public · 4 members · encrypted · room version 12". */
+/** "Room · Public: anyone can join · 4 members · encrypted · room version 12". */
 fun factsLine(space: Boolean, settings: RoomSettings, members: Int?): String = listOfNotNull(
     if (space) "Space" else "Room",
-    if (settings.access == Access.PUBLIC) "Public" else "Private",
+    settings.joinRuleFact,
     members?.let { if (it == 1) "1 member" else "$it members" },
     "encrypted".takeIf { settings.encrypted },
     settings.version?.let { "room version $it" },
 ).joinToString(" · ")
 
 /** Listed in the directory shows only for a public or listed room. */
-fun showsListed(settings: RoomSettings): Boolean = settings.access == Access.PUBLIC || settings.listed == true
+fun showsListed(settings: RoomSettings): Boolean = settings.joinRule == JoinRule.PUBLIC || settings.listed == true
 
 /** The server of a user ID or room ID, after its first colon. */
 fun serverOf(id: String): String = id.substringAfter(':', "")

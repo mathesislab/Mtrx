@@ -163,7 +163,7 @@ open class ScreensTest {
     fun spaceOverview() = snap("space-overview") {
         SpaceOverviewContent(
             teamHeader,
-            OverviewRooms(teamChildren, updating = true, failed = false, pending = emptySet(), joined = setOf(ICE)),
+            OverviewRooms(teamChildren, updating = true, failed = false, pending = emptySet(), buttonOf = { org.mtrx.app.joinButton(it) }),
             iceSettings,
             iceMembers,
             busy = null,
@@ -186,7 +186,7 @@ open class ScreensTest {
             org.mtrx.app.directoryRoom("!last:example.org", "Last room", members = 2, topic = "The list's last row")
         SpaceOverviewContent(
             teamHeader,
-            OverviewRooms(long, updating = updating, failed = failed, pending = emptySet(), joined = setOf(ICE)),
+            OverviewRooms(long, updating = updating, failed = failed, pending = emptySet(), buttonOf = { org.mtrx.app.joinButton(it) }),
             iceSettings,
             iceMembers,
             busy = null,
@@ -224,12 +224,12 @@ open class ScreensTest {
                         org.mtrx.app.directoryRoom("!glacio:example.org", "Glaciology", members = 240, topic = "Everything about glaciers"),
                         org.mtrx.app.directoryRoom("!ice:example.org", "Ice sheets", membership = Membership.JOINED, members = 12),
                         org.mtrx.app.directoryRoom("!polar:example.org", "Polar science", space = true, members = 80),
-                        org.mtrx.app.directoryRoom("!icecore:example.org", "Ice cores", access = uniffi.mtrx.JoinAccess.KNOCK, members = 18),
+                        org.mtrx.app.directoryRoom("!icecore:example.org", "Ice cores", joinRule = uniffi.mtrx.JoinRule.KNOCK, members = 18),
                     ),
                     next = "2",
                 ),
                 pending = emptySet(),
-                joined = setOf(ICE),
+                buttonOf = { org.mtrx.app.joinButton(it) },
             ),
             images,
             noJoinActions,

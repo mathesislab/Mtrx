@@ -23,35 +23,16 @@ use matrix_sdk::{
         directory::{Filter, PublicRoomsChunk, RoomTypeFilter},
         events::{macros::EventContent, space::child::HierarchySpaceChildEvent},
         matrix_uri::MatrixId,
-        room::{JoinRuleKind, JoinRuleSummary, RoomType},
+        room::RoomType,
         uint,
     },
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{Child, Live, Result, Role, Session, SpaceGraph, account_data::AccountData};
-
-/// Who may join a room found in a space or a directory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JoinAccess {
-    /// Anyone.
-    Public,
-    /// Members of a space the room names (restricted).
-    SpaceMembers,
-    /// Anyone may ask; members let them in.
-    Knock,
-    /// Invited people only.
-    Invite,
-}
-
-/// Our membership of a room found in a space or a directory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Membership {
-    Joined,
-    Invited,
-    /// We asked to join.
-    Asked,
-}
+use crate::{
+    Child, JoinAction, JoinRule, Live, Membership, Result, Role, Session, SpaceGraph,
+    account_data::AccountData,
+};
 
 /// A room or space to join, as a space or a directory lists it.
 #[derive(Clone, Debug, PartialEq)]
@@ -66,7 +47,9 @@ pub struct DirectoryRoom {
     pub is_space: bool,
     /// For a space, the rooms and spaces it lists.
     pub children: u64,
-    pub access: JoinAccess,
+    pub join_rule: JoinRule,
+    /// As the server or the store had it when listed; what to show is
+    /// [`crate::RoomLists::membership`].
     pub membership: Option<Membership>,
     /// Ours, where we are a member.
     pub role: Option<Role>,
@@ -194,23 +177,11 @@ pub fn parse_address(text: &str) -> Option<(OwnedRoomOrAliasId, Vec<OwnedServerN
     Some((id, via))
 }
 
-fn access(rule: &JoinRuleSummary) -> JoinAccess {
-    match rule {
-        JoinRuleSummary::Public => JoinAccess::Public,
-        JoinRuleSummary::Restricted(_) | JoinRuleSummary::KnockRestricted(_) => {
-            JoinAccess::SpaceMembers
-        }
-        JoinRuleSummary::Knock => JoinAccess::Knock,
-        _ => JoinAccess::Invite,
-    }
-}
-
-fn kind_access(rule: &JoinRuleKind) -> JoinAccess {
-    match rule {
-        JoinRuleKind::Public => JoinAccess::Public,
-        JoinRuleKind::Restricted | JoinRuleKind::KnockRestricted => JoinAccess::SpaceMembers,
-        JoinRuleKind::Knock => JoinAccess::Knock,
-        _ => JoinAccess::Invite,
+impl DirectoryRoom {
+    /// What its button does, with our `membership` of it now
+    /// ([`crate::RoomLists::membership`]).
+    pub fn action(&self, membership: Option<Membership>) -> JoinAction {
+        JoinAction::new(self.join_rule, membership)
     }
 }
 
@@ -228,9 +199,7 @@ fn known_child(room: &Room, child: &Child, graph: &SpaceGraph) -> DirectoryRoom 
         members: room.joined_members_count(),
         is_space: room.is_space(),
         children: graph.children(&child.room).len() as u64,
-        access: room
-            .join_rule()
-            .map_or(JoinAccess::Invite, |rule| kind_access(&rule.kind())),
+        join_rule: room.join_rule().as_ref().into(),
         membership: None,
         role: None,
         via: child.via.clone(),
@@ -257,12 +226,7 @@ impl Session {
     }
 
     fn membership(&self, room: &RoomId) -> Option<Membership> {
-        match self.client.get_room(room)?.state() {
-            RoomState::Joined => Some(Membership::Joined),
-            RoomState::Invited => Some(Membership::Invited),
-            RoomState::Knocked => Some(Membership::Asked),
-            _ => None,
-        }
+        Membership::of(self.client.get_room(room)?.state())
     }
 
     /// The rooms and spaces `space` lists directly (subspaces' own rooms
@@ -360,7 +324,7 @@ impl Session {
                     members: summary.num_joined_members.into(),
                     is_space: summary.room_type == Some(RoomType::Space),
                     children: chunk.children_state.len() as u64,
-                    access: access(&summary.join_rule),
+                    join_rule: (&summary.join_rule).into(),
                     via: child.map(|c| c.content.via.clone()).unwrap_or_default(),
                     suggested: child.is_some_and(|c| c.content.suggested),
                     id: summary.room_id,
@@ -428,7 +392,7 @@ impl Session {
             members: chunk.num_joined_members.into(),
             is_space: chunk.room_type == Some(RoomType::Space),
             children: 0,
-            access: kind_access(&chunk.join_rule),
+            join_rule: (&chunk.join_rule).into(),
             via,
             suggested: false,
             id: chunk.room_id,
@@ -457,28 +421,41 @@ impl Session {
             members: preview.num_joined_members,
             is_space: preview.room_type == Some(RoomType::Space),
             children: 0,
-            access: preview
+            join_rule: preview
                 .join_rule
                 .as_ref()
-                .map_or(JoinAccess::Invite, access),
+                .map_or(JoinRule::Invite, JoinRule::from),
             via,
             suggested: false,
             id: preview.room_id,
         })
     }
 
-    /// Ask to join a room that takes requests.
+    /// Ask to join a room that takes requests. The room lists show it as
+    /// asked ([`crate::RoomLists::membership`]) until they list it: by ID
+    /// from the start, by alias once asked.
     pub async fn knock(
         &self,
         room: &OwnedRoomOrAliasId,
         via: Vec<OwnedServerName>,
     ) -> Result<OwnedRoomId> {
-        Ok(self
-            .client
-            .knock(room.clone(), None, via)
-            .await?
-            .room_id()
-            .to_owned())
+        let id = OwnedRoomId::try_from(room.as_str()).ok();
+        if let Some(id) = &id {
+            self.echoes.set_knocking(id);
+        }
+        match self.client.knock(room.clone(), None, via).await {
+            Ok(knocked) => {
+                let knocked = knocked.room_id().to_owned();
+                self.echoes.set_knocking(&knocked);
+                Ok(knocked)
+            }
+            Err(e) => {
+                if let Some(id) = &id {
+                    self.echoes.drop_knocking(id);
+                }
+                Err(e.into())
+            }
+        }
     }
 
     pub fn directory_servers(&self) -> DirectoryServers {
