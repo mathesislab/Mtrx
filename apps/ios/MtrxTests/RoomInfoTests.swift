@@ -2,7 +2,8 @@ import MtrxFFI
 import XCTest
 @testable import Mtrx
 
-/// A room's settings: shown changed at once, read again after.
+/// A room's settings, as the library gives them, and changing them and
+/// the members.
 @MainActor
 final class RoomInfoModelTests: XCTestCase {
     private var session: FakeSession!
@@ -13,6 +14,7 @@ final class RoomInfoModelTests: XCTestCase {
         session.memberList = [Make.member("me", level: 100)]
         model = RoomInfoModel(session: session, roomId: "!room:example.org", userId: "@me:example.org")
         await model.load()
+        await eventually { self.model.settings != nil }
     }
 
     func testReadsTheSettingsAndMembers() {
@@ -20,15 +22,18 @@ final class RoomInfoModelTests: XCTestCase {
         XCTAssertEqual(model.members?.map(\.user.userId), ["@me:example.org"])
     }
 
-    func testAChangeShowsAtOnceThenAsTheServerHasIt() async {
-        let task = model.setNotify(.mentions)
-        XCTAssertEqual(model.settings?.notify, .mentions)
-        await task.value
+    func testAChangeShowsAsTheLibraryGivesIt() async {
+        await model.setNotify(.mentions).value
         XCTAssertEqual(session.changes, ["notify mentions"])
-        XCTAssertEqual(model.settings?.notify, .mentions)
+        await eventually { self.model.settings?.notify == .mentions }
     }
 
-    func testAFailedChangeIsTakenBackWithWhy() async {
+    func testAChangeMadeElsewhereShows() async {
+        session.settings = Make.settings(joinRule: .public)
+        await eventually { self.model.settings?.joinRule == .public }
+    }
+
+    func testAFailedChangeSaysWhy() async {
         session.changeError = MtrxError.Other(reason: "Not allowed")
         await model.setJoinRule(.public).value
         XCTAssertEqual(model.settings?.joinRule, .invite)
@@ -52,14 +57,13 @@ final class RoomInfoModelTests: XCTestCase {
     func testSpacesChange() async {
         session.settings = Make.settings(
             spaces: [SpaceLink(spaceId: "!a", suggested: false, canChange: true)], canAddTo: ["!b"])
-        await model.loadSettings()
-        let adding = model.addToSpace("!b")
-        XCTAssertEqual(model.settings?.spaces.map(\.spaceId), ["!a", "!b"])
+        await model.addToSpace("!b").value
+        await eventually { self.model.settings?.spaces.map(\.spaceId) == ["!a", "!b"] }
         XCTAssertEqual(model.settings?.canAddTo, [])
-        await adding.value
         await model.setSuggested(in: "!a", true).value
         await model.removeFromSpace("!a").value
         XCTAssertEqual(session.changes, ["add to !b", "suggested !a true", "remove from !a"])
+        await eventually { self.model.settings?.spaces.map(\.spaceId) == ["!b"] }
     }
 
     func testMembersChange() async {

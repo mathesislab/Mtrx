@@ -148,7 +148,6 @@ final class ScreenshotTests: XCTestCase {
     func testTopicPanel() async throws {
         session.fakePinned.initialRows = Array(Screens.timeline.suffix(2))
         let info = model.info(for: Screens.ice)
-        await info.loadSettings()
         let pinned = PinnedModel(session: session, roomId: "!ice")
         try await snap(
             "06-topic-panel",
@@ -173,6 +172,7 @@ final class ScreenshotTests: XCTestCase {
         session.memberList = Screens.members
         let info = model.info(for: Screens.ice)
         await info.load()
+        await eventually { info.settings != nil }
         try await snap(
             "07b-room-settings",
             NavigationStack {

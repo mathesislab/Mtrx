@@ -28,7 +28,8 @@ struct RoomInfoView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .refreshable { await model.load() }
+            // The settings follow the library; the members are read.
+            .refreshable { await model.loadMembers() }
         }
         .task { await model.load() }
         .infoErrors(model)
@@ -233,9 +234,9 @@ struct RoomSettingsSections: View {
         let direct = room.kind == .direct
         return Section("Settings") {
             Picker("Notifications", selection: Binding(get: { settings.notify }, set: { model.setNotify($0) })) {
-                Text("All messages").tag(NotifyMode.all)
-                Text("Mentions").tag(NotifyMode.mentions)
-                Text("Mute").tag(NotifyMode.mute)
+                ForEach(settings.notifyChoices, id: \.mode) { choice in
+                    Text(choice.title).tag(choice.mode)
+                }
             }
             if room.rights.changeJoinRule && !direct {
                 Picker("Who can join", selection: Binding(get: { settings.joinRule }, set: { model.setJoinRule($0) })) {
@@ -257,10 +258,9 @@ struct RoomSettingsSections: View {
                     "Who can read the history",
                     selection: Binding(get: { settings.history }, set: { model.setHistory($0) })
                 ) {
-                    Text("Since joining").tag(History.joined)
-                    Text("Since invited").tag(History.invited)
-                    Text("Members").tag(History.members)
-                    Text("Anyone").tag(History.anyone)
+                    ForEach(settings.historyChoices, id: \.history) { choice in
+                        Text(choice.title).tag(choice.history)
+                    }
                 }
             }
             if room.rights.changeLevels && !direct {
@@ -268,8 +268,9 @@ struct RoomSettingsSections: View {
                     "Who can edit",
                     selection: Binding(get: { settings.permissions }, set: { model.setPermissions($0) })
                 ) {
-                    Text("Everyone").tag(Permissions.everyone)
-                    Text("Moderators").tag(Permissions.moderators)
+                    ForEach(settings.permissionsChoices, id: \.permissions) { choice in
+                        Text(choice.title).tag(choice.permissions)
+                    }
                 }
             }
             if room.kind != .space {

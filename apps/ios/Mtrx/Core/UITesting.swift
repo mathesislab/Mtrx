@@ -198,8 +198,8 @@ private final class UITestSession: Session, @unchecked Sendable {
 
 /// A room's settings and members: none here.
 private final class UITestRoom: Room, @unchecked Sendable {
-    override func settings() async throws -> RoomSettings {
-        throw MtrxError.Other(reason: "No settings here")
+    override func subscribeSettings(listener: RoomSettingsListener) -> TaskHandle {
+        UITestHandle(noHandle: .init())
     }
 
     override func members() async throws -> [Member] { [] }

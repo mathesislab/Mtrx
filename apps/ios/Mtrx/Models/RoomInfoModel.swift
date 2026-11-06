@@ -2,10 +2,10 @@ import Foundation
 import MtrxFFI
 
 /// A room's or space's settings and members, for its header, topic panel,
-/// info screen and overview: read from the server, changed where we may.
-/// A change shows at once; the settings are read again once the server
-/// has it (the library returns once sync brought it back), or on failure,
-/// with the reason.
+/// info screen and overview, changed where we may. The settings follow the
+/// library: a change made here shows at once, as do those made elsewhere;
+/// a failed one shows why. The members are read, and read again after we
+/// change them.
 @MainActor
 final class RoomInfoModel: ObservableObject {
     let roomId: String
@@ -17,8 +17,6 @@ final class RoomInfoModel: ObservableObject {
     @Published private(set) var members: [Member]?
     /// Why the settings or members could not be read.
     @Published private(set) var loadError: String?
-    /// A change is on its way.
-    @Published private(set) var saving = false
     /// Why the last change failed.
     @Published var error: String?
 
@@ -26,6 +24,9 @@ final class RoomInfoModel: ObservableObject {
     private let room: Result<Room, Error>
     /// For the spaces the room is in.
     private let session: Session
+    /// The settings' subscription, once started.
+    private let subscriptions = Subscriptions()
+    private var following = false
 
     init(session: Session, roomId: String, userId: String) {
         self.session = session
@@ -34,16 +35,22 @@ final class RoomInfoModel: ObservableObject {
         room = Result { try session.room(roomId: roomId) }
     }
 
-    /// Read the settings and members, again if read before.
+    /// Follow the settings (from the first call on) and read the members,
+    /// again if read before.
     func load() async {
-        async let settings: () = loadSettings()
-        async let members: () = loadMembers()
-        _ = await (settings, members)
+        follow()
+        await loadMembers()
     }
 
-    func loadSettings() async {
+    private func follow() {
+        guard !following else { return }
+        following = true
         do {
-            settings = try await room.get().settings()
+            let room = try self.room.get()
+            let feed = Feed<RoomSettings>()
+            subscriptions.add(room.subscribeSettings(listener: feed), feed) { [weak self] settings in
+                self?.settings = settings
+            }
         } catch {
             loadError = errorMessage(error)
         }
@@ -68,78 +75,68 @@ final class RoomInfoModel: ObservableObject {
     @discardableResult
     func rename(_ name: String) -> Task<Void, Never> {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return change { _ in } call: { try await $0.setName(name: name) }
+        return change { try await $0.setName(name: name) }
     }
 
     @discardableResult
     func setNotify(_ mode: NotifyMode) -> Task<Void, Never> {
-        change { $0.notify = mode } call: { try await $0.setNotify(mode: mode) }
+        change { try await $0.setNotify(mode: mode) }
     }
 
     @discardableResult
     func setJoinRule(_ rule: JoinRule) -> Task<Void, Never> {
-        change { $0.joinRule = rule } call: { try await $0.setJoinRule(rule: rule) }
+        change { try await $0.setJoinRule(rule: rule) }
     }
 
     @discardableResult
     func setListed(_ listed: Bool) -> Task<Void, Never> {
-        change { $0.listed = listed } call: { try await $0.setListed(listed: listed) }
+        change { try await $0.setListed(listed: listed) }
     }
 
     @discardableResult
     func setHistory(_ history: History) -> Task<Void, Never> {
-        change { $0.history = history } call: { try await $0.setHistory(history: history) }
+        change { try await $0.setHistory(history: history) }
     }
 
     @discardableResult
     func setPermissions(_ permissions: Permissions) -> Task<Void, Never> {
-        change { $0.permissions = permissions } call: { try await $0.setPermissions(permissions: permissions) }
+        change { try await $0.setPermissions(permissions: permissions) }
     }
 
     /// Encrypt from now on: not to be undone.
     @discardableResult
     func encrypt() -> Task<Void, Never> {
-        change { $0.encrypted = true } call: { try await $0.encrypt() }
+        change { try await $0.encrypt() }
     }
 
     /// The address `#name:ourserver`, or none (`name` empty).
     @discardableResult
     func setAddress(_ name: String) -> Task<Void, Never> {
         let name = name.trimmingCharacters(in: .whitespaces)
-        return change { _ in } call: { try await $0.setAddress(name: name.isEmpty ? nil : name) }
+        return change { try await $0.setAddress(name: name.isEmpty ? nil : name) }
     }
 
     @discardableResult
     func setSuggested(in space: String, _ suggested: Bool) -> Task<Void, Never> {
         let (session, roomId) = (self.session, self.roomId)
-        return change { settings in
-            if let at = settings.spaces.firstIndex(where: { $0.spaceId == space }) {
-                settings.spaces[at].suggested = suggested
-            }
-        } call: { _ in try await session.room(roomId: space).setSuggested(roomId: roomId, suggested: suggested) }
+        return change { _ in try await session.room(roomId: space).setSuggested(roomId: roomId, suggested: suggested) }
     }
 
     @discardableResult
     func addToSpace(_ space: String) -> Task<Void, Never> {
         let (session, roomId) = (self.session, self.roomId)
-        return change { settings in
-            settings.canAddTo.removeAll { $0 == space }
-            settings.spaces.append(SpaceLink(spaceId: space, suggested: false, canChange: true))
-        } call: { _ in try await session.room(roomId: space).addChild(roomId: roomId) }
+        return change { _ in try await session.room(roomId: space).addChild(roomId: roomId) }
     }
 
     @discardableResult
     func removeFromSpace(_ space: String) -> Task<Void, Never> {
         let (session, roomId) = (self.session, self.roomId)
-        return change { settings in
-            settings.spaces.removeAll { $0.spaceId == space }
-            settings.canAddTo.append(space)
-        } call: { _ in try await session.room(roomId: space).removeChild(roomId: roomId) }
+        return change { _ in try await session.room(roomId: space).removeChild(roomId: roomId) }
     }
 
     @discardableResult
     func unban(_ user: String) -> Task<Void, Never> {
-        change { $0.banned.removeAll { $0.user.userId == user } } call: { try await $0.unban(userId: user) }
+        change { try await $0.unban(userId: user) }
     }
 
     // MARK: Members
@@ -163,9 +160,6 @@ final class RoomInfoModel: ObservableObject {
                 try await $0.remove(userId: user, ban: ban, reason: reason.isEmpty ? nil : reason)
             }) {
                 await loadMembers()
-                if ban {
-                    await loadSettings()
-                }
             }
         }
     }
@@ -187,26 +181,14 @@ final class RoomInfoModel: ObservableObject {
 
     // MARK: Calls
 
-    /// Show `update` at once, make the change, then read the settings again
-    /// (also on failure, which shows why).
-    private func change(
-        _ update: (inout RoomSettings) -> Void, call: @escaping (Room) async throws -> Void
-    ) -> Task<Void, Never> {
-        if var changed = settings {
-            update(&changed)
-            settings = changed
-        }
-        return Task {
-            _ = await self.call(call)
-            await loadSettings()
-        }
+    /// Make a change, which the settings (or the room list) show at once.
+    private func change(_ call: @escaping (Room) async throws -> Void) -> Task<Void, Never> {
+        Task { _ = await self.call(call) }
     }
 
     /// Run `call` on the room; a failure shows as `error`. Returns whether
     /// it succeeded.
     private func call(_ call: (Room) async throws -> Void) async -> Bool {
-        saving = true
-        defer { saving = false }
         do {
             try await call(room.get())
             return true
