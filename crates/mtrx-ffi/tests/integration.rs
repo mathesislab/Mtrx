@@ -432,13 +432,17 @@ fn recovery_key_decrypts_history_on_a_new_device() {
     wait_for_encrypted_room(&second.session, &room_id);
     let (listener, states) = forward();
     let _states_handle = second.session.subscribe_encryption_state(listener);
-    wait_for("unverified, recovery incomplete", &states, |s| {
-        *s == EncryptionState {
-            device_verified: false,
-            recovery: RecoveryStatus::Incomplete,
-            keys_arriving: false,
-        }
-    });
+    wait_for(
+        "unverified, recovery incomplete",
+        &states,
+        |s: &EncryptionState| {
+            *s == EncryptionState {
+                device_verified: false,
+                recovery: RecoveryStatus::Incomplete,
+                keys_arriving: false,
+            }
+        },
+    );
     let timeline = block_on(second.session.timeline(room_id.clone())).unwrap();
     let (items, item_updates) = forward();
     let _timeline_handle = timeline.subscribe_rows(items);
