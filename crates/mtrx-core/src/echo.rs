@@ -318,6 +318,12 @@ impl Echoes {
         self.changes.borrow().settings.get(&key)?.since
     }
 
+    /// `room`'s setting `key` as changed here, while still shown.
+    pub(crate) fn setting(&self, room: &RoomId, key: SettingKey) -> Option<Setting> {
+        let key = (room.to_owned(), key);
+        Some(self.changes.borrow().settings.get(&key)?.value.clone())
+    }
+
     /// Lay the changes to `room`'s settings over `settings` (as synced),
     /// first dropping those they show and those the server accepted
     /// [`ECHO_TIMEOUT`] ago; returns when the next of those left times out.
@@ -801,6 +807,7 @@ mod tests {
         let listed = Setting::Listed(true);
         echoes.set_setting(&a, listed.clone());
         assert_eq!(echoes.accepted(&a, SettingKey::Listed), None);
+        assert_eq!(echoes.setting(&a, SettingKey::Listed), Some(listed.clone()));
         echoes.setting_answered(&a, &listed, true, now);
         assert_eq!(echoes.accepted(&a, SettingKey::Listed), Some(now));
         // Read again: listed.

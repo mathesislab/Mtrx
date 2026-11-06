@@ -597,11 +597,25 @@ impl RoomHandle {
 
     /// Suggest `room` to this space's members, or not.
     pub async fn set_suggested(&self, room: &RoomId, suggested: bool) -> Result<()> {
-        let graph = self.session.space_graph();
-        let child =
-            (graph.child(self.id(), room)).ok_or_else(|| Error::RoomNotFound(room.to_string()))?;
-        let mut content = SpaceChildEventContent::new(child.via.clone());
-        content.order = child.order.clone();
+        let session = &self.session;
+        let graph = session.space_graph();
+        let link = SettingKey::Link(self.id().to_owned());
+        let mut content = match graph.child(self.id(), room) {
+            Some(child) => {
+                let mut content = SpaceChildEventContent::new(child.via.clone());
+                content.order = child.order.clone();
+                content
+            }
+            // Listed here, not synced yet.
+            None if matches!(
+                session.echoes.setting(room, link),
+                Some(Setting::Link(_, Some(_)))
+            ) =>
+            {
+                SpaceChildEventContent::new(session.via())
+            }
+            None => return Err(Error::RoomNotFound(room.to_string())),
+        };
         content.suggested = suggested;
         self.session.set_child(&self.room, room, content).await
     }

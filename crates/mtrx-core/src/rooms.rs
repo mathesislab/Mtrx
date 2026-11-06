@@ -571,7 +571,7 @@ impl Session {
     }
 
     /// Servers to name in space links: ours.
-    fn via(&self) -> Vec<OwnedServerName> {
+    pub(crate) fn via(&self) -> Vec<OwnedServerName> {
         vec![self.user_id().server_name().to_owned()]
     }
 
