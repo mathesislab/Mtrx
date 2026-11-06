@@ -162,7 +162,8 @@ private const val LOAD_MARGIN = 5
 
 /** What shows over the timeline, one at a time; rows by id, as in the latest rows. */
 private sealed interface Overlay {
-    data class Menu(val rowId: String) : Overlay
+    /** A message's menu; with [unsent], only retrying it or taking it back (its send state was tapped). */
+    data class Menu(val rowId: String, val unsent: Boolean = false) : Overlay
     data class EmojiPicker(val rowId: String) : Overlay
     data class Reactors(val rowId: String, val key: String) : Overlay
     data class Readers(val rowId: String) : Overlay
@@ -179,6 +180,8 @@ private class RowHandlers(
     val showReactors: (String, String) -> Unit,
     val showReaders: (String) -> Unit,
     val openLink: (String) -> Unit,
+    /** The send state of a message not sent yet was tapped. */
+    val unsent: (String) -> Unit,
 )
 
 /** What the room screen shows, from its model's flows. */
@@ -393,6 +396,7 @@ fun TimelineContent(
             showReactors = { rowId, key -> overlay = Overlay.Reactors(rowId, key) },
             showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
             openLink = { url -> openLink(url) },
+            unsent = { rowId -> overlay = Overlay.Menu(rowId, unsent = true) },
         )
     }
 
@@ -524,7 +528,9 @@ fun TimelineContent(
         null -> {}
         is Overlay.Menu -> {
             val row = rowOf(shown.rowId)
-            val menu = row?.actions.orEmpty()
+            val menu = row?.actions.orEmpty().filter {
+                !shown.unsent || it == MessageAction.RETRY || it == MessageAction.UNSEND
+            }
             if (row == null || menu.isEmpty()) {
                 LaunchedEffect(shown) { overlay = null }
             } else {
@@ -553,7 +559,7 @@ fun TimelineContent(
                                 overlay = Overlay.ConfirmDelete(row.id)
                             }
                             MessageAction.RETRY -> actions.retry(row.id)
-                            MessageAction.DISCARD -> actions.discard(row.id)
+                            MessageAction.UNSEND -> actions.unsend(row.id)
                         }
                     },
                 )
@@ -879,7 +885,7 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
                         }
                     }
                     ReactionChips(row, handlers)
-                    SendStateLine(event.sendState)
+                    SendStateLine(event.sendState, onClick = { handlers.unsent(row.id) })
                 }
             }
         }
@@ -1193,8 +1199,9 @@ private fun fileSize(media: Media): String {
     }
 }
 
+/** A message not sent yet says so; a tap offers to retry it (if refused) or take it back. */
 @Composable
-private fun SendStateLine(state: SendState) {
+private fun SendStateLine(state: SendState, onClick: () -> Unit) {
     val (text, error) = when (state) {
         SendState.Sent -> return
         SendState.Sending -> "sending…" to false
@@ -1205,7 +1212,9 @@ private fun SendStateLine(state: SendState) {
         text,
         style = MaterialTheme.typography.labelSmall,
         color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+        modifier = Modifier
+            .clickable(onClickLabel = "Retry or cancel", onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
     )
 }
 

@@ -186,13 +186,37 @@ final class TimelineModelTests: XCTestCase {
         await model.react("b", key: "👍").value
         await model.delete("o").value
         await model.retry("o").value
-        await model.discard("o").value
+        await model.unsend("o").value
         XCTAssertEqual(timeline.reactions.map(\.itemId), ["b"])
         XCTAssertEqual(timeline.reactions.map(\.key), ["👍"])
         XCTAssertEqual(timeline.deleted, ["o"])
         XCTAssertEqual(timeline.retried, ["o"])
-        XCTAssertEqual(timeline.discarded, ["o"])
+        XCTAssertEqual(timeline.unsent, ["o"])
         XCTAssertNil(model.error)
+    }
+
+    func testAMessageTakenBackIsInAnEmptyComposerWithItsReply() async {
+        await show([bobsMessage])
+        timeline.found = ["$b": "b"]
+        timeline.unsentDraft = Draft(text: "**Sure**", replyTo: "$b")
+        await model.unsend("u").value
+        XCTAssertEqual(model.draft, "**Sure**")
+        await eventually { self.model.compose?.target.itemId == "b" }
+    }
+
+    func testAMessageTakenBackFollowsWhatIsWritten() async {
+        await show([bobsMessage])
+        timeline.found = ["$b": "b"]
+        model.draft = "Half written  \n"
+        timeline.unsentDraft = Draft(text: "Sure", replyTo: "$b")
+        await model.unsend("u").value
+        XCTAssertEqual(model.draft, "Half written\n\nSure")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(model.compose)
+        // A file: nothing comes back.
+        timeline.unsentDraft = nil
+        await model.unsend("f").value
+        XCTAssertEqual(model.draft, "Half written\n\nSure")
     }
 
     func testAFailedActionShowsWhy() async {

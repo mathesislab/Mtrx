@@ -23,6 +23,7 @@ use crate::{
     Grouping, Layout, Live, Membership, Result, RoomCategories, RoomKind, RoomListState,
     RoomSummary, Section, Session, SpaceGraph,
     spaces::{SpaceMembers, home_rooms, space_rooms},
+    timeline::synced_receipt,
 };
 
 /// What a room list lists.
@@ -773,6 +774,10 @@ impl Follow {
         }
         let mut state = self.state.clone();
         let timeout = self.echoes.lay_over(&mut state.rooms, Instant::now());
+        let client = &self.client;
+        (self.echoes).lay_reads(&mut state.rooms, |id| {
+            client.get_room(id).as_ref().and_then(synced_receipt)
+        });
         let (categories, drafts) = self.current.clone();
         let members = self.members.known().clone();
         let mut lists = RoomLists::new(state, categories, members, &self.own_user, drafts);

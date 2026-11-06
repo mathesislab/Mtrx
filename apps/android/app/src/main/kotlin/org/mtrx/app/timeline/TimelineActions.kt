@@ -29,7 +29,8 @@ interface TimelineActions {
 
     fun retry(itemId: String)
 
-    fun discard(itemId: String)
+    /** Take a message not sent yet out of the send queue, its text back in the composer. */
+    fun unsend(itemId: String)
 
     fun goToOriginal(eventId: String)
 

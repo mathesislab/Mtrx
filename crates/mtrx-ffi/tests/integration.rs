@@ -1278,7 +1278,7 @@ fn reactions_replies_edits_receipts_and_typing() {
 
 #[test]
 #[ignore = "needs the local Synapse (testserver/run.sh)"]
-fn failed_sends_are_retried_or_discarded() {
+fn unsent_messages_come_back_as_drafts() {
     let core_runtime = tokio::runtime::Runtime::new().unwrap();
     let (names, room_id) = room_of(&core_runtime, &["ffi-unsent"]);
     let device = sign_in(&names[0]);
@@ -1297,6 +1297,18 @@ fn failed_sends_are_retried_or_discarded() {
         .0
         .to_owned();
 
+    // Queued behind it, it waits: taken back, its Markdown comes back.
+    // Rows show its text without the Markdown.
+    let (queued, shown) = ("**queued** after it", "queued after it");
+    block_on(timeline.send_text(queued.into())).unwrap();
+    let queued_row = find(items.wait("queued", |i| find(i, shown).is_some()), shown)
+        .unwrap()
+        .0
+        .to_owned();
+    let draft = block_on(timeline.unsend(queued_row)).unwrap();
+    assert_eq!(draft.map(|d| d.text).as_deref(), Some(queued));
+    items.wait("its echo gone", |i| find(i, shown).is_none());
+
     // Sent again: sending, then failed again.
     block_on(timeline.retry(row.clone())).unwrap();
     items.wait("sending again", |i| {
@@ -1304,10 +1316,12 @@ fn failed_sends_are_retried_or_discarded() {
     });
     items.wait("failed again", failed);
 
-    // What is queued after it waits for it; once it is dropped, it is sent.
+    // What is queued after it waits for it; once it is taken back, it is
+    // sent.
     block_on(timeline.send_text("after the long one".into())).unwrap();
-    block_on(timeline.discard(row)).unwrap();
-    let items = items.wait("dropped, and the next one sent", |i| {
+    let draft = block_on(timeline.unsend(row)).unwrap();
+    assert_eq!(draft.map(|d| d.text), Some(too_long.clone()));
+    let items = items.wait("taken back, and the next one sent", |i| {
         find(i, &too_long).is_none()
             && sent(i, "after the long one").is_some_and(|(_, e)| e.send_state == SendState::Sent)
     });
@@ -1317,7 +1331,7 @@ fn failed_sends_are_retried_or_discarded() {
         Err(MtrxError::Other { .. })
     ));
     assert!(matches!(
-        block_on(timeline.discard(row)),
+        block_on(timeline.unsend(row)),
         Err(MtrxError::Other { .. })
     ));
     assert!(matches!(

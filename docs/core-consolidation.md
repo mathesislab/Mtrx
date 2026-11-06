@@ -370,6 +370,15 @@ impl RoomHandle { pub fn settings(&self) -> Live<RoomSettings>; }
 - Android: the `change()` reload, `_settings` one-shot loads (`RoomInfoModel.kt:45-68, 114-127`).
 - Desktop: `load_settings`, `reload_card`, `info.rs` overlays and `apply()`, the `saving` flag, and `settings.rs:250-327` (`Access` section) with its `let_everyone_edit_space` button moved to the space's info panel.
 
+**As merged (PR N, #78), where it differs from the above**
+- `RoomHandle::settings()` is async and resolves to `Live<RoomSettings>`: the first value needs async reads (`listed`, bans, notify mode).
+- `NotifyMode`, `History` and `Permissions` have core `title()` and `explanation()`. The FFI `RoomSettings` carries `notify_choices`, `history_choices` and `permissions_choices`, like `join_rule_choices` (labels are record fields, decision 2026-11-06).
+- "Let everyone edit" for a space's rooms is on the space's info card, as "Its rooms".
+- `set_suggested` works on a room just listed: before sync it uses the pending link echo, with our server as via.
+- Space-link echoes (added, removed, suggested) show only in the room's own settings, not in the `SpaceGraph`.
+- Settings echoes of rooms no longer in the room list are dropped at its next update.
+- iOS pull to refresh stays on the room info, but reloads only the members.
+
 ---
 
 ## 7. RoomHandle in core, Room object in FFI

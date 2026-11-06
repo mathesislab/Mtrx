@@ -77,7 +77,7 @@ val MessageAction.label: String
         MessageAction.UNPIN -> "Unpin"
         MessageAction.DELETE -> "Delete"
         MessageAction.RETRY -> "Retry"
-        MessageAction.DISCARD -> "Discard"
+        MessageAction.UNSEND -> "Cancel and put back"
     }
 
 /** A message's text; an image's or file's body is its name unless it has a caption. */

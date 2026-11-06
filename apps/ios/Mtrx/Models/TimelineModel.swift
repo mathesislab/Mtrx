@@ -395,10 +395,48 @@ final class TimelineModel: ObservableObject {
         act { try await $0.retry(itemId: itemId) }
     }
 
-    /// Drop row `itemId`'s refused message.
+    /// Take row `itemId`'s message, not sent yet, out of the send queue:
+    /// its text comes back in the composer (`putBack`).
     @discardableResult
-    func discard(_ itemId: String) -> Task<Void, Never> {
-        act { try await $0.discard(itemId: itemId) }
+    func unsend(_ itemId: String) -> Task<Void, Never> {
+        guard let timeline else { return Task {} }
+        return Task {
+            do {
+                if let unsent = try await timeline.unsend(itemId: itemId) {
+                    self.putBack(unsent)
+                }
+            } catch {
+                self.error = errorMessage(error)
+            }
+        }
+    }
+
+    /// Put `unsent`'s text in the composer: after what is written and a
+    /// blank line, or as is in an empty one, then answering its message
+    /// unless another is answered. During an edit, in the draft that comes
+    /// back after it.
+    private func putBack(_ unsent: Draft) {
+        if case .edit = compose {
+            savedDraft = Self.appending(unsent.text, to: savedDraft ?? "")
+            return
+        }
+        let empty = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        draft = Self.appending(unsent.text, to: draft)
+        guard empty, compose == nil, restoringReply == nil, let replyTo = unsent.replyTo, let timeline else {
+            return
+        }
+        restoringReply = replyTo
+        drafts.changed(draft: keptDraft)
+        waitForReply(replyTo, in: timeline)
+    }
+
+    /// `text` after `written` and a blank line; as is if nothing is written.
+    static func appending(_ text: String, to written: String) -> String {
+        var written = written
+        while let last = written.last, last.isWhitespace {
+            written.removeLast()
+        }
+        return written.isEmpty ? text : written + "\n\n" + text
     }
 
     /// Run `action` in a task of the model's (leaving the room does not

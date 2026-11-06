@@ -20,7 +20,7 @@ use matrix_sdk::{
     },
 };
 use matrix_sdk_ui::sync_service::SyncService;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::broadcast;
 use tracing::warn;
 use url::Url;
 
@@ -51,8 +51,8 @@ pub struct Session {
     pub(crate) sync: Arc<SyncService>,
     pub(crate) verification_tx: broadcast::Sender<VerificationRequest>,
     pub(crate) room_keys: Arc<crate::encryption::RoomKeys>,
-    /// Serializes enqueueing messages, see [`crate::timeline::send_message`].
-    pub(crate) send_lock: Arc<Mutex<()>>,
+    /// Enqueues messages, see [`crate::timeline::send_message`].
+    pub(crate) outbox: Arc<crate::timeline::Outbox>,
     pub(crate) schedule: Arc<Schedule>,
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
@@ -185,13 +185,15 @@ impl Session {
                 .await
                 .map_err(|e| Error::Sync(e.to_string()))?,
         );
-        let (connection, watch_connection) = crate::connection::watch(client.clone(), sync.clone());
+        let echoes = Arc::new(crate::echo::Echoes::default());
+        let (connection, watch_connection) =
+            crate::connection::watch(client.clone(), sync.clone(), echoes.clone());
         let verification_tx = crate::encryption::register_handlers(&client);
         let notification_settings = client.notification_settings().await;
         let (notifications, notifier) =
             crate::notifications::register(&client, sync.clone(), notification_settings.clone());
-        let send_lock = Arc::new(Mutex::new(()));
-        let schedule = Arc::new(Schedule::load(client.clone(), send_lock.clone()).await?);
+        let outbox = Arc::new(crate::timeline::Outbox::default());
+        let schedule = Arc::new(Schedule::load(client.clone(), outbox.clone()).await?);
         let categories = crate::account_data::Synced::load(client.clone()).await;
         let colours = crate::account_data::Synced::load(client.clone()).await;
         let directory_servers = crate::account_data::Synced::load(client.clone()).await;
@@ -203,7 +205,7 @@ impl Session {
             sync,
             verification_tx,
             room_keys: Default::default(),
-            send_lock,
+            outbox,
             schedule,
             scheduler: Default::default(),
             notifications,
@@ -212,7 +214,7 @@ impl Session {
             colours,
             directory_servers,
             drafts,
-            echoes: Default::default(),
+            echoes,
             spaces,
             listings: Default::default(),
             connection,

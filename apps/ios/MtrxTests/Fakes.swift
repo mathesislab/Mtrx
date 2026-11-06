@@ -40,7 +40,9 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     var reactions: [(itemId: String, key: String)] = []
     var deleted: [String] = []
     var retried: [String] = []
-    var discarded: [String] = []
+    var unsent: [String] = []
+    /// What `unsend` gives back.
+    var unsentDraft: Draft?
     var typing: [Bool] = []
     var actionError: Error?
     /// Given to the listener as it subscribes, if any.
@@ -93,9 +95,10 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
         retried.append(itemId)
     }
 
-    override func discard(itemId: String) async throws {
+    override func unsend(itemId: String) async throws -> Draft? {
         if let actionError { throw actionError }
-        discarded.append(itemId)
+        unsent.append(itemId)
+        return unsentDraft
     }
 
     override func setTyping(typing: Bool) async throws {
@@ -707,8 +710,10 @@ enum Make {
         if event.own && sent && event.content != .redacted {
             actions.append(.delete)
         }
-        if case .failed = event.sendState {
-            actions += [.retry, .discard]
+        switch event.sendState {
+        case .failed: actions += [.retry, .unsend]
+        case .sending, .waiting: actions.append(.unsend)
+        case .sent: break
         }
         return actions
     }

@@ -22,7 +22,7 @@ use tracing::warn;
 
 use crate::{
     AbortOnDrop, Attachment, Error, Live, PendingSend, Result, RoomHandle, Session,
-    timeline::send_message,
+    timeline::{Outbox, send_message},
 };
 
 /// Store key of the list of scheduled messages.
@@ -71,21 +71,21 @@ fn file_key(message_id: &str, index: usize) -> Vec<u8> {
 /// The scheduled messages of a session, persisted on every change.
 pub(crate) struct Schedule {
     client: Client,
-    send_lock: Arc<Mutex<()>>,
+    outbox: Arc<Outbox>,
     messages: watch::Sender<Vec<ScheduledMessage>>,
     /// Serializes changes so each is persisted before the next starts.
     write: Mutex<()>,
 }
 
 impl Schedule {
-    pub(crate) async fn load(client: Client, send_lock: Arc<Mutex<()>>) -> Result<Self> {
+    pub(crate) async fn load(client: Client, outbox: Arc<Outbox>) -> Result<Self> {
         let messages = match client.state_store().get_custom_value(STORE_KEY).await? {
             Some(bytes) => serde_json::from_slice(&bytes)?,
             None => Vec::new(),
         };
         Ok(Self {
             client,
-            send_lock,
+            outbox,
             messages: watch::Sender::new(messages),
             write: Mutex::new(()),
         })
@@ -148,7 +148,7 @@ impl Schedule {
             .ok_or_else(|| Error::RoomNotFound(message.room_id.to_string()))?;
         send_message(
             &room,
-            &self.send_lock,
+            &self.outbox,
             &message.text,
             self.load_files(message).await?,
             message.in_reply_to.as_deref(),

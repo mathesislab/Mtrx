@@ -1,6 +1,7 @@
 //! Changes made here, shown at once in the room lists, the timelines' rows
 //! and the rooms' settings: the server answers before sync brings them
-//! back.
+//! back. Rooms read here show as read while the receipt waits for the
+//! server.
 
 use std::{
     borrow::Borrow,
@@ -9,7 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use matrix_sdk::ruma::{OwnedEventId, OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomId};
+use matrix_sdk::{
+    Room,
+    ruma::{OwnedEventId, OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomId},
+};
 use tokio::sync::watch;
 
 use crate::{
@@ -195,6 +199,69 @@ fn lay<T: Clone>(pendings: &Pendings<T>, room: &RoomId, shown: &mut T) {
     }
 }
 
+/// A room's unread messages, mentions and notifications.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Unread {
+    messages: u64,
+    mentions: u64,
+    notifications: u64,
+}
+
+impl Unread {
+    /// As the SDK counts them in `room`: from our read receipt as synced.
+    pub(crate) fn of(room: &Room) -> Self {
+        Self {
+            messages: room.num_unread_messages(),
+            mentions: room.num_unread_mentions(),
+            notifications: room.num_unread_notifications(),
+        }
+    }
+
+    /// As the room list has them.
+    fn listed(room: &RoomSummary) -> Self {
+        Self {
+            messages: room.unread_messages,
+            mentions: room.unread_mentions,
+            notifications: room.unread_notifications,
+        }
+    }
+
+    fn is_zero(self) -> bool {
+        self == Self::default()
+    }
+
+    /// Those counted since `then`.
+    fn since(self, then: Self) -> Self {
+        Self {
+            messages: self.messages.saturating_sub(then.messages),
+            mentions: self.mentions.saturating_sub(then.mentions),
+            notifications: self.notifications.saturating_sub(then.notifications),
+        }
+    }
+
+    fn show(self, room: &mut RoomSummary) {
+        room.unread_messages = self.messages;
+        room.unread_mentions = self.mentions;
+        room.unread_notifications = self.notifications;
+    }
+}
+
+/// A room read here up to an event, until sync brings our receipt.
+///
+/// The SDK counts a room's unread messages from our read receipt as synced:
+/// while that stays where it was when we read, what it counted then was
+/// read, and what it counts beyond that came since.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PendingRead {
+    /// The newest event read: where the receipt goes.
+    pub(crate) up_to: OwnedEventId,
+    /// Where our read receipt was as synced when we read (an event we sent
+    /// counts), if known.
+    pub(crate) receipt: Option<OwnedEventId>,
+    /// The SDK's counts then.
+    pub(crate) counted: Unread,
+}
+
 /// The changes made here that sync has not brought yet.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Changes {
@@ -212,6 +279,9 @@ pub(crate) struct Changes {
     joining: BTreeSet<OwnedRoomId>,
     /// Rooms asked to join here that the room list does not list yet.
     knocking: BTreeSet<OwnedRoomId>,
+    /// Rooms read here, until sync moves our read receipt. No timeout: the
+    /// receipt is sent again once the server is reachable.
+    reads: HashMap<OwnedRoomId, PendingRead>,
 }
 
 impl Changes {
@@ -406,6 +476,58 @@ impl Echoes {
     pub(crate) fn drop_knocking(&self, room: &RoomId) {
         self.changes
             .send_if_modified(|changes| changes.knocking.remove(room));
+    }
+
+    /// `room` was read here, `read`; shown as read from now.
+    pub(crate) fn set_read(&self, room: &RoomId, read: PendingRead) {
+        self.changes.send_modify(|changes| {
+            changes.reads.insert(room.to_owned(), read);
+        });
+    }
+
+    /// The server has our receipt in `room` at or after `up_to` already:
+    /// the read up to there goes, unless the room was read further since.
+    pub(crate) fn drop_read(&self, room: &RoomId, up_to: &OwnedEventId) {
+        self.changes.send_if_modified(|changes| {
+            let ours = changes.reads.get(room).is_some_and(|r| r.up_to == *up_to);
+            ours && changes.reads.remove(room).is_some()
+        });
+    }
+
+    /// The rooms read here that sync has not shown read, with the event
+    /// read up to: their receipts, to send again.
+    pub(crate) fn reads(&self) -> Vec<(OwnedRoomId, OwnedEventId)> {
+        let changes = self.changes.borrow();
+        (changes.reads.iter())
+            .map(|(room, read)| (room.clone(), read.up_to.clone()))
+            .collect()
+    }
+
+    /// Show the rooms read here as read in `rooms`, but for what came
+    /// since; first dropping the reads of rooms gone, of those whose read
+    /// receipt sync moved (`receipt`: where it is now, see
+    /// [`PendingRead::receipt`]) and of those the SDK counts nothing unread
+    /// in.
+    pub(crate) fn lay_reads(
+        &self,
+        rooms: &mut [RoomSummary],
+        receipt: impl Fn(&RoomId) -> Option<OwnedEventId>,
+    ) {
+        self.changes.send_if_modified(|changes| {
+            let before = changes.reads.len();
+            changes.reads.retain(|id, read| {
+                rooms.iter().find(|r| r.id == *id).is_some_and(|room| {
+                    receipt(id) == read.receipt && !Unread::listed(room).is_zero()
+                })
+            });
+            changes.reads.len() != before
+        });
+        let changes = self.changes.borrow();
+        for room in rooms.iter_mut() {
+            if let Some(read) = changes.reads.get(&room.id) {
+                Unread::listed(room).since(read.counted).show(room);
+            }
+        }
     }
 
     /// Changes after every change.
@@ -815,6 +937,93 @@ mod tests {
         synced.listed = Some(true);
         echoes.lay_settings(&a, &mut synced, now);
         assert_eq!(echoes.accepted(&a, SettingKey::Listed), None);
+    }
+
+    /// Unread counts: messages, mentions, notifications.
+    fn unread(messages: u64, mentions: u64, notifications: u64) -> Unread {
+        Unread {
+            messages,
+            mentions,
+            notifications,
+        }
+    }
+
+    #[test]
+    fn a_room_read_here_shows_read_but_for_what_came_since() {
+        let echoes = Echoes::default();
+        let (a, b) = (owned_room_id!("!a:x"), owned_room_id!("!b:x"));
+        let old = owned_event_id!("$old");
+        let mut rooms = vec![
+            room(a.as_str(), RoomKind::Room),
+            room(b.as_str(), RoomKind::Room),
+        ];
+        unread(3, 1, 2).show(&mut rooms[0]);
+        unread(4, 0, 4).show(&mut rooms[1]);
+        echoes.set_read(
+            &a,
+            PendingRead {
+                up_to: owned_event_id!("$3"),
+                receipt: Some(old.clone()),
+                counted: unread(3, 1, 2),
+            },
+        );
+        let synced = |_: &RoomId| Some(old.clone());
+        let mut shown = rooms.clone();
+        echoes.lay_reads(&mut shown, synced);
+        assert_eq!(Unread::listed(&shown[0]), Unread::default());
+        // Another room's counts stay.
+        assert_eq!(Unread::listed(&shown[1]), unread(4, 0, 4));
+        assert_eq!(echoes.reads(), [(a.clone(), owned_event_id!("$3"))]);
+
+        // A mention came since, counted from the same receipt.
+        unread(4, 2, 3).show(&mut rooms[0]);
+        let mut shown = rooms.clone();
+        echoes.lay_reads(&mut shown, synced);
+        assert_eq!(Unread::listed(&shown[0]), unread(1, 1, 1));
+        // Read again, further: counted from there.
+        echoes.set_read(
+            &a,
+            PendingRead {
+                up_to: owned_event_id!("$4"),
+                receipt: Some(old.clone()),
+                counted: unread(4, 2, 3),
+            },
+        );
+        // The server had the earlier one already: the later read stays.
+        echoes.drop_read(&a, &owned_event_id!("$3"));
+        let mut shown = rooms.clone();
+        echoes.lay_reads(&mut shown, synced);
+        assert_eq!(Unread::listed(&shown[0]), Unread::default());
+
+        // Sync moved the receipt: its counts again, the read gone.
+        let mut shown = rooms.clone();
+        echoes.lay_reads(&mut shown, |_| Some(owned_event_id!("$4")));
+        assert_eq!(Unread::listed(&shown[0]), unread(4, 2, 3));
+        assert!(echoes.reads().is_empty());
+    }
+
+    #[test]
+    fn reads_go_when_nothing_is_unread_the_room_is_gone_or_the_server_had_them() {
+        let echoes = Echoes::default();
+        let (a, b, c) = (
+            owned_room_id!("!a:x"),
+            owned_room_id!("!b:x"),
+            owned_room_id!("!c:x"),
+        );
+        let read = |up_to| PendingRead {
+            up_to,
+            receipt: None,
+            counted: unread(2, 0, 2),
+        };
+        echoes.set_read(&a, read(owned_event_id!("$a")));
+        echoes.set_read(&b, read(owned_event_id!("$b")));
+        echoes.set_read(&c, read(owned_event_id!("$c")));
+        echoes.drop_read(&c, &owned_event_id!("$c"));
+        // Nothing unread in a; b not listed.
+        let mut rooms = vec![room(a.as_str(), RoomKind::Room)];
+        echoes.lay_reads(&mut rooms, |_| None);
+        assert!(echoes.reads().is_empty());
+        assert_eq!(Unread::listed(&rooms[0]), Unread::default());
     }
 
     #[test]

@@ -18,6 +18,9 @@ struct RoomView: View {
     @State private var showsInfo = false
     /// The message to delete, once confirmed.
     @State private var deleting: String?
+    /// The message not sent yet whose status was tapped: to retry or take
+    /// back.
+    @State private var unsent: String?
     /// The rooms shared with a direct chat's person show.
     @State private var showsShared = false
     /// Chosen in a message's menu (on which item), done once it closed.
@@ -109,6 +112,13 @@ struct RoomView: View {
                 if let deleting { model.delete(deleting) }
             }
         }
+        .confirmationDialog("Not sent yet", isPresented: isUnsent) {
+            if let unsent, let row = model.messageRow(unsent) {
+                ForEach(row.actions.filter { $0 == .retry || $0 == .unsend }, id: \.self) { action in
+                    Button(action.title) { perform(action, on: unsent) }
+                }
+            }
+        }
         .alert("Something went wrong", isPresented: hasError) {
             Button("OK") { model.error = nil }
         } message: {
@@ -128,7 +138,8 @@ struct RoomView: View {
             react: { id, key in model.react(id, key: key) },
             goTo: { quote in Task { await model.goTo(eventId: quote.eventId) } },
             showReactors: { id, key in sheet = .reactors(itemId: id, key: key) },
-            showReaders: { id in sheet = .readers(itemId: id) })
+            showReaders: { id in sheet = .readers(itemId: id) },
+            unsent: { id in unsent = id })
     }
 
     /// A held message's menu, if anything applies to it.
@@ -160,8 +171,12 @@ struct RoomView: View {
         case .unpin: model.setPinned(id, pin: false)
         case .delete: deleting = id
         case .retry: model.retry(id)
-        case .discard: model.discard(id)
+        case .unsend: model.unsend(id)
         }
+    }
+
+    private var isUnsent: Binding<Bool> {
+        Binding(get: { unsent != nil }, set: { if !$0 { unsent = nil } })
     }
 
     private var isDeleting: Binding<Bool> {

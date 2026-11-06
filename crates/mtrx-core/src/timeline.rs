@@ -10,8 +10,8 @@ use std::{
 use eyeball_im::Vector;
 use futures_util::{Stream, StreamExt, stream};
 use matrix_sdk::ruma::{
-    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, RoomId, UInt,
-    UserId,
+    EventId, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedTransactionId, OwnedUserId, RoomId,
+    TransactionId, UInt, UserId,
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::{
         Mentions,
@@ -28,7 +28,7 @@ use matrix_sdk::{
         edit::EditedContent,
         reply::{EnforceThread, Reply as SdkReply},
     },
-    send_queue::{RoomSendQueueUpdate, SendHandle},
+    send_queue::{LocalEcho, RoomSendQueueUpdate, SendHandle},
 };
 use matrix_sdk_ui::timeline::{
     EncryptedMessage, EventSendState, EventTimelineItem, InReplyToDetails,
@@ -40,8 +40,8 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    AbortOnDrop, Error, Live, PinsChange, Result, Session, User,
-    echo::Echoes,
+    AbortOnDrop, Draft, Error, Live, PinsChange, Result, Session, User,
+    echo::{Echoes, PendingRead, Unread},
     media::{self, MediaRef},
     permissions, pins, room_links,
     rows::{self, Row, RowContext},
@@ -348,7 +348,8 @@ const SEEK_SETTLE: Duration = Duration::from_secs(2);
 pub struct RoomTimeline {
     room_id: OwnedRoomId,
     timeline: Arc<Timeline>,
-    send_lock: Arc<Mutex<()>>,
+    outbox: Arc<Outbox>,
+    echoes: Arc<Echoes>,
     /// Back-paginations run one at a time.
     pagination: Mutex<()>,
     entries: watch::Receiver<Vec<TimelineEntry>>,
@@ -504,7 +505,7 @@ impl RoomTimeline {
         files: Vec<Attachment>,
         reply_to: Option<&EventId>,
     ) -> Result<PendingSend> {
-        send_message(self.timeline.room(), &self.send_lock, text, files, reply_to).await
+        send_message(self.timeline.room(), &self.outbox, text, files, reply_to).await
     }
 
     /// Replace the text of one of our messages.
@@ -554,18 +555,21 @@ impl RoomTimeline {
         Ok(())
     }
 
-    /// Drop one of our messages not sent (yet), e.g. after sending failed.
-    /// The messages queued after it are then sent.
-    pub async fn discard(&self, event: &EventKey) -> Result<()> {
-        let dropped = send_handle(&self.local_echo(event).await?)?
-            .abort()
-            .await
-            .map_err(timeline_error)?;
+    /// Take our message out of the send queue (sending, waiting or failed);
+    /// the messages queued after it are then sent. One the server is
+    /// receiving right now is deleted for everyone once it arrives (the SDK
+    /// cannot stop it). Its text comes back as a draft: the Markdown it was
+    /// written in where known (not after a restart), else its plain text;
+    /// with the message it answers. None for a file. Fails once it was sent.
+    pub async fn unsend(&self, event: &EventKey) -> Result<Option<Draft>> {
+        let item = self.local_echo(event).await?;
+        let dropped = send_handle(&item)?.abort().await.map_err(timeline_error)?;
         if !dropped {
             return Err(Error::Timeline("the message was sent already".into()));
         }
         self.resume_sending();
-        Ok(())
+        let source = item.transaction_id().and_then(|id| self.outbox.take(id));
+        Ok(unsent_draft(&item, source))
     }
 
     /// The room's send queue stops after any failed send, also one that
@@ -622,9 +626,26 @@ impl RoomTimeline {
         })
     }
 
-    /// Mark everything up to the latest event as read.
+    /// Mark everything up to the latest event as read. The room lists show
+    /// the room read at once, until sync shows our receipt; if the server
+    /// is unreachable, it is sent again once the server is back.
     pub async fn mark_read(&self) -> Result<()> {
-        self.timeline.mark_as_read(ReceiptType::Read).await?;
+        let room = self.timeline.room();
+        let up_to = self.timeline.latest_event_id().await;
+        if let Some(up_to) = &up_to {
+            let read = PendingRead {
+                up_to: up_to.clone(),
+                receipt: synced_receipt(room),
+                counted: Unread::of(room),
+            };
+            self.echoes.set_read(room.room_id(), read);
+        }
+        // Kept also when this fails.
+        let sent = self.timeline.mark_as_read(ReceiptType::Read).await?;
+        if !sent && let Some(up_to) = &up_to {
+            // The server has our receipt at or after it already.
+            self.echoes.drop_read(room.room_id(), up_to);
+        }
         Ok(())
     }
 }
@@ -652,16 +673,56 @@ impl Attachment {
     }
 }
 
+/// Where our read receipt in `room` is as synced (an event we sent counts):
+/// where the SDK counts its unread messages from.
+pub(crate) fn synced_receipt(room: &Room) -> Option<OwnedEventId> {
+    Some(room.read_receipts().latest_active?.event_id)
+}
+
+/// Enqueues a session's messages one at a time (see [`send_message`]), and
+/// keeps the Markdown each queued text was written in, for
+/// [`RoomTimeline::unsend`].
+#[derive(Default)]
+pub(crate) struct Outbox {
+    /// Held while enqueueing.
+    lock: Mutex<()>,
+    /// By the text's transaction ID, with its room. A room's are dropped
+    /// once sent, at its next send.
+    sources: std::sync::Mutex<HashMap<OwnedTransactionId, (OwnedRoomId, String)>>,
+}
+
+impl Outbox {
+    /// Keep only the sources of `room`'s messages that are still `queued`,
+    /// and other rooms'.
+    fn prune(&self, room: &RoomId, queued: &[LocalEcho]) {
+        let mut sources = self.sources.lock().expect("not poisoned");
+        sources.retain(|id, (of, _)| {
+            **of != *room || queued.iter().any(|echo| echo.transaction_id == *id)
+        });
+    }
+
+    fn keep(&self, room: &RoomId, id: OwnedTransactionId, text: &str) {
+        let mut sources = self.sources.lock().expect("not poisoned");
+        sources.insert(id, (room.to_owned(), text.to_owned()));
+    }
+
+    /// The Markdown of the text queued as `id`, if known; forgotten.
+    fn take(&self, id: &TransactionId) -> Option<String> {
+        let mut sources = self.sources.lock().expect("not poisoned");
+        Some(sources.remove(id)?.1)
+    }
+}
+
 /// Queue a message in `room`'s send queue, which persists it and sends it
 /// in the background; timelines show it as a local echo. The text goes
 /// first, then each file as a message of its own; see [`RoomTimeline::send`].
 ///
 /// The SDK's send handle does not expose the transaction ID, so we take it
-/// from the new local echoes after subscribing. `send_lock`, shared by all
+/// from the new local echoes after subscribing. `outbox`, shared by all
 /// sends of a session, makes sure no other send enqueues in between.
 pub(crate) async fn send_message(
     room: &Room,
-    send_lock: &Mutex<()>,
+    outbox: &Outbox,
     text: &str,
     files: Vec<Attachment>,
     reply_to: Option<&EventId>,
@@ -692,9 +753,10 @@ pub(crate) async fn send_message(
         None => None,
     };
 
-    let _guard = send_lock.lock().await;
+    let _guard = outbox.lock.lock().await;
     let queue = room.send_queue();
-    let (_, mut updates) = queue.subscribe().await.map_err(timeline_error)?;
+    let (queued_before, mut updates) = queue.subscribe().await.map_err(timeline_error)?;
+    outbox.prune(room.room_id(), &queued_before);
     let mut queued = 0;
     if let Some(mut content) = content {
         if let Some(event_id) = reply_to.take() {
@@ -716,19 +778,20 @@ pub(crate) async fn send_message(
             .map_err(timeline_error)?;
         queued += 1;
     }
-    let mut last = None;
-    while queued > 0 {
+    // In the order queued: the text first.
+    let mut ids = Vec::with_capacity(queued);
+    while ids.len() < queued {
         match updates.try_recv() {
-            Ok(RoomSendQueueUpdate::NewLocalEvent(echo)) => {
-                last = Some(echo.transaction_id);
-                queued -= 1;
-            }
+            Ok(RoomSendQueueUpdate::NewLocalEvent(echo)) => ids.push(echo.transaction_id),
             Ok(_) => {}
             Err(e) => return Err(Error::Timeline(format!("no local echo after send: {e}"))),
         }
     }
+    if let Some(text) = text {
+        outbox.keep(room.room_id(), ids[0].clone(), text);
+    }
     Ok(PendingSend {
-        transaction_id: last.expect("something was queued"),
+        transaction_id: ids.pop().expect("something was queued"),
         updates,
     })
 }
@@ -982,7 +1045,8 @@ impl Session {
         RoomTimeline {
             room_id: room_id.to_owned(),
             timeline,
-            send_lock: self.send_lock.clone(),
+            outbox: self.outbox.clone(),
+            echoes: self.echoes.clone(),
             pagination: Mutex::default(),
             entries,
             context,
@@ -1095,6 +1159,25 @@ async fn member_profile(room: &Room, user: &OwnedUserId) -> Profile {
             (None, None)
         }
     }
+}
+
+/// The draft that brings back our message `item`, taken out of the send
+/// queue, in `source`, the Markdown it was written in, if known: none for a
+/// file.
+fn unsent_draft(item: &EventTimelineItem, source: Option<String>) -> Option<Draft> {
+    let TimelineItemContent::MsgLike(msg_like) = item.content() else {
+        return None;
+    };
+    let MsgLikeKind::Message(message) = &msg_like.kind else {
+        return None;
+    };
+    if media(message.msgtype()).is_some() {
+        return None;
+    }
+    Some(Draft {
+        text: source.unwrap_or_else(|| message.body().to_owned()),
+        reply_to: (msg_like.in_reply_to.as_ref()).map(|reply| reply.event_id.clone()),
+    })
 }
 
 /// The send queue's handle of a local echo.

@@ -1,11 +1,18 @@
 //! Whether the server is reachable and still accepts the session. Sync
 //! goes offline on network errors and checks the server until it answers
 //! again; meanwhile messages wait in the send queue, which is re-enabled
-//! once the server is back. A session the server rejected stays signed out.
+//! once the server is back, and the read receipts not shown synced are sent
+//! again. A session the server rejected stays signed out.
 
 use std::{sync::Arc, time::Duration};
 
-use matrix_sdk::{Client, SessionChange};
+use matrix_sdk::{
+    Client, SessionChange,
+    ruma::{
+        OwnedEventId, OwnedRoomId, api::client::receipt::create_receipt::v3::ReceiptType,
+        events::receipt::ReceiptThread,
+    },
+};
 use matrix_sdk_ui::sync_service::{State, SyncService};
 use tokio::{
     sync::{broadcast, watch},
@@ -13,7 +20,7 @@ use tokio::{
 };
 use tracing::warn;
 
-use crate::{AbortOnDrop, Live, Session};
+use crate::{AbortOnDrop, Live, Session, echo::Echoes};
 
 /// After an unexpected sync error, how long until sync starts again.
 const RESTART: Duration = Duration::from_secs(5);
@@ -32,10 +39,12 @@ pub enum Connection {
 }
 
 /// Follow sync's state as a [`Connection`] until dropped, restarting sync
-/// after errors and resuming sends once the server is reachable.
+/// after errors and resuming sends once the server is reachable: messages,
+/// and receipts of the rooms read here (`echoes`).
 pub(crate) fn watch(
     client: Client,
     sync: Arc<SyncService>,
+    echoes: Arc<Echoes>,
 ) -> (watch::Receiver<Connection>, AbortOnDrop) {
     let (tx, rx) = watch::channel(Connection::Online);
     let task = tokio::spawn(async move {
@@ -62,6 +71,7 @@ pub(crate) fn watch(
                         tx.send_replace(Connection::Online);
                         // Sends stop on network errors; the server is back.
                         client.send_queue().set_enabled(true).await;
+                        tokio::spawn(send_receipts(client.clone(), echoes.reads()));
                     }
                     Some(State::Offline) => {
                         tx.send_replace(Connection::Offline);
@@ -95,6 +105,23 @@ pub(crate) fn watch(
         }
     });
     (rx, AbortOnDrop(task))
+}
+
+/// Send again our read receipts up to `reads` (room, event), which sync
+/// does not show yet: those that failed stay for the next time.
+async fn send_receipts(client: Client, reads: Vec<(OwnedRoomId, OwnedEventId)>) {
+    for (room, up_to) in reads {
+        let Some(room) = client.get_room(&room) else {
+            continue;
+        };
+        let thread = ReceiptThread::Unthreaded;
+        if let Err(e) = room
+            .send_single_receipt(ReceiptType::Read, thread, up_to)
+            .await
+        {
+            warn!(room = %room.room_id(), "could not send the read receipt again: {e}");
+        }
+    }
 }
 
 impl Session {

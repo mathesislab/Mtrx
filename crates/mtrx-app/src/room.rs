@@ -398,13 +398,29 @@ impl Room {
     /// Put back the draft kept for the room (if any), unless something was
     /// written meanwhile; the reply once its message is in the timeline.
     pub fn restore_draft(&mut self, draft: Option<Draft>) -> Task<app::Message> {
-        let Some(draft) = draft.filter(|_| self.draft().is_empty()) else {
-            return Task::none();
+        match draft.filter(|_| self.draft().is_empty()) {
+            Some(draft) => self.put_back(draft),
+            None => Task::none(),
+        }
+    }
+
+    /// Put `draft` (e.g. of a message taken back) in the composer: after
+    /// what is written and a blank line, or as is in an empty composer,
+    /// answering its message unless another is answered; the reply once its
+    /// message is in the timeline.
+    pub fn put_back(&mut self, draft: Draft) -> Task<app::Message> {
+        let written = self.composer.text().trim_end().to_owned();
+        let empty = written.trim().is_empty();
+        let text = if empty {
+            draft.text
+        } else {
+            format!("{written}\n\n{}", draft.text)
         };
-        let mut composer = text_editor::Content::with_text(&draft.text);
+        let mut composer = text_editor::Content::with_text(&text);
         composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
         self.set_composer(composer);
-        let Some(event_id) = draft.reply_to else {
+        let answering = self.compose.reply_to().is_some() || self.pending_reply.is_some();
+        let Some(event_id) = draft.reply_to.filter(|_| empty && !answering) else {
             return Task::none();
         };
         self.pending_reply = Some(event_id.clone());
@@ -1400,7 +1416,7 @@ struct Context<'a, 'b> {
     readers: Option<&'b str>,
     /// The row and reaction key whose people are listed.
     reactors: Option<(&'b str, &'b str)>,
-    /// The row whose unsent message is offered to retry or delete.
+    /// The row whose unsent message is offered to retry or take back.
     unsent: Option<&'b str>,
     /// Our newest message, the only one to say it was sent.
     newest_own: Option<&'b str>,

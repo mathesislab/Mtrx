@@ -205,7 +205,7 @@ impl RoomHandle {
     pub async fn post_call(&self, service: &str, url: &Url) -> Result<()> {
         send_message(
             &self.room,
-            &self.session.send_lock,
+            &self.session.outbox,
             &format!("{service} call: {url}"),
             Vec::new(),
             None,

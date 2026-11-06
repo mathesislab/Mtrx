@@ -299,7 +299,7 @@ object NoTimelineActions : TimelineActions {
     override fun react(itemId: String, key: String) {}
     override fun delete(itemId: String) {}
     override fun retry(itemId: String) {}
-    override fun discard(itemId: String) {}
+    override fun unsend(itemId: String) {}
     override fun goToOriginal(eventId: String) {}
     override fun showPersonInfo(userId: String) {}
     override fun showSharedRooms(userId: String) {}

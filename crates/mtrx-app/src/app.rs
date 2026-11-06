@@ -3470,9 +3470,20 @@ impl App {
                 main.popup.take_if(unsent);
                 Task::perform(async move { timeline.retry(&key).await }, done)
             }
-            Act::Discard(key) => {
+            Act::Unsend(key) => {
                 main.popup.take_if(unsent);
-                Task::perform(async move { timeline.discard(&key).await }, done)
+                Task::perform(
+                    async move { timeline.unsend(&key).await.map_err(|e| e.to_string()) },
+                    move |result| actions::act(&id, Act::Unsent(result)),
+                )
+            }
+            Act::Unsent(Ok(draft)) => match draft {
+                Some(draft) => room.put_back(draft),
+                None => Task::none(),
+            },
+            Act::Unsent(Err(e)) => {
+                room.error = Some(e);
+                Task::none()
             }
             Act::OpenLink(url) => {
                 main.popup.take_if(menu);
