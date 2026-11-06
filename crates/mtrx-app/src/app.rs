@@ -1497,7 +1497,7 @@ impl App {
                             let opened = update.changed.len();
                             mtrx_core::Result::Ok(format!("Opened {opened} room(s).{skipped}"))
                         },
-                        |result| {
+                        |result: mtrx_core::Result<String>| {
                             Message::Info(info::Message::Opened(result.map_err(|e| e.to_string())))
                         },
                     ),
