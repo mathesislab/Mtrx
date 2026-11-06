@@ -236,11 +236,11 @@ class TimelineViewModelTest {
         viewModel.react("mine", "👍")
         viewModel.delete("mine")
         viewModel.retry("mine")
-        viewModel.discard("mine")
+        viewModel.unsend("mine")
         assertEquals(listOf("mine" to "👍"), timeline.reactions)
         assertEquals(listOf("mine"), timeline.deleted)
         assertEquals(listOf("mine"), timeline.retried)
-        assertEquals(listOf("mine"), timeline.discarded)
+        assertEquals(listOf("mine"), timeline.unsent)
 
         // A row gone meanwhile.
         timeline.actionError = MtrxException.InvalidInput("no message `mine` in the timeline")
@@ -394,6 +394,34 @@ class TimelineViewModelTest {
         viewModel.cancelComposing()
         viewModel.keepDraft()
         assertEquals(Draft("yes", null), session.drafts[room])
+    }
+
+    @Test
+    fun aMessageTakenBackIsInAnEmptyComposerWithItsReply() = runTest {
+        val viewModel = viewModel()
+        show(textEvent("1", alice, "shall we?"))
+        timeline.found["\$1"] = "1"
+        timeline.unsentDraft = Draft("**yes**", "\$1")
+        viewModel.unsend("u")
+        assertEquals(listOf("u"), timeline.unsent)
+        assertEquals("**yes**", viewModel.draft.value)
+        assertEquals(Composing.Replying("1", "alice", "shall we?", "\$1"), viewModel.composing.value)
+    }
+
+    @Test
+    fun aMessageTakenBackFollowsWhatIsWritten() = runTest {
+        val viewModel = viewModel()
+        show(textEvent("1", alice, "shall we?"))
+        timeline.found["\$1"] = "1"
+        viewModel.onDraft("half written \n")
+        timeline.unsentDraft = Draft("yes", "\$1")
+        viewModel.unsend("u")
+        assertEquals("half written\n\nyes", viewModel.draft.value)
+        assertNull(viewModel.composing.value)
+        // A file: nothing comes back.
+        timeline.unsentDraft = null
+        viewModel.unsend("f")
+        assertEquals("half written\n\nyes", viewModel.draft.value)
     }
 
     @Test

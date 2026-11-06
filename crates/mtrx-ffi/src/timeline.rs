@@ -172,12 +172,6 @@ impl Timeline {
         run(async move { Ok(timeline.unsend(&event.key).await?.map(Draft::from)) }).await
     }
 
-    /// The old name of [`Timeline::unsend`], without its draft; goes once
-    /// the apps call `unsend`.
-    pub async fn discard(&self, item_id: String) -> Result<(), MtrxError> {
-        self.unsend(item_id).await.map(|_| ())
-    }
-
     /// Tell the others we are typing (while the composer has text), or
     /// stopped (it was emptied or sent). Call it as the text changes: the
     /// library sends at most one notice every few seconds.

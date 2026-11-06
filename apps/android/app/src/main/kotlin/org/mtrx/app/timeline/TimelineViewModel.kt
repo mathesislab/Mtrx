@@ -278,6 +278,11 @@ class TimelineViewModel(
         _draft.value = saved.text
         val replyTo = saved.replyTo ?: return
         pendingReply = replyTo
+        answerOnceShown(replyTo)
+    }
+
+    /** Answer [replyTo], the [pendingReply], once its message is among the rows. */
+    private fun answerOnceShown(replyTo: String) {
         viewModelScope.launch {
             // Found by the library, which loads nothing for it.
             val itemId = try {
@@ -289,6 +294,26 @@ class TimelineViewModel(
             _rows.first { rows -> rows.any { it.id == itemId } }
             if (pendingReply == replyTo) startReply(itemId)
         }
+    }
+
+    /**
+     * Put [unsent]'s text in the composer: after what is written and a blank line, or as is in an empty one, then
+     * answering its message unless another is answered. During an edit, in the draft that comes back after it.
+     */
+    private fun putBack(unsent: Draft) {
+        val mode = _composing.value
+        if (mode is Composing.Editing) {
+            _composing.value = mode.copy(draft = appending(unsent.text, mode.draft))
+        } else {
+            val empty = _draft.value.isBlank()
+            _draft.value = appending(unsent.text, _draft.value)
+            val replyTo = unsent.replyTo
+            if (empty && mode == null && pendingReply == null && replyTo != null) {
+                pendingReply = replyTo
+                answerOnceShown(replyTo)
+            }
+        }
+        drafts.changed(currentDraft())
     }
 
     /** The room's draft: the text and what it answers, or during an edit the text from before it. */
@@ -439,8 +464,8 @@ class TimelineViewModel(
     /** Send row [itemId]'s failed message again. */
     override fun retry(itemId: String) = act { it.retry(itemId) }
 
-    /** Drop row [itemId]'s failed message. */
-    override fun discard(itemId: String) = act { it.discard(itemId) }
+    /** Take row [itemId]'s message, not sent yet, out of the send queue: its text comes back in the composer. */
+    override fun unsend(itemId: String) = act { timeline -> timeline.unsend(itemId)?.let(::putBack) }
 
     private fun act(action: suspend (Timeline) -> Unit) {
         val current = timeline ?: return
@@ -529,4 +554,10 @@ class TimelineViewModel(
 
         const val GONE = "The message is no longer in the timeline"
     }
+}
+
+/** [text] after [written] and a blank line; as is if nothing is written. */
+internal fun appending(text: String, written: String): String {
+    val before = written.trimEnd()
+    return if (before.isEmpty()) text else "$before\n\n$text"
 }

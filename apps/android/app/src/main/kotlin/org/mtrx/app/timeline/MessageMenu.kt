@@ -91,7 +91,7 @@ fun MessageMenu(
             HorizontalDivider()
         }
         for (action in actions - MessageAction.REACT) {
-            val destructive = action == MessageAction.DELETE || action == MessageAction.DISCARD
+            val destructive = action == MessageAction.DELETE
             ListItem(
                 headlineContent = {
                     Text(action.label, color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)

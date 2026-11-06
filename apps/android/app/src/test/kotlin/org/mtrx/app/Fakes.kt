@@ -894,7 +894,10 @@ class FakeTimeline : Timeline(NoHandle) {
     val reactions = mutableListOf<Pair<String, String>>()
     val deleted = mutableListOf<String>()
     val retried = mutableListOf<String>()
-    val discarded = mutableListOf<String>()
+    val unsent = mutableListOf<String>()
+
+    /** What [unsend] gives back. */
+    var unsentDraft: Draft? = null
     val typing = mutableListOf<Boolean>()
     var closed = false
 
@@ -951,7 +954,10 @@ class FakeTimeline : Timeline(NoHandle) {
 
     override suspend fun retry(itemId: String) = action { retried += itemId }
 
-    override suspend fun discard(itemId: String) = action { discarded += itemId }
+    override suspend fun unsend(itemId: String): Draft? {
+        action { unsent += itemId }
+        return unsentDraft
+    }
 
     override suspend fun setTyping(typing: Boolean) {
         this.typing += typing
@@ -1043,7 +1049,11 @@ fun actionsOf(event: TimelineEvent): List<MessageAction> = buildList {
     }
     if (event.editable) add(MessageAction.EDIT)
     if (event.own && sent && event.content !is EventContent.Redacted) add(MessageAction.DELETE)
-    if (event.sendState is SendState.Failed) addAll(listOf(MessageAction.RETRY, MessageAction.DISCARD))
+    when (event.sendState) {
+        is SendState.Failed -> addAll(listOf(MessageAction.RETRY, MessageAction.UNSEND))
+        SendState.Sending, SendState.Waiting -> add(MessageAction.UNSEND)
+        SendState.Sent -> {}
+    }
 }
 
 /**

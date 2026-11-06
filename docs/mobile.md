@@ -93,7 +93,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `markRead`. Messages (section 8), each taking the
   row's `TimelineRow.id`: `reply(itemId, markdown)`, `edit(itemId,
   markdown)`, `react(itemId, key)` (adds ours, or removes it),
-  `delete(itemId)` (redacts), `retry(itemId)`, `discard(itemId)`; and
+  `delete(itemId)` (redacts), `retry(itemId)`, `unsend(itemId) -> Draft?`; and
   `setTyping(typing)`, `subscribeTyping(listener)`.
 - `DraftKeeper`: a room's draft, kept on the device. `restore() -> Draft?`
   (once), `changed(draft)` after every change of the composer (saved
@@ -123,7 +123,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   avatarUrl, displayName }` (`displayName`: the name, else the ID's
   localpart), `ReplyQuote { eventId, state, sender: User?, kind, body }`,
   `QuoteState` (`loading`, `loaded`, `failed`), `Media`,
-  `SendState` (`failed(error)`: retry or discard). `TimelineRow.id` is unique and stable (also when a
+  `SendState` (`failed(error)`: retry or unsend). `TimelineRow.id` is unique and stable (also when a
   local echo becomes the server's event): use it as list identity.
   `EventContent.unableToDecrypt`: an encrypted event without its key (yet);
   `TimelineEvent.utdCause: UtdCause?` says why, as far as the SDK knows
@@ -329,7 +329,7 @@ apps/ios/
   Reactions" (a palette fits six, so no "+" in it); on iOS 16 a "React"
   submenu with both. Then Reply, Copy, Select Text (a sheet with a
   `UITextView`), Edit (`editable`), Delete (own, sent; confirmed), Retry
-  and Discard (failed). React and Reply once `eventId != nil`. The full
+  (failed) and Cancel and Put Back (not sent). React and Reply once `eventId != nil`. The full
   picker is a searchable grid of the emoji the system's Unicode data
   marks as emoji by default, one character each, searched by Unicode
   name (no skin tones, flags or sequences). Bubbles no longer have
@@ -370,7 +370,7 @@ apps/ios/
   (always one line high); three people are "Anna, Ben and Cleo are
   typing…", more "Anna, Ben and N others…". `subscribeTyping` runs
   while the room is on screen.
-- Actions (`react`, `delete`, `retry`, `discard`) run in tasks the model
+- Actions (`react`, `delete`, `retry`, `unsend`) run in tasks the model
   creates; sending, replying and editing in `send()`. The library runs
   back-paginations one at a time, so loading older messages and looking
   for a quote do not overlap.
@@ -652,7 +652,7 @@ and tested by CI only; no Android SDK is used locally.
     emoji2-emojipicker`'s `EmojiPickerView` in a dialog, themed with
     AppCompat's DayNight, which its resources need), then Reply, Copy,
     Select text, Edit, Delete (after "Delete this message for everyone?"),
-    Retry and Discard, as `timeline/TimelineRows.kt`'s `messageActions`
+    Retry and Cancel and put back, as `timeline/TimelineRows.kt`'s `messageActions`
     allows; swiping a bubble left (a horizontal `draggable`, so vertical
     drags scroll and edge swipes stay the system's back) shows the reply
     icon and, past 64 dp when let go, replies as Reply does, for the
@@ -812,7 +812,7 @@ Remaining:
       each, counted and named on both sides, and removed again; an edit,
       marked edited; a deletion; typing, by name; a read receipt moving to
       the message read, with the reader's name); a send the server refuses,
-      retried and then discarded, after which the next message goes;
+      retried and then taken back, after which the next message goes;
       stage 4: the encryption state through the listener (the recovering
       device sees `keysArriving` true, then verified with recovery enabled
       and no keys arriving; the verified device sees `deviceVerified`
@@ -1007,7 +1007,7 @@ typing, and retrying a failed send. The library part is done and tested
 (it has no `eventId` until then). Pass the ID of a row from the latest
 items; a row gone meanwhile (or a reply to a message not yet sent) fails
 with `MtrxError.InvalidInput`. Server failures, and `retry` of a message
-that did not fail or `discard` of one already sent, are `MtrxError.Other`:
+that did not fail or `unsend` of one already sent, are `MtrxError.Other`:
 show the reason in a short alert or snackbar.
 
 **Messages.**
@@ -1027,10 +1027,13 @@ Android: a bottom sheet), offering only what applies:
 - Edit, when `TimelineEvent.editable` → the composer edits (below).
 - Delete, when `own && eventId != nil`, after a confirmation ("Delete this
   message for everyone?") → `delete(itemId)`.
-- For `sendState == failed`: Retry → `retry(itemId)`, Discard →
-  `discard(itemId)`. Later messages wait until it is retried or
-  discarded. `waiting` (offline) needs nothing: it is sent when the server
-  is back.
+- For `sendState == failed`: Retry → `retry(itemId)`. Later messages wait
+  until it is retried or taken back. `waiting` (offline) needs nothing: it
+  is sent when the server is back.
+- Until sent (`sending`, `waiting`, `failed`), a tap on the send state offers
+  Cancel and put back → `unsend(itemId)`: its `Draft` goes in the composer,
+  after a blank line if something is written, else as is with its reply
+  (unless one is answered). None for a file.
 React and Reply need a sent message: offer them once `eventId != nil`.
 
 **Reactions** (`Message.reactions`, in the order first given): chips under
