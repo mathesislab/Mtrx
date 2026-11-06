@@ -2184,14 +2184,14 @@ impl App {
                     return Task::none();
                 };
                 match message {
-                    downloads::Message::GoTo(room, event) => {
+                    downloads::Message::GoTo(id, event) => {
                         main.downloads.close();
-                        if main.pane.open(&room).is_some() {
-                            return Task::done(room::Message::GoTo(event).to(&room));
+                        if main.pane.open(&id).is_some() {
+                            return Task::done(room::Message::GoTo(event).to(&id));
                         }
-                        let open = self.update(Message::OpenRoom(room.clone()));
+                        let open = self.update(Message::OpenRoom(id.clone()));
                         if let Screen::Main(main) = &mut self.screen {
-                            main.go_to = Some((room, event));
+                            main.go_to = Some((id, event));
                         }
                         open
                     }

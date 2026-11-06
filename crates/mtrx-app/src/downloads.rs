@@ -98,7 +98,9 @@ impl Downloads {
         match message {
             Message::Updated(list) => {
                 self.errors.retain(|id, _| list.iter().any(|d| d.id == *id));
-                self.menu.take_if(|id| list.iter().all(|d| d.id != *id));
+                if self.menu.is_some_and(|id| list.iter().all(|d| d.id != id)) {
+                    self.menu = None;
+                }
                 self.open &= !list.is_empty();
                 self.list = list;
             }
