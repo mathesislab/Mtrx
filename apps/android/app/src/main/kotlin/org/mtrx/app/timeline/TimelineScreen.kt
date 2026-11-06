@@ -134,7 +134,6 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
@@ -314,7 +313,8 @@ fun TimelineContent(
     onOpenLink: (String) -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenSpace: (String) -> Unit,
-    files: Flow<FileRequest> = emptyFlow(),
+    /** Downloaded files to open, share or save; none in the screenshots (no activity). */
+    files: Flow<FileRequest>? = null,
     topicOpen: Boolean = false,
     editingTopic: Boolean = false,
     sharedOpen: Boolean = false,
@@ -348,38 +348,8 @@ fun TimelineContent(
         actions.clearError()
     }
 
-    // Downloaded files: opened, shared, or saved to Downloads (on API 26–28
-    // where the user picks).
-    val context = LocalContext.current
-    var saving by remember { mutableStateOf<FileRequest?>(null) }
-    val createDocument = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
-        val request = saving ?: return@rememberLauncherForActivityResult
-        saving = null
-        if (target != null) {
-            scope.launch {
-                snackbar.showSnackbar(if (copyFile(context, request, target)) "Saved" else "Couldn't save the file")
-            }
-        }
-    }
-    LaunchedEffect(files) {
-        files.collect { request ->
-            when (request.use) {
-                FileUse.OPEN -> if (!openFile(context, request)) {
-                    scope.launch { snackbar.showSnackbar("No app can open this file") }
-                }
-                FileUse.SHARE -> shareFile(context, request)
-                FileUse.SAVE -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    scope.launch {
-                        val saved = saveToDownloads(context, request)
-                        snackbar.showSnackbar(if (saved) "Saved to Downloads" else "Couldn't save the file")
-                    }
-                } else {
-                    saving = request
-                    createDocument.launch(request.media.filename)
-                }
-            }
-        }
-    }
+    // Downloaded files: opened, shared or saved.
+    if (files != null) FileRequests(files) { message -> scope.launch { snackbar.showSnackbar(message) } }
 
     // The pinned messages, while the panel is open.
     val panelOpen = panel != null
@@ -1265,6 +1235,38 @@ private fun MediaPreview(media: Media, images: Images) {
         if (loaded != null) {
             val image = remember(loaded) { loaded.asImageBitmap() }
             Image(image, contentDescription = media.filename, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
+    }
+}
+
+/**
+ * Hands [files] to other apps: opened, shared, or saved to Downloads (on
+ * API 26–28 where the user picks); [say] what came of it.
+ */
+@Composable
+private fun FileRequests(files: Flow<FileRequest>, say: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var saving by remember { mutableStateOf<FileRequest?>(null) }
+    val createDocument = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
+        val request = saving ?: return@rememberLauncherForActivityResult
+        saving = null
+        if (target != null) {
+            scope.launch { say(if (copyFile(context, request, target)) "Saved" else "Couldn't save the file") }
+        }
+    }
+    LaunchedEffect(files) {
+        files.collect { request ->
+            when (request.use) {
+                FileUse.OPEN -> if (!openFile(context, request)) say("No app can open this file")
+                FileUse.SHARE -> shareFile(context, request)
+                FileUse.SAVE -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    scope.launch { say(if (saveToDownloads(context, request)) "Saved to Downloads" else "Couldn't save the file") }
+                } else {
+                    saving = request
+                    createDocument.launch(request.media.filename)
+                }
+            }
         }
     }
 }
