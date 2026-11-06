@@ -1298,15 +1298,16 @@ fn unsent_messages_come_back_as_drafts() {
         .to_owned();
 
     // Queued behind it, it waits: taken back, its Markdown comes back.
-    let queued = "**queued** after it";
+    // Rows show its text without the Markdown.
+    let (queued, shown) = ("**queued** after it", "queued after it");
     block_on(timeline.send_text(queued.into())).unwrap();
-    let queued_row = find(items.wait("queued", |i| find(i, queued).is_some()), queued)
+    let queued_row = find(items.wait("queued", |i| find(i, shown).is_some()), shown)
         .unwrap()
         .0
         .to_owned();
     let draft = block_on(timeline.unsend(queued_row)).unwrap();
     assert_eq!(draft.map(|d| d.text).as_deref(), Some(queued));
-    items.wait("its echo gone", |i| find(i, queued).is_none());
+    items.wait("its echo gone", |i| find(i, shown).is_none());
 
     // Sent again: sending, then failed again.
     block_on(timeline.retry(row.clone())).unwrap();
