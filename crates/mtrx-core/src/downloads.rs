@@ -146,6 +146,22 @@ impl Download {
         }
     }
 
+    /// A download of `file_name` in a room, running, for frontends' tests.
+    #[cfg(feature = "test-support")]
+    pub fn example(id: DownloadId, file_name: &str) -> Self {
+        let media = Media {
+            kind: MediaKind::File,
+            filename: file_name.into(),
+            size: None,
+            mimetype: None,
+            width: None,
+            height: None,
+            source: MediaRef::plain("mxc://example.org/file"),
+        };
+        let room = "!room:example.org".try_into().expect("a room ID");
+        Self::new(id, &media, room, "Room".into(), None, SaveTo::Downloads)
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(self.state, DownloadState::Downloading { .. })
     }
@@ -489,7 +505,8 @@ impl Downloads {
     /// be deleting its files).
     fn spawn(&self, tasks: &mut HashMap<DownloadId, AbortOnDrop>, job: Job) {
         tasks.retain(|_, task| !task.0.is_finished());
-        let previous = tasks.remove(&job.id);
+        let id = job.id;
+        let previous = tasks.remove(&id);
         let shared = self.shared.clone();
         let task = tokio::spawn(async move {
             if let Some(mut previous) = previous {
@@ -497,9 +514,9 @@ impl Downloads {
                 let _ = (&mut previous.0).await;
             }
             let result = shared.fetch(&job).await;
-            shared.end(job.id, result);
+            shared.end(id, result);
         });
-        tasks.insert(job.id, AbortOnDrop(task));
+        tasks.insert(id, AbortOnDrop(task));
     }
 
     async fn finished(&self, id: DownloadId) -> Result<PathBuf> {
