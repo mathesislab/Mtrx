@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 mtrx-core.workspace = true
+mtrx-google.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
 anyhow.workspace = true

@@ -1,25 +1,19 @@
 //! Calls through links: meeting links in messages are recognised, and a
 //! space can set the call service its rooms use to start calls, in its state,
 //! so every member sees it. A room's own calls are in its topic (see
-//! [`crate::Topic`]); its old standing call link moves there.
+//! [`crate::Topic`]).
 
 use matrix_sdk::ruma::{
     RoomId,
     api::{client::state::get_state_event_for_key, error::ErrorKind},
-    events::{
-        AnySyncTimelineEvent, EmptyStateKey, StateEventType, StaticEventContent,
-        macros::EventContent,
-    },
-    serde::Raw,
+    events::{EmptyStateKey, StateEventType, StaticEventContent, macros::EventContent},
 };
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::warn;
 use url::Url;
 
-use crate::{
-    Error, LinkKind, Result, RoomHandle, RoomLink, Session, Topic, timeline::send_message,
-};
+use crate::{Error, Result, RoomHandle, Session, timeline::send_message};
 
 /// A call service, for starting calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,28 +164,6 @@ fn is_google_meet(url: &Url) -> bool {
     url.host_str() == Some("meet.google.com") && url.path().len() > 1
 }
 
-/// A room's standing call link, before calls moved into the topic.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, EventContent)]
-#[ruma_event(type = "org.mtrx.call_link", kind = State, state_key_type = EmptyStateKey)]
-struct CallLinkEventContent {
-    /// `None` once removed (state cannot be deleted).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    url: Option<String>,
-}
-
-/// The call link a timeline's state event of `event_type` sets: `None` if it
-/// is not a call link event, `Some(None)` if it removes the link.
-pub(crate) fn call_link_change(
-    event_type: &StateEventType,
-    raw: Option<&Raw<AnySyncTimelineEvent>>,
-) -> Option<Option<String>> {
-    if *event_type != StateEventType::from(CallLinkEventContent::TYPE) {
-        return None;
-    }
-    let content = raw.and_then(|raw| raw.get_field::<CallLinkEventContent>("content").ok()?);
-    Some(content.and_then(|c| c.url))
-}
-
 /// The call service of a space, used by the rooms in it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, EventContent)]
 #[ruma_event(type = "org.mtrx.call_service", kind = State, state_key_type = EmptyStateKey)]
@@ -201,47 +173,6 @@ struct CallServiceEventContent {
 }
 
 impl RoomHandle {
-    /// Move the room's old standing call link (`org.mtrx.call_link`) into
-    /// its topic as its call, then remove it; if we may change both.
-    pub async fn move_call_link_to_topic(&self) -> Result<()> {
-        let content = fetch_state::<CallLinkEventContent>(&self.session, self.id()).await?;
-        let Some(url) = content.and_then(|c| Url::parse(c.url.as_deref()?).ok()) else {
-            return Ok(());
-        };
-        if !(self.can_change_topic().await?
-            && self.can_send_state(CallLinkEventContent::TYPE).await?)
-        {
-            return Ok(());
-        }
-        let mut topic = Topic::parse(&self.room.topic().unwrap_or_default());
-        if !topic.links.iter().any(|link| link.url == url) {
-            topic.links.insert(
-                0,
-                RoomLink {
-                    kind: LinkKind::Call { passcode: None },
-                    title: None,
-                    url,
-                },
-            );
-            self.set_topic(&topic.to_topic()).await?;
-        }
-        self.room
-            .send_state_event(CallLinkEventContent { url: None })
-            .await?;
-        Ok(())
-    }
-
-    /// Set the room's old standing call link, as older versions did.
-    #[cfg(feature = "test-support")]
-    pub async fn set_old_call_link(&self, url: &Url) -> Result<()> {
-        self.room
-            .send_state_event(CallLinkEventContent {
-                url: Some(url.to_string()),
-            })
-            .await?;
-        Ok(())
-    }
-
     /// Whether we may change the room's topic, and so its calls and links.
     pub async fn can_change_topic(&self) -> Result<bool> {
         self.can_send_state("m.room.topic").await
@@ -320,28 +251,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reads_call_link_changes_from_the_timeline() {
-        let call_link = StateEventType::from("org.mtrx.call_link");
-        let event = |content: &str| {
-            Raw::<AnySyncTimelineEvent>::from_json_string(format!(
-                r#"{{"type": "org.mtrx.call_link", "state_key": "", "event_id": "$a",
-                    "sender": "@alice:x", "origin_server_ts": 1, "content": {content}}}"#
-            ))
-            .unwrap()
-        };
-        let set = event(r#"{"url": "https://meet.jit.si/ice"}"#);
-        assert_eq!(
-            call_link_change(&call_link, Some(&set)),
-            Some(Some("https://meet.jit.si/ice".into()))
-        );
-        assert_eq!(call_link_change(&call_link, Some(&event("{}"))), Some(None));
-        assert_eq!(
-            call_link_change(&StateEventType::RoomTopic, Some(&set)),
-            None
-        );
-    }
 
     #[test]
     fn recognizes_meeting_links() {

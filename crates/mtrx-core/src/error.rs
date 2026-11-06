@@ -79,10 +79,4 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("Google: {0}")]
-    Google(String),
-    #[error("not signed in to Google")]
-    GoogleNotSignedIn,
-    #[error("Google sign-in expired or was revoked; sign in to Google again")]
-    GoogleSignInExpired,
 }

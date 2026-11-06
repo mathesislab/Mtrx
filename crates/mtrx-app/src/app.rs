@@ -20,12 +20,13 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Draft, DraftKeeper, Google, Live, Media, MediaRef,
-    Notification, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
-    OwnedUserId, Profile, RecoveryStep, RoomHandle, RoomKind, RoomListColours, RoomListState,
-    RoomLists, RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind,
-    Session, SpaceKey, Topic, Url,
+    CallService, Connection, Contact, Draft, DraftKeeper, Live, Media, MediaRef, Notification,
+    OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
+    Profile, RecoveryStep, RoomHandle, RoomKind, RoomListColours, RoomListState, RoomLists,
+    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
+    SpaceKey, Topic, Url,
 };
+use mtrx_google::Google;
 
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, PickerAt},
@@ -3383,7 +3384,7 @@ impl App {
     }
 
     /// Whether we may change a newly opened room's topic, and the call
-    /// service of its space; its old call link moved into its topic.
+    /// service of its space.
     fn load_room_calls(&self, room_id: &OwnedRoomId) -> Task<Message> {
         let Screen::Main(main) = &self.screen else {
             return Task::none();
@@ -3394,16 +3395,6 @@ impl App {
             let room = room.clone();
             move |message| room::Message::Topic(message).to(&room)
         });
-        let old_link = {
-            let (session, room) = (session.clone(), room.clone());
-            Task::future(async move {
-                let moved = async { session.room(&room)?.move_call_link_to_topic().await };
-                if let Err(e) = moved.await {
-                    tracing::warn!("moving the call link of {room} into its topic: {e}");
-                }
-            })
-            .discard()
-        };
         let can_pin = {
             let (session, room, reply) = (session.clone(), room.clone(), room.clone());
             Task::perform(
@@ -3428,7 +3419,7 @@ impl App {
                 },
             )
         };
-        Task::batch([can_edit, can_pin, old_link, space_service])
+        Task::batch([can_edit, can_pin, space_service])
     }
 
     /// Make the open room's pinned messages' timeline, once it has pins.
@@ -5359,7 +5350,7 @@ fn load_access(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
 async fn new_call_link(service: &CallService, google: &Google) -> Result<Url, String> {
     match service.kind {
         ServiceKind::GoogleMeet => google.create_meeting().await.map_err(|e| match e {
-            mtrx_core::Error::GoogleNotSignedIn => {
+            mtrx_google::Error::NotSignedIn => {
                 "Connect your Google account in Settings to create Meet links.".to_owned()
             }
             e => e.to_string(),

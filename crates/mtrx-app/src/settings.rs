@@ -15,9 +15,10 @@ use iced::{
     },
 };
 use mtrx_core::{
-    AtHome, CallService, GoogleClient, Grouping, OwnedRoomId, Permissions, RoomCategories,
-    RoomListColours, ServiceKind,
+    AtHome, CallService, Grouping, OwnedRoomId, Permissions, RoomCategories, RoomListColours,
+    ServiceKind,
 };
+use mtrx_google::GoogleClient;
 use serde::{Deserialize, Serialize};
 
 use crate::{

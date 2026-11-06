@@ -583,7 +583,7 @@ async fn pinned_messages() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
-async fn call_links_and_space_services() -> Result<()> {
+async fn space_call_services() -> Result<()> {
     let (_, alice) = new_user("calls").await?;
     let (_, bob) = new_user("calls").await?;
     let s = &alice.session;
@@ -610,43 +610,7 @@ async fn call_links_and_space_services() -> Result<()> {
     })
     .await?;
 
-    // An old standing call link moves into the topic, first, once.
-    let url = mtrx_core::Url::parse("https://meet.jit.si/mtrx-test")?;
     assert!(s.room(&room)?.can_change_topic().await?);
-    s.room(&room)?
-        .set_topic("Meetings\n[link] https://example.org/")
-        .await?;
-    s.room(&room)?.set_old_call_link(&url).await?;
-    s.room(&room)?.move_call_link_to_topic().await?;
-    let moved = "Meetings\n[call] https://meet.jit.si/mtrx-test\n[link] https://example.org/";
-    wait_for(
-        "call in the topic",
-        s.room_list().await?.updates(),
-        |state| (state.rooms.iter()).any(|r| r.id == room && r.topic.as_deref() == Some(moved)),
-    )
-    .await?;
-    // Removed once moved: the topic keeps a change made since.
-    s.room(&room)?.set_topic("Meetings").await?;
-    let topic_is = |topic: &'static str| {
-        let room = &room;
-        move |state: &mtrx_core::RoomListState| {
-            (state.rooms.iter()).any(|r| r.id == *room && r.topic.as_deref() == Some(topic))
-        }
-    };
-    wait_for(
-        "topic changed",
-        s.room_list().await?.updates(),
-        topic_is("Meetings"),
-    )
-    .await?;
-    s.room(&room)?.move_call_link_to_topic().await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    wait_for(
-        "topic kept",
-        s.room_list().await?.updates(),
-        topic_is("Meetings"),
-    )
-    .await?;
 
     let service = CallService::jitsi("Lab Jitsi", "https://video.lab.example")?;
     s.room(&space)?

@@ -12,6 +12,8 @@ Native Rust Matrix client for macOS, Windows and Linux, built on
   encryption). No UI; exposes plain types and live update streams.
 - `crates/mtrx-format`: Markdown/LaTeX to Matrix HTML, HTML to a document
   model, math typesetting with Typst.
+- `crates/mtrx-google`: Google Meet links (Google sign-in, the Meet API) for
+  the desktop app and the CLI.
 - `crates/mtrx-cli`: the `mtrx` command-line client on top of core.
 - `crates/mtrx-app`: the desktop app (iced).
 - `crates/xtask`: build tasks (`cargo xtask bundle`, `icons`, `version`).

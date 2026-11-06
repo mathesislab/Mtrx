@@ -16,7 +16,6 @@ mod echo;
 mod emoji;
 mod encryption;
 mod error;
-mod google;
 mod lists;
 mod live;
 mod media;
@@ -60,7 +59,6 @@ pub use encryption::{
     VerificationState,
 };
 pub use error::{Error, Result};
-pub use google::{Google, GoogleClient};
 pub use lists::{
     Badges, ListSection, RoomLists, RoomSort, SectionChoice, SectionLayout, SpaceEntry, SpaceKey,
 };
@@ -88,7 +86,7 @@ pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, Space
 pub use rooms::{NewRoom, RoomKind, RoomListState, RoomSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
-pub use secrets::{SecretBackend, SecretStore};
+pub use secrets::{Secret, SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use space_graph::{Child, SpaceGraph};

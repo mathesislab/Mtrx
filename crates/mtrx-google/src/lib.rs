@@ -13,6 +13,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use matrix_sdk::utils::local_server::{
     LocalServerBuilder, LocalServerIpAddress, LocalServerResponse,
 };
+use mtrx_core::{Secret, SecretStore};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,17 +21,44 @@ use tokio::sync::Mutex;
 use tracing::warn;
 use url::Url;
 
-use crate::{
-    Error, Result,
-    secrets::{Secret, SecretStore},
-};
-
 const SCOPES: &str = "https://www.googleapis.com/auth/meetings.space.created openid email";
 const SECRETS_FILE: &str = "google.json";
 /// Access tokens are refreshed this long before they expire.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 const BROWSER_DONE_PAGE: &str = "<!doctype html><title>Mtrx</title>\
     <p style=\"font-family: sans-serif\">Signed in to Google. You can close this tab and return to Mtrx.</p>";
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// What failed: signing in, or making a Meet link.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("not signed in to Google")]
+    NotSignedIn,
+    #[error("Google sign-in expired or was revoked; sign in to Google again")]
+    SignInExpired,
+    /// Google's answer, or our side of it (the local server, the stored secret).
+    #[error("Google: {0}")]
+    Other(String),
+}
+
+impl From<mtrx_core::Error> for Error {
+    fn from(e: mtrx_core::Error) -> Self {
+        Self::Other(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Self::Other(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Other(e.to_string())
+    }
+}
 
 /// An OAuth client the user created in their Google Cloud project
 /// (type "Desktop app", with the Google Meet REST API enabled).
@@ -166,7 +194,9 @@ impl Google {
         let pkce = Pkce::new();
         let state = random_token();
         open_url(self.auth_url(&client.client_id, &redirect_uri, &pkce.challenge, &state));
-        let query = redirect.await.ok_or(Error::LoginCancelled)?;
+        let query = redirect
+            .await
+            .ok_or_else(|| Error::Other("sign-in was cancelled".into()))?;
         let code = authorization_code(&query.0, &state)?;
 
         let tokens = self
@@ -181,10 +211,10 @@ impl Google {
             .await?;
         let refresh_token = tokens
             .refresh_token
-            .ok_or_else(|| Error::Google("no refresh token in the sign-in response".into()))?;
+            .ok_or_else(|| Error::Other("no refresh token in the sign-in response".into()))?;
         let id_token = tokens
             .id_token
-            .ok_or_else(|| Error::Google("no ID token in the sign-in response".into()))?;
+            .ok_or_else(|| Error::Other("no ID token in the sign-in response".into()))?;
         let email = email_from_id_token(&id_token)?;
         let previous = self.load()?;
         self.save(&Stored {
@@ -211,7 +241,7 @@ impl Google {
             warn!("revoking the Google token failed, forgetting it anyway: {e}");
         }
         self.access.lock().await.take();
-        self.secret.delete()
+        Ok(self.secret.delete()?)
     }
 
     /// A new Meet link.
@@ -226,9 +256,8 @@ impl Google {
             response => response,
         };
         let space: Space = checked(response).await?.json().await.map_err(http_error)?;
-        Url::parse(&space.meeting_uri).map_err(|e| {
-            Error::Google(format!("invalid meeting link `{}`: {e}", space.meeting_uri))
-        })
+        Url::parse(&space.meeting_uri)
+            .map_err(|e| Error::Other(format!("invalid meeting link `{}`: {e}", space.meeting_uri)))
     }
 
     async fn post_space(&self) -> Result<reqwest::Response> {
@@ -251,7 +280,7 @@ impl Google {
         {
             return Ok(cached.token.clone());
         }
-        let mut stored = self.load()?.ok_or(Error::GoogleNotSignedIn)?;
+        let mut stored = self.load()?.ok_or(Error::NotSignedIn)?;
         let tokens = match self
             .request_token(&[
                 ("grant_type", "refresh_token"),
@@ -261,10 +290,10 @@ impl Google {
             ])
             .await
         {
-            Err(Error::GoogleSignInExpired) => {
+            Err(Error::SignInExpired) => {
                 *access = None;
                 self.secret.delete()?;
-                return Err(Error::GoogleSignInExpired);
+                return Err(Error::SignInExpired);
             }
             result => result?,
         };
@@ -278,7 +307,7 @@ impl Google {
     }
 
     /// POST `form` to the token endpoint. `invalid_grant` (revoked or
-    /// expired grant) gives [`Error::GoogleSignInExpired`].
+    /// expired grant) gives [`Error::SignInExpired`].
     async fn request_token(&self, form: &[(&str, &str)]) -> Result<TokenResponse> {
         let response = self
             .http
@@ -294,9 +323,9 @@ impl Google {
         let body = response.text().await.unwrap_or_default();
         match serde_json::from_str(&body) {
             Ok(ErrorBody::OAuth { error, .. }) if error == "invalid_grant" => {
-                Err(Error::GoogleSignInExpired)
+                Err(Error::SignInExpired)
             }
-            _ => Err(Error::Google(error_message(status, &body))),
+            _ => Err(Error::Other(error_message(status, &body))),
         }
     }
 
@@ -334,7 +363,7 @@ impl Google {
     }
 
     fn save(&self, stored: &Stored) -> Result<()> {
-        self.secret.save(&serde_json::to_string(stored)?)
+        Ok(self.secret.save(&serde_json::to_string(stored)?)?)
     }
 }
 
@@ -373,15 +402,15 @@ fn authorization_code(query: &str, state: &str) -> Result<String> {
             .map(|(_, value)| value.into_owned())
     };
     if let Some(error) = param("error") {
-        return Err(Error::Google(format!("sign-in failed: {error}")));
+        return Err(Error::Other(format!("sign-in failed: {error}")));
     }
     if param("state").as_deref() != Some(state) {
-        return Err(Error::Google(
+        return Err(Error::Other(
             "sign-in response does not match the request".into(),
         ));
     }
     param("code")
-        .ok_or_else(|| Error::Google("no authorization code in the sign-in response".into()))
+        .ok_or_else(|| Error::Other("no authorization code in the sign-in response".into()))
 }
 
 /// The `email` claim. The token comes straight from Google's token endpoint
@@ -391,7 +420,7 @@ fn email_from_id_token(id_token: &str) -> Result<String> {
     struct Claims {
         email: String,
     }
-    let invalid = || Error::Google("invalid ID token in the sign-in response".into());
+    let invalid = || Error::Other("invalid ID token in the sign-in response".into());
     let payload = id_token.split('.').nth(1).ok_or_else(invalid)?;
     let json = URL_SAFE_NO_PAD
         .decode(payload.trim_end_matches('='))
@@ -407,7 +436,7 @@ async fn checked(response: reqwest::Response) -> Result<reqwest::Response> {
         return Ok(response);
     }
     let body = response.text().await.unwrap_or_default();
-    Err(Error::Google(error_message(status, &body)))
+    Err(Error::Other(error_message(status, &body)))
 }
 
 fn error_message(status: StatusCode, body: &str) -> String {
@@ -423,7 +452,7 @@ fn error_message(status: StatusCode, body: &str) -> String {
 }
 
 fn http_error(e: reqwest::Error) -> Error {
-    Error::Google(e.to_string())
+    Error::Other(e.to_string())
 }
 
 #[cfg(test)]
@@ -638,10 +667,10 @@ mod tests {
         let google = signed_in(dir.path(), &server);
 
         let error = google.create_meeting().await.unwrap_err();
-        assert!(matches!(error, Error::GoogleSignInExpired), "{error}");
+        assert!(matches!(error, Error::SignInExpired), "{error}");
         assert_eq!(google.account().unwrap(), None);
         let error = google.create_meeting().await.unwrap_err();
-        assert!(matches!(error, Error::GoogleNotSignedIn), "{error}");
+        assert!(matches!(error, Error::NotSignedIn), "{error}");
     }
 
     #[tokio::test]
@@ -660,7 +689,7 @@ mod tests {
 
         let error = google.create_meeting().await.unwrap_err();
         assert!(
-            matches!(&error, Error::Google(m) if m == "Meet API disabled"),
+            matches!(&error, Error::Other(m) if m == "Meet API disabled"),
             "{error}"
         );
     }
