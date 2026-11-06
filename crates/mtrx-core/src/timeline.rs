@@ -41,7 +41,7 @@ use tracing::warn;
 
 use crate::{
     AbortOnDrop, Draft, Error, Live, PinsChange, Result, Session, User,
-    echo::Echoes,
+    echo::{Echoes, PendingRead, Unread},
     media::{self, MediaRef},
     permissions, pins, room_links,
     rows::{self, Row, RowContext},
@@ -349,6 +349,7 @@ pub struct RoomTimeline {
     room_id: OwnedRoomId,
     timeline: Arc<Timeline>,
     outbox: Arc<Outbox>,
+    echoes: Arc<Echoes>,
     /// Back-paginations run one at a time.
     pagination: Mutex<()>,
     entries: watch::Receiver<Vec<TimelineEntry>>,
@@ -630,9 +631,26 @@ impl RoomTimeline {
         })
     }
 
-    /// Mark everything up to the latest event as read.
+    /// Mark everything up to the latest event as read. The room lists show
+    /// the room read at once, until sync shows our receipt; if the server
+    /// is unreachable, it is sent again once the server is back.
     pub async fn mark_read(&self) -> Result<()> {
-        self.timeline.mark_as_read(ReceiptType::Read).await?;
+        let room = self.timeline.room();
+        let up_to = self.timeline.latest_event_id().await;
+        if let Some(up_to) = &up_to {
+            let read = PendingRead {
+                up_to: up_to.clone(),
+                receipt: synced_receipt(room),
+                counted: Unread::of(room),
+            };
+            self.echoes.set_read(room.room_id(), read);
+        }
+        // Kept also when this fails.
+        let sent = self.timeline.mark_as_read(ReceiptType::Read).await?;
+        if !sent && let Some(up_to) = &up_to {
+            // The server has our receipt at or after it already.
+            self.echoes.drop_read(room.room_id(), up_to);
+        }
         Ok(())
     }
 }
@@ -658,6 +676,12 @@ impl Attachment {
             bytes: tokio::fs::read(path).await?,
         })
     }
+}
+
+/// Where our read receipt in `room` is as synced (an event we sent counts):
+/// where the SDK counts its unread messages from.
+pub(crate) fn synced_receipt(room: &Room) -> Option<OwnedEventId> {
+    Some(room.read_receipts().latest_active?.event_id)
 }
 
 /// Enqueues a session's messages one at a time (see [`send_message`]), and
@@ -1027,6 +1051,7 @@ impl Session {
             room_id: room_id.to_owned(),
             timeline,
             outbox: self.outbox.clone(),
+            echoes: self.echoes.clone(),
             pagination: Mutex::default(),
             entries,
             context,

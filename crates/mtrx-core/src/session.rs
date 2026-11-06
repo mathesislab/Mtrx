@@ -185,7 +185,9 @@ impl Session {
                 .await
                 .map_err(|e| Error::Sync(e.to_string()))?,
         );
-        let (connection, watch_connection) = crate::connection::watch(client.clone(), sync.clone());
+        let echoes = Arc::new(crate::echo::Echoes::default());
+        let (connection, watch_connection) =
+            crate::connection::watch(client.clone(), sync.clone(), echoes.clone());
         let verification_tx = crate::encryption::register_handlers(&client);
         let notification_settings = client.notification_settings().await;
         let (notifications, notifier) =
@@ -212,7 +214,7 @@ impl Session {
             colours,
             directory_servers,
             drafts,
-            echoes: Default::default(),
+            echoes,
             spaces,
             listings: Default::default(),
             connection,

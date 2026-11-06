@@ -208,6 +208,8 @@ pub struct RoomSummary {
     pub membership: Membership,
     pub encrypted: bool,
     pub join_rule: JoinRule,
+    /// Unread since our read receipt; in the room lists, a room read here
+    /// counts only what came since at once, before sync has the receipt.
     pub unread_messages: u64,
     pub unread_mentions: u64,
     pub unread_notifications: u64,
