@@ -74,6 +74,9 @@ struct RowActions {
     let showReactors: (String, String) -> Void
     /// List who read up to the message.
     let showReaders: (String) -> Void
+    /// The status of a message not sent yet was tapped: retry it or take
+    /// it back.
+    let unsent: (String) -> Void
 }
 
 /// A message: in a bubble on the right if ours, else on the left with the
@@ -274,15 +277,27 @@ struct MessageView: View {
             case .sent:
                 EmptyView()
             case .sending:
-                Image(systemName: "clock").accessibilityLabel("Sending")
+                unsentStatus(Image(systemName: "clock"), label: "Sending")
             case .waiting:
-                Image(systemName: "wifi.slash").accessibilityLabel("Waiting for connection")
+                unsentStatus(Image(systemName: "wifi.slash"), label: "Waiting for connection")
             case .failed:
-                Image(systemName: "exclamationmark.circle").foregroundColor(.red).accessibilityLabel("Not sent")
+                unsentStatus(
+                    Image(systemName: "exclamationmark.circle").foregroundColor(.red), label: "Not sent")
             }
         }
         .font(.caption2)
         .foregroundStyle(muted)
+    }
+
+    /// The status of a message not sent yet: a tap offers to retry it (if
+    /// refused) or take it back.
+    private func unsentStatus<Icon: View>(_ icon: Icon, label: String) -> some View {
+        icon
+            .contentShape(Rectangle())
+            .onTapGesture { actions.unsent(id) }
+            .accessibilityLabel(label)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { actions.unsent(id) }
     }
 }
 
@@ -475,7 +490,7 @@ extension MessageAction {
         case .unpin: return "Unpin"
         case .delete: return "Delete"
         case .retry: return "Retry"
-        case .discard: return "Discard"
+        case .unsend: return "Cancel and Put Back"
         }
     }
 
@@ -490,7 +505,7 @@ extension MessageAction {
         case .unpin: return "pin.slash"
         case .delete: return "trash"
         case .retry: return "arrow.clockwise"
-        case .discard: return "xmark.bin"
+        case .unsend: return "arrow.uturn.backward"
         }
     }
 }
