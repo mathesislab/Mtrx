@@ -5,7 +5,7 @@ use crate::tint::Tint;
 use iced::{
     Background, Border, Color, Theme,
     border::Radius,
-    widget::{button, container, rule, text_editor, text_input},
+    widget::{button, container, rule, text, text_editor, text_input},
 };
 
 pub const SPACE_BAR_WIDTH: f32 = 56.0;
@@ -195,6 +195,17 @@ fn wait_colors(theme: &Theme) -> (Color, Color) {
             Color::from_rgb8(0x1f, 0x3b, 0x5f),
         )
     }
+}
+
+/// Text about a problem: dark pink (light in dark mode), as in the status
+/// pill.
+pub fn problem_text(theme: &Theme) -> text::Style {
+    let color = if theme.extended_palette().is_dark {
+        Color::from_rgb8(0xf2, 0x9c, 0xb2)
+    } else {
+        Color::from_rgb8(0xb0, 0x26, 0x4b)
+    };
+    text::Style { color: Some(color) }
 }
 
 /// The bar along the bottom while offline, or once the session ended.

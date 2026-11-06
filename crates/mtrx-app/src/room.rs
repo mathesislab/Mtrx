@@ -1553,6 +1553,7 @@ fn event_view<'a>(
                 (kind, _) => match &m.media {
                     Some(file) => media::view(
                         context.room,
+                        event.event_id.as_ref(),
                         file,
                         &m.body,
                         context.previews,

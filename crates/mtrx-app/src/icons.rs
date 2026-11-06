@@ -1183,6 +1183,78 @@ pub fn door<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> 
     })
 }
 
+/// A folder: where a file is.
+pub fn folder<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        frame.stroke(
+            &Path::new(|path| {
+                path.move_to(p(0.12, 0.8));
+                path.line_to(p(0.12, 0.22));
+                path.line_to(p(0.4, 0.22));
+                path.line_to(p(0.5, 0.32));
+                path.line_to(p(0.88, 0.32));
+                path.line_to(p(0.88, 0.8));
+                path.close();
+            }),
+            stroke,
+        );
+    })
+}
+
+/// A ring filled clockwise from the top to `fraction`, as progress; just
+/// the faint ring while it is unknown.
+pub fn ring<'a, M: 'a>(size: f32, fraction: Option<f32>) -> Element<'a, M> {
+    canvas::Canvas::new(Ring { fraction })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Ring {
+    fraction: Option<f32>,
+}
+
+impl<M> canvas::Program<M> for Ring {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let width = 2.0;
+        let center = frame.center();
+        let radius = bounds.width.min(bounds.height) / 2.0 - width;
+        let palette = theme.extended_palette();
+        let track = Stroke::default()
+            .with_color(palette.background.strong.color)
+            .with_width(width);
+        frame.stroke(&Path::circle(center, radius), track);
+        if let Some(fraction) = self.fraction.filter(|f| *f > 0.0) {
+            let start = -FRAC_PI_2;
+            let arc = Path::new(|path| {
+                path.arc(canvas::path::Arc {
+                    center,
+                    radius,
+                    start_angle: iced::Radians(start),
+                    end_angle: iced::Radians(start + std::f32::consts::TAU * fraction.min(1.0)),
+                });
+            });
+            let done = Stroke::default()
+                .with_color(palette.primary.base.color)
+                .with_width(width)
+                .with_line_cap(canvas::LineCap::Round);
+            frame.stroke(&arc, done);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
 /// An icon of round-capped strokes, drawn by `draw` on a square of side
 /// `s` (the size).
 fn sketch<'a, M: 'a>(
