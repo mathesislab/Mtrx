@@ -384,8 +384,13 @@ final class FakeSession: Session, @unchecked Sendable {
     // MARK: Rooms: settings, members, pins, joining, making
 
     let fakePinned = FakeTimeline(noHandle: .init())
-    /// Each `Room.settings` call returns this (after the changes made).
-    var settings = Make.settings()
+    /// The rooms' settings, as `Room.subscribeSettings` gives them: to the
+    /// listener as it subscribes, and again on every change (the changes
+    /// made show at once, as in the library).
+    var settings = Make.settings() {
+        didSet { settingsListener?.onUpdate(settings: settings) }
+    }
+    var settingsListener: RoomSettingsListener?
     var memberList: [Member] = []
     /// Changes asked for, in order, e.g. "notify mentions", "pin $e true".
     var changes: [String] = []
@@ -470,13 +475,18 @@ final class FakeSession: Session, @unchecked Sendable {
     }
 }
 
-/// A room of a fake session (`FakeSession.room`): reads its settings and
-/// members, and records changes in its `changes`.
+/// A room of a fake session (`FakeSession.room`): gives its settings and
+/// members, records changes in its `changes` and shows them in its
+/// settings.
 final class FakeRoom: Room, @unchecked Sendable {
     fileprivate var session: FakeSession!
     fileprivate var roomId = ""
 
-    override func settings() async throws -> RoomSettings { session.settings }
+    override func subscribeSettings(listener: RoomSettingsListener) -> TaskHandle {
+        session.settingsListener = listener
+        listener.onUpdate(settings: session.settings)
+        return FakeTaskHandle(noHandle: .init())
+    }
 
     override func members() async throws -> [Member] { session.memberList }
 
@@ -498,26 +508,52 @@ final class FakeRoom: Room, @unchecked Sendable {
 
     override func setTopic(topic: String) async throws { try session.change("topic \(topic)") }
 
-    override func setAddress(name: String?) async throws { try session.change("address \(name ?? "-")") }
+    override func setAddress(name: String?) async throws {
+        try session.change("address \(name ?? "-")")
+        session.settings.address = name.map { "#\($0):example.org" }
+    }
 
-    override func setListed(listed: Bool) async throws { try session.change("listed \(listed)") }
+    override func setListed(listed: Bool) async throws {
+        try session.change("listed \(listed)")
+        session.settings.listed = listed
+    }
 
-    override func setHistory(history: History) async throws { try session.change("history \(history)") }
+    override func setHistory(history: History) async throws {
+        try session.change("history \(history)")
+        session.settings.history = history
+    }
 
     override func setPermissions(permissions: Permissions) async throws {
         try session.change("permissions \(permissions)")
+        session.settings.permissions = permissions
     }
 
-    override func encrypt() async throws { try session.change("encrypt") }
+    override func encrypt() async throws {
+        try session.change("encrypt")
+        session.settings.encrypted = true
+    }
 
     /// On a space's room.
     override func setSuggested(roomId: String, suggested: Bool) async throws {
         try session.change("suggested \(self.roomId) \(suggested)")
+        if let at = session.settings.spaces.firstIndex(where: { $0.spaceId == self.roomId }) {
+            session.settings.spaces[at].suggested = suggested
+        }
     }
 
-    override func addChild(roomId: String) async throws { try session.change("add to \(self.roomId)") }
+    /// On a space's room.
+    override func addChild(roomId: String) async throws {
+        try session.change("add to \(self.roomId)")
+        session.settings.canAddTo.removeAll { $0 == self.roomId }
+        session.settings.spaces.append(SpaceLink(spaceId: self.roomId, suggested: false, canChange: true))
+    }
 
-    override func removeChild(roomId: String) async throws { try session.change("remove from \(self.roomId)") }
+    /// On a space's room.
+    override func removeChild(roomId: String) async throws {
+        try session.change("remove from \(self.roomId)")
+        session.settings.spaces.removeAll { $0.spaceId == self.roomId }
+        session.settings.canAddTo.append(self.roomId)
+    }
 
     override func setLevel(userId: String, level: Int64) async throws {
         try session.change("level \(userId) \(level)")
@@ -527,7 +563,10 @@ final class FakeRoom: Room, @unchecked Sendable {
         try session.change("\(ban ? "ban" : "remove") \(userId) \(reason ?? "-")")
     }
 
-    override func unban(userId: String) async throws { try session.change("unban \(userId)") }
+    override func unban(userId: String) async throws {
+        try session.change("unban \(userId)")
+        session.settings.banned.removeAll { $0.user.userId == userId }
+    }
 
     override func invite(userId: String) async throws {
         if let inviteError = session.inviteError { throw inviteError }
@@ -728,11 +767,39 @@ enum Make {
             .filter { $0 != .spaceMembers || inSpace || joinRule == .spaceMembers }
             .map { JoinRuleChoice(rule: $0, title: title($0), fact: fact($0)) }
         return RoomSettings(
-            rights: rights(canChange), notify: .all, joinRule: joinRule, joinRuleFact: fact(joinRule),
-            joinRuleChoices: choices, address: address, listed: listed, history: .joined,
-            permissions: .everyone, encrypted: encrypted, version: "12", spaces: spaces, canAddTo: canAddTo,
-            banned: banned)
+            rights: rights(canChange), notify: .all, notifyChoices: notifyChoices, joinRule: joinRule,
+            joinRuleFact: fact(joinRule), joinRuleChoices: choices, address: address, listed: listed,
+            history: .joined, historyChoices: historyChoices, permissions: .everyone,
+            permissionsChoices: permissionsChoices, encrypted: encrypted, version: "12", spaces: spaces,
+            canAddTo: canAddTo, banned: banned)
     }
+
+    /// The notification modes a room's settings offer, as the library words
+    /// them.
+    static let notifyChoices = [
+        NotifyChoice(mode: .all, title: "All messages", explanation: "Every message notifies you."),
+        NotifyChoice(
+            mode: .mentions, title: "Mentions", explanation: "Only mentions of you and your keywords notify you."),
+        NotifyChoice(mode: .mute, title: "Mute", explanation: "Nothing here notifies you."),
+    ]
+
+    /// Who may read the history, as the library words it.
+    static let historyChoices = [
+        HistoryChoice(history: .joined, title: "Since joining", explanation: "Members, from when they joined."),
+        HistoryChoice(history: .invited, title: "Since invited", explanation: "Members, from when they were invited."),
+        HistoryChoice(
+            history: .members, title: "Members", explanation: "Members, all of it, also from before they joined."),
+        HistoryChoice(history: .anyone, title: "Anyone", explanation: "Anyone, without joining."),
+    ]
+
+    /// Who may edit, as the library words it.
+    static let permissionsChoices = [
+        PermissionsChoice(
+            permissions: .everyone, title: "Everyone", explanation: "Everyone can invite, rename and change the topic."),
+        PermissionsChoice(
+            permissions: .moderators, title: "Moderators",
+            explanation: "Invite, rename, change the topic and picture, and pin messages."),
+    ]
 
     /// A member at `level` (nil: an owner); `upTo`: the highest level we
     /// may give them (nil: theirs is not ours to change). Their label and

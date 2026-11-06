@@ -8,8 +8,15 @@ use mtrx_core::{self as core, OwnedEventId};
 
 use crate::{
     History, JoinRule, Member, MtrxError, NotifyMode, Permissions, RoomSettings, Session,
-    runtime::{InRuntime, run},
+    TaskHandle,
+    runtime::{InRuntime, forward, run},
 };
+
+/// Receives a room's settings, once read, and after every change.
+#[uniffi::export(with_foreign)]
+pub trait RoomSettingsListener: Send + Sync {
+    fn on_update(&self, settings: RoomSettings);
+}
 
 /// A room or space we know (`Session.room`).
 #[derive(uniffi::Object)]
@@ -36,10 +43,19 @@ impl Session {
 
 #[uniffi::export]
 impl Room {
-    /// The room's settings, and which we may change.
-    pub async fn settings(&self) -> Result<RoomSettings, MtrxError> {
+    /// Call `listener` with the room's settings once read, then after
+    /// every change: to its state, who is banned, the notification rules
+    /// and the spaces it is in. A change made here shows at once, before
+    /// its call returns; a failed one goes again.
+    pub fn subscribe_settings(&self, listener: Arc<dyn RoomSettingsListener>) -> Arc<TaskHandle> {
         let room = self.core();
-        run(async move { Ok(room.settings().await?.into()) }).await
+        TaskHandle::spawn(async move {
+            let settings = room.settings().await;
+            forward(settings, RoomSettings::from, |settings| {
+                listener.on_update(settings)
+            })
+            .await;
+        })
     }
 
     /// Joined and invited members, admins first, then by name.
@@ -82,12 +98,7 @@ impl Room {
     }
 
     pub async fn set_history(&self, history: History) -> Result<(), MtrxError> {
-        let history = match history {
-            History::Joined => core::History::Joined,
-            History::Invited => core::History::Invited,
-            History::Members => core::History::Members,
-            History::Anyone => core::History::Anyone,
-        };
+        let history = core::History::from(history);
         let room = self.core();
         run(async move { Ok(room.set_history(history).await?) }).await
     }
@@ -105,10 +116,7 @@ impl Room {
     }
 
     pub async fn set_permissions(&self, permissions: Permissions) -> Result<(), MtrxError> {
-        let permissions = match permissions {
-            Permissions::Everyone => core::Permissions::Everyone,
-            Permissions::Moderators => core::Permissions::Moderators,
-        };
+        let permissions = core::Permissions::from(permissions);
         let room = self.core();
         run(async move { Ok(room.set_permissions(permissions).await?) }).await
     }
@@ -120,11 +128,7 @@ impl Room {
     }
 
     pub async fn set_notify(&self, mode: NotifyMode) -> Result<(), MtrxError> {
-        let mode = match mode {
-            NotifyMode::All => core::NotifyMode::All,
-            NotifyMode::Mentions => core::NotifyMode::Mentions,
-            NotifyMode::Mute => core::NotifyMode::Mute,
-        };
+        let mode = core::NotifyMode::from(mode);
         let room = self.core();
         run(async move { Ok(room.set_notify(mode).await?) }).await
     }

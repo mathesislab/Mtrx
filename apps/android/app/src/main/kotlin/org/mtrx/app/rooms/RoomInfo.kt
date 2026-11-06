@@ -337,8 +337,8 @@ fun SettingsColumn(
         ChoiceRow(
             "Notifications",
             settings.notify,
-            NOTIFY_OPTIONS.map { it.value to it.label },
-            NOTIFY_OPTIONS.firstOrNull { it.value == settings.notify }?.explanation,
+            settings.notifyChoices.map { it.mode to it.title },
+            settings.notifyChoices.firstOrNull { it.mode == settings.notify }?.explanation,
             enabled = true,
             onChoose = actions::setNotify,
         )
@@ -373,8 +373,8 @@ fun SettingsColumn(
             ChoiceRow(
                 "Who can read the history",
                 settings.history,
-                HISTORY_OPTIONS.map { it.value to it.label },
-                HISTORY_OPTIONS.firstOrNull { it.value == settings.history }?.explanation,
+                settings.historyChoices.map { it.history to it.title },
+                settings.historyChoices.firstOrNull { it.history == settings.history }?.explanation,
                 enabled = true,
                 onChoose = actions::setHistory,
             )
@@ -383,8 +383,8 @@ fun SettingsColumn(
             ChoiceRow(
                 "Who can edit",
                 settings.permissions,
-                PERMISSION_OPTIONS.map { it.value to it.label },
-                PERMISSION_OPTIONS.firstOrNull { it.value == settings.permissions }?.explanation,
+                settings.permissionsChoices.map { it.permissions to it.title },
+                settings.permissionsChoices.firstOrNull { it.permissions == settings.permissions }?.explanation,
                 enabled = true,
                 onChoose = actions::setPermissions,
             )

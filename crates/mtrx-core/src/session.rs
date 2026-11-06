@@ -62,7 +62,8 @@ pub struct Session {
     pub(crate) colours: crate::account_data::Synced<crate::RoomListColours>,
     pub(crate) directory_servers: crate::account_data::Synced<crate::DirectoryServers>,
     pub(crate) drafts: crate::drafts::Drafts,
-    /// Changes made here, until the room list and timelines have them.
+    /// Changes made here, until the room list, timelines and settings have
+    /// them.
     pub(crate) echoes: Arc<crate::echo::Echoes>,
     /// The joined spaces and what they list, as last synced.
     pub(crate) spaces: crate::Live<Arc<crate::SpaceGraph>>,
@@ -72,6 +73,8 @@ pub struct Session {
     /// Kept for the session: it follows push rule changes, so it knows a
     /// room's mode right after setting it (sync echoes it later).
     pub(crate) notification_settings: matrix_sdk::notification_settings::NotificationSettings,
+    /// Changes to rooms' modes, one after another in each room.
+    pub(crate) notify_turns: crate::room_settings::NotifyTurns,
     /// Sets our presence and keeps it, see [`Session::set_presence`].
     pub(crate) presence_keeper: crate::presence::Keeper,
     pub(crate) own_presence: crate::OwnPresence,
@@ -214,6 +217,7 @@ impl Session {
             listings: Default::default(),
             connection,
             notification_settings,
+            notify_turns: Default::default(),
             presence_keeper: presence_keeper.clone(),
             own_presence: crate::presence::own_presence(presence_keeper),
             profile,

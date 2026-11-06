@@ -22,9 +22,9 @@ use iced::{
 use mtrx_core::{
     CallService, Connection, Contact, Draft, DraftKeeper, Live, Media, MediaRef, Membership,
     Notification, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
-    OwnedUserId, Profile, RecoveryStep, RoomHandle, RoomKind, RoomListColours, RoomListState,
-    RoomLists, RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind,
-    Session, SpaceKey, Topic, Url,
+    OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists,
+    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
+    SpaceKey, Topic, Url,
 };
 use mtrx_google::Google;
 
@@ -1485,8 +1485,22 @@ impl App {
                             saved,
                         )
                     }
-                    // What was saved, or the settings as they are after a failure.
-                    (info::Message::Saved(_), Some(room)) => load_settings(&room),
+                    (info::Message::LetEveryoneEdit, Some(room)) => Task::perform(
+                        async move {
+                            let update = room.let_everyone_edit_all().await?;
+                            let skipped = match update.not_allowed.len() {
+                                0 => String::new(),
+                                n => format!(
+                                    " {n} could not be changed: you are not an admin there."
+                                ),
+                            };
+                            let opened = update.changed.len();
+                            mtrx_core::Result::Ok(format!("Opened {opened} room(s).{skipped}"))
+                        },
+                        |result: mtrx_core::Result<String>| {
+                            Message::Info(info::Message::Opened(result.map_err(|e| e.to_string())))
+                        },
+                    ),
                     _ => Task::none(),
                 };
                 let overview = match card.update(message) {
@@ -2936,7 +2950,6 @@ impl App {
                 Task::none()
             }
             dialog::Opened::Members(room) => self.refresh_members(&room),
-            dialog::Opened::Settings(room) => self.reload_card(&room),
             dialog::Opened::Left(id) => {
                 if main.pane.id() == Some(&id) {
                     main.set_pane(Pane::Empty);
@@ -2970,22 +2983,12 @@ impl App {
             };
             let rights =
                 |id: &OwnedRoomId| main.lists.room(id).map(|r| r.rights).unwrap_or_default();
-            if let Some(room) = main.pane.room() {
-                panel.room = Some(settings::Access::new(
-                    room.id.clone(),
-                    name(&room.id),
-                    false,
-                    rights(&room.id),
-                ));
-                tasks.push(load_permissions(main.session.clone(), room.id.clone()));
-            }
             if let Some(space) = &main.space {
                 panel.space = Some(settings::SpaceCalls::new(
                     space.clone(),
                     name(space),
                     rights(space),
                 ));
-                tasks.push(load_permissions(main.session.clone(), space.clone()));
                 let (session, space) = (main.session.clone(), space.clone());
                 tasks.push(Task::perform(
                     async move {
@@ -3163,40 +3166,6 @@ impl App {
                         result.map_err(|e| e.to_string()),
                     ))
                 })
-            }
-            settings::Action::LetEveryoneEdit { id, space } => {
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                let session = main.session.clone();
-                Task::perform(
-                    {
-                        let id = id.clone();
-                        async move {
-                            let room = session.room(&id)?;
-                            if space {
-                                room.let_everyone_edit_all().await.map(|update| {
-                                    let skipped = match update.not_allowed.len() {
-                                        0 => String::new(),
-                                        n => format!(
-                                            " {n} could not be changed: you are not an admin there."
-                                        ),
-                                    };
-                                    format!("Opened {} room(s).{skipped}", update.changed.len())
-                                })
-                            } else {
-                                (room.set_permissions(mtrx_core::Permissions::Everyone).await)
-                                    .map(|()| "Done.".to_owned())
-                            }
-                        }
-                    },
-                    move |result| {
-                        Message::Settings(settings::Message::Opened(
-                            id.clone(),
-                            result.map_err(|e| e.to_string()),
-                        ))
-                    },
-                )
             }
             settings::Action::SetSpaceService(space, service) => {
                 let Screen::Main(main) = &self.screen else {
@@ -3966,7 +3935,7 @@ impl App {
             ),
             _ => Task::none(),
         };
-        Task::batch([beside, overview, self.reload_card(room)])
+        Task::batch([beside, overview])
     }
 
     /// Once synced, an account without "Notes at the top" gets this
@@ -4008,17 +3977,6 @@ impl App {
         };
         let card = main.card.as_ref()?;
         Some((card.room().cloned(), card.overview.as_ref().map(|o| o.tab)))
-    }
-
-    /// The settings again on `room`'s card, if it is open.
-    fn reload_card(&self, room: &OwnedRoomId) -> Task<Message> {
-        match &self.screen {
-            Screen::Main(main) if main.card.as_ref().and_then(|c| c.room()) == Some(room) => {
-                (main.card.as_ref().and_then(|c| c.handle.as_ref()))
-                    .map_or_else(Task::none, load_settings)
-            }
-            _ => Task::none(),
-        }
     }
 
     /// Run what the join dialog asks for.
@@ -4162,13 +4120,14 @@ impl App {
                     move |result| Message::Info(info::Message::UserLoaded(user.clone(), result)),
                 )
             }
+            // A room's settings are followed while its card shows
+            // (`subscription`).
             None => match room {
-                Some((_, Ok(handle))) => load_settings(&handle),
-                Some((id, Err(e))) => Task::done(Message::Info(info::Message::SettingsLoaded(
+                Some((id, Err(e))) => Task::done(Message::Info(info::Message::Settings(
                     id,
                     Err(e.to_string()),
                 ))),
-                None => Task::none(),
+                _ => Task::none(),
             },
         };
         let overview = card.overview.as_ref().map_or(Task::none(), |o| {
@@ -4311,6 +4270,9 @@ impl App {
                     Subscription::run_with(Shared(lists.clone()), |lists| lists.0.updates())
                         .map(Message::Rooms),
                 );
+            }
+            if let Some(card) = &main.card {
+                subscriptions.push(card.subscription());
             }
             if let Some(room) = main.pane.room() {
                 subscriptions.push(Subscription::run_with(
@@ -4807,7 +4769,7 @@ async fn run_request(
             }
             Request::Encrypt(room) => {
                 session.room(&room)?.encrypt().await?;
-                Opened::Settings(room)
+                Opened::Nothing
             }
             Request::SignOut => {
                 // Others see us offline now, not once the server forgets us.
@@ -5276,20 +5238,6 @@ async fn notify(notification: Notification) -> bool {
     }
 }
 
-/// Who may edit `room`, for the settings panel.
-fn load_permissions(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
-    Task::perform(
-        async move {
-            let permissions = match session.room(&room) {
-                Ok(handle) => handle.permissions().await.ok(),
-                Err(_) => None,
-            };
-            settings::Message::AccessLoaded(room, permissions)
-        },
-        Message::Settings,
-    )
-}
-
 /// A link for a new call with `service`.
 async fn new_call_link(service: &CallService, google: &Google) -> Result<Url, String> {
     match service.kind {
@@ -5316,14 +5264,6 @@ fn paginate(room: &mut Room) -> Task<Message> {
     Task::perform(
         async move { timeline.paginate_back(30).await.map(|_| ()) },
         move |result| room::Message::Paginated(result.map_err(|e| e.to_string())).to(&id),
-    )
-}
-
-fn load_settings(room: &RoomHandle) -> Task<Message> {
-    let (room, id) = (room.clone(), room.id().to_owned());
-    Task::perform(
-        async move { room.settings().await.map_err(|e| e.to_string()) },
-        move |result| Message::Info(info::Message::SettingsLoaded(id.clone(), result)),
     )
 }
 

@@ -51,6 +51,10 @@ extension Feed: TypingListener where Value == [String] {
     func onUpdate(names: [String]) { send(names) }
 }
 
+extension Feed: RoomSettingsListener where Value == RoomSettings {
+    func onUpdate(settings: RoomSettings) { send(settings) }
+}
+
 extension Feed: EncryptionStateListener where Value == EncryptionState {
     func onUpdate(state: EncryptionState) { send(state) }
 }

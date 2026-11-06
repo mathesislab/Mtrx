@@ -15,15 +15,17 @@ import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.Room
 import uniffi.mtrx.RoomSettings
+import uniffi.mtrx.RoomSettingsListener
 import uniffi.mtrx.Session
+import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Topic
 
 /**
  * Room info of [roomId] (a room or a space): its settings and members, and
- * the changes to them, through its [Room]. Each change reads the settings
- * (or members) again after it, as the library returns once sync brought it
- * back. [composeTopic] makes the topic to save from its text and links (the
- * library's). Methods are called on the main thread.
+ * the changes to them, through its [Room]. The settings follow the room, and
+ * a change to them shows at once (the library's); the members are read again
+ * after each change to them. [composeTopic] makes the topic to save from its
+ * text and links (the library's). Methods are called on the main thread.
  */
 class RoomInfoModel(
     val roomId: String,
@@ -39,26 +41,23 @@ class RoomInfoModel(
     private val _members = MutableStateFlow<List<Member>?>(null)
     val members: StateFlow<List<Member>?> = _members.asStateFlow()
 
-    /** A change under way, as "Saving…". */
+    /** A change to the members under way, as "Banning…". */
     private val _busy = MutableStateFlow<String?>(null)
     val busy: StateFlow<String?> = _busy.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    init {
-        loadSettings()
-        loadMembers()
-    }
-
-    fun loadSettings() {
-        viewModelScope.launch {
-            try {
-                _settings.value = room.getOrThrow().settings()
-            } catch (e: MtrxException) {
-                _error.value = describe(e)
-            }
+    /** Follows the settings into [settings]; cancelled with the model. */
+    private val subscription: TaskHandle? = room.getOrNull()?.subscribeSettings(object : RoomSettingsListener {
+        // On a library thread: the settings once read, then after every change.
+        override fun onUpdate(settings: RoomSettings) {
+            _settings.value = settings
         }
+    })
+
+    init {
+        loadMembers()
     }
 
     fun loadMembers() {
@@ -73,58 +72,65 @@ class RoomInfoModel(
 
     override fun rename(name: String) {
         if (name.isBlank()) return
-        change("Renaming…") { it.setName(name.trim()) }
+        change { it.setName(name.trim()) }
     }
 
-    override fun setTopic(topic: Topic) = change("Saving…") { it.setTopic(composeTopic(topic)) }
+    override fun setTopic(topic: Topic) = change { it.setTopic(composeTopic(topic)) }
 
-    override fun setNotify(mode: NotifyMode) = change("Saving…") { it.setNotify(mode) }
+    override fun setNotify(mode: NotifyMode) = change { it.setNotify(mode) }
 
-    override fun setJoinRule(rule: JoinRule) = change("Saving…") { it.setJoinRule(rule) }
+    override fun setJoinRule(rule: JoinRule) = change { it.setJoinRule(rule) }
 
-    override fun setListed(listed: Boolean) = change("Saving…") { it.setListed(listed) }
+    override fun setListed(listed: Boolean) = change { it.setListed(listed) }
 
     override fun setSuggested(spaceId: String, suggested: Boolean) =
-        change("Saving…") { session.room(spaceId).use { space -> space.setSuggested(roomId, suggested) } }
+        change { session.room(spaceId).use { space -> space.setSuggested(roomId, suggested) } }
 
-    override fun setHistory(history: History) = change("Saving…") { it.setHistory(history) }
+    override fun setHistory(history: History) = change { it.setHistory(history) }
 
-    override fun setPermissions(permissions: Permissions) = change("Saving…") { it.setPermissions(permissions) }
+    override fun setPermissions(permissions: Permissions) = change { it.setPermissions(permissions) }
 
-    override fun encrypt() = change("Turning encryption on…") { it.encrypt() }
+    override fun encrypt() = change { it.encrypt() }
 
     /** The address `#name:ourserver`; blank removes it. */
-    override fun setAddress(name: String) =
-        change("Saving…") { it.setAddress(name.trim().removePrefix("#").ifEmpty { null }) }
+    override fun setAddress(name: String) = change { it.setAddress(name.trim().removePrefix("#").ifEmpty { null }) }
 
-    override fun addToSpace(spaceId: String) =
-        change("Saving…") { session.room(spaceId).use { space -> space.addChild(roomId) } }
+    override fun addToSpace(spaceId: String) = change { session.room(spaceId).use { space -> space.addChild(roomId) } }
 
     override fun removeFromSpace(spaceId: String) =
-        change("Saving…") { session.room(spaceId).use { space -> space.removeChild(roomId) } }
+        change { session.room(spaceId).use { space -> space.removeChild(roomId) } }
 
-    override fun unban(userId: String) = change("Saving…") { it.unban(userId) }
+    override fun unban(userId: String) = change { it.unban(userId) }
 
     override fun setLevel(userId: String, level: Long) =
-        change("Changing the level…", members = true) { it.setLevel(userId, level) }
+        changeMembers("Changing the level…") { it.setLevel(userId, level) }
 
     /** Remove [userId], or also ban them; they see [reason]. */
     override fun remove(userId: String, reason: String, ban: Boolean) =
-        change(if (ban) "Banning…" else "Removing…", members = true) {
-            it.remove(userId, ban, reason.trim().ifEmpty { null })
-        }
+        changeMembers(if (ban) "Banning…" else "Removing…") { it.remove(userId, ban, reason.trim().ifEmpty { null }) }
 
     /** Invite [userId] (`@name:server`). */
-    override fun invite(userId: String) = change("Sending the invites…", members = true) { it.invite(userId.trim()) }
+    override fun invite(userId: String) = changeMembers("Sending the invites…") { it.invite(userId.trim()) }
 
-    private fun change(doing: String, members: Boolean = false, call: suspend (Room) -> Unit) {
+    /** Make a change, which shows at once (in [settings], or the room list's name and topic); a failure shows as [error]. */
+    private fun change(call: suspend (Room) -> Unit) {
+        viewModelScope.launch {
+            try {
+                call(room.getOrThrow())
+            } catch (e: MtrxException) {
+                _error.value = describe(e)
+            }
+        }
+    }
+
+    /** Make a change to the members, shown as [doing] meanwhile, then read them again. */
+    private fun changeMembers(doing: String, call: suspend (Room) -> Unit) {
         viewModelScope.launch {
             _busy.value = doing
             try {
                 val opened = room.getOrThrow()
                 call(opened)
-                _settings.value = opened.settings()
-                if (members) _members.value = opened.members()
+                _members.value = opened.members()
             } catch (e: MtrxException) {
                 _error.value = describe(e)
             } finally {
@@ -138,6 +144,10 @@ class RoomInfoModel(
     }
 
     override fun onCleared() {
+        subscription?.let {
+            it.cancel()
+            it.close()
+        }
         room.getOrNull()?.close()
     }
 }

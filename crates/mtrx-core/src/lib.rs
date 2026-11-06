@@ -40,7 +40,6 @@ mod send_time;
 mod session;
 mod space_graph;
 mod spaces;
-mod synced;
 mod timeline;
 
 #[cfg(feature = "test-support")]

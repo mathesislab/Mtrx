@@ -37,15 +37,16 @@ pub use encryption::{
 };
 pub use error::MtrxError;
 pub use manage::{
-    Banned, History, LevelChoice, LevelConfirmation, Manage, Member, NotifyMode, Permissions,
-    Rights, Role, RoomSettings, SpaceLink, level_confirmation, role_level, typed_level,
+    Banned, History, HistoryChoice, LevelChoice, LevelConfirmation, Manage, Member, NotifyChoice,
+    NotifyMode, Permissions, PermissionsChoice, Rights, Role, RoomSettings, SpaceLink,
+    level_confirmation, role_level, typed_level,
 };
 pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,
     presence_line,
 };
 pub use push::{Notification, PusherInfo};
-pub use room::Room;
+pub use room::{Room, RoomSettingsListener};
 pub use room_list::{
     Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,
     SpaceEntry, SpaceKey,
