@@ -50,7 +50,7 @@ struct RoomView: View {
                     PersonHeader(room: room, presence: presence.presence(of: person.userId), open: model.showPersonInfo)
                 } else {
                     RoomHeader(
-                        room: room, topic: topic, canEdit: info.settings?.canChangeTopic ?? false,
+                        room: room, topic: topic, canEdit: room.rights.changeTopic,
                         openInfo: { showsInfo = true }, openTopic: { sheet = .topic })
                 }
             }
@@ -75,7 +75,6 @@ struct RoomView: View {
             }
         }
         .task { await model.open() }
-        .task { await info.loadSettings() }
         .onAppear { model.setVisible(true) }
         .onDisappear {
             model.setVisible(false)
@@ -380,7 +379,7 @@ private struct RoomSheetView: View {
             SelectTextSheet(text: text)
         case .topic:
             TopicPanel(
-                topic: topic, canEdit: info.settings?.canChangeTopic ?? false, info: info,
+                topic: topic, canEdit: room.rights.changeTopic, info: info,
                 pinned: PinnedModel(session: session.session, roomId: room.id)
             ) { eventId in
                 Task { await model.goTo(eventId: eventId) }

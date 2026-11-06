@@ -161,7 +161,7 @@ struct SpacesTab: View {
 }
 
 /// The `+` of the Spaces tab: New space…, Join a space or room…, and in a
-/// space New room in it….
+/// space we may add rooms to New room in it….
 private struct AddMenu: View {
     /// The space shown, if any.
     let space: RoomSummary?
@@ -169,7 +169,7 @@ private struct AddMenu: View {
 
     var body: some View {
         Menu {
-            if let space {
+            if let space, space.rights.addRooms {
                 Button {
                     sheet = .newRoom(parent: space.id, name: space.name)
                 } label: {

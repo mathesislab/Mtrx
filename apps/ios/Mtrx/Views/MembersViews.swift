@@ -30,7 +30,7 @@ struct MembersSection: View {
         ForEach(members, id: \.user.userId) { member in
             if member.manageable {
                 NavigationLink {
-                    MemberMenu(member: member, model: model)
+                    MemberMenu(member: member, rights: room.rights, model: model)
                 } label: {
                     MemberRow(member: member)
                 }
@@ -76,6 +76,8 @@ struct MemberRow: View {
 /// can't be undone.
 struct MemberMenu: View {
     let member: Member
+    /// Ours in the room.
+    let rights: Rights
     @ObservedObject var model: RoomInfoModel
     @Environment(\.dismiss) private var dismiss
     @State private var confirming: (level: Int64, confirmation: LevelConfirmation)?
@@ -185,7 +187,7 @@ struct MemberMenu: View {
 
     /// "Admin 100 · Moderator 50 · Member 0 · at most 50".
     private var levelsHint: String {
-        var hint = "Admin 100 · Moderator 50 · Member \(member.manage.defaultLevel)"
+        var hint = "Admin 100 · Moderator 50 · Member \(rights.defaultLevel)"
         if let upTo = member.manage.upTo, upTo < 100 {
             hint += " · at most \(upTo)"
         }
