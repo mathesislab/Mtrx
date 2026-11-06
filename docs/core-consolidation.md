@@ -628,3 +628,5 @@ Rough size of the apps' changes:
 ## Decisions (user, 2026-11-02)
 
 All recommendations taken: 1a, 2a, 3a, 4a, 5a, 6a, 7a, 8a, 9a, 10a, 11a.
+
+2026-11-06: FFI labels are record fields, not functions (Android JVM tests can't call FFI functions); applies to N too.

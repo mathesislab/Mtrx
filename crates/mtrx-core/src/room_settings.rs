@@ -17,7 +17,7 @@ use matrix_sdk::{
             room::{
                 canonical_alias::RoomCanonicalAliasEventContent,
                 history_visibility::{HistoryVisibility, RoomHistoryVisibilityEventContent},
-                join_rules::{AllowRule, JoinRule, RoomJoinRulesEventContent},
+                join_rules::{AllowRule, JoinRule as SdkJoinRule, RoomJoinRulesEventContent},
                 member::MembershipState,
             },
             space::child::SpaceChildEventContent,
@@ -28,7 +28,7 @@ use matrix_sdk::{
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    Error, Permissions, Result, RoomHandle, Session, User,
+    Error, JoinRule, Permissions, Result, RoomHandle, Session, User,
     media::guess_mimetype,
     permissions::{everyone_can_edit, power_levels},
     synced,
@@ -59,30 +59,6 @@ impl From<NotifyMode> for RoomNotificationMode {
             NotifyMode::All => Self::AllMessages,
             NotifyMode::Mentions => Self::MentionsAndKeywordsOnly,
             NotifyMode::Mute => Self::Mute,
-        }
-    }
-}
-
-/// Who may join a room.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Access {
-    /// Only invited people.
-    Invite,
-    /// Members of the spaces the room is in (and invited people).
-    SpaceMembers,
-    /// Anyone may ask to join; members let them in.
-    Knock,
-    /// Anyone.
-    Public,
-}
-
-impl From<Option<JoinRule>> for Access {
-    fn from(rule: Option<JoinRule>) -> Self {
-        match rule {
-            Some(JoinRule::Public) => Self::Public,
-            Some(JoinRule::Restricted(_) | JoinRule::KnockRestricted(_)) => Self::SpaceMembers,
-            Some(JoinRule::Knock) => Self::Knock,
-            _ => Self::Invite,
         }
     }
 }
@@ -146,7 +122,10 @@ pub struct RoomSettings {
     pub can_change_picture: bool,
     pub can_invite: bool,
     pub notify: NotifyMode,
-    pub access: Access,
+    pub join_rule: JoinRule,
+    /// The rules to offer, in order: Space members only for a room in a
+    /// joined space, or already so.
+    pub join_rule_choices: Vec<JoinRule>,
     pub can_change_access: bool,
     /// For a space: may list rooms in it.
     pub can_add_rooms: bool,
@@ -244,12 +223,15 @@ impl RoomHandle {
             })
             .collect();
         let (spaces, can_add_to) = session.space_links(self.id()).await;
+        let join_rule = JoinRule::from(room.join_rule().as_ref());
+        let in_space = !session.space_graph().parents(self.id()).is_empty();
         Ok(RoomSettings {
             can_rename: can(StateEventType::RoomName),
             can_change_topic: can(StateEventType::RoomTopic),
             can_change_picture: can(StateEventType::RoomAvatar),
             can_invite: levels.user_can_invite(&own),
-            access: room.join_rule().into(),
+            join_rule,
+            join_rule_choices: JoinRule::choices(join_rule, in_space),
             can_change_access: can(StateEventType::RoomJoinRules),
             can_add_rooms: can(StateEventType::SpaceChild),
             notify: session.notify_mode(room).await.into(),
@@ -323,14 +305,14 @@ impl RoomHandle {
         Ok(())
     }
 
-    /// Change who may join; [`Access::SpaceMembers`] lets in members of the
-    /// joined spaces the room is in.
-    pub async fn set_join_rule(&self, access: Access) -> Result<()> {
-        let rule = match access {
-            Access::Invite => JoinRule::Invite,
-            Access::Public => JoinRule::Public,
-            Access::Knock => JoinRule::Knock,
-            Access::SpaceMembers => {
+    /// Change who may join; [`JoinRule::SpaceMembers`] lets in members of
+    /// the joined spaces the room is in.
+    pub async fn set_join_rule(&self, rule: JoinRule) -> Result<()> {
+        let rule = match rule {
+            JoinRule::Invite => SdkJoinRule::Invite,
+            JoinRule::Public => SdkJoinRule::Public,
+            JoinRule::Knock => SdkJoinRule::Knock,
+            JoinRule::SpaceMembers => {
                 let spaces = self.session.space_graph().parents(self.id()).to_vec();
                 if spaces.is_empty() {
                     return Err(Error::Permissions("the room is in no space".into()));

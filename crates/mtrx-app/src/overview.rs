@@ -7,12 +7,15 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, pick_list, row, space, text, text_input},
 };
-use mtrx_core::{DirectoryRoom, Member, Membership, OwnedRoomId, OwnedServerName, RoomSummary};
+use mtrx_core::{
+    DirectoryRoom, Member, Membership, OwnedRoomId, OwnedServerName, RoomLists, RoomSummary,
+};
 
 use crate::{
     app,
     dialog::Kind,
-    directory, frame,
+    directory::{self, SpaceRooms},
+    frame,
     hint::{Position, hint},
     icons, info, style,
 };
@@ -87,10 +90,25 @@ pub struct Overview {
     expanded: HashSet<OwnedRoomId>,
     /// Joining or asking to join.
     busy: HashSet<OwnedRoomId>,
-    /// Asked to join here, before the server's list says so.
-    asked: HashSet<OwnedRoomId>,
     members: Option<Result<Vec<Member>, String>>,
     error: Option<String>,
+}
+
+/// A line of the Rooms tab, before it is drawn; `depth` levels of
+/// subspaces in.
+enum Line<'a> {
+    /// `open` whether a subspace's rooms follow; `None` for a room, or for
+    /// a space already open above.
+    Room {
+        room: &'a DirectoryRoom,
+        membership: Option<Membership>,
+        open: Option<bool>,
+        depth: usize,
+    },
+    /// The space's rooms aren't listed yet, or couldn't be.
+    Unlisted { depth: usize, failed: bool },
+    /// None the filter shows, of the rooms `listed`, if any.
+    Empty { depth: usize, listed: bool },
 }
 
 impl Overview {
@@ -102,7 +120,6 @@ impl Overview {
             show: Show::default(),
             expanded: HashSet::new(),
             busy: HashSet::new(),
-            asked: HashSet::new(),
             members: None,
             error: None,
         }
@@ -147,11 +164,8 @@ impl Overview {
             }
             Message::Done(room, result) => {
                 self.busy.remove(&room);
-                match result {
-                    Ok(()) => {
-                        self.asked.insert(room);
-                    }
-                    Err(e) => self.error = Some(e),
+                if let Err(e) = result {
+                    self.error = Some(e);
                 }
             }
             Message::MembersLoaded(result) => self.members = Some(result),
@@ -280,7 +294,9 @@ impl Overview {
             ));
         }
         let mut list = column![].spacing(2);
-        list = self.push_rooms(list, &self.space, 0, shown);
+        for line in self.lines(shown.space_rooms, shown.lists) {
+            list = list.push(self.line(line, shown));
+        }
         let mut body = column![tools, list].spacing(10);
         if let Some(error) = &self.error {
             body = body.push(text(error).size(12).style(text::danger));
@@ -298,40 +314,39 @@ impl Overview {
         .into()
     }
 
-    /// The rooms `of` lists that the filter shows, with the rooms of
-    /// expanded subspaces below each, indented by `depth`.
-    fn push_rooms<'a>(
-        &'a self,
-        mut list: iced::widget::Column<'a, app::Message>,
-        of: &OwnedRoomId,
-        depth: u16,
-        shown: info::Shown<'a>,
-    ) -> iced::widget::Column<'a, app::Message> {
-        let indent = f32::from(depth) * INDENT;
-        let listing = shown.space_rooms;
+    /// The Rooms tab's lines: the rooms the space lists that the filter
+    /// shows, with the rooms of expanded subspaces below each.
+    fn lines<'a>(&self, listing: &'a SpaceRooms, lists: &RoomLists) -> Vec<Line<'a>> {
+        let mut lines = Vec::new();
+        self.push_lines(&mut lines, &mut vec![self.space.clone()], listing, lists);
+        lines
+    }
+
+    /// The lines of the last space on `path`, the spaces open from ours
+    /// down. A space already on it is listed but not opened again, so one
+    /// listed below itself shows once and the lines end.
+    fn push_lines<'a>(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        path: &mut Vec<OwnedRoomId>,
+        listing: &'a SpaceRooms,
+        lists: &RoomLists,
+    ) {
+        let depth = path.len() - 1;
+        let of = &path[depth];
         let rooms = listing.rooms(of);
-        // Nothing to show yet: room for what comes, or why it didn't.
         if rooms.is_empty() && !listing.listed(of) {
-            let waiting = listing.failed(of).is_none();
-            if depth == 0 && waiting {
-                return list.push(frame::loading());
-            }
-            let line = if waiting {
-                text("Loading…").size(12).style(text::secondary)
-            } else {
-                text("Couldn't list the rooms.")
-                    .size(12)
-                    .style(text::secondary)
-            };
-            return list.push(container(line).padding(iced::Padding::new(4.0).left(indent + 4.0)));
+            let failed = listing.failed(of).is_some();
+            lines.push(Line::Unlisted { depth, failed });
+            return;
         }
         let filter = self.filter.trim().to_lowercase();
         let mut any = false;
         for room in rooms {
-            let membership =
-                directory::membership(room, shown.rooms, self.asked.contains(&room.id));
+            let membership = lists.membership(&room.id);
             let joined = membership == Some(Membership::Joined);
-            let expanded = room.is_space && self.expanded.contains(&room.id);
+            let open = (room.is_space && !path.contains(&room.id))
+                .then(|| self.expanded.contains(&room.id));
             // A subspace stays while open, for its rooms.
             let matches = (filter.is_empty() || room.name.to_lowercase().contains(&filter))
                 && match self.show {
@@ -339,48 +354,76 @@ impl Overview {
                     Show::Joined => joined,
                     Show::NotJoined => !joined,
                 };
-            if !matches && !expanded {
+            if !matches && open != Some(true) {
                 continue;
             }
             any = true;
-            list = list.push(self.room_row(room, membership, indent, shown));
-            if expanded {
-                list = self.push_rooms(list, &room.id, depth + 1, shown);
+            lines.push(Line::Room {
+                room,
+                membership,
+                open,
+                depth,
+            });
+            if open == Some(true) {
+                path.push(room.id.clone());
+                self.push_lines(lines, path, listing, lists);
+                path.pop();
             }
         }
         if !any {
-            let empty = if rooms.is_empty() {
-                "No rooms you can see."
-            } else {
-                "No rooms match."
-            };
-            list = list.push(
-                container(text(empty).size(12).style(text::secondary))
-                    .padding(iced::Padding::new(4.0).left(indent + 4.0)),
-            );
+            let listed = !rooms.is_empty();
+            lines.push(Line::Empty { depth, listed });
         }
-        list
     }
 
+    fn line<'a>(&'a self, line: Line<'a>, shown: info::Shown<'a>) -> Element<'a, app::Message> {
+        match line {
+            Line::Room {
+                room,
+                membership,
+                open,
+                depth,
+            } => self.room_row(room, membership, open, indent(depth), shown),
+            // Nothing to show yet: room for what comes, or why it didn't.
+            Line::Unlisted {
+                depth: 0,
+                failed: false,
+            } => frame::loading(),
+            Line::Unlisted { depth, failed } => quiet(
+                if failed {
+                    "Couldn't list the rooms."
+                } else {
+                    "Loading…"
+                },
+                depth,
+            ),
+            Line::Empty { depth, listed } => quiet(
+                if listed {
+                    "No rooms match."
+                } else {
+                    "No rooms you can see."
+                },
+                depth,
+            ),
+        }
+    }
+
+    /// A room's row; `open` for a subspace that opens here.
     fn room_row<'a>(
         &'a self,
         room: &DirectoryRoom,
         membership: Option<Membership>,
+        open: Option<bool>,
         indent: f32,
         shown: info::Shown<'a>,
     ) -> Element<'a, app::Message> {
-        let expander: Element<'a, app::Message> = if room.is_space {
-            button(icons::chevron(
-                12.0,
-                self.expanded.contains(&room.id),
-                directory::secondary,
-            ))
-            .padding(4)
-            .style(style::list_item(false))
-            .on_press(message(Message::Expand(room.id.clone())))
-            .into()
-        } else {
-            space().width(20).into()
+        let expander: Element<'a, app::Message> = match open {
+            Some(open) => button(icons::chevron(12.0, open, directory::secondary))
+                .padding(4)
+                .style(style::list_item(false))
+                .on_press(message(Message::Expand(room.id.clone())))
+                .into(),
+            None => space().width(20).into(),
         };
         directory::entry(
             room,
@@ -444,4 +487,62 @@ impl Overview {
 
 fn message(message: Message) -> app::Message {
     app::Message::Info(info::Message::Overview(message))
+}
+
+fn indent(depth: usize) -> f32 {
+    depth as f32 * INDENT
+}
+
+/// A quiet line in place of rooms, indented by `depth`.
+fn quiet<'a>(line: &'static str, depth: usize) -> Element<'a, app::Message> {
+    container(text(line).size(12).style(text::secondary))
+        .padding(iced::Padding::new(4.0).left(indent(depth) + 4.0))
+        .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use mtrx_core::JoinRule;
+
+    use super::*;
+
+    fn space(id: &OwnedRoomId, name: &str) -> DirectoryRoom {
+        DirectoryRoom {
+            id: id.clone(),
+            alias: None,
+            name: name.into(),
+            topic: None,
+            avatar: None,
+            members: 3,
+            is_space: true,
+            children: 1,
+            join_rule: JoinRule::Public,
+            membership: None,
+            via: Vec::new(),
+            suggested: false,
+            role: None,
+        }
+    }
+
+    #[test]
+    fn a_space_listed_below_itself_shows_once() {
+        let a: OwnedRoomId = "!a:x".try_into().unwrap();
+        let b: OwnedRoomId = "!b:x".try_into().unwrap();
+        let mut listing = SpaceRooms::default();
+        listing.loaded(a.clone(), Ok(vec![space(&b, "B")]));
+        listing.loaded(b.clone(), Ok(vec![space(&a, "A")]));
+        let mut overview = Overview::new(a.clone(), Tab::Rooms);
+        overview.update(Message::Expand(b));
+        // Opened below B too.
+        overview.update(Message::Expand(a));
+        let lines: Vec<_> = (overview.lines(&listing, &RoomLists::default()).into_iter())
+            .map(|line| match line {
+                Line::Room {
+                    room, open, depth, ..
+                } => (room.name.as_str(), open, depth),
+                _ => panic!("only rooms are listed"),
+            })
+            .collect();
+        assert_eq!(lines, [("B", Some(true), 0), ("A", None, 1)]);
+    }
 }

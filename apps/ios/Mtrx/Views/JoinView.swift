@@ -126,14 +126,14 @@ struct JoinView: View {
     }
 
     private func row(_ room: DirectoryRoom) -> some View {
-        let joined = session.joined(room.id)
-        return DirectoryRoomRow(room: model.shown(room, joined: joined), action: model.action(room, joined: joined)) {
+        DirectoryRoomRow(room: room, button: session.button(for: room), busy: model.isBusy(room)) {
             act(on: room)
         }
     }
 
     private func act(on room: DirectoryRoom) {
-        switch model.action(room, joined: session.joined(room.id)) {
+        guard !model.isBusy(room) else { return }
+        switch session.button(for: room).action {
         case .join, .askToJoin:
             Task { await model.join(room) }
         case .open:
@@ -142,7 +142,7 @@ struct JoinView: View {
         case .invited:
             dismiss()
             session.invite = RoomRef(id: room.id)
-        case .asked, .inviteOnly, .busy:
+        case .asked, .inviteOnly:
             break
         }
     }

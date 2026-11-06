@@ -16,7 +16,6 @@ mod echo;
 mod emoji;
 mod encryption;
 mod error;
-mod google;
 mod lists;
 mod live;
 mod media;
@@ -50,17 +49,13 @@ pub mod test_support;
 pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
-pub use directory::{
-    DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, JoinAccess, Membership,
-    parse_address,
-};
+pub use directory::{DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, parse_address};
 pub use drafts::{DRAFT_PAUSE, Draft, DraftKeeper};
 pub use encryption::{
     DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,
     VerificationState,
 };
 pub use error::{Error, Result};
-pub use google::{Google, GoogleClient};
 pub use lists::{
     Badges, ListSection, RoomLists, RoomSort, SectionChoice, SectionLayout, SpaceEntry, SpaceKey,
 };
@@ -84,11 +79,11 @@ pub use push::{HttpPusher, PusherInfo};
 pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
-pub use room_settings::{Access, Banned, History, NotifyMode, RoomSettings, SpaceLink};
-pub use rooms::{NewRoom, RoomKind, RoomListState, RoomSummary};
+pub use room_settings::{Banned, History, NotifyMode, RoomSettings, SpaceLink};
+pub use rooms::{JoinAction, JoinRule, Membership, NewRoom, RoomKind, RoomListState, RoomSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
-pub use secrets::{SecretBackend, SecretStore};
+pub use secrets::{Secret, SecretBackend, SecretStore};
 pub use send_time::{describe_send_time, parse_send_time};
 pub use session::{APP_OAUTH_REDIRECT_URI, OAuthLogin, Session};
 pub use space_graph::{Child, SpaceGraph};

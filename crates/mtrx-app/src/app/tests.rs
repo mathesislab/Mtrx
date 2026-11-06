@@ -62,7 +62,7 @@ fn person(id: &str, name: &str, role: mtrx_core::Role) -> mtrx_core::Member {
         },
         role,
         level: Some(role.level(0)),
-        invited: false,
+        membership: mtrx_core::Membership::Joined,
         own: false,
         manage: Default::default(),
     }
@@ -1900,7 +1900,7 @@ async fn room_management_screens() {
     let handle = session.room(&glaciers).unwrap();
     tokio::time::timeout(TIMEOUT, async {
         while handle
-            .set_join_rule(mtrx_core::Access::Public)
+            .set_join_rule(mtrx_core::JoinRule::Public)
             .await
             .is_err()
         {
@@ -2999,9 +2999,9 @@ fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
         avatar: None,
         topic: None,
         kind: RoomKind::Room,
-        invited: false,
+        membership: mtrx_core::Membership::Joined,
         encrypted: false,
-        public: false,
+        join_rule: mtrx_core::JoinRule::Invite,
         unread_messages: 0,
         unread_mentions: 0,
         unread_notifications: 0,
@@ -3202,7 +3202,7 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
         rooms: vec![
             summary(&a, "a"),
             mtrx_core::RoomSummary {
-                invited: true,
+                membership: mtrx_core::Membership::Invited,
                 ..summary(&invite, "invite")
             },
         ],

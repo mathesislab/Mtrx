@@ -151,6 +151,22 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `InvalidInput(reason)`: a malformed ID or URL, or a recovery key that is
   not one or not the account's ("The recovery key is not valid").
   `PresenceUnavailable`: the server does not share presence (section 11).
+- Joining: `JoinRule` (`invite`, `knock`, `spaceMembers`, `public`) is who
+  may join, in `RoomSummary.joinRule`, `RoomSettings.joinRule` and
+  `DirectoryRoom.joinRule`, each with `joinRuleFact` ("Private: by
+  invitation", "Public: anyone can join"…); `RoomSettings.joinRuleChoices`
+  are the picker's options, `JoinRuleChoice {rule, title, fact}` (titles
+  "Invited people", "Ask to join", "Space members", "Anyone");
+  `Room.setJoinRule(rule)`. `Membership` (`joined`, `invited`, `asked`) is
+  ours: `RoomSummary.membership`, `Member.membership`,
+  `RoomLists.membership(roomId)` (joined once joining here, asked once
+  asked here or as listed; rooms asked to join are in no list). A
+  directory row's button is `RoomLists.joinButton(room)`, a `JoinButton
+  {action, title}`: `JoinAction` (`open`, `join`, `askToJoin`, `invited`,
+  `asked`, `inviteOnly`) and its words ("Join", "Ask to join", "Open",
+  "Invited", "Asked", "Invite only"). `DirectoryRoom.membership` is the
+  server's, when listed. Words are fields, not functions: the Android JVM
+  tests' fakes supply them.
 - `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console),
   `presenceLine(presence, now)`, `presenceDotLabel(dot)`.
 
@@ -916,7 +932,7 @@ needed: `rooms` is already ordered by recency (the SDK's: latest message or
 recency stamp, rooms with unsent messages first). Keep that order; do not
 re-sort by `lastActivity`, which is nil for some rooms (an invite, say).
 Show `lastActivity` as the time. Invites to direct chats are there
-(`invited`), and the Notes to self (`directUser.userId == session.userId()`).
+(`membership == .invited`), and the Notes to self (`directUser.userId == session.userId()`).
 
 **Rooms.** A horizontal pager of two pages, like the desktop's two columns.
 - Left page, the spaces: `spaces` in order (top-level spaces, most
@@ -952,7 +968,7 @@ Show `lastActivity` as the time. Invites to direct chats are there
   then, and again when its number of joined members changes).
 - `roomsOutsideSpaces`: rooms no space lists, and invites to spaces outside
   them. No direct chats (they are all in Chats) and no joined spaces.
-- Invites (`invited`) are in the lists they would belong to once joined;
+- Invites (`membership == .invited`) are in the lists they would belong to once joined;
   mark them as invites. They are answered on the desktop (no join call yet).
 - Everything is in the order of `rooms`, most recently active first.
 

@@ -20,7 +20,6 @@ import org.mtrx.app.model.SelectedSpaceStore
 import org.mtrx.app.model.SharePresenceStore
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
-import uniffi.mtrx.Access
 import uniffi.mtrx.Address
 import uniffi.mtrx.Banned
 import uniffi.mtrx.ConnectionListener
@@ -28,7 +27,10 @@ import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.DirectoryPage
 import uniffi.mtrx.DirectoryRoom
 import uniffi.mtrx.History
-import uniffi.mtrx.JoinAccess
+import uniffi.mtrx.JoinAction
+import uniffi.mtrx.JoinButton
+import uniffi.mtrx.JoinRule
+import uniffi.mtrx.JoinRuleChoice
 import uniffi.mtrx.LevelChoice
 import uniffi.mtrx.Manage
 import uniffi.mtrx.Member
@@ -433,7 +435,7 @@ class FakeRoom(private val session: FakeSession, private val roomId: String) : R
 
     override suspend fun setNotify(mode: NotifyMode) = session.call("notify $mode")
 
-    override suspend fun setJoinRule(rule: Access) = session.call("access $rule")
+    override suspend fun setJoinRule(rule: JoinRule) = session.call("join rule $rule")
 
     override suspend fun setListed(listed: Boolean) = session.call("listed $listed")
 
@@ -469,10 +471,50 @@ class FakeRoom(private val session: FakeSession, private val roomId: String) : R
     override suspend fun leave() = session.call("leave $roomId")
 }
 
-/** A room's settings, all ours to change unless [may] is false. */
+/** A join rule's title in the settings' menu, as the library words it. */
+fun ruleTitle(rule: JoinRule): String = when (rule) {
+    JoinRule.INVITE -> "Invited people"
+    JoinRule.KNOCK -> "Ask to join"
+    JoinRule.SPACE_MEMBERS -> "Space members"
+    JoinRule.PUBLIC -> "Anyone"
+}
+
+/** A join rule as a room's facts say it, as the library words it. */
+fun ruleFact(rule: JoinRule): String = when (rule) {
+    JoinRule.INVITE -> "Private: by invitation"
+    JoinRule.KNOCK -> "Private: people ask to join"
+    JoinRule.SPACE_MEMBERS -> "Private: space members can join"
+    JoinRule.PUBLIC -> "Public: anyone can join"
+}
+
+/** A listed room's button with our [membership] of it, as the library gives it. */
+fun joinButton(room: DirectoryRoom, membership: Membership? = room.membership): JoinButton {
+    val action = when (membership) {
+        Membership.JOINED -> JoinAction.OPEN
+        Membership.INVITED -> JoinAction.INVITED
+        Membership.ASKED -> JoinAction.ASKED
+        null -> when (room.joinRule) {
+            JoinRule.PUBLIC, JoinRule.SPACE_MEMBERS -> JoinAction.JOIN
+            JoinRule.KNOCK -> JoinAction.ASK_TO_JOIN
+            JoinRule.INVITE -> JoinAction.INVITE_ONLY
+        }
+    }
+    val title = when (action) {
+        JoinAction.OPEN -> "Open"
+        JoinAction.JOIN -> "Join"
+        JoinAction.ASK_TO_JOIN -> "Ask to join"
+        JoinAction.INVITED -> "Invited"
+        JoinAction.ASKED -> "Asked"
+        JoinAction.INVITE_ONLY -> "Invite only"
+    }
+    return JoinButton(action, title)
+}
+
+/** A room's settings, all ours to change unless [may] is false; Space members offered [inSpace] or when so. */
 fun roomSettings(
     may: Boolean = true,
-    access: Access = Access.INVITE,
+    joinRule: JoinRule = JoinRule.INVITE,
+    inSpace: Boolean = false,
     encrypted: Boolean = false,
     spaces: List<SpaceLink> = emptyList(),
     canAddTo: List<String> = emptyList(),
@@ -485,7 +527,11 @@ fun roomSettings(
     canChangePicture = may,
     canInvite = may,
     notify = NotifyMode.ALL,
-    access = access,
+    joinRule = joinRule,
+    joinRuleFact = ruleFact(joinRule),
+    joinRuleChoices = JoinRule.entries
+        .filter { it != JoinRule.SPACE_MEMBERS || inSpace || joinRule == JoinRule.SPACE_MEMBERS }
+        .map { JoinRuleChoice(it, ruleTitle(it), ruleFact(it)) },
     canChangeAccess = may,
     canAddRooms = may,
     address = address,
@@ -512,7 +558,7 @@ fun member(
     upTo: Long? = null,
     remove: Boolean = false,
     ban: Boolean = false,
-    invited: Boolean = false,
+    membership: Membership = Membership.JOINED,
     defaultLevel: Long = 0,
 ): Member = Member(
     user = user(userId, name),
@@ -522,7 +568,7 @@ fun member(
         else -> Role.MEMBER
     },
     level = level,
-    invited = invited,
+    membership = membership,
     own = userId == FakeSession.USER_ID,
     manage = Manage(remove = remove, ban = ban, upTo = upTo, defaultLevel = defaultLevel, alone = false),
     label = when (level) {
@@ -544,7 +590,7 @@ fun member(
 fun directoryRoom(
     id: String,
     name: String = id.removePrefix("!").substringBefore(':').replaceFirstChar { it.uppercase() },
-    access: JoinAccess = JoinAccess.PUBLIC,
+    joinRule: JoinRule = JoinRule.PUBLIC,
     membership: Membership? = null,
     members: Long = 3,
     topic: String? = null,
@@ -559,7 +605,8 @@ fun directoryRoom(
     members = members.toULong(),
     isSpace = space,
     children = if (space) 4uL else 0uL,
-    access = access,
+    joinRule = joinRule,
+    joinRuleFact = ruleFact(joinRule),
     membership = membership,
     role = role,
     via = listOf("x"),
@@ -674,7 +721,7 @@ fun user(userId: String, name: String? = null): User = User(
 fun summary(
     id: String,
     kind: RoomKind = RoomKind.ROOM,
-    invited: Boolean = false,
+    membership: Membership = Membership.JOINED,
     unread: Long = 0,
     directUserId: String? = null,
     name: String = id.removePrefix("!").substringBefore(':'),
@@ -688,7 +735,7 @@ fun summary(
     avatarUrl = null,
     topic = topic,
     kind = kind,
-    invited = invited,
+    membership = membership,
     encrypted = false,
     unreadMessages = unread.toULong(),
     unreadMentions = mentions.toULong(),
@@ -697,6 +744,8 @@ fun summary(
     directUser = directUserId?.let { user(it) },
     alias = null,
     joinedMembers = 2uL,
+    joinRule = JoinRule.INVITE,
+    joinRuleFact = ruleFact(JoinRule.INVITE),
     pinned = pinned,
 )
 
@@ -947,6 +996,8 @@ class FakeRoomLists(
     private val badges: Badges = Badges(0uL, 0uL, 0uL),
     private val notesAtTop: Boolean = true,
     private val joining: List<String> = emptyList(),
+    /** Rooms asked to join (in no list). */
+    private val asked: List<String> = emptyList(),
 ) : RoomLists(NoHandle) {
     override fun badges() = badges
 
@@ -959,6 +1010,14 @@ class FakeRoomLists(
     override fun firstSpaceOf(roomId: String) = firstSpaces[roomId]
 
     override fun joining() = joining
+
+    override fun membership(roomId: String) = when (roomId) {
+        in joining -> Membership.JOINED
+        in asked -> Membership.ASKED
+        else -> room(roomId)?.membership
+    }
+
+    override fun joinButton(room: DirectoryRoom) = org.mtrx.app.joinButton(room, membership(room.id))
 
     override fun loaded() = loaded
 
@@ -1027,12 +1086,12 @@ object SpacesFixture {
     const val NOTES = "!notes:x"
 
     val rooms = listOf(
-        summary(WITH_CAROL, RoomKind.DIRECT, invited = true, directUserId = "@carol:x"),
+        summary(WITH_CAROL, RoomKind.DIRECT, Membership.INVITED, directUserId = "@carol:x"),
         summary(WITH_BOB, RoomKind.DIRECT, unread = 2, directUserId = "@bob:x"),
-        summary(OFFER, invited = true),
+        summary(OFFER, membership = Membership.INVITED),
         summary(LAB, unread = 1),
         summary(DEEP),
-        summary(PARTY, invited = true),
+        summary(PARTY, membership = Membership.INVITED),
         summary(NOTES, RoomKind.DIRECT, directUserId = FakeSession.USER_ID),
         summary(LOOSE),
         summary(SUB, RoomKind.SPACE),

@@ -13,8 +13,9 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, DirectoryRoom, Grouping, Layout, MxcUri, OwnedRoomId, OwnedUserId, RoomKind,
-    RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, Topic, UserId,
+    CallService, DirectoryRoom, Grouping, Layout, Membership, MxcUri, OwnedRoomId, OwnedUserId,
+    RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, Topic,
+    UserId,
 };
 
 use crate::{
@@ -569,11 +570,9 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
             );
         }
         for room in unjoined {
-            let membership =
-                directory::membership(room, rooms, space_rooms.asked.contains(&room.id));
             list = list.push(directory::entry(
                 room,
-                membership,
+                view.lists.membership(&room.id),
                 space_rooms.busy.contains(&room.id),
                 space().width(0).into(),
                 directory::Shown {
@@ -1407,7 +1406,8 @@ impl<'a> RoomListView<'a> {
                 tint.color(theme)
             })
         } else {
-            access_symbol(room.public)
+            let symbol = directory::join_rule_icon(room.join_rule, 14.0, faint);
+            container(symbol).center(ROOM_AVATAR).into()
         };
         let name = ellipsis(&room.name).size(14).font(font);
         // Right after the name, so nothing moves when the star and menu
@@ -1421,7 +1421,8 @@ impl<'a> RoomListView<'a> {
             (!menu_open).then(|| room.id.clone()),
         ));
         let dragging = self.arrange.dragging().is_some();
-        let actions = (hovered || menu_open) && !room.invited && !dragging;
+        let invite = room.membership == Membership::Invited;
+        let actions = (hovered || menu_open) && !invite && !dragging;
         // On hover the star and menu take the place of the draft's pencil
         // and the scheduled-message clock, so nothing else moves. Favourites have their own section.
         if actions {
@@ -1444,7 +1445,7 @@ impl<'a> RoomListView<'a> {
             .on_press(Message::OpenRoom(room.id.clone()));
         let row = |enter| arrange_message(arrange::Message::Row(room.id.clone(), enter));
         let mut area = mouse_area(entry).on_enter(row(true)).on_exit(row(false));
-        if !room.invited {
+        if !invite {
             area = area.on_right_press(menu);
         }
         // Found by `find_out_of_view` when unread.
@@ -1464,31 +1465,6 @@ fn faint(theme: &Theme) -> Color {
         .base
         .text
         .scale_alpha(0.45)
-}
-
-/// In place of a room's picture: # for a public room, a lock for one only
-/// invited people (or a space's members) may join.
-fn access_symbol<'a>(public: bool) -> Element<'a, Message> {
-    let symbol: Element<'a, Message> = if public {
-        icons::hash(16.0, |theme| {
-            theme
-                .extended_palette()
-                .background
-                .base
-                .text
-                .scale_alpha(0.55)
-        })
-    } else {
-        icons::lock(14.0, |theme| {
-            theme
-                .extended_palette()
-                .background
-                .base
-                .text
-                .scale_alpha(0.5)
-        })
-    };
-    container(symbol).center(ROOM_AVATAR).into()
 }
 
 /// Whether the room has unread messages or notifications: bold, shown in
@@ -1741,9 +1717,9 @@ mod tests {
             avatar: None,
             topic: None,
             kind,
-            invited: false,
+            membership: Membership::Joined,
             encrypted: false,
-            public: false,
+            join_rule: mtrx_core::JoinRule::Invite,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,

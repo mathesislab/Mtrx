@@ -9,8 +9,8 @@ struct MembersSection: View {
 
     var body: some View {
         if let members = model.members {
-            let joined = members.filter { !$0.invited }
-            let invited = members.filter(\.invited)
+            let joined = members.filter { $0.membership == .joined }
+            let invited = members.filter { $0.membership == .invited }
             Section("Joined · \(joined.count)") {
                 rows(joined)
             }

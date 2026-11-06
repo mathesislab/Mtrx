@@ -230,7 +230,6 @@ fn summary(events: &[&Event]) -> String {
             EventContent::OtherState { .. }
             | EventContent::Topic { .. }
             | EventContent::Pins(_)
-            | EventContent::CallLink { .. }
                 if creators.contains(&&event.sender.id) =>
             {
                 continue;
@@ -244,10 +243,6 @@ fn summary(events: &[&Event]) -> String {
                 }
             }
             EventContent::Pins(change) => format!("{name} {}", change.describe()),
-            EventContent::CallLink { url: Some(url) } => {
-                format!("{name} changed the call link to {url}")
-            }
-            EventContent::CallLink { url: None } => format!("{name} removed the call link"),
             EventContent::OtherState { event_type } => match event_type.as_str() {
                 "m.room.name" => format!("{name} renamed the room"),
                 "m.room.topic" => format!("{name} changed the topic"),
@@ -531,16 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn summarises_call_link_pin_and_topic_changes() {
-        let link = |id, url: Option<&str>| {
-            let url = url.map(Into::into);
-            state(id, "alice", EventContent::CallLink { url })
-        };
-        assert_eq!(
-            summary_of(&[link("a", Some("https://meet.jit.si/ice")), link("b", None)]),
-            "alice changed the call link to https://meet.jit.si/ice · alice removed the call link"
-        );
-
+    fn summarises_pin_and_topic_changes() {
         let topic = |id, old: Option<&str>, new: &str| {
             let (old, new) = (old.map(Into::into), new.into());
             state(id, "alice", EventContent::Topic { old, new })

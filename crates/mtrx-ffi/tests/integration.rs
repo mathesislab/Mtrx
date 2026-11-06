@@ -22,12 +22,13 @@ use mtrx_core::{
 };
 use mtrx_ffi::{
     ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
-    MediaKind, Message, MessageKind, Mtrx, MtrxError, Notification, Presence, PresenceActivity,
-    PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction,
-    RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists,
-    RoomListsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout, SendState,
-    Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, User,
-    Verification, VerificationListener, VerificationRequestListener, VerificationState,
+    JoinAction, JoinRule, MediaKind, Membership, Message, MessageKind, Mtrx, MtrxError,
+    Notification, Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState,
+    PusherInfo, QuoteState, Reaction, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote,
+    RoomKind, RoomLists, RoomListsListener, RoomSort, RowContent, SecretBackend, SecretError,
+    SectionLayout, SendState, Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener,
+    TypingListener, User, Verification, VerificationListener, VerificationRequestListener,
+    VerificationState,
 };
 use tempfile::TempDir;
 
@@ -760,10 +761,10 @@ fn rooms_by_space_with_direct_chats_and_invites() {
     let summary = |id: &str| rooms.iter().find(|r| r.id == id).unwrap();
     assert_eq!(summary(&with_bob).kind, RoomKind::Direct);
     assert_eq!(
-        (summary(&with_carol).kind, summary(&with_carol).invited),
-        (RoomKind::Direct, true)
+        (summary(&with_carol).kind, summary(&with_carol).membership),
+        (RoomKind::Direct, Membership::Invited)
     );
-    assert!(summary(&offer).invited);
+    assert_eq!(summary(&offer).membership, Membership::Invited);
     assert_eq!(summary(&sub).kind, RoomKind::Space);
 }
 
@@ -881,15 +882,21 @@ fn rooms_made_set_up_joined_and_left() {
     let a_room = a.session.room(room.clone()).unwrap();
     block_on(a_room.set_topic(topic)).unwrap();
     block_on(a_room.set_notify(mtrx_ffi::NotifyMode::Mentions)).unwrap();
-    block_on(a_room.set_join_rule(mtrx_ffi::Access::SpaceMembers)).unwrap();
+    block_on(a_room.set_join_rule(JoinRule::SpaceMembers)).unwrap();
     let settings = block_on(a.session.room(room.clone()).unwrap().settings()).unwrap();
     assert_eq!(
-        (settings.notify, settings.access),
-        (
-            mtrx_ffi::NotifyMode::Mentions,
-            mtrx_ffi::Access::SpaceMembers
-        )
+        (settings.notify, settings.join_rule),
+        (mtrx_ffi::NotifyMode::Mentions, JoinRule::SpaceMembers)
     );
+    let space_members = settings
+        .join_rule_choices
+        .iter()
+        .find(|c| c.rule == JoinRule::SpaceMembers);
+    assert_eq!(
+        space_members.map(|c| c.title.as_str()),
+        Some("Space members")
+    );
+    assert_eq!(settings.join_rule_fact, "Private: space members can join");
     let state = wait_for("the topic", &a_updates, |s: &Arc<RoomLists>| {
         s.rooms()
             .iter()
@@ -906,17 +913,23 @@ fn rooms_made_set_up_joined_and_left() {
     // The space lists it; Bob accepts the invite.
     let children = block_on(a.session.space_children(space.clone())).unwrap();
     let listed = children.iter().find(|r| r.id == room).unwrap();
-    assert_eq!(listed.access, mtrx_ffi::JoinAccess::SpaceMembers);
-    wait_for("Bob's invite", &b_updates, |s: &Arc<RoomLists>| {
-        s.rooms().iter().any(|r| r.id == room && r.invited)
+    assert_eq!(listed.join_rule, JoinRule::SpaceMembers);
+    let invited = wait_for("Bob's invite", &b_updates, |s: &Arc<RoomLists>| {
+        s.membership(room.clone()) == Some(Membership::Invited)
     });
+    let button = invited.join_button(listed.clone());
+    assert_eq!(
+        (button.action, button.title.as_str()),
+        (JoinAction::Invited, "Invited")
+    );
     assert_eq!(
         block_on(b.session.join(room.clone(), vec![])).unwrap(),
         room
     );
     // Coming until listed as joined.
     wait_for("Bob's room joined", &b_updates, |s: &Arc<RoomLists>| {
-        s.rooms().iter().any(|r| r.id == room && !r.invited) && s.joining().is_empty()
+        let listed = s.room(room.clone());
+        listed.is_some_and(|r| r.membership == Membership::Joined) && s.joining().is_empty()
     });
     // They share the room now (not the space, which Bob has not joined).
     let deadline = std::time::Instant::now() + TIMEOUT;
@@ -938,7 +951,7 @@ fn rooms_made_set_up_joined_and_left() {
         let members = block_on(a_room.members()).unwrap();
         if let Some(bob) = members
             .iter()
-            .find(|m| m.user.user_id == bob_id && !m.invited)
+            .find(|m| m.user.user_id == bob_id && m.membership == Membership::Joined)
         {
             assert!(bob.manage.up_to.is_some() && bob.manage.remove);
             break;
@@ -1023,7 +1036,9 @@ fn wait_for_room(session: &Session, room_id: &str) {
     wait_for(
         "the room in the room list",
         &updates,
-        |s: &Arc<RoomLists>| s.rooms().iter().any(|r| r.id == room_id && !r.invited),
+        |s: &Arc<RoomLists>| {
+            (s.room(room_id.to_owned())).is_some_and(|r| r.membership == Membership::Joined)
+        },
     );
 }
 
@@ -1359,7 +1374,7 @@ fn profiles_and_inviting_to_a_space() {
         seen = state
             .rooms()
             .iter()
-            .find(|r| r.id == space_id && r.invited)
+            .find(|r| r.id == space_id && r.membership == Membership::Invited)
             .cloned();
         if seen
             .as_ref()

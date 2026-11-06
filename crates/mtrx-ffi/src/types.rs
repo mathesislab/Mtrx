@@ -27,6 +27,90 @@ impl From<core::Connection> for ConnectionState {
     }
 }
 
+/// Who may join a room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum JoinRule {
+    /// Only invited people.
+    Invite,
+    /// Anyone may ask; members let them in.
+    Knock,
+    /// Members of the spaces it is in.
+    SpaceMembers,
+    Public,
+}
+
+impl From<core::JoinRule> for JoinRule {
+    fn from(rule: core::JoinRule) -> Self {
+        match rule {
+            core::JoinRule::Invite => Self::Invite,
+            core::JoinRule::Knock => Self::Knock,
+            core::JoinRule::SpaceMembers => Self::SpaceMembers,
+            core::JoinRule::Public => Self::Public,
+        }
+    }
+}
+
+impl From<JoinRule> for core::JoinRule {
+    fn from(rule: JoinRule) -> Self {
+        match rule {
+            JoinRule::Invite => Self::Invite,
+            JoinRule::Knock => Self::Knock,
+            JoinRule::SpaceMembers => Self::SpaceMembers,
+            JoinRule::Public => Self::Public,
+        }
+    }
+}
+
+/// A join rule a room's settings offer, with its words.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct JoinRuleChoice {
+    pub rule: JoinRule,
+    /// As the menu names it: "Invited people", "Ask to join", "Space
+    /// members", "Anyone".
+    pub title: String,
+    /// As a room's facts say it: "Private: by invitation"…
+    pub fact: String,
+}
+
+impl From<core::JoinRule> for JoinRuleChoice {
+    fn from(rule: core::JoinRule) -> Self {
+        Self {
+            rule: rule.into(),
+            title: rule.title().to_owned(),
+            fact: rule.fact().to_owned(),
+        }
+    }
+}
+
+/// Our membership of a room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum Membership {
+    Joined,
+    Invited,
+    /// We asked to join, and wait to be let in.
+    Asked,
+}
+
+impl From<core::Membership> for Membership {
+    fn from(membership: core::Membership) -> Self {
+        match membership {
+            core::Membership::Joined => Self::Joined,
+            core::Membership::Invited => Self::Invited,
+            core::Membership::Asked => Self::Asked,
+        }
+    }
+}
+
+impl From<Membership> for core::Membership {
+    fn from(membership: Membership) -> Self {
+        match membership {
+            Membership::Joined => Self::Joined,
+            Membership::Invited => Self::Invited,
+            Membership::Asked => Self::Asked,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum RoomKind {
     Room,
@@ -46,8 +130,9 @@ pub struct RoomSummary {
     pub avatar_url: Option<String>,
     pub topic: Option<String>,
     pub kind: RoomKind,
-    /// We are invited but have not joined yet.
-    pub invited: bool,
+    /// Joined, or invited and not joined yet. Rooms asked to join are not
+    /// listed: `RoomLists.membership`.
+    pub membership: Membership,
     pub encrypted: bool,
     pub unread_messages: u64,
     pub unread_mentions: u64,
@@ -58,9 +143,10 @@ pub struct RoomSummary {
     /// The room's address, e.g. `#ice-sheets:example.org`.
     pub alias: Option<String>,
     pub joined_members: u64,
-    /// Anyone may join.
-    #[uniffi(default)]
-    pub public: bool,
+    /// Who may join.
+    pub join_rule: JoinRule,
+    /// Who may join, in words: "Public: anyone can join"…
+    pub join_rule_fact: String,
     /// Event IDs of its pinned messages, first pinned first.
     #[uniffi(default)]
     pub pinned: Vec<String>,
@@ -78,7 +164,7 @@ impl From<&core::RoomSummary> for RoomSummary {
                 core::RoomKind::Space => RoomKind::Space,
                 core::RoomKind::Direct => RoomKind::Direct,
             },
-            invited: room.invited,
+            membership: room.membership.into(),
             encrypted: room.encrypted,
             unread_messages: room.unread_messages,
             unread_mentions: room.unread_mentions,
@@ -87,7 +173,8 @@ impl From<&core::RoomSummary> for RoomSummary {
             direct_user: room.direct_user.as_ref().map(User::from),
             alias: room.alias.clone(),
             joined_members: room.joined_members,
-            public: room.public,
+            join_rule: room.join_rule.into(),
+            join_rule_fact: room.join_rule.fact().to_owned(),
             pinned: room.pinned.iter().map(ToString::to_string).collect(),
         }
     }
@@ -546,9 +633,6 @@ impl From<&core::EventContent> for EventContent {
                 user_id: user.to_string(),
                 new_name: new_name.clone(),
             },
-            core::EventContent::CallLink { .. } => Self::OtherState {
-                event_type: "org.mtrx.call_link".into(),
-            },
             core::EventContent::Topic { .. } => Self::OtherState {
                 event_type: "m.room.topic".into(),
             },
@@ -911,9 +995,9 @@ mod tests {
             avatar: None,
             topic: Some("Greenland".into()),
             kind: core::RoomKind::Direct,
-            invited: false,
+            membership: core::Membership::Joined,
             encrypted: true,
-            public: false,
+            join_rule: core::JoinRule::Invite,
             unread_messages: 3,
             unread_mentions: 1,
             unread_notifications: 2,
@@ -931,6 +1015,7 @@ mod tests {
         let summary = RoomSummary::from(&room);
         assert_eq!(summary.id, "!room:example.org");
         assert_eq!(summary.kind, RoomKind::Direct);
+        assert_eq!(summary.join_rule_fact, "Private: by invitation");
         let bob = summary.direct_user.as_ref().unwrap();
         assert_eq!(
             (bob.user_id.as_str(), bob.display_name.as_str()),

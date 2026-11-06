@@ -20,12 +20,13 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Draft, DraftKeeper, Google, Live, Media, MediaRef,
+    CallService, Connection, Contact, Draft, DraftKeeper, Live, Media, MediaRef, Membership,
     Notification, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
     OwnedUserId, Profile, RecoveryStep, RoomHandle, RoomKind, RoomListColours, RoomListState,
     RoomLists, RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind,
     Session, SpaceKey, Topic, Url,
 };
+use mtrx_google::Google;
 
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, PickerAt},
@@ -1186,7 +1187,8 @@ impl App {
                     return Task::none();
                 }
                 // An invite shows Accept and Decline instead of a timeline.
-                if main.lists.rooms.iter().any(|r| r.id == id && r.invited) {
+                let invited = |r: &mtrx_core::RoomSummary| r.membership == Membership::Invited;
+                if main.lists.room(&id).is_some_and(invited) {
                     main.set_pane(Pane::Invite {
                         id,
                         answering: false,
@@ -1439,9 +1441,9 @@ impl App {
                             saved,
                         )
                     }
-                    (info::Message::Access(access), Some(room)) => {
-                        let access = *access;
-                        Task::perform(async move { room.set_join_rule(access).await }, saved)
+                    (info::Message::JoinRule(rule), Some(room)) => {
+                        let rule = *rule;
+                        Task::perform(async move { room.set_join_rule(rule).await }, saved)
                     }
                     (info::Message::Notify(mode), Some(room)) => {
                         let mode = *mode;
@@ -1657,25 +1659,11 @@ impl App {
                     return Task::none();
                 };
                 main.space_rooms.busy.insert(room.clone());
-                let session = main.session.clone();
-                Task::perform(
-                    {
-                        let room = room.clone();
-                        async move {
-                            if knock {
-                                session.knock(&room.into(), via).await.map(|_| ())
-                            } else {
-                                session
-                                    .join(<&RoomOrAliasId>::from(&*room), &via)
-                                    .await
-                                    .map(|_| ())
-                            }
-                        }
-                    },
-                    move |result| {
-                        Message::FoundJoined(room.clone(), knock, result.map_err(|e| e.to_string()))
-                    },
-                )
+                let join = join_listed(main.session.clone(), room.clone().into(), via, knock);
+                Task::perform(join, move |result| {
+                    let result = result.map(|_| ()).map_err(|e| e.to_string());
+                    Message::FoundJoined(room.clone(), knock, result)
+                })
             }
             Message::FoundJoined(room, knock, result) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1683,10 +1671,7 @@ impl App {
                 };
                 main.space_rooms.busy.remove(&room);
                 match result {
-                    Ok(()) if knock => {
-                        main.space_rooms.asked.insert(room);
-                        Task::none()
-                    }
+                    Ok(()) if knock => Task::none(),
                     Ok(()) => self.update(Message::OpenRoom(room)),
                     Err(e) => {
                         main.report(format!("Could not join: {e}"), None);
@@ -3383,7 +3368,7 @@ impl App {
     }
 
     /// Whether we may change a newly opened room's topic, and the call
-    /// service of its space; its old call link moved into its topic.
+    /// service of its space.
     fn load_room_calls(&self, room_id: &OwnedRoomId) -> Task<Message> {
         let Screen::Main(main) = &self.screen else {
             return Task::none();
@@ -3394,16 +3379,6 @@ impl App {
             let room = room.clone();
             move |message| room::Message::Topic(message).to(&room)
         });
-        let old_link = {
-            let (session, room) = (session.clone(), room.clone());
-            Task::future(async move {
-                let moved = async { session.room(&room)?.move_call_link_to_topic().await };
-                if let Err(e) = moved.await {
-                    tracing::warn!("moving the call link of {room} into its topic: {e}");
-                }
-            })
-            .discard()
-        };
         let can_pin = {
             let (session, room, reply) = (session.clone(), room.clone(), room.clone());
             Task::perform(
@@ -3428,7 +3403,7 @@ impl App {
                 },
             )
         };
-        Task::batch([can_edit, can_pin, old_link, space_service])
+        Task::batch([can_edit, can_pin, space_service])
     }
 
     /// Make the open room's pinned messages' timeline, once it has pins.
@@ -4135,9 +4110,9 @@ impl App {
             }
             join::Action::Join(room, via, space) => Task::perform(
                 {
-                    let room = room.clone();
+                    let join = join_listed(session, room.clone(), via, false);
                     async move {
-                        let id = session.join(&room, &via).await?;
+                        let id = join.await?;
                         Ok(if space {
                             join::Joined::Space(id)
                         } else {
@@ -4149,8 +4124,8 @@ impl App {
             ),
             join::Action::Knock(room, via) => Task::perform(
                 {
-                    let room = room.clone();
-                    async move { Ok(join::Joined::Asked(session.knock(&room, via).await?)) }
+                    let knock = join_listed(session, room.clone(), via, true);
+                    async move { knock.await.map(|_| join::Joined::Asked) }
                 },
                 done(room),
             ),
@@ -4404,8 +4379,7 @@ impl App {
                 let mut layers = stack![self.main_view(main)];
                 if let Some(card) = &main.card {
                     let card = card.view(info::Shown {
-                        rooms: &main.lists.rooms,
-                        graph: &main.lists.graph,
+                        lists: &main.lists,
                         avatars: &main.avatars,
                         own_user: &main.own_user,
                         presences: &main.presences,
@@ -4440,11 +4414,7 @@ impl App {
                         false,
                     ),
                     Some(Modal::Join(join)) => panel(
-                        join.view(
-                            &main.lists.rooms,
-                            &main.avatars,
-                            self.settings.room_pictures,
-                        ),
+                        join.view(&main.lists, &main.avatars, self.settings.room_pictures),
                         Message::Join(join::Message::Close),
                         true,
                     ),
@@ -5235,30 +5205,41 @@ fn overview_task(
                 move |result| done(Overview::MembersLoaded(result.map_err(|e| e.to_string()))),
             )
         }
-        Action::Join(room, via) => Task::perform(
-            {
-                let room = room.clone();
-                async move { session.join(<&RoomOrAliasId>::from(&*room), &via).await }
-            },
-            move |result| {
-                done(Overview::Done(
-                    room.clone(),
-                    result.map(|_| ()).map_err(|e| e.to_string()),
-                ))
-            },
-        ),
-        Action::Knock(room, via) => Task::perform(
-            {
-                let room = room.clone();
-                async move { session.knock(&room.into(), via).await.map(|_| ()) }
-            },
-            move |result| {
-                done(Overview::Done(
-                    room.clone(),
-                    result.map_err(|e| e.to_string()),
-                ))
-            },
-        ),
+        Action::Join(room, via) => joined_in_overview(session, room, via, false),
+        Action::Knock(room, via) => joined_in_overview(session, room, via, true),
+    }
+}
+
+/// Join a room a space's overview lists, or ask to (`knock`).
+fn joined_in_overview(
+    session: Arc<Session>,
+    room: OwnedRoomId,
+    via: Vec<OwnedServerName>,
+    knock: bool,
+) -> Task<Message> {
+    let join = join_listed(session, room.clone().into(), via, knock);
+    Task::perform(join, move |result| {
+        let result = result.map(|_| ()).map_err(|e| e.to_string());
+        Message::Info(info::Message::Overview(overview::Message::Done(
+            room.clone(),
+            result,
+        )))
+    })
+}
+
+/// Join a room or space that a space, a directory or a link lists, or ask
+/// to join it (`knock`): its ID. The room lists show it as joined, or asked,
+/// at once.
+async fn join_listed(
+    session: Arc<Session>,
+    room: OwnedRoomOrAliasId,
+    via: Vec<OwnedServerName>,
+    knock: bool,
+) -> mtrx_core::Result<OwnedRoomId> {
+    if knock {
+        session.knock(&room, via).await
+    } else {
+        session.join(&room, &via).await
     }
 }
 
@@ -5360,7 +5341,7 @@ fn load_access(session: Arc<Session>, room: OwnedRoomId) -> Task<Message> {
 async fn new_call_link(service: &CallService, google: &Google) -> Result<Url, String> {
     match service.kind {
         ServiceKind::GoogleMeet => google.create_meeting().await.map_err(|e| match e {
-            mtrx_core::Error::GoogleNotSignedIn => {
+            mtrx_google::Error::NotSignedIn => {
                 "Connect your Google account in Settings to create Meet links.".to_owned()
             }
             e => e.to_string(),

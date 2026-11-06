@@ -4,7 +4,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use mtrx_core::{Google, GoogleClient, SecretStore};
+use mtrx_core::SecretStore;
+use mtrx_google::{Google, GoogleClient};
 
 #[derive(Subcommand)]
 pub enum GoogleCommand {

@@ -43,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.ConfirmDialog
 import uniffi.mtrx.DirectoryKind
+import uniffi.mtrx.DirectoryRoom
+import uniffi.mtrx.JoinButton
 
 /** The join screen's state, from [JoinModel]. */
 data class JoinState(
@@ -56,8 +58,8 @@ data class JoinState(
     val kind: DirectoryKind,
     val results: JoinResults,
     val pending: Set<String>,
-    /** Rooms the room list has us in. */
-    val joined: Set<String>,
+    /** What a row offers, with our membership as the room lists have it (the library's joinButton). */
+    val buttonOf: (DirectoryRoom) -> JoinButton,
     val error: String? = null,
 )
 
@@ -142,7 +144,7 @@ fun JoinContent(state: JoinState, images: Images, actions: JoinActions, onBack: 
                 }
                 is JoinResults.Preview -> DirectoryRow(
                     results.room,
-                    rowAction(results.room, results.room.id in state.joined),
+                    state.buttonOf(results.room),
                     results.room.id in state.pending,
                     images,
                     actions.rows,
@@ -154,7 +156,7 @@ fun JoinContent(state: JoinState, images: Images, actions: JoinActions, onBack: 
                         }
                     }
                     items(results.rooms, key = { it.id }) { room ->
-                        DirectoryRow(room, rowAction(room, room.id in state.joined), room.id in state.pending, images, actions.rows)
+                        DirectoryRow(room, state.buttonOf(room), room.id in state.pending, images, actions.rows)
                     }
                     if (results.next != null) {
                         item(key = "more") {

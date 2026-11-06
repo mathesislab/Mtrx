@@ -67,10 +67,6 @@ pub fn event_line(event: &Event) -> String {
             Some(new) => format!("{user} is now {new}"),
             None => format!("{user} removed their display name"),
         },
-        EventContent::CallLink { url: Some(url) } => {
-            format!("{who} changed the call link to {url}")
-        }
-        EventContent::CallLink { url: None } => format!("{who} removed the call link"),
         EventContent::Topic { old, new } => {
             match mtrx_core::describe_change(old.as_deref().unwrap_or_default(), new) {
                 Some(change) => format!("{who} {change}"),

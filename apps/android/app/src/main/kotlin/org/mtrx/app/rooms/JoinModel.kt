@@ -12,7 +12,6 @@ import org.mtrx.app.model.describe
 import uniffi.mtrx.Address
 import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.DirectoryRoom
-import uniffi.mtrx.Membership
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Session
 
@@ -34,8 +33,8 @@ sealed interface JoinResults {
  * null), searched by [query] and filtered by [kind]; a pasted address or
  * link ([parseAddress], the library's) shows its preview instead. A server
  * browsed successfully is remembered (synced to our other devices). Rows
- * asked to join here change in place; those joined open as the room list
- * has them, at once. Methods are called on the main thread.
+ * joined or asked to join here show it as the room list has them, at
+ * once. Methods are called on the main thread.
  */
 class JoinModel(
     private val session: Session,
@@ -61,11 +60,13 @@ class JoinModel(
     private val _results = MutableStateFlow<JoinResults>(JoinResults.Loading)
     val results: StateFlow<JoinResults> = _results.asStateFlow()
 
-    private val _pending = MutableStateFlow<Set<String>>(emptySet())
-    val pending: StateFlow<Set<String>> = _pending.asStateFlow()
-
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    private val joining = Joining(viewModelScope, session) { _error.value = it }
+
+    /** Rooms being joined or asked to join. */
+    val pending: StateFlow<Set<String>> = joining.pending
 
     private var search: Job? = null
 
@@ -150,30 +151,10 @@ class JoinModel(
     }
 
     /** Join [room] (or accept its invite): its row opens, as the room list has it at once. */
-    fun join(room: DirectoryRoom) = act(room, after = null) { session.join(room.id, room.via) }
+    fun join(room: DirectoryRoom) = joining.join(room)
 
-    /** Ask to join [room]: its row becomes Asked. */
-    fun knock(room: DirectoryRoom) = act(room, Membership.ASKED) { session.knock(room.id, room.via) }
-
-    private fun act(room: DirectoryRoom, after: Membership?, call: suspend () -> Unit) {
-        if (room.id in _pending.value) return
-        _pending.value += room.id
-        viewModelScope.launch {
-            try {
-                call()
-                if (after == null) return@launch
-                _results.value = when (val shown = _results.value) {
-                    is JoinResults.Listed -> shown.copy(rooms = withMembership(shown.rooms, room.id, after))
-                    is JoinResults.Preview -> if (shown.room.id == room.id) JoinResults.Preview(shown.room.copy(membership = after)) else shown
-                    else -> shown
-                }
-            } catch (e: MtrxException) {
-                _error.value = describe(e)
-            } finally {
-                _pending.value -= room.id
-            }
-        }
-    }
+    /** Ask to join [room]: its row becomes Asked, as the room list has it at once. */
+    fun knock(room: DirectoryRoom) = joining.knock(room)
 
     fun clearError() {
         _error.value = null

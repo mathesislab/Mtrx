@@ -238,16 +238,13 @@ struct RoomSettingsSections: View {
                 Text("Mute").tag(NotifyMode.mute)
             }
             if settings.canChangeAccess && !direct {
-                Picker("Who can join", selection: Binding(get: { settings.access }, set: { model.setAccess($0) })) {
-                    Text("Invited people").tag(Access.invite)
-                    Text("Ask to join").tag(Access.knock)
-                    if !session.lists.parents(roomId: room.id).isEmpty || settings.access == .spaceMembers {
-                        Text("Space members").tag(Access.spaceMembers)
+                Picker("Who can join", selection: Binding(get: { settings.joinRule }, set: { model.setJoinRule($0) })) {
+                    ForEach(settings.joinRuleChoices, id: \.rule) { choice in
+                        Text(choice.title).tag(choice.rule)
                     }
-                    Text("Anyone").tag(Access.public)
                 }
             }
-            if let listed = settings.listed, settings.canChangeAccess, settings.access == .public || listed {
+            if let listed = settings.listed, settings.canChangeAccess, settings.joinRule == .public || listed {
                 Toggle("Listed in the directory", isOn: Binding(get: { listed }, set: { model.setListed($0) }))
             }
             ForEach(settings.spaces.filter(\.canChange), id: \.spaceId) { link in
@@ -430,12 +427,7 @@ enum RoomFacts {
         case .room: facts.append("Room")
         }
         if room.kind != .direct {
-            switch settings.access {
-            case .public: facts.append("Public: anyone can join")
-            case .spaceMembers: facts.append("Private: space members can join")
-            case .knock: facts.append("Private: people ask to join")
-            case .invite: facts.append("Private: by invitation")
-            }
+            facts.append(settings.joinRuleFact)
         }
         facts.append(room.joinedMembers == 1 ? "1 member" : "\(room.joinedMembers) members")
         if room.kind != .space {

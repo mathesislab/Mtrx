@@ -1602,7 +1602,6 @@ fn event_view<'a>(
         // Rendered as summaries in a row of their own (`Row::Summary`).
         EventContent::Membership { .. }
         | EventContent::DisplayNameChange { .. }
-        | EventContent::CallLink { .. }
         | EventContent::Topic { .. }
         | EventContent::Pins(_)
         | EventContent::OtherState { .. } => return space().into(),
@@ -2343,7 +2342,7 @@ mod tests {
             },
             role: mtrx_core::Role::Member,
             level: Some(0),
-            invited: false,
+            membership: mtrx_core::Membership::Joined,
             own: false,
             manage: Default::default(),
         };

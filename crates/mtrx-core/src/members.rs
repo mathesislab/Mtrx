@@ -12,7 +12,7 @@ use matrix_sdk::{
     },
 };
 
-use crate::{Result, RoomHandle, User};
+use crate::{Membership, Result, RoomHandle, User};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
@@ -20,8 +20,8 @@ pub struct Member {
     pub role: Role,
     /// Their power level; `None` for a creator of the room, above all levels.
     pub level: Option<i64>,
-    /// Invited, not joined yet.
-    pub invited: bool,
+    /// Joined, or invited and not joined yet.
+    pub membership: Membership,
     /// Ourselves.
     pub own: bool,
     /// What we may do to them.
@@ -90,7 +90,10 @@ impl RoomHandle {
                         UserPowerLevel::Int(level) => Some(level.into()),
                         _ => None,
                     },
-                    invited: *member.membership() == MembershipState::Invite,
+                    membership: match member.membership() {
+                        MembershipState::Invite => Membership::Invited,
+                        _ => Membership::Joined,
+                    },
                     own: member.user_id() == own,
                     manage,
                 }
@@ -100,7 +103,10 @@ impl RoomHandle {
         if let Some(us) = members.iter_mut().find(|m| m.own) {
             us.manage.alone = alone;
         }
-        members.sort_by_cached_key(|m| (m.invited, m.role, m.user.display_name().to_lowercase()));
+        members.sort_by_cached_key(|m| {
+            let invited = m.membership == Membership::Invited;
+            (invited, m.role, m.user.display_name().to_lowercase())
+        });
         Ok(members)
     }
 
@@ -305,7 +311,7 @@ pub fn typed_level(text: &str, up_to: i64) -> Option<i64> {
 /// Nobody joined but us has our level or more (a creator's is above all).
 fn alone(members: &[Member]) -> bool {
     let level = |m: &Member| m.level.unwrap_or(i64::MAX);
-    let joined = || members.iter().filter(|m| !m.invited);
+    let joined = || (members.iter()).filter(|m| m.membership == Membership::Joined);
     joined()
         .find(|m| m.own)
         .is_some_and(|us| !joined().any(|m| !m.own && level(m) >= level(us)))
@@ -335,7 +341,7 @@ mod tests {
             },
             role: Role::Member,
             level,
-            invited: false,
+            membership: Membership::Joined,
             own: name == "me",
             manage: Manage {
                 up_to,
@@ -441,7 +447,7 @@ mod tests {
         assert!(!alone(&[me.clone(), bob(None)]));
         // Invited people do not count.
         let mut invited = bob(Some(100));
-        invited.invited = true;
+        invited.membership = Membership::Invited;
         assert!(alone(&[me, invited]));
         assert!(!alone(&[bob(Some(0))]));
     }

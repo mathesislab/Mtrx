@@ -17,7 +17,7 @@ use matrix_sdk::{
 use tokio::sync::broadcast::error::RecvError;
 use tracing::warn;
 
-use crate::{Live, Result, RoomKind, RoomSummary, Session, synced};
+use crate::{Live, Membership, Result, RoomKind, RoomSummary, Session, synced};
 
 /// Joined spaces and what they list, with the servers to join through.
 /// `m.space.parent` is not read.
@@ -107,7 +107,7 @@ impl SpaceGraph {
         let ids: HashSet<&OwnedRoomId> = rooms.iter().map(|r| &r.id).collect();
         rooms
             .iter()
-            .filter(|r| r.kind == RoomKind::Space && !r.invited)
+            .filter(|r| r.kind == RoomKind::Space && r.membership == Membership::Joined)
             .filter(|r| !self.parents(&r.id).iter().any(|p| ids.contains(p)))
             .map(|r| r.id.clone())
             .collect()
@@ -356,7 +356,7 @@ pub(crate) mod tests {
     fn top_level_spaces_are_in_no_joined_space() {
         let room = crate::spaces::tests::room;
         let invited = RoomSummary {
-            invited: true,
+            membership: Membership::Invited,
             ..room("!guild:x", RoomKind::Space)
         };
         let rooms = [

@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 # Helpers for tests against the local Synapse.
-test-support = ["dep:hmac", "dep:sha1"]
+test-support = ["dep:hmac", "dep:sha1", "dep:reqwest"]
 
 [dependencies]
 mtrx-format.workspace = true
@@ -26,13 +26,12 @@ tracing.workspace = true
 rand.workspace = true
 chrono.workspace = true
 url.workspace = true
-reqwest.workspace = true
-sha2.workspace = true
-base64.workspace = true
 mime_guess = "2.0.5"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 hmac = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
+# With JSON, which matrix-sdk's leaves out.
+reqwest = { workspace = true, optional = true }
 
 # The OS keyring; iOS and Android apps supply their own (`SecretStore::Custom`).
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
@@ -43,13 +42,14 @@ directories.workspace = true
 # Secrets on Windows: an encrypted file, its key in Credential Manager.
 [target.'cfg(windows)'.dependencies]
 chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+base64.workspace = true
 
 [dev-dependencies]
 mtrx-core = { path = ".", features = ["test-support"] }
 mtrx-format.workspace = true
 tempfile.workspace = true
 anyhow.workspace = true
-tokio = { workspace = true, features = ["net", "io-util", "test-util"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints.rust]
 # Used by ruma's `EventContent` derive.

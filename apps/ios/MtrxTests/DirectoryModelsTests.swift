@@ -11,17 +11,26 @@ final class DirectoryRowsTests: XCTestCase {
         XCTAssertEqual(DirectoryRows.details(Make.directoryRoom("!r", members: 1)), "1 member")
     }
 
-    func testActions() {
-        let action = { (room: DirectoryRoom) in DirectoryRows.action(room, busy: false) }
-        XCTAssertEqual(action(Make.directoryRoom("!a")), .join)
-        XCTAssertEqual(action(Make.directoryRoom("!a", access: .spaceMembers)), .join)
-        XCTAssertEqual(action(Make.directoryRoom("!a", access: .knock)), .askToJoin)
-        XCTAssertEqual(action(Make.directoryRoom("!a", access: .invite)), .inviteOnly)
-        XCTAssertEqual(action(Make.directoryRoom("!a", membership: .joined)), .open)
-        XCTAssertEqual(action(Make.directoryRoom("!a", membership: .asked)), .asked)
-        XCTAssertEqual(action(Make.directoryRoom("!a", membership: .invited)), .invited)
-        XCTAssertEqual(DirectoryRows.action(Make.directoryRoom("!a", access: .knock), busy: true).title, "Asking…")
+    func testRole() {
         XCTAssertEqual(DirectoryRows.role(Make.directoryRoom("!a", role: .moderator)), "Mod")
+    }
+
+    /// The library's: our membership as the room lists have it first,
+    /// then what the room lets us do.
+    func testActions() {
+        let lists = Make.lists([
+            Make.room("!lab"), Make.room("!offer", membership: .invited), Make.room("!door", membership: .asked),
+        ])
+        let action = { (room: DirectoryRoom) in lists.joinButton(room: room).action }
+        XCTAssertEqual(action(Make.directoryRoom("!a")), .join)
+        XCTAssertEqual(action(Make.directoryRoom("!a", joinRule: .spaceMembers)), .join)
+        XCTAssertEqual(action(Make.directoryRoom("!a", joinRule: .knock)), .askToJoin)
+        XCTAssertEqual(action(Make.directoryRoom("!a", joinRule: .invite)), .inviteOnly)
+        XCTAssertEqual(action(Make.directoryRoom("!lab")), .open)
+        XCTAssertEqual(action(Make.directoryRoom("!offer")), .invited)
+        XCTAssertEqual(action(Make.directoryRoom("!door", joinRule: .knock)), .asked)
+        XCTAssertEqual(lists.joinButton(room: Make.directoryRoom("!a", joinRule: .knock)).title, "Ask to join")
+        XCTAssertFalse(JoinAction.asked.pressable)
     }
 }
 
@@ -63,24 +72,20 @@ final class SpaceOverviewModelTests: XCTestCase {
         XCTAssertEqual(model.rooms.map(\.id), ["!old"])
     }
 
-    /// Joined as the room list has it (at once, the library's); asked as
-    /// asked here, until listed again.
-    func testJoiningTurnsTheRowToOpen() async {
+    /// Joins, or asks to join a room that takes requests; busy meanwhile.
+    /// Open or Asked after is the room lists' (the library's).
+    func testJoinsOrAsks() async {
         let lab = Make.directoryRoom("!lab")
-        let door = Make.directoryRoom("!door", access: .knock)
+        let door = Make.directoryRoom("!door", joinRule: .knock)
         session.children = .success([lab, door])
         let model = SpaceOverviewModel(session: session, spaceId: "!team")
         await model.load()
-        XCTAssertEqual(model.action(lab, joined: false), .join)
         let joined = await model.join(lab)
         XCTAssertEqual(joined, "!lab")
-        XCTAssertEqual(model.action(lab, joined: true), .open)
         let asked = await model.join(door)
         XCTAssertNil(asked)
-        XCTAssertEqual(model.action(door, joined: false), .asked)
         XCTAssertEqual(session.changes, ["join !lab", "knock !door"])
-        await model.load()
-        XCTAssertEqual(model.action(door, joined: false), .askToJoin)
+        XCTAssertFalse(model.isBusy(door))
     }
 
     func testAFailedJoinSaysWhy() async {
@@ -89,7 +94,7 @@ final class SpaceOverviewModelTests: XCTestCase {
         let joined = await model.join(Make.directoryRoom("!lab"))
         XCTAssertNil(joined)
         XCTAssertEqual(model.error, "Not allowed")
-        XCTAssertEqual(model.action(Make.directoryRoom("!lab"), joined: false), .join)
+        XCTAssertFalse(model.isBusy(Make.directoryRoom("!lab")))
     }
 }
 

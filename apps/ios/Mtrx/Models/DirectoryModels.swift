@@ -1,8 +1,8 @@
 import Foundation
 import MtrxFFI
 
-/// Rooms to join, as a space or a directory lists them: the details line,
-/// the role, and what a row offers.
+/// Rooms to join, as a space or a directory lists them: the details line
+/// and the role. What a row offers is the library's `joinButton`.
 enum DirectoryRows {
     /// "Space · 4 rooms · the topic's first line · 12 members".
     static func details(_ room: DirectoryRoom) -> String {
@@ -29,72 +29,30 @@ enum DirectoryRows {
         case .member, nil: return nil
         }
     }
+}
 
-    /// What a row offers, as the room allows.
-    enum Action: Equatable {
-        case join
-        case askToJoin
-        case open
-        /// An invite, to answer.
-        case invited
-        /// We asked, and wait.
-        case asked
-        case inviteOnly
-        /// Joining or asking, on its way.
-        case busy(knock: Bool)
-
-        var title: String {
-            switch self {
-            case .join: return "Join"
-            case .askToJoin: return "Ask to join"
-            case .open: return "Open"
-            case .invited: return "Invited"
-            case .asked: return "Asked"
-            case .inviteOnly: return "Invite only"
-            case .busy(let knock): return knock ? "Asking…" : "Joining…"
-            }
-        }
-
-        /// A button to press (in the primary colour for joining), not a
-        /// word.
-        var pressable: Bool {
-            switch self {
-            case .join, .askToJoin, .open, .invited: return true
-            case .asked, .inviteOnly, .busy: return false
-            }
-        }
-
-        var primary: Bool {
-            self == .join || self == .askToJoin
+extension JoinAction {
+    /// A button to press (in the primary colour for joining), not a
+    /// word.
+    var pressable: Bool {
+        switch self {
+        case .join, .askToJoin, .open, .invited: return true
+        case .asked, .inviteOnly: return false
         }
     }
 
-    static func action(_ room: DirectoryRoom, busy: Bool) -> Action {
-        if busy {
-            return .busy(knock: room.access == .knock)
-        }
-        switch room.membership {
-        case .joined: return .open
-        case .invited: return .invited
-        case .asked: return .asked
-        case nil:
-            switch room.access {
-            case .public, .spaceMembers: return .join
-            case .knock: return .askToJoin
-            case .invite: return .inviteOnly
-            }
-        }
+    var primary: Bool {
+        self == .join || self == .askToJoin
     }
 }
 
-/// Joining rooms from a list: join or ask to join, the row changing as
-/// it goes (Joining…, then Open or Asked); a failure shows why.
+/// Joining rooms from a list: join or ask to join, the row busy as it
+/// goes (Joining…), then Open or Asked as the room lists have it at once
+/// (the library's); a failure shows why.
 @MainActor
 class JoiningModel: ObservableObject {
     /// Rooms being joined or asked to join.
     @Published private(set) var busy: Set<String> = []
-    /// Rooms asked to join here, until the list is read again.
-    @Published private(set) var asked: Set<String> = []
     @Published var error: String?
 
     let session: Session
@@ -103,25 +61,9 @@ class JoiningModel: ObservableObject {
         self.session = session
     }
 
-    /// `room` as shown: `joined` as the room list has it (rooms joined here
-    /// are there at once), else asked if asked here.
-    func shown(_ room: DirectoryRoom, joined: Bool) -> DirectoryRoom {
-        var room = room
-        if joined {
-            room.membership = .joined
-        } else if asked.contains(room.id) {
-            room.membership = .asked
-        }
-        return room
-    }
-
-    func action(_ room: DirectoryRoom, joined: Bool) -> DirectoryRows.Action {
-        DirectoryRows.action(shown(room, joined: joined), busy: busy.contains(room.id))
-    }
-
-    /// The list was read again: it has our memberships.
-    func relisted() {
-        asked = []
+    /// Joining or asking to join `room`, on its way.
+    func isBusy(_ room: DirectoryRoom) -> Bool {
+        busy.contains(room.id)
     }
 
     /// Join `room`, or ask to (rooms that take requests). Returns the room's
@@ -133,9 +75,8 @@ class JoiningModel: ObservableObject {
         defer { busy.remove(room.id) }
         let address = room.alias ?? room.id
         do {
-            if room.access == .knock {
+            if room.joinRule == .knock {
                 _ = try await session.knock(room: address, via: room.via)
-                asked.insert(room.id)
                 return nil
             }
             return try await session.join(room: address, via: room.via)
@@ -189,7 +130,6 @@ final class SpaceOverviewModel: JoiningModel {
         do {
             rooms = try await session.spaceChildren(spaceId: spaceId)
             unknown = false
-            relisted()
         } catch {
             failed = true
         }

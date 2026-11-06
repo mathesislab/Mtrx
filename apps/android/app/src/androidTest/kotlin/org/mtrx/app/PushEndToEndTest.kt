@@ -108,7 +108,7 @@ class PushEndToEndTest {
             aliceRooms.get()?.rooms()?.any { it.id == roomId && it.encrypted && it.joinedMembers == 2uL } == true
         }
         waitUntil("Bob's app to see the room") {
-            account.rooms.value.rooms().any { it.id == roomId && !it.invited && it.encrypted }
+            account.rooms.value.rooms().any { it.id == roomId && it.membership == uniffi.mtrx.Membership.JOINED && it.encrypted }
         }
 
         // The pusher, as the app sets it for a new endpoint.

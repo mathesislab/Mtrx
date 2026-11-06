@@ -5187,6 +5187,7 @@ dependencies = [
  "image",
  "mtrx-core",
  "mtrx-format",
+ "mtrx-google",
  "notify-rust",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -5219,6 +5220,7 @@ dependencies = [
  "clap",
  "futures-util",
  "mtrx-core",
+ "mtrx-google",
  "open",
  "rpassword",
  "tokio",
@@ -5251,7 +5253,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
- "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -5301,6 +5302,25 @@ dependencies = [
  "typst-layout",
  "typst-render",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "mtrx-google"
+version = "0.5.3"
+dependencies = [
+ "base64 0.23.1",
+ "matrix-sdk",
+ "mtrx-core",
+ "rand 0.10.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

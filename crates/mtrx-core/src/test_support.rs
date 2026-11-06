@@ -38,7 +38,7 @@ pub fn unique_name(prefix: &str) -> String {
 
 /// Register `name` with [`PASSWORD`] via Synapse's shared-secret admin API.
 pub async fn register(name: &str) -> Result<(), String> {
-    let http = matrix_sdk::reqwest::Client::new();
+    let http = reqwest::Client::new();
     let url = format!("{}/_synapse/admin/v1/register", homeserver());
     let err = |e: &dyn std::fmt::Display| e.to_string();
     let nonce = http
@@ -83,7 +83,7 @@ pub async fn register(name: &str) -> Result<(), String> {
 /// Log `name` out on all their devices, as if signed out elsewhere: their
 /// sessions' tokens stop working.
 pub async fn log_out_everywhere(name: &str) -> Result<(), String> {
-    let http = matrix_sdk::reqwest::Client::new();
+    let http = reqwest::Client::new();
     let err = |e: &dyn std::fmt::Display| e.to_string();
     let login = serde_json::json!({
         "type": "m.login.password",

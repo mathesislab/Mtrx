@@ -1,38 +1,19 @@
 package org.mtrx.app.rooms
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import org.mtrx.app.model.describe
 import uniffi.mtrx.DirectoryRoom
-import uniffi.mtrx.JoinAccess
-import uniffi.mtrx.Membership
+import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Role
+import uniffi.mtrx.Session
 
 // Rooms to join, as a space or a server's directory lists them: what each
-// row offers and says.
-
-/** What a listed room's row offers. */
-enum class RowAction(val label: String) {
-    JOIN("Join"),
-    ASK("Ask to join"),
-    OPEN("Open"),
-
-    /** Only invited people may join: nothing to do. */
-    INVITE_ONLY("Invite only"),
-
-    /** We asked to join and wait. */
-    ASKED("Asked"),
-}
-
-/**
- * Open where we are a member ([joined] also counts the room list's), Join
- * where we are invited or may join, Ask to join where it takes requests.
- */
-fun rowAction(room: DirectoryRoom, joined: Boolean = false): RowAction = when {
-    joined || room.membership == Membership.JOINED -> RowAction.OPEN
-    room.membership == Membership.ASKED -> RowAction.ASKED
-    room.membership == Membership.INVITED -> RowAction.JOIN
-    room.access == JoinAccess.KNOCK -> RowAction.ASK
-    room.access == JoinAccess.INVITE -> RowAction.INVITE_ONLY
-    else -> RowAction.JOIN
-}
+// row says, and joining them. What a row offers is the library's
+// joinButton.
 
 /** "N members" (a space: "Space · N rooms"), then the topic's first line. */
 fun rowDetails(room: DirectoryRoom): String {
@@ -61,6 +42,36 @@ fun filtered(rooms: List<DirectoryRoom>, filter: String): List<DirectoryRoom> {
     }
 }
 
-/** [rooms] with [roomId]'s membership now [membership]. */
-fun withMembership(rooms: List<DirectoryRoom>, roomId: String, membership: Membership): List<DirectoryRoom> =
-    rooms.map { if (it.id == roomId) it.copy(membership = membership) else it }
+/**
+ * Joining or asking to join listed rooms: [pending] while on its way, a
+ * failure to [onError]. The rows then show Open or Asked as the room lists
+ * have them, at once (the library's). Methods are called on the main thread.
+ */
+class Joining(
+    private val scope: CoroutineScope,
+    private val session: Session,
+    private val onError: (String?) -> Unit,
+) {
+    private val _pending = MutableStateFlow<Set<String>>(emptySet())
+    val pending: StateFlow<Set<String>> = _pending.asStateFlow()
+
+    /** Join [room] (or accept its invite). */
+    fun join(room: DirectoryRoom) = act(room) { session.join(room.id, room.via) }
+
+    /** Ask to join [room]. */
+    fun knock(room: DirectoryRoom) = act(room) { session.knock(room.id, room.via) }
+
+    private fun act(room: DirectoryRoom, call: suspend () -> Unit) {
+        if (room.id in _pending.value) return
+        _pending.value += room.id
+        scope.launch {
+            try {
+                call()
+            } catch (e: MtrxException) {
+                onError(describe(e))
+            } finally {
+                _pending.value -= room.id
+            }
+        }
+    }
+}

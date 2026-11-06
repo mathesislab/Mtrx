@@ -4,7 +4,7 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, hover, row, space, stack, text},
 };
-use mtrx_core::{Member, OwnedRoomId, OwnedUserId};
+use mtrx_core::{Member, Membership, OwnedRoomId, OwnedUserId};
 
 use crate::{
     app::Message,
@@ -95,7 +95,8 @@ pub fn rows<'a>(
         None => rows = rows.push(text("Loading…").size(12).style(text::secondary)),
         Some(Err(e)) => rows = rows.push(text(e).size(12).style(text::danger)),
         Some(Ok(members)) => {
-            let (joined, invited): (Vec<_>, Vec<_>) = members.iter().partition(|m| !m.invited);
+            let (joined, invited): (Vec<_>, Vec<_>) =
+                (members.iter()).partition(|m| m.membership == Membership::Joined);
             let common = Common {
                 more: members.iter().any(|m| m.manage.remove || m.manage.ban),
             };
