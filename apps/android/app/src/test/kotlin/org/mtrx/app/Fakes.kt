@@ -56,6 +56,8 @@ import uniffi.mtrx.EventContent
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
+import uniffi.mtrx.DownloadsListener
+import uniffi.mtrx.Media
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.NoHandle
@@ -234,6 +236,30 @@ class FakeSession : Session(NoHandle) {
     }
 
     override fun subscribeConnection(listener: ConnectionListener): TaskHandle = FakeHandle().also { handles += it }
+
+    var downloadsListener: DownloadsListener? = null
+
+    /** Each download started, retried or cancelled: "download <source>", "retry <id>", "cancel <id>". */
+    val downloadCalls = mutableListOf<String>()
+
+    /** Where [downloadFinished] says each download is; missing: it failed. */
+    val downloaded = mutableMapOf<ULong, String>()
+
+    override fun subscribeDownloads(listener: DownloadsListener): TaskHandle {
+        downloadsListener = listener
+        return FakeHandle().also { handles += it }
+    }
+
+    override suspend fun downloadFinished(id: ULong): String =
+        downloaded[id] ?: throw MtrxException.Other("Cancelled")
+
+    override fun retryDownload(id: ULong) {
+        downloadCalls += "retry $id"
+    }
+
+    override fun cancelDownload(id: ULong) {
+        downloadCalls += "cancel $id"
+    }
 
     override suspend fun subscribeRoomLists(listener: RoomListsListener): TaskHandle {
         roomListListener = listener
@@ -448,6 +474,11 @@ class FakeSession : Session(NoHandle) {
  * library's.
  */
 class FakeRoom(private val session: FakeSession, private val roomId: String) : Room(NoHandle) {
+    override fun download(media: Media, eventId: String?): ULong {
+        session.downloadCalls += "download ${media.source}"
+        return 1u
+    }
+
     // As the library: the settings now, then after each change.
     override fun subscribeSettings(listener: RoomSettingsListener): TaskHandle {
         listener.onUpdate(session.settings)
