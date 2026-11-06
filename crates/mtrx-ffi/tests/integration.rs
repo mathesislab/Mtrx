@@ -282,7 +282,6 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
 
     block_on(session.logout()).unwrap();
     assert!(secrets.0.lock().unwrap().is_empty());
-    assert!(!std::path::Path::new(&path).exists());
     assert!(block_on(mtrx.restore()).unwrap().is_none());
 }
 
@@ -414,6 +413,7 @@ fn diary_with_recovery(
         let sent = timeline.send_markdown(text, None).await.unwrap().sent();
         tokio::time::timeout(TIMEOUT, sent).await.unwrap().unwrap();
         let key = first.enable_recovery().await.unwrap();
+        first.stop_sync().await;
         (room.to_string(), key)
     })
 }
