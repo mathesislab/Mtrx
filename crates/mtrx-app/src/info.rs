@@ -29,7 +29,7 @@ use crate::{
     overview::{self, Overview},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
-    selectable::selectable_text,
+    selectable::text::selectable_text,
     settings::{self, Preference},
     sidebar, spelling, style, topic,
 };

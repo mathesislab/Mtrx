@@ -20,7 +20,7 @@ use crate::{
     hint::{Position, hint},
     icons,
     reorder::{self, Reorder},
-    selectable::selectable_text,
+    selectable::text::selectable_text,
     selection, spelling, style,
 };
 

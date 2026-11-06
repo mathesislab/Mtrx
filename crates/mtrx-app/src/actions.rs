@@ -31,7 +31,7 @@ use crate::{
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
     room,
-    selectable::selectable,
+    selectable::text::selectable,
     selection::{self, Unit},
     style,
 };
@@ -623,7 +623,7 @@ pub fn quote<'a>(
     let go = (!reply.failed).then(|| room::Message::GoTo(reply.event_id.clone()).to(room));
     let unit = |index: usize, spans| {
         let unit = selectable(spans, index).size(12);
-        let unit = select.apply(unit, index, units[index].text.len());
+        let unit = select.apply(unit, index);
         match &go {
             Some(go) => unit.on_click(go.clone()),
             None => unit,

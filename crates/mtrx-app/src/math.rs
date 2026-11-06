@@ -12,7 +12,7 @@ use ::image::{DynamicImage, ImageFormat, RgbImage};
 use iced::{Task, widget::image};
 use mtrx_format::{Document, RenderStyle, Renderer};
 
-use crate::{clipboard, fonts, message, selectable_image, style};
+use crate::{clipboard, fonts, message, selectable, style};
 
 /// Identifies one rendering: same content, width and colours give the same image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -30,7 +30,7 @@ pub enum Rendered {
         width: f32,
         height: f32,
         /// Where its text is, for selecting it.
-        text: Arc<selectable_image::Text>,
+        text: Arc<selectable::image::Text>,
     },
     /// Typst or LaTeX error; the message is shown natively instead.
     Failed,
@@ -193,7 +193,7 @@ fn render(renderer: &Renderer, document: &Document, key: Key, params: &Params) -
         Ok(img) => Rendered::Image {
             width: img.width as f32 / params.scale,
             height: img.height as f32 / params.scale,
-            text: Arc::new(selectable_image::Text::new(
+            text: Arc::new(selectable::image::Text::new(
                 &img.pieces,
                 &message::text_map(document),
                 params.scale,
