@@ -17,7 +17,7 @@ use matrix_sdk::{
 use tokio::sync::broadcast::error::RecvError;
 use tracing::warn;
 
-use crate::{Live, Membership, Result, RoomKind, RoomSummary, Session, synced};
+use crate::{Error, Live, Membership, Result, RoomKind, RoomSummary, Session, echo::Setting};
 
 /// Joined spaces and what they list, with the servers to join through.
 /// `m.space.parent` is not read.
@@ -230,8 +230,7 @@ impl Session {
     }
 
     /// Send `space`'s link to `room` (none: `via` empty), returning once the
-    /// space graph has it (or after [`synced::CONFIRM`]): what is read next
-    /// shows it.
+    /// server took it; the room's settings show it at once.
     pub(crate) async fn set_child(
         &self,
         space: &Room,
@@ -240,13 +239,12 @@ impl Session {
     ) -> Result<()> {
         // As the graph will have it: listed, suggested or not; or not.
         let listed = (!content.via.is_empty()).then_some(content.suggested);
-        space.send_state_event_for_key(room, content).await?;
-        let space = space.room_id();
-        let shown = self
-            .spaces
-            .wait_for(|graph| graph.child(space, room).map(|c| c.suggested) == listed);
-        let _ = tokio::time::timeout(synced::CONFIRM, shown).await;
-        Ok(())
+        let setting = Setting::Link(space.room_id().to_owned(), listed);
+        let request = async {
+            space.send_state_event_for_key(room, content).await?;
+            Ok::<_, Error>(())
+        };
+        self.echoed(room, setting, request).await
     }
 }
 

@@ -5322,7 +5322,7 @@ fn paginate(room: &mut Room) -> Task<Message> {
 fn load_settings(room: &RoomHandle) -> Task<Message> {
     let (room, id) = (room.clone(), room.id().to_owned());
     Task::perform(
-        async move { room.settings().await.map_err(|e| e.to_string()) },
+        async move { Ok::<_, String>(room.settings().await.get()) },
         move |result| Message::Info(info::Message::SettingsLoaded(id.clone(), result)),
     )
 }

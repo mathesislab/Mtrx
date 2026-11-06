@@ -1,15 +1,21 @@
-//! Changes made here, shown at once in the room lists and the timelines'
-//! rows: the server answers before sync brings them back.
+//! Changes made here, shown at once in the room lists, the timelines' rows
+//! and the rooms' settings: the server answers before sync brings them
+//! back.
 
 use std::{
+    borrow::Borrow,
     collections::{BTreeSet, HashMap},
+    hash::Hash,
     time::{Duration, Instant},
 };
 
-use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId, RoomId};
+use matrix_sdk::ruma::{OwnedEventId, OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomId};
 use tokio::sync::watch;
 
-use crate::{Membership, RoomSummary, RoomTag};
+use crate::{
+    History, JoinRule, Membership, NotifyMode, Permissions, RoomSettings, RoomSummary, RoomTag,
+    SpaceLink,
+};
 
 /// How long a change the server accepted may still differ from what sync
 /// brought (sync lags behind the server's answer).
@@ -31,37 +37,154 @@ impl<T: PartialEq> Pending<T> {
     /// Whether it still shows over `synced`, the room's value as synced
     /// (none once the room is gone): until synced, or timed out.
     fn shows_over(&self, synced: Option<&T>, now: Instant) -> bool {
-        let timed_out = self.timeout().is_some_and(|at| now >= at);
-        synced.is_some_and(|synced| *synced != self.value) && !timed_out
+        synced.is_some_and(|synced| *synced != self.value) && !self.timed_out(now)
     }
 
     /// [`ECHO_TIMEOUT`] after the server accepted it.
     fn timeout(&self) -> Option<Instant> {
         Some(self.since? + ECHO_TIMEOUT)
     }
+
+    fn timed_out(&self, now: Instant) -> bool {
+        self.timeout().is_some_and(|at| now >= at)
+    }
 }
 
-/// The values of one kind set here, by room.
-type Pendings<T> = HashMap<OwnedRoomId, Pending<T>>;
+/// The values of one kind set here, by room (or by what else `K` says).
+type Pendings<T, K = OwnedRoomId> = HashMap<K, Pending<T>>;
 
-/// The server answered setting `room`'s value to `value`: on failure it
-/// goes. Returns whether that changed anything.
-fn answer<T: PartialEq<U>, U: ?Sized>(
-    pendings: &mut Pendings<T>,
-    room: &RoomId,
+/// The server answered setting the value under `key` to `value`: on
+/// failure it goes. Returns whether that changed anything.
+fn answer<K, Q, T, U>(
+    pendings: &mut Pendings<T, K>,
+    key: &Q,
     value: &U,
     ok: bool,
     now: Instant,
-) -> bool {
-    match pendings.get_mut(room) {
+) -> bool
+where
+    K: Borrow<Q> + Hash + Eq,
+    Q: Hash + Eq + ?Sized,
+    T: PartialEq<U>,
+    U: ?Sized,
+{
+    match pendings.get_mut(key) {
         // A later change is under way.
         Some(pending) if pending.value != *value => false,
         Some(pending) if ok => {
             pending.since = Some(now);
             true
         }
-        Some(_) => pendings.remove(room).is_some(),
+        Some(_) => pendings.remove(key).is_some(),
         None => false,
+    }
+}
+
+/// A room's setting changed here, with its new value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Setting {
+    JoinRule(JoinRule),
+    History(History),
+    Address(Option<OwnedRoomAliasId>),
+    Listed(bool),
+    Permissions(Permissions),
+    Notify(NotifyMode),
+    Encrypted(bool),
+    /// Listed in the space, suggested or not; or not (none).
+    Link(OwnedRoomId, Option<bool>),
+    /// Someone banned, or not.
+    Banned(OwnedUserId, bool),
+}
+
+/// Which setting a [`Setting`] is.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SettingKey {
+    JoinRule,
+    History,
+    Address,
+    Listed,
+    Permissions,
+    Notify,
+    Encrypted,
+    Link(OwnedRoomId),
+    Banned(OwnedUserId),
+}
+
+impl Setting {
+    fn key(&self) -> SettingKey {
+        match self {
+            Self::JoinRule(_) => SettingKey::JoinRule,
+            Self::History(_) => SettingKey::History,
+            Self::Address(_) => SettingKey::Address,
+            Self::Listed(_) => SettingKey::Listed,
+            Self::Permissions(_) => SettingKey::Permissions,
+            Self::Notify(_) => SettingKey::Notify,
+            Self::Encrypted(_) => SettingKey::Encrypted,
+            Self::Link(space, _) => SettingKey::Link(space.clone()),
+            Self::Banned(user, _) => SettingKey::Banned(user.clone()),
+        }
+    }
+
+    /// Show it in `settings`.
+    fn lay(&self, settings: &mut RoomSettings) {
+        match self {
+            Self::JoinRule(rule) => settings.join_rule = *rule,
+            Self::History(history) => settings.history = *history,
+            Self::Address(address) => settings.address = address.clone(),
+            Self::Listed(listed) => settings.listed = Some(*listed),
+            Self::Permissions(permissions) => settings.permissions = *permissions,
+            Self::Notify(mode) => settings.notify = *mode,
+            Self::Encrypted(encrypted) => settings.encrypted = *encrypted,
+            Self::Link(space, listed) => {
+                let at = settings.spaces.iter().position(|l| l.space == *space);
+                match (listed, at) {
+                    (Some(suggested), Some(at)) => settings.spaces[at].suggested = *suggested,
+                    (Some(suggested), None) => {
+                        settings.can_add_to.retain(|id| id != space);
+                        settings.spaces.push(SpaceLink {
+                            space: space.clone(),
+                            suggested: *suggested,
+                            // We just did.
+                            can_change: true,
+                        });
+                    }
+                    (None, Some(at)) => {
+                        let link = settings.spaces.remove(at);
+                        if link.can_change && !settings.can_add_to.contains(space) {
+                            settings.can_add_to.push(link.space);
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+            Self::Banned(user, false) => settings.banned.retain(|b| b.user.id != *user),
+            // Only unbanning is changed here.
+            Self::Banned(_, true) => {}
+        }
+    }
+}
+
+impl SettingKey {
+    /// Its value in `settings`; none where they don't say (whether the
+    /// room is listed).
+    fn read(&self, settings: &RoomSettings) -> Option<Setting> {
+        Some(match self {
+            Self::JoinRule => Setting::JoinRule(settings.join_rule),
+            Self::History => Setting::History(settings.history),
+            Self::Address => Setting::Address(settings.address.clone()),
+            Self::Listed => Setting::Listed(settings.listed?),
+            Self::Permissions => Setting::Permissions(settings.permissions),
+            Self::Notify => Setting::Notify(settings.notify),
+            Self::Encrypted => Setting::Encrypted(settings.encrypted),
+            Self::Link(space) => {
+                let link = settings.spaces.iter().find(|l| l.space == *space);
+                Setting::Link(space.clone(), link.map(|l| l.suggested))
+            }
+            Self::Banned(user) => {
+                let banned = settings.banned.iter().any(|b| b.user.id == *user);
+                Setting::Banned(user.clone(), banned)
+            }
+        })
     }
 }
 
@@ -78,7 +201,12 @@ pub(crate) struct Changes {
     tags: Pendings<RoomTag>,
     /// Without a topic: none.
     topics: Pendings<Option<String>>,
+    /// Only names that are not blank: a room without one is named after
+    /// its members.
+    names: Pendings<String>,
     pinned: Pendings<Vec<OwnedEventId>>,
+    /// Rooms' settings, by room and setting.
+    settings: Pendings<Setting, (OwnedRoomId, SettingKey)>,
     /// Rooms joined or made here that the room list does not list as
     /// joined yet.
     joining: BTreeSet<OwnedRoomId>,
@@ -89,15 +217,18 @@ pub(crate) struct Changes {
 impl Changes {
     fn count(&self) -> usize {
         let rooms = self.joining.len() + self.knocking.len();
-        self.tags.len() + self.topics.len() + self.pinned.len() + rooms
+        let listed = self.tags.len() + self.topics.len() + self.names.len() + self.pinned.len();
+        listed + self.settings.len() + rooms
     }
 
-    /// When the next of the changes the server accepted times out.
+    /// When the next of the changes the room list shows that the server
+    /// accepted times out.
     fn timeout(&self) -> Option<Instant> {
         let tags = self.tags.values().filter_map(Pending::timeout);
         let topics = self.topics.values().filter_map(Pending::timeout);
+        let names = self.names.values().filter_map(Pending::timeout);
         let pinned = self.pinned.values().filter_map(Pending::timeout);
-        tags.chain(topics).chain(pinned).min()
+        tags.chain(topics).chain(names).chain(pinned).min()
     }
 }
 
@@ -144,6 +275,76 @@ impl Echoes {
     ) {
         (self.changes)
             .send_if_modified(|changes| answer(&mut changes.topics, room, topic, ok, now));
+    }
+
+    /// `room` is being renamed `name` (not blank).
+    pub(crate) fn set_name(&self, room: &RoomId, name: String) {
+        self.changes.send_modify(|changes| {
+            changes.names.insert(room.to_owned(), Pending::new(name));
+        });
+    }
+
+    /// The server answered renaming `room`: on failure the name goes.
+    pub(crate) fn name_answered(&self, room: &RoomId, name: &str, ok: bool, now: Instant) {
+        (self.changes).send_if_modified(|changes| answer(&mut changes.names, room, name, ok, now));
+    }
+
+    /// `room`'s `setting` is being changed.
+    pub(crate) fn set_setting(&self, room: &RoomId, setting: Setting) {
+        self.changes.send_modify(|changes| {
+            let key = (room.to_owned(), setting.key());
+            changes.settings.insert(key, Pending::new(setting));
+        });
+    }
+
+    /// The server answered changing `room`'s `setting`: on failure the
+    /// change goes.
+    pub(crate) fn setting_answered(
+        &self,
+        room: &RoomId,
+        setting: &Setting,
+        ok: bool,
+        now: Instant,
+    ) {
+        let key = (room.to_owned(), setting.key());
+        (self.changes)
+            .send_if_modified(|changes| answer(&mut changes.settings, &key, setting, ok, now));
+    }
+
+    /// When the server accepted the change to `room`'s setting `key` that
+    /// is still shown, if it has.
+    pub(crate) fn accepted(&self, room: &RoomId, key: SettingKey) -> Option<Instant> {
+        let key = (room.to_owned(), key);
+        self.changes.borrow().settings.get(&key)?.since
+    }
+
+    /// Lay the changes to `room`'s settings over `settings` (as synced),
+    /// first dropping those they show and those the server accepted
+    /// [`ECHO_TIMEOUT`] ago; returns when the next of those left times out.
+    pub(crate) fn lay_settings(
+        &self,
+        room: &RoomId,
+        settings: &mut RoomSettings,
+        now: Instant,
+    ) -> Option<Instant> {
+        self.changes.send_if_modified(|changes| {
+            let before = changes.settings.len();
+            (changes.settings).retain(|(id, key), pending| {
+                **id != *room || pending.shows_over(key.read(settings).as_ref(), now)
+            });
+            changes.settings.len() != before
+        });
+        let changes = self.changes.borrow();
+        let mine = (changes.settings.iter()).filter(|((id, _), _)| **id == *room);
+        let mut timeouts = Vec::new();
+        for (_, pending) in mine {
+            pending.value.lay(settings);
+            timeouts.extend(pending.timeout());
+        }
+        // Space members only for a room in a space, as shown now.
+        let in_space = !settings.spaces.is_empty();
+        settings.join_rule_choices = JoinRule::choices(settings.join_rule, in_space);
+        timeouts.into_iter().min()
     }
 
     /// `room`'s pinned messages being set here, if any: what the next
@@ -216,7 +417,11 @@ impl Echoes {
             let before = changes.count();
             (changes.tags).retain(|id, p| p.shows_over(synced(id).map(|r| &r.tag), now));
             (changes.topics).retain(|id, p| p.shows_over(synced(id).map(|r| &r.topic), now));
+            (changes.names).retain(|id, p| p.shows_over(synced(id).map(|r| &r.name), now));
             (changes.pinned).retain(|id, p| p.shows_over(synced(id).map(|r| &r.pinned), now));
+            // The settings drop those they show; here go those of rooms
+            // gone and those timed out, whether shown or not.
+            (changes.settings).retain(|(id, _), p| synced(id).is_some() && !p.timed_out(now));
             let coming = |r: &RoomSummary| r.membership != Membership::Joined;
             (changes.joining).retain(|id| synced(id).is_none_or(coming));
             (changes.knocking).retain(|id| synced(id).is_none());
@@ -226,6 +431,7 @@ impl Echoes {
         for room in rooms.iter_mut() {
             lay(&changes.tags, &room.id, &mut room.tag);
             lay(&changes.topics, &room.id, &mut room.topic);
+            lay(&changes.names, &room.id, &mut room.name);
             lay(&changes.pinned, &room.id, &mut room.pinned);
         }
         changes.timeout()
@@ -265,7 +471,7 @@ impl Echoes {
 
 #[cfg(test)]
 mod tests {
-    use matrix_sdk::ruma::{owned_event_id, owned_room_id};
+    use matrix_sdk::ruma::{owned_event_id, owned_room_alias_id, owned_room_id, owned_user_id};
 
     use super::*;
     use crate::{RoomKind, spaces::tests::room};
@@ -437,5 +643,187 @@ mod tests {
         rooms[0].membership = Membership::Asked;
         echoes.lay_over(&mut rooms, Instant::now());
         assert!(echoes.knocking().is_empty());
+    }
+
+    #[test]
+    fn a_name_shows_in_the_list_until_synced_or_failed() {
+        let echoes = Echoes::default();
+        let (a, b) = (owned_room_id!("!a:x"), owned_room_id!("!b:x"));
+        let rooms = vec![
+            room(a.as_str(), RoomKind::Room),
+            room(b.as_str(), RoomKind::Room),
+        ];
+        let now = Instant::now();
+        echoes.set_name(&a, "Ice".into());
+        echoes.set_name(&b, "Sheets".into());
+        echoes.name_answered(&a, "Ice", true, now);
+        echoes.name_answered(&b, "Sheets", false, now);
+        let mut shown = rooms.clone();
+        assert_eq!(echoes.lay_over(&mut shown, now), Some(now + ECHO_TIMEOUT));
+        assert_eq!(
+            (shown[0].name.as_str(), shown[1].name.as_str()),
+            ("Ice", "!b:x")
+        );
+
+        let mut synced = rooms.clone();
+        synced[0].name = "Ice".into();
+        echoes.lay_over(&mut synced, now);
+        assert!(echoes.changes.borrow().names.is_empty());
+    }
+
+    /// A room's settings as synced: invite only, in the space Team, which
+    /// suggests it, Bob banned; we may add it to Other.
+    fn settings() -> RoomSettings {
+        RoomSettings {
+            rights: Default::default(),
+            notify: NotifyMode::All,
+            join_rule: JoinRule::Invite,
+            join_rule_choices: JoinRule::choices(JoinRule::Invite, true),
+            address: None,
+            listed: Some(false),
+            history: History::Members,
+            permissions: Permissions::Everyone,
+            encrypted: false,
+            version: Some("12".into()),
+            spaces: vec![SpaceLink {
+                space: owned_room_id!("!team:x"),
+                suggested: true,
+                can_change: true,
+            }],
+            can_add_to: vec![owned_room_id!("!other:x")],
+            banned: vec![crate::Banned {
+                user: crate::User {
+                    id: owned_user_id!("@bob:x"),
+                    name: None,
+                    avatar: None,
+                },
+                reason: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn settings_show_until_synced_failed_or_timed_out() {
+        let echoes = Echoes::default();
+        let (a, b) = (owned_room_id!("!a:x"), owned_room_id!("!b:x"));
+        let now = Instant::now();
+        let public = Setting::JoinRule(JoinRule::Public);
+        let joined = Setting::History(History::Joined);
+        let address = Setting::Address(Some(owned_room_alias_id!("#ice:x")));
+        echoes.set_setting(&a, public.clone());
+        echoes.set_setting(&a, joined.clone());
+        echoes.set_setting(&a, address.clone());
+        echoes.set_setting(&a, Setting::Notify(NotifyMode::Mute));
+        // Another room's: not shown here.
+        echoes.set_setting(&b, Setting::Encrypted(true));
+        let mut shown = settings();
+        assert_eq!(echoes.lay_settings(&a, &mut shown, now), None);
+        assert_eq!(shown.join_rule, JoinRule::Public);
+        assert_eq!(shown.history, History::Joined);
+        assert_eq!(shown.address, Some(owned_room_alias_id!("#ice:x")));
+        assert_eq!(shown.notify, NotifyMode::Mute);
+        assert!(!shown.encrypted);
+
+        // Failed: gone. Accepted: until synced or timed out. An answer to
+        // an earlier change leaves a later one.
+        echoes.setting_answered(&a, &address, false, now);
+        echoes.setting_answered(&a, &public, true, now);
+        echoes.setting_answered(&a, &joined, true, now);
+        echoes.setting_answered(&a, &Setting::Notify(NotifyMode::All), true, now);
+        let mut shown = settings();
+        assert_eq!(
+            echoes.lay_settings(&a, &mut shown, now),
+            Some(now + ECHO_TIMEOUT)
+        );
+        assert_eq!(shown.address, None);
+        assert_eq!(shown.notify, NotifyMode::Mute);
+        let mut synced = settings();
+        synced.join_rule = JoinRule::Public;
+        echoes.lay_settings(&a, &mut synced, now);
+        assert_eq!(synced.history, History::Joined);
+        assert!(
+            !(echoes.changes.borrow().settings).contains_key(&(a.clone(), SettingKey::JoinRule))
+        );
+        let mut shown = settings();
+        echoes.lay_settings(&a, &mut shown, now + ECHO_TIMEOUT);
+        assert_eq!(shown.history, History::Members);
+        // The mode's request runs on; the other room's stays.
+        let left: Vec<_> = echoes.changes.borrow().settings.keys().cloned().collect();
+        assert_eq!(left.len(), 2);
+        assert!(left.contains(&(a.clone(), SettingKey::Notify)));
+    }
+
+    #[test]
+    fn space_links_and_unbans_show_in_the_settings() {
+        let echoes = Echoes::default();
+        let a = owned_room_id!("!a:x");
+        let (team, other) = (owned_room_id!("!team:x"), owned_room_id!("!other:x"));
+        let now = Instant::now();
+        // Moved from Team to Other, not suggested there; Bob unbanned.
+        echoes.set_setting(&a, Setting::Link(team.clone(), None));
+        echoes.set_setting(&a, Setting::Link(other.clone(), Some(false)));
+        echoes.set_setting(&a, Setting::Banned(owned_user_id!("@bob:x"), false));
+        let mut shown = settings();
+        echoes.lay_settings(&a, &mut shown, now);
+        let spaces: Vec<_> = (shown.spaces.iter())
+            .map(|l| (&l.space, l.suggested))
+            .collect();
+        assert_eq!(spaces, [(&other, false)]);
+        assert_eq!(shown.can_add_to, [team.clone()]);
+        assert!(shown.banned.is_empty());
+
+        // Out of every space: Space members no longer offered.
+        let mut shown = settings();
+        shown.can_add_to.clear();
+        let not_listed = Setting::Link(other.clone(), None);
+        echoes.set_setting(&a, not_listed);
+        echoes.lay_settings(&a, &mut shown, now);
+        assert!(shown.spaces.is_empty());
+        assert_eq!(
+            shown.join_rule_choices,
+            JoinRule::choices(JoinRule::Invite, false)
+        );
+
+        // Synced: Bob no longer banned, out of Team.
+        let mut synced = settings();
+        synced.banned.clear();
+        synced.spaces.clear();
+        echoes.lay_settings(&a, &mut synced, now);
+        let keys: Vec<_> = echoes.changes.borrow().settings.keys().cloned().collect();
+        assert!(keys.is_empty(), "{keys:?}");
+    }
+
+    #[test]
+    fn a_listed_change_says_when_it_was_accepted() {
+        let echoes = Echoes::default();
+        let a = owned_room_id!("!a:x");
+        let now = Instant::now();
+        let listed = Setting::Listed(true);
+        echoes.set_setting(&a, listed.clone());
+        assert_eq!(echoes.accepted(&a, SettingKey::Listed), None);
+        echoes.setting_answered(&a, &listed, true, now);
+        assert_eq!(echoes.accepted(&a, SettingKey::Listed), Some(now));
+        // Read again: listed.
+        let mut synced = settings();
+        synced.listed = Some(true);
+        echoes.lay_settings(&a, &mut synced, now);
+        assert_eq!(echoes.accepted(&a, SettingKey::Listed), None);
+    }
+
+    #[test]
+    fn settings_of_rooms_gone_go_with_the_room_list() {
+        let echoes = Echoes::default();
+        let (a, b) = (owned_room_id!("!a:x"), owned_room_id!("!b:x"));
+        let now = Instant::now();
+        let mute = Setting::Notify(NotifyMode::Mute);
+        echoes.set_setting(&a, mute.clone());
+        echoes.set_setting(&b, Setting::Encrypted(true));
+        echoes.setting_answered(&a, &mute, true, now);
+        // Room list timeouts are its own.
+        let mut rooms = vec![room(a.as_str(), RoomKind::Room)];
+        assert_eq!(echoes.lay_over(&mut rooms, now), None);
+        assert_eq!(echoes.changes.borrow().settings.len(), 1);
+        echoes.lay_over(&mut rooms, now + ECHO_TIMEOUT);
+        assert!(echoes.changes.borrow().settings.is_empty());
     }
 }

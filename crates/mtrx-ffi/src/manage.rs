@@ -38,6 +38,98 @@ pub enum Permissions {
     Moderators,
 }
 
+impl From<core::NotifyMode> for NotifyMode {
+    fn from(mode: core::NotifyMode) -> Self {
+        match mode {
+            core::NotifyMode::All => Self::All,
+            core::NotifyMode::Mentions => Self::Mentions,
+            core::NotifyMode::Mute => Self::Mute,
+        }
+    }
+}
+
+impl From<NotifyMode> for core::NotifyMode {
+    fn from(mode: NotifyMode) -> Self {
+        match mode {
+            NotifyMode::All => Self::All,
+            NotifyMode::Mentions => Self::Mentions,
+            NotifyMode::Mute => Self::Mute,
+        }
+    }
+}
+
+impl From<core::History> for History {
+    fn from(history: core::History) -> Self {
+        match history {
+            core::History::Joined => Self::Joined,
+            core::History::Invited => Self::Invited,
+            core::History::Members => Self::Members,
+            core::History::Anyone => Self::Anyone,
+        }
+    }
+}
+
+impl From<History> for core::History {
+    fn from(history: History) -> Self {
+        match history {
+            History::Joined => Self::Joined,
+            History::Invited => Self::Invited,
+            History::Members => Self::Members,
+            History::Anyone => Self::Anyone,
+        }
+    }
+}
+
+impl From<core::Permissions> for Permissions {
+    fn from(permissions: core::Permissions) -> Self {
+        match permissions {
+            core::Permissions::Everyone => Self::Everyone,
+            core::Permissions::Moderators => Self::Moderators,
+        }
+    }
+}
+
+impl From<Permissions> for core::Permissions {
+    fn from(permissions: Permissions) -> Self {
+        match permissions {
+            Permissions::Everyone => Self::Everyone,
+            Permissions::Moderators => Self::Moderators,
+        }
+    }
+}
+
+/// A notification mode a room's settings offer, with its words.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct NotifyChoice {
+    pub mode: NotifyMode,
+    /// As the menu names it: "All messages", "Mentions", "Mute".
+    pub title: String,
+    /// What it does: "Every message notifies you."…
+    pub explanation: String,
+}
+
+/// Who may read the history, as a room's settings offer it, with its words.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct HistoryChoice {
+    pub history: History,
+    /// As the menu names it: "Since joining", "Since invited", "Members",
+    /// "Anyone".
+    pub title: String,
+    /// Who may read it: "Members, from when they joined."…
+    pub explanation: String,
+}
+
+/// Who may edit, as a room's settings offer it, with its words.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct PermissionsChoice {
+    pub permissions: Permissions,
+    /// As the menu names it: "Everyone", "Moderators".
+    pub title: String,
+    /// What it lets members do: "Everyone can invite, rename and change
+    /// the topic."…
+    pub explanation: String,
+}
+
 /// What we may do in a room, from its power levels. All false while they
 /// are not known yet, and in a room we have not joined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
@@ -140,12 +232,15 @@ pub struct Banned {
     pub reason: Option<String>,
 }
 
-/// A room's settings, and which we may change.
+/// A room's settings, and which we may change; the changes made here show
+/// at once.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct RoomSettings {
     /// What we may change; the same as `RoomSummary.rights`.
     pub rights: Rights,
     pub notify: NotifyMode,
+    /// The modes to offer, in order, with their words.
+    pub notify_choices: Vec<NotifyChoice>,
     pub join_rule: JoinRule,
     /// Who may join, in words: "Public: anyone can join"…
     pub join_rule_fact: String,
@@ -157,7 +252,11 @@ pub struct RoomSettings {
     /// Listed in our server's directory; `None` if it would not say.
     pub listed: Option<bool>,
     pub history: History,
+    /// Who may read the history, in order, with their words.
+    pub history_choices: Vec<HistoryChoice>,
     pub permissions: Permissions,
+    /// Who may edit, in order, with their words.
+    pub permissions_choices: Vec<PermissionsChoice>,
     pub encrypted: bool,
     /// The room version, as "12".
     pub version: Option<String>,
@@ -172,26 +271,35 @@ impl From<core::RoomSettings> for RoomSettings {
     fn from(s: core::RoomSettings) -> Self {
         Self {
             rights: s.rights.into(),
-            notify: match s.notify {
-                core::NotifyMode::All => NotifyMode::All,
-                core::NotifyMode::Mentions => NotifyMode::Mentions,
-                core::NotifyMode::Mute => NotifyMode::Mute,
-            },
+            notify: s.notify.into(),
+            notify_choices: (core::NotifyMode::ALL.into_iter())
+                .map(|mode| NotifyChoice {
+                    mode: mode.into(),
+                    title: mode.title().to_owned(),
+                    explanation: mode.explanation().to_owned(),
+                })
+                .collect(),
             join_rule: s.join_rule.into(),
             join_rule_fact: s.join_rule.fact().to_owned(),
             join_rule_choices: s.join_rule_choices.into_iter().map(Into::into).collect(),
             address: s.address.map(|a| a.to_string()),
             listed: s.listed,
-            history: match s.history {
-                core::History::Joined => History::Joined,
-                core::History::Invited => History::Invited,
-                core::History::Members => History::Members,
-                core::History::Anyone => History::Anyone,
-            },
-            permissions: match s.permissions {
-                core::Permissions::Everyone => Permissions::Everyone,
-                core::Permissions::Moderators => Permissions::Moderators,
-            },
+            history: s.history.into(),
+            history_choices: (core::History::ALL.into_iter())
+                .map(|history| HistoryChoice {
+                    history: history.into(),
+                    title: history.title().to_owned(),
+                    explanation: history.explanation().to_owned(),
+                })
+                .collect(),
+            permissions: s.permissions.into(),
+            permissions_choices: (core::Permissions::ALL.into_iter())
+                .map(|permissions| PermissionsChoice {
+                    permissions: permissions.into(),
+                    title: permissions.title().to_owned(),
+                    explanation: permissions.explanation().to_owned(),
+                })
+                .collect(),
             encrypted: s.encrypted,
             version: s.version,
             spaces: s

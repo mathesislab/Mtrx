@@ -13,7 +13,7 @@ use matrix_sdk::{
     ruma::{
         Int, OwnedEventId, OwnedRoomId, UserId,
         events::{
-            EmptyStateKey, MessageLikeEventType, StateEventType, SyncStateEvent, TimelineEventType,
+            MessageLikeEventType, StateEventType, SyncStateEvent, TimelineEventType,
             room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent, UserPowerLevel},
         },
         int,
@@ -22,7 +22,7 @@ use matrix_sdk::{
 };
 use serde_json::json;
 
-use crate::{Error, Result, RoomHandle, synced};
+use crate::{Error, Result, RoomHandle, echo::Setting};
 
 /// What we may do in a room, from its power levels. All false while they
 /// are not known yet, and in a room we have not joined.
@@ -165,6 +165,27 @@ pub enum Permissions {
     Moderators,
 }
 
+impl Permissions {
+    /// In the menu's order.
+    pub const ALL: [Self; 2] = [Self::Everyone, Self::Moderators];
+
+    /// As the menu names it: "Everyone", "Moderators".
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Everyone => "Everyone",
+            Self::Moderators => "Moderators",
+        }
+    }
+
+    /// What it lets members do, in a sentence.
+    pub fn explanation(self) -> &'static str {
+        match self {
+            Self::Everyone => "Everyone can invite, rename and change the topic.",
+            Self::Moderators => "Invite, rename, change the topic and picture, and pin messages.",
+        }
+    }
+}
+
 /// State only admins change: permissions and who can get in.
 const ADMIN_STATE: [&str; 7] = [
     "m.room.power_levels",
@@ -281,12 +302,17 @@ impl RoomHandle {
     /// Let every member invite and edit the room (see the module docs), or
     /// only moderators.
     pub async fn set_permissions(&self, permissions: Permissions) -> Result<()> {
-        let mut content = power_levels_content(&self.room).await?;
-        match permissions {
-            Permissions::Everyone => open_up(&mut content),
-            Permissions::Moderators => close_down(&mut content),
-        }
-        synced::send_state(&self.room, &EmptyStateKey, content).await
+        let request = async {
+            let mut content = power_levels_content(&self.room).await?;
+            match permissions {
+                Permissions::Everyone => open_up(&mut content),
+                Permissions::Moderators => close_down(&mut content),
+            }
+            self.room.send_state_event(content).await?;
+            Ok::<_, Error>(())
+        };
+        let setting = Setting::Permissions(permissions);
+        self.session.echoed(self.id(), setting, request).await
     }
 
     /// Let everyone edit this space and every room and space in it that we

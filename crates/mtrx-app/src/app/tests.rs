@@ -1849,7 +1849,7 @@ async fn room_management_screens() {
         }),
         "info-user",
     );
-    let settings = session.room(&room).unwrap().settings().await.unwrap();
+    let settings = session.room(&room).unwrap().settings().await.get();
     snapshot(
         &main_with(&|main| {
             let mut card = info::Card::new(
@@ -1912,7 +1912,7 @@ async fn room_management_screens() {
     .await
     .unwrap();
     let children = session.space_children(&space).await.unwrap();
-    let space_settings = session.room(&space).unwrap().settings().await.unwrap();
+    let space_settings = session.room(&space).unwrap().settings().await.get();
     snapshot(
         &main_with(&|main| {
             let mut card = info::Card::new(

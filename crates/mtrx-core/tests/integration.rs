@@ -642,7 +642,14 @@ async fn space_call_services() -> Result<()> {
     assert_eq!(s.room(&space)?.call_service().await?, Some(service.clone()));
     // The space's rooms use it.
     s.room(&space)?.add_child(&room).await?;
-    assert_eq!(s.room(&room)?.call_service().await?, Some(service));
+    // Once synced.
+    timeout("the space's service", async {
+        while s.room(&room)?.call_service().await? != Some(service.clone()) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        anyhow::Ok(())
+    })
+    .await??;
 
     // In a moderated room, members cannot change room state.
     let bob_list = bob.session.room_list().await?;
@@ -892,57 +899,49 @@ async fn room_settings_and_space_links() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    // The settings once sync brings back what `done` waits for.
+    let live = timeout("settings read", s.room(&room)?.settings()).await?;
+    // The settings once they show what `done` waits for.
     let settled = |what: &'static str, done: fn(&mtrx_core::RoomSettings) -> bool| {
-        let room = room.clone();
-        timeout(what, async move {
-            loop {
-                if let Ok(settings) = s.room(&room)?.settings().await
-                    && done(&settings)
-                {
-                    return anyhow::Ok(settings);
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-        })
+        wait_for(what, live.updates(), done)
     };
-    let settings = settled("in the first space", |s| s.spaces.len() == 1).await??;
+    let settings = settled("in the first space", |s| s.spaces.len() == 1).await?;
     assert_eq!(settings.version.as_deref(), Some("12"));
     assert_eq!(settings.spaces[0].space, first);
     assert!(settings.spaces[0].can_change && !settings.spaces[0].suggested);
     assert_eq!(settings.listed, Some(false));
     assert_eq!(settings.permissions, Permissions::Everyone);
 
-    // Each change shows in the settings read straight after.
+    // Each change shows in the settings followed, and stays once synced.
     s.room(&first)?.set_suggested(&room, true).await?;
-    assert!(s.room(&room)?.settings().await?.spaces[0].suggested);
+    settled("suggested", |s| s.spaces[0].suggested).await?;
     // Moved: added to the second, out of the first.
     s.room(&second)?.add_child(&room).await?;
     s.room(&first)?.remove_child(&room).await?;
-    let moved = s.room(&room)?.settings().await?;
-    assert_eq!(
-        (
-            moved.spaces[0].space.clone(),
-            moved.spaces.len(),
-            moved.can_add_to
-        ),
-        (second, 1, vec![first])
-    );
+    let in_second = |s: &mtrx_core::RoomSettings| {
+        let spaces: Vec<_> = s.spaces.iter().map(|l| &l.space).collect();
+        (spaces, &s.can_add_to) == (vec![&second], &vec![first.clone()])
+    };
+    wait_for("moved", live.updates(), in_second).await?;
 
     let name = unique_name("moving");
     s.room(&room)?.set_address(Some(&name)).await?;
-    let addressed = s.room(&room)?.settings().await?;
+    let addressed = settled("an address", |s| s.address.is_some()).await?;
     assert_eq!(addressed.address.context("address")?.alias(), name);
     s.room(&room)?.set_listed(true).await?;
     s.room(&room)?.set_history(History::Joined).await?;
     s.room(&room)?
         .set_permissions(Permissions::Moderators)
         .await?;
-    let changed = s.room(&room)?.settings().await?;
-    assert_eq!(
-        (changed.listed, changed.history, changed.permissions),
-        (Some(true), History::Joined, Permissions::Moderators)
-    );
+    let changed = |s: &mtrx_core::RoomSettings| {
+        (s.listed, s.history, s.permissions)
+            == (Some(true), History::Joined, Permissions::Moderators)
+    };
+    settled("changed", changed).await?;
+    // Still so once synced (past the changes' 10 s echo), and read anew.
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    assert!(changed(&live.get()));
+    let again = timeout("settings read", s.room(&room)?.settings()).await?;
+    assert!(changed(&again.get()));
     Ok(())
 }
 
@@ -1991,19 +1990,21 @@ async fn room_settings() -> Result<()> {
             .any(|r| r.id == room && r.name == "settings")
     })
     .await?;
-    let settings = s.room(&room)?.settings().await?;
+    let live = timeout("settings read", s.room(&room)?.settings()).await?;
+    let settings = live.get();
     let rights = settings.rights;
     assert!(rights.rename && rights.change_topic && rights.change_picture && rights.invite);
     // The room list's are the same.
     wait_for_rights("the list's rights", s, &room, |r| *r == rights).await?;
     assert_eq!(settings.notify, NotifyMode::All);
 
-    // Each change returns once sync confirms it: well before its 10 s limit.
+    // Each change shows at once, and waits for the one before to be
+    // confirmed by sync: well before its 10 s limit.
     for mode in [NotifyMode::Mute, NotifyMode::Mentions, NotifyMode::All] {
         let started = std::time::Instant::now();
         s.room(&room)?.set_notify(mode).await?;
         assert!(started.elapsed() < Duration::from_secs(5), "not confirmed");
-        assert_eq!(s.room(&room)?.settings().await?.notify, mode);
+        wait_for("the mode", live.updates(), |s| s.notify == mode).await?;
     }
 
     // Who can join: anyone, the space's members, invited people. Space
@@ -2039,8 +2040,10 @@ async fn room_settings() -> Result<()> {
         has_rule(state, JoinRule::SpaceMembers)
     })
     .await?;
-    let settings = s.room(&room)?.settings().await?;
-    assert_eq!(settings.join_rule, JoinRule::SpaceMembers);
+    let settings = wait_for("space members offered", live.updates(), |s| {
+        s.join_rule == JoinRule::SpaceMembers
+    })
+    .await?;
     assert_eq!(settings.join_rule_choices.len(), 4);
     s.room(&room)?.set_join_rule(JoinRule::Invite).await?;
     wait_for("invite only", list.updates(), |state| {

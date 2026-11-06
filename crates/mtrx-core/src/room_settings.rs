@@ -1,8 +1,13 @@
 //! A room's settings as the user sees them: what they may change, and when
-//! it notifies them.
+//! it notifies them. Kept up to date while shown; a change made here shows
+//! at once, and its setter returns once the server took it.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 
+use futures_util::{
+    StreamExt,
+    stream::{self, BoxStream},
+};
 use matrix_sdk::{
     Room, RoomMemberships,
     notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode},
@@ -13,25 +18,26 @@ use matrix_sdk::{
             room::Visibility,
         },
         events::{
-            EmptyStateKey,
+            EmptyStateKey, StateEventContent,
             room::{
                 canonical_alias::RoomCanonicalAliasEventContent,
                 history_visibility::{HistoryVisibility, RoomHistoryVisibilityEventContent},
                 join_rules::{AllowRule, JoinRule as SdkJoinRule, RoomJoinRulesEventContent},
-                member::MembershipState,
             },
             space::child::SpaceChildEventContent,
         },
         push::{Action, PushCondition, RuleKind, Ruleset},
     },
 };
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{OwnedMutexGuard, broadcast};
+use tokio_stream::wrappers::BroadcastStream;
+use tracing::warn;
 
 use crate::{
-    Error, JoinRule, Permissions, Result, Rights, RoomHandle, Session, User,
+    Error, JoinRule, Live, Permissions, Result, Rights, RoomHandle, Session, User,
+    echo::{ECHO_TIMEOUT, Setting, SettingKey},
     media::guess_mimetype,
-    permissions::{known_levels, rights},
-    synced,
+    permissions::{levels, rights},
 };
 
 /// When a room notifies (push rules, so on all the user's devices).
@@ -41,6 +47,29 @@ pub enum NotifyMode {
     /// Only for mentions and keywords.
     Mentions,
     Mute,
+}
+
+impl NotifyMode {
+    /// In the menu's order.
+    pub const ALL: [Self; 3] = [Self::All, Self::Mentions, Self::Mute];
+
+    /// As the menu names it: "All messages", "Mentions", "Mute".
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::All => "All messages",
+            Self::Mentions => "Mentions",
+            Self::Mute => "Mute",
+        }
+    }
+
+    /// What it does, in a sentence: "Every message notifies you."…
+    pub fn explanation(self) -> &'static str {
+        match self {
+            Self::All => "Every message notifies you.",
+            Self::Mentions => "Only mentions of you and your keywords notify you.",
+            Self::Mute => "Nothing here notifies you.",
+        }
+    }
 }
 
 impl From<RoomNotificationMode> for NotifyMode {
@@ -74,6 +103,32 @@ pub enum History {
     Members,
     /// Anyone, members or not.
     Anyone,
+}
+
+impl History {
+    /// In the menu's order.
+    pub const ALL: [Self; 4] = [Self::Joined, Self::Invited, Self::Members, Self::Anyone];
+
+    /// As the menu names it: "Since joining", "Since invited", "Members",
+    /// "Anyone".
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Joined => "Since joining",
+            Self::Invited => "Since invited",
+            Self::Members => "Members",
+            Self::Anyone => "Anyone",
+        }
+    }
+
+    /// Who may read it, in a sentence: "Members, from when they joined."…
+    pub fn explanation(self) -> &'static str {
+        match self {
+            Self::Joined => "Members, from when they joined.",
+            Self::Invited => "Members, from when they were invited.",
+            Self::Members => "Members, all of it, also from before they joined.",
+            Self::Anyone => "Anyone, without joining.",
+        }
+    }
 }
 
 impl From<HistoryVisibility> for History {
@@ -140,7 +195,37 @@ pub struct RoomSettings {
     pub banned: Vec<Banned>,
 }
 
+/// Changes to rooms' notification modes, one after another in each room:
+/// each starts once the one before is confirmed, so from the server's
+/// rules.
+#[derive(Default)]
+pub(crate) struct NotifyTurns(std::sync::Mutex<HashMap<OwnedRoomId, Arc<tokio::sync::Mutex<()>>>>);
+
+impl NotifyTurns {
+    /// `room`'s turn, once the change before it is done.
+    async fn take(&self, room: &RoomId) -> OwnedMutexGuard<()> {
+        let turn = (self.0.lock().unwrap().entry(room.to_owned()))
+            .or_default()
+            .clone();
+        turn.lock_owned().await
+    }
+}
+
 impl Session {
+    /// Show `room`'s `setting` at once while `request` runs; it goes if the
+    /// request fails.
+    pub(crate) async fn echoed<T>(
+        &self,
+        room: &RoomId,
+        setting: Setting,
+        request: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        self.echoes.set_setting(room, setting.clone());
+        let result = request.await;
+        (self.echoes).setting_answered(room, &setting, result.is_ok(), Instant::now());
+        result
+    }
+
     /// The joined spaces listing the room, and those we may add it to.
     async fn space_links(&self, room_id: &RoomId) -> (Vec<SpaceLink>, Vec<OwnedRoomId>) {
         let graph = self.space_graph();
@@ -184,19 +269,103 @@ impl Session {
     }
 }
 
+/// Each message on `updates`, as a change; ends when it closes.
+fn changes<T: Clone + Send + 'static>(updates: broadcast::Receiver<T>) -> BoxStream<'static, ()> {
+    // A message missed while lagging still left its change.
+    BroadcastStream::new(updates).map(|_| ()).boxed()
+}
+
 impl RoomHandle {
-    pub async fn settings(&self) -> Result<RoomSettings> {
+    /// The room's settings, once read, kept up to date while held: as its
+    /// state, who is banned, the notification rules and the joined spaces
+    /// change. The changes made here show at once, until the settings
+    /// show them or [`ECHO_TIMEOUT`] after the server took them. Whether
+    /// the room is listed is not room state: it is read when this starts,
+    /// and again once the server took a change to it. A reading that fails
+    /// (the power levels not known yet) is tried again at the next change.
+    pub fn settings(&self) -> impl Future<Output = Live<RoomSettings>> + Send + use<> {
+        let handle = self.clone();
+        let session = &self.session;
+        // Followed before the first reading, so no change is missed.
+        let mut changes = stream::select_all([
+            changes(session.client.subscribe_to_room_updates(self.id())),
+            changes(session.notification_settings.subscribe_to_changes()),
+            session.spaces.updates().map(|_| ()).boxed(),
+        ]);
+        let mut echoes = session.echoes.subscribe();
+        async move {
+            let mut listed = handle.listed().await;
+            let mut synced = loop {
+                if let Some(settings) = handle.read_settings(listed).await {
+                    break settings;
+                }
+                if changes.next().await.is_none() {
+                    // Nothing to read it again on.
+                    std::future::pending::<()>().await;
+                }
+            };
+            let (first, mut timeout) = handle.shown(&synced);
+            Live::spawn(first, move |tx| async move {
+                // When the server took the last change to whether it is
+                // listed.
+                let mut accepted = None;
+                loop {
+                    let timed_out = async move {
+                        match timeout {
+                            Some(at) => tokio::time::sleep_until(at.into()).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    };
+                    tokio::select! {
+                        change = changes.next() => {
+                            if change.is_none() {
+                                return;
+                            }
+                            if let Some(settings) = handle.read_settings(listed).await {
+                                synced = settings;
+                            }
+                        }
+                        changed = echoes.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                            let echoes = &handle.session.echoes;
+                            let taken = echoes.accepted(handle.id(), SettingKey::Listed);
+                            if taken.is_some() && taken != accepted {
+                                accepted = taken;
+                                listed = handle.listed().await;
+                                synced.listed = listed;
+                            }
+                        }
+                        () = timed_out => {}
+                    }
+                    let (shown, next) = handle.shown(&synced);
+                    timeout = next;
+                    tx.send_if_modified(|current| {
+                        let changed = *current != shown;
+                        if changed {
+                            *current = shown;
+                        }
+                        changed
+                    });
+                }
+            })
+        }
+    }
+
+    /// The settings as synced, with `listed`; none while the power levels
+    /// are not known yet, or if those banned can't be read.
+    async fn read_settings(&self, listed: Option<bool>) -> Option<RoomSettings> {
         let (session, room) = (&self.session, &self.room);
-        let levels = known_levels(room).await?;
-        let listed = session
-            .client
-            .send(get_room_visibility::v3::Request::new(self.id().to_owned()))
-            .await
-            .ok()
-            .map(|response| response.visibility == Visibility::Public);
-        let banned = room
-            .members_no_sync(RoomMemberships::BAN)
-            .await?
+        let levels = levels(room).await?;
+        let banned = match room.members_no_sync(RoomMemberships::BAN).await {
+            Ok(banned) => banned,
+            Err(e) => {
+                warn!("could not read who is banned from {}: {e}", self.id());
+                return None;
+            }
+        };
+        let banned = banned
             .into_iter()
             .map(|member| Banned {
                 user: User {
@@ -209,8 +378,8 @@ impl RoomHandle {
             .collect();
         let (spaces, can_add_to) = session.space_links(self.id()).await;
         let join_rule = JoinRule::from(room.join_rule().as_ref());
-        let in_space = !session.space_graph().parents(self.id()).is_empty();
-        Ok(RoomSettings {
+        let in_space = !spaces.is_empty();
+        Some(RoomSettings {
             rights: Rights::of(&levels, &session.user_id()),
             join_rule,
             join_rule_choices: JoinRule::choices(join_rule, in_space),
@@ -227,10 +396,47 @@ impl RoomHandle {
         })
     }
 
-    /// Change when the room notifies, returning once the push rules that
-    /// sync brings back give it that mode (or after a while): a further
-    /// change then starts from the server's rules, not from older ones
-    /// still on their way.
+    /// `synced` with the changes made here laid over, and when the next of
+    /// those times out.
+    fn shown(&self, synced: &RoomSettings) -> (RoomSettings, Option<Instant>) {
+        let mut shown = synced.clone();
+        let timeout = (self.session.echoes).lay_settings(self.id(), &mut shown, Instant::now());
+        (shown, timeout)
+    }
+
+    /// Whether our server's directory lists the room; none if it would not
+    /// say.
+    async fn listed(&self) -> Option<bool> {
+        let request = get_room_visibility::v3::Request::new(self.id().to_owned());
+        let response = self.session.client.send(request).await.ok()?;
+        Some(response.visibility == Visibility::Public)
+    }
+
+    /// Send `content` as the room's state.
+    async fn send_state(
+        &self,
+        content: impl StateEventContent<StateKey = EmptyStateKey>,
+    ) -> Result<()> {
+        self.room.send_state_event(content).await?;
+        Ok(())
+    }
+
+    /// Change when the room notifies, shown at once; returns once the
+    /// server took it.
+    ///
+    /// Changes to a room's mode go one after another: each waits until the
+    /// one before is confirmed by the push rules sync brings back (or
+    /// [`ECHO_TIMEOUT`]), so it starts from the server's rules, not from
+    /// older ones still on their way.
+    pub async fn set_notify(&self, mode: NotifyMode) -> Result<()> {
+        let request = self.send_notify(mode.into());
+        self.session
+            .echoed(self.id(), Setting::Notify(mode), request)
+            .await
+    }
+
+    /// In the room's turn, send `mode`; it is confirmed before the next
+    /// change.
     ///
     /// `notification_settings` applies a change to its rules as soon as the
     /// server took it, before sync brings it back; a sync from midway
@@ -238,48 +444,60 @@ impl RoomHandle {
     /// still replace them after that. So the change is confirmed by the
     /// rules as last synced (the store's, kept before event handlers run),
     /// once `notification_settings` applied that sync too.
-    pub async fn set_notify(&self, mode: NotifyMode) -> Result<()> {
-        let (session, room_id) = (&self.session, self.id());
-        let settings = &session.notification_settings;
-        let mode = RoomNotificationMode::from(mode);
-        let has_mode = || async {
-            settings
-                .get_user_defined_room_notification_mode(room_id)
-                .await
-                == Some(mode)
-        };
-        let synced_mode = || async {
-            let rules = session.client.account().push_rules().await.ok()?;
-            user_defined_mode(&rules, room_id)
-        };
-        if has_mode().await {
+    async fn send_notify(&self, mode: RoomNotificationMode) -> Result<()> {
+        let turn = self.session.notify_turns.take(self.id()).await;
+        if self.has_notify(mode).await {
             // Nothing to change, so nothing comes back.
             return Ok(());
         }
+        let settings = &self.session.notification_settings;
         let mut synced = settings.subscribe_to_changes();
         settings
-            .set_room_notification_mode(room_id, mode)
+            .set_room_notification_mode(self.id(), mode)
             .await
             .map_err(|e| Error::Notifications(e.to_string()))?;
-        let confirmed = async {
-            loop {
-                match synced.recv().await {
-                    Err(RecvError::Closed) => return,
-                    // A change missed while lagging still left its rules.
-                    _ if synced_mode().await == Some(mode) && has_mode().await => return,
-                    _ => {}
+        let handle = self.clone();
+        tokio::spawn(async move {
+            let _turn = turn;
+            let confirmed = async {
+                loop {
+                    match synced.recv().await {
+                        Err(broadcast::error::RecvError::Closed) => return,
+                        // A change missed while lagging still left its rules.
+                        _ if handle.synced_notify().await == Some(mode)
+                            && handle.has_notify(mode).await =>
+                        {
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
-            }
-        };
-        // The server took the change either way.
-        let _ = tokio::time::timeout(synced::CONFIRM, confirmed).await;
+            };
+            // The server took the change either way.
+            let _ = tokio::time::timeout(ECHO_TIMEOUT, confirmed).await;
+        });
         Ok(())
+    }
+
+    /// Whether `notification_settings` gives the room `mode` of its own.
+    async fn has_notify(&self, mode: RoomNotificationMode) -> bool {
+        let settings = &self.session.notification_settings;
+        settings
+            .get_user_defined_room_notification_mode(self.id())
+            .await
+            == Some(mode)
+    }
+
+    /// The room's own mode, as the push rules last synced give it.
+    async fn synced_notify(&self) -> Option<RoomNotificationMode> {
+        let rules = self.session.client.account().push_rules().await.ok()?;
+        user_defined_mode(&rules, self.id())
     }
 
     /// Change who may join; [`JoinRule::SpaceMembers`] lets in members of
     /// the joined spaces the room is in.
     pub async fn set_join_rule(&self, rule: JoinRule) -> Result<()> {
-        let rule = match rule {
+        let content = match rule {
             JoinRule::Invite => SdkJoinRule::Invite,
             JoinRule::Public => SdkJoinRule::Public,
             JoinRule::Knock => SdkJoinRule::Knock,
@@ -294,34 +512,43 @@ impl RoomHandle {
                 .join_rule
             }
         };
-        let content = RoomJoinRulesEventContent::new(rule);
-        synced::send_state(&self.room, &EmptyStateKey, content).await
+        let request = self.send_state(RoomJoinRulesEventContent::new(content));
+        (self.session)
+            .echoed(self.id(), Setting::JoinRule(rule), request)
+            .await
     }
 
     /// Give the room the address `#name:our.server`, or none.
     pub async fn set_address(&self, name: Option<&str>) -> Result<()> {
-        let (client, room_id) = (&self.session.client, self.id());
         let alias = match name {
             Some(name) => {
                 let own = self.session.user_id();
                 let alias = RoomAliasId::parse(format!("#{name}:{}", own.server_name()))
                     .map_err(|_| Error::Permissions(format!("“{name}” can't be an address")))?;
-                // Ours already if it was before; taken, the server says so.
-                let ours = client
-                    .resolve_room_alias(&alias)
-                    .await
-                    .is_ok_and(|r| r.room_id == room_id);
-                if !ours {
-                    client.create_room_alias(&alias, room_id).await?;
-                }
                 Some(alias)
             }
             None => None,
         };
-        let mut content = RoomCanonicalAliasEventContent::new();
-        content.alias = alias;
-        content.alt_aliases = self.room.alt_aliases();
-        synced::send_state(&self.room, &EmptyStateKey, content).await
+        let request = async {
+            let (client, room_id) = (&self.session.client, self.id());
+            if let Some(alias) = &alias {
+                // Ours already if it was before; taken, the server says so.
+                let ours = client
+                    .resolve_room_alias(alias)
+                    .await
+                    .is_ok_and(|r| r.room_id == room_id);
+                if !ours {
+                    client.create_room_alias(alias, room_id).await?;
+                }
+            }
+            let mut content = RoomCanonicalAliasEventContent::new();
+            content.alias = alias.clone();
+            content.alt_aliases = self.room.alt_aliases();
+            self.send_state(content).await?;
+            Ok::<_, Error>(())
+        };
+        let setting = Setting::Address(alias.clone());
+        self.session.echoed(self.id(), setting, request).await
     }
 
     /// List the room in our server's directory, or not.
@@ -331,34 +558,41 @@ impl RoomHandle {
         } else {
             Visibility::Private
         };
-        let request = set_room_visibility::v3::Request::new(self.id().to_owned(), visibility);
-        self.session.client.send(request).await?;
-        Ok(())
+        let request = async {
+            let request = set_room_visibility::v3::Request::new(self.id().to_owned(), visibility);
+            self.session.client.send(request).await?;
+            Ok::<_, Error>(())
+        };
+        (self.session)
+            .echoed(self.id(), Setting::Listed(listed), request)
+            .await
     }
 
     pub async fn set_history(&self, history: History) -> Result<()> {
-        let content = RoomHistoryVisibilityEventContent::new(history.into());
-        synced::send_state(&self.room, &EmptyStateKey, content).await
+        let request = self.send_state(RoomHistoryVisibilityEventContent::new(history.into()));
+        (self.session)
+            .echoed(self.id(), Setting::History(history), request)
+            .await
     }
 
     /// Encrypt the room's messages from now on; not to be undone.
     pub async fn encrypt(&self) -> Result<()> {
-        self.room.enable_encryption().await?;
-        Ok(())
+        let request = async {
+            self.room.enable_encryption().await?;
+            Ok::<_, Error>(())
+        };
+        (self.session)
+            .echoed(self.id(), Setting::Encrypted(true), request)
+            .await
     }
 
     pub async fn unban(&self, user: &UserId) -> Result<()> {
-        let room = &self.room;
-        let updates = self.session.client.subscribe_to_room_updates(self.id());
-        room.unban_user(user, None).await?;
-        synced::until(updates, || async {
-            !matches!(
-                room.get_member_no_sync(user).await,
-                Ok(Some(member)) if *member.membership() == MembershipState::Ban
-            )
-        })
-        .await;
-        Ok(())
+        let request = async {
+            self.room.unban_user(user, None).await?;
+            Ok::<_, Error>(())
+        };
+        let setting = Setting::Banned(user.to_owned(), false);
+        self.session.echoed(self.id(), setting, request).await
     }
 
     /// Suggest `room` to this space's members, or not.
@@ -468,5 +702,19 @@ mod tests {
             user_defined_mode(&rules, &room),
             Some(RoomNotificationMode::Mute)
         );
+    }
+
+    #[tokio::test]
+    async fn changes_to_a_rooms_mode_take_turns() {
+        let turns = NotifyTurns::default();
+        let (a, b) = (owned_room_id!("!a:x"), owned_room_id!("!b:x"));
+        let first = turns.take(&a).await;
+        // Another room's change does not wait.
+        drop(turns.take(&b).await);
+        let next = turns.take(&a);
+        let mut next = std::pin::pin!(next);
+        assert!(futures_util::poll!(&mut next).is_pending());
+        drop(first);
+        next.await;
     }
 }

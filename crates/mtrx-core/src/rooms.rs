@@ -636,8 +636,19 @@ impl Session {
 }
 
 impl RoomHandle {
+    /// Rename the room. The room lists show a name at once; a blank one
+    /// (the room is then named after its members) once synced.
     pub async fn set_name(&self, name: &str) -> Result<()> {
-        self.room.set_name(name.to_owned()).await?;
+        let echoes = &self.session.echoes;
+        let shown = !name.trim().is_empty();
+        if shown {
+            echoes.set_name(self.id(), name.to_owned());
+        }
+        let result = self.room.set_name(name.to_owned()).await;
+        if shown {
+            echoes.name_answered(self.id(), name, result.is_ok(), Instant::now());
+        }
+        result?;
         Ok(())
     }
 

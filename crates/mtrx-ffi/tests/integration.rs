@@ -25,10 +25,10 @@ use mtrx_ffi::{
     JoinAction, JoinRule, MediaKind, Membership, Message, MessageKind, Mtrx, MtrxError,
     Notification, Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState,
     PusherInfo, QuoteState, Reaction, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote,
-    RoomKind, RoomLists, RoomListsListener, RoomSort, RowContent, SecretBackend, SecretError,
-    SectionLayout, SendState, Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener,
-    TypingListener, User, Verification, VerificationListener, VerificationRequestListener,
-    VerificationState,
+    RoomKind, RoomLists, RoomListsListener, RoomSettings, RoomSettingsListener, RoomSort,
+    RowContent, SecretBackend, SecretError, SectionLayout, SendState, Session, SpaceKey,
+    TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, User, Verification,
+    VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -70,6 +70,12 @@ impl<T> Forward<T> {
 impl RoomListsListener for Forward<Arc<RoomLists>> {
     fn on_update(&self, lists: Arc<RoomLists>) {
         self.send(lists);
+    }
+}
+
+impl RoomSettingsListener for Forward<RoomSettings> {
+    fn on_update(&self, settings: RoomSettings) {
+        self.send(settings);
     }
 }
 
@@ -865,7 +871,10 @@ fn rooms_made_set_up_joined_and_left() {
     );
 
     // Its settings: ours to change; the topic with a call link.
-    let settings = block_on(a.session.room(room.clone()).unwrap().settings()).unwrap();
+    let a_room = a.session.room(room.clone()).unwrap();
+    let (followed, settings_updates) = forward::<RoomSettings>();
+    let _settings = a_room.subscribe_settings(followed);
+    let settings = wait_for("the settings", &settings_updates, |_| true);
     assert!(settings.rights.rename && settings.rights.change_join_rule && settings.encrypted);
     // The room list has the same rights.
     let listed = lists.room(room.clone()).map(|r| r.rights);
@@ -882,14 +891,19 @@ fn rooms_made_set_up_joined_and_left() {
             name: String::new(),
         }],
     });
-    let a_room = a.session.room(room.clone()).unwrap();
     block_on(a_room.set_topic(topic)).unwrap();
     block_on(a_room.set_notify(mtrx_ffi::NotifyMode::Mentions)).unwrap();
     block_on(a_room.set_join_rule(JoinRule::SpaceMembers)).unwrap();
-    let settings = block_on(a.session.room(room.clone()).unwrap().settings()).unwrap();
+    // Shown at once.
+    let settings = wait_for("the changes", &settings_updates, |s: &RoomSettings| {
+        (s.notify, s.join_rule) == (mtrx_ffi::NotifyMode::Mentions, JoinRule::SpaceMembers)
+    });
+    let titles: Vec<_> = (settings.history_choices.iter())
+        .map(|c| c.title.as_str())
+        .collect();
     assert_eq!(
-        (settings.notify, settings.join_rule),
-        (mtrx_ffi::NotifyMode::Mentions, JoinRule::SpaceMembers)
+        titles,
+        ["Since joining", "Since invited", "Members", "Anyone"]
     );
     let space_members = settings
         .join_rule_choices
