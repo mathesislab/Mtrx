@@ -52,7 +52,7 @@ final class RoomUITests: XCTestCase {
         openLab()
         let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         field.tap()
-        let newest = inView(app.staticTexts["Mine, to delete"])
+        let newest = inView("Mine, to delete")
         snap("ui-keyboard")
         XCTAssertTrue(newest, "The newest message is under the keyboard")
         for n in 1...4 {
@@ -60,7 +60,7 @@ final class RoomUITests: XCTestCase {
             field.typeText("Sent number \(n), with a few words")
             snap("ui-written-\(n)")
             app.buttons["Send"].tap()
-            let shown = inView(app.staticTexts["Sent number \(n), with a few words"])
+            let shown = inView("Sent number \(n), with a few words")
             snap("ui-sent-\(n)")
             XCTAssertTrue(shown, "Sent message \(n) not in view")
         }
@@ -136,7 +136,7 @@ final class RoomUITests: XCTestCase {
         // Its older messages loaded.
         sleep(4)
         snap("ui-opened-loaded")
-        XCTAssertTrue(inView(app.staticTexts["Mine, to delete"]), "The newest message is not in view")
+        XCTAssertTrue(inView("Mine, to delete"), "The newest message is not in view")
         XCTAssertFalse(app.buttons["Scroll to the newest message"].exists, "Not at the bottom")
     }
 
@@ -209,47 +209,83 @@ final class RoomUITests: XCTestCase {
         app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Arrived \(n),")).firstMatch
     }
 
-    /// The arrived message numbered highest is in view (hittable), once the
-    /// keyboard and the timeline have moved: within `timeout`. On a slow
-    /// machine more arrive while it is looked for, so it is looked for
-    /// again on each try.
+    /// The arrived message numbered highest is in view, once the keyboard
+    /// and the timeline have moved: which is newest and where it is, read
+    /// from the same look, as more arrive between two.
     @MainActor
-    private func newestInView(timeout: TimeInterval = 10) -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        repeat {
-            if let newest = newestArrived(), arrived(newest).isHittable {
+    private func newestInView() -> Bool {
+        settles { texts in
+            let arrived: [(number: Int, inView: Bool)] = texts.compactMap { text in
+                guard text.label.hasPrefix("Arrived "),
+                    let number = Int(text.label.dropFirst("Arrived ".count).prefix { $0.isNumber })
+                else { return nil }
+                return (number, text.inView)
+            }
+            return arrived.max { $0.number < $1.number }?.inView ?? false
+        }
+    }
+
+    /// The message `label` is in view, once the keyboard and the timeline
+    /// have moved.
+    @MainActor
+    private func inView(_ label: String) -> Bool {
+        settles { texts in texts.contains { $0.label == label && $0.inView } }
+    }
+
+    /// Whether `shown` holds of a look at the timeline, looked at again
+    /// until it does or until a look taken `settle` seconds on does not.
+    /// A look can take seconds on a slow machine: the verdict is never
+    /// that of a look taken before the app had `settle` seconds.
+    @MainActor
+    private func settles(
+        within settle: TimeInterval = 5, _ shown: ([(label: String, inView: Bool)]) -> Bool
+    ) -> Bool {
+        let end = Date().addingTimeInterval(settle)
+        while true {
+            let last = Date() >= end
+            if shown(timelineTexts()) {
                 return true
             }
-            usleep(500_000)
-        } while Date() < end
-        return false
-    }
-
-    /// The highest number of the arrived messages shown, read from one
-    /// snapshot of the app: one query, however many have arrived, and the
-    /// elements' order is not the timeline's.
-    @MainActor
-    private func newestArrived() -> Int? {
-        guard let snapshot = try? app.snapshot() else { return nil }
-        var labels: [String] = []
-        func collect(_ element: XCUIElementSnapshot) {
-            if element.elementType == .staticText {
-                labels.append(element.label)
+            if last {
+                return false
             }
-            element.children.forEach(collect)
+            usleep(200_000)
         }
-        collect(snapshot)
-        return labels.filter { $0.hasPrefix("Arrived ") }
-            .compactMap { Int($0.dropFirst("Arrived ".count).prefix { $0.isNumber }) }
-            .max()
     }
 
-    /// `element` is in view (hittable), once the keyboard and the timeline
-    /// have moved: within 3 seconds, or `timeout`.
+    /// The texts in the timeline, from one snapshot of the app, each with
+    /// whether it is in view: its middle in the timeline's scroll view,
+    /// below the header (the timeline is drawn under it) and above the
+    /// keyboard. One query, however many messages, and no hit test: a
+    /// second query each, which records a failure for a text scrolled off
+    /// the screen in between.
     @MainActor
-    private func inView(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
-        let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: element)
-        return XCTWaiter().wait(for: [hittable], timeout: timeout) == .completed
+    private func timelineTexts() -> [(label: String, inView: Bool)] {
+        guard let snapshot = try? app.snapshot() else { return [] }
+        var header: CGFloat = 0
+        var keyboard = CGFloat.infinity
+        var texts: [(label: String, frame: CGRect, view: CGRect)] = []
+        func collect(_ element: XCUIElementSnapshot, in scrollView: CGRect?) {
+            switch element.elementType {
+            case .navigationBar:
+                header = max(header, element.frame.maxY)
+            case .keyboard:
+                keyboard = min(keyboard, element.frame.minY)
+            case .staticText:
+                if let scrollView {
+                    texts.append((element.label, element.frame, scrollView))
+                }
+            default:
+                break
+            }
+            let scrollView = element.elementType == .scrollView ? element.frame : scrollView
+            element.children.forEach { collect($0, in: scrollView) }
+        }
+        collect(snapshot, in: nil)
+        return texts.map { text in
+            let middle = CGPoint(x: text.frame.midX, y: text.frame.midY)
+            return (text.label, text.view.contains(middle) && middle.y > header && middle.y < keyboard)
+        }
     }
 
     @MainActor
