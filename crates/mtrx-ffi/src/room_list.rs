@@ -99,14 +99,6 @@ pub struct SectionChoice {
     pub rooms: u64,
 }
 
-/// A room or space below a space, with how deep (0 for what the space
-/// lists itself).
-#[derive(Clone, Debug, PartialEq, uniffi::Record)]
-pub struct TreeEntry {
-    pub depth: u32,
-    pub room: RoomSummary,
-}
-
 /// A category of a space's list (Home's for no `space`), for the lists
 /// made up in tests and previews.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -467,41 +459,6 @@ impl RoomLists {
             Err(_) => Vec::new(),
         }
     }
-
-    /// The joined spaces that list the room directly.
-    pub fn parents(&self, room_id: String) -> Vec<RoomSummary> {
-        let Ok(id) = OwnedRoomId::try_from(room_id) else {
-            return Vec::new();
-        };
-        (self.inner.parents(&id).into_iter())
-            .map(RoomSummary::from)
-            .collect()
-    }
-
-    /// The joined spaces the room is in, through nested spaces too,
-    /// nearest first.
-    pub fn ancestors(&self, room_id: String) -> Vec<RoomSummary> {
-        let Ok(id) = OwnedRoomId::try_from(room_id) else {
-            return Vec::new();
-        };
-        (self.inner.ancestors(&id).into_iter())
-            .map(RoomSummary::from)
-            .collect()
-    }
-
-    /// What a space lists, through nested spaces too, depth first; rooms
-    /// we are not in or invited to are left out.
-    pub fn tree(&self, space_id: String) -> Vec<TreeEntry> {
-        let Ok(id) = OwnedRoomId::try_from(space_id) else {
-            return Vec::new();
-        };
-        (self.inner.tree(&id).into_iter())
-            .map(|(depth, room)| TreeEntry {
-                depth: u32::try_from(depth).unwrap_or(u32::MAX),
-                room: room.into(),
-            })
-            .collect()
-    }
 }
 
 impl From<Arc<core::RoomLists>> for RoomLists {
@@ -666,13 +623,7 @@ mod tests {
         let names = |rooms: Vec<RoomSummary>| -> Vec<String> {
             rooms.into_iter().map(|r| r.name).collect()
         };
-        assert_eq!(names(lists.parents("!deep:x".into())), ["Sub"]);
-        assert_eq!(names(lists.ancestors("!deep:x".into())), ["Sub", "Team"]);
         assert_eq!(names(lists.top_level_spaces()), ["Team"]);
-        let tree: Vec<_> = (lists.tree("!team:x".into()).into_iter())
-            .map(|entry| (entry.depth, entry.room.name))
-            .collect();
-        assert_eq!(tree, [(0, "Sub".to_owned()), (1, "Deep".to_owned())]);
     }
 
     /// A room asked to join is not listed; one joining shows as joined.

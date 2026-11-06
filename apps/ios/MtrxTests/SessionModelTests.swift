@@ -50,7 +50,6 @@ final class SessionModelTests: XCTestCase {
             await eventually { self.model.encryption == state }
             XCTAssertEqual(model.needsEncryptionSetup, banner, "\(state)")
         }
-        XCTAssertEqual(session.encryptionRequests, 0)
     }
 
     func testTheBannerGoesAwayByItselfAfterRecovery() async {
@@ -68,19 +67,6 @@ final class SessionModelTests: XCTestCase {
         session.encryptionListener?.onUpdate(
             state: EncryptionState(deviceVerified: true, recovery: .enabled, keysArriving: true))
         await eventually { !self.model.needsEncryptionSetup }
-        XCTAssertEqual(session.encryptionRequests, 0)
-    }
-
-    func testSyncAndTheRoomListDoNotAskForTheEncryptionState() async {
-        model.setForeground(true)
-        await eventually { self.session.syncStarts == 1 }
-        session.roomListListener?.onUpdate(lists: Make.lists([Make.room("!a")]))
-        await eventually { self.model.rooms.count == 1 }
-        model.setForeground(false)
-        model.setForeground(true)
-        await eventually { self.session.syncStops == 1 && self.session.syncStarts == 2 }
-        await settle()
-        XCTAssertEqual(session.encryptionRequests, 0)
     }
 
     func testSignOutEndsTheEncryptionSubscription() async throws {
@@ -98,8 +84,6 @@ final class SessionModelTests: XCTestCase {
 
         session.selfVerification.listener?.onUpdate(state: .done)
         await eventually { self.model.verification?.state == .done }
-        // The encryption state that follows is pushed, not asked.
-        XCTAssertEqual(session.encryptionRequests, 0)
 
         model.closeVerification()
         XCTAssertNil(model.verification)

@@ -403,7 +403,6 @@ impl From<core::Confirmation> for LevelConfirmation {
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct Member {
     pub user: User,
-    pub role: Role,
     /// Their power level; `None` for a creator of the room (an owner, above
     /// every level).
     pub level: Option<i64>,
@@ -437,7 +436,6 @@ impl From<core::Member> for Member {
                 .collect(),
             manageable: m.manageable(),
             user: User::from(&m.user),
-            role: m.role.into(),
             level: m.level,
             membership: m.membership.into(),
             own: m.own,
@@ -464,17 +462,6 @@ pub fn level_confirmation(member: Member, level: i64) -> Option<LevelConfirmatio
 #[uniffi::export]
 pub fn typed_level(text: String, up_to: i64) -> Option<i64> {
     core::typed_level(&text, up_to)
-}
-
-/// The level `role` stands for, `default_level` for a member.
-#[uniffi::export]
-pub fn role_level(role: Role, default_level: i64) -> i64 {
-    match role {
-        Role::Admin => core::Role::Admin,
-        Role::Moderator => core::Role::Moderator,
-        Role::Member => core::Role::Member,
-    }
-    .level(default_level)
 }
 
 #[uniffi::export]

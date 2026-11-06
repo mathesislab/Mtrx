@@ -41,7 +41,7 @@ pub use error::MtrxError;
 pub use manage::{
     Banned, History, HistoryChoice, LevelChoice, LevelConfirmation, Manage, Member, NotifyChoice,
     NotifyMode, Permissions, PermissionsChoice, Rights, Role, RoomSettings, SpaceLink,
-    level_confirmation, role_level, typed_level,
+    level_confirmation, typed_level,
 };
 pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,

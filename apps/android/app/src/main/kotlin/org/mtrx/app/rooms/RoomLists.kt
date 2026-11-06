@@ -14,15 +14,12 @@ import uniffi.mtrx.SectionChoice
 import uniffi.mtrx.SectionLayout
 import uniffi.mtrx.SpaceEntry
 import uniffi.mtrx.SpaceKey
-import uniffi.mtrx.TreeEntry
 
 // The lists of the Chats, Rooms and Spaces tabs come from the library
 // (`RoomLists`); how they open and show is the app's.
 
 /** No rooms: the lists before the library's first. */
 object NoRooms : RoomListsInterface {
-    override fun ancestors(roomId: String): List<RoomSummary> = emptyList()
-
     override fun badges() = Badges(0uL, 0uL, 0uL)
 
     override fun chatSpaces(chatId: String): List<String> = emptyList()
@@ -48,8 +45,6 @@ object NoRooms : RoomListsInterface {
 
     override fun notesAtTop() = true
 
-    override fun parents(roomId: String): List<RoomSummary> = emptyList()
-
     override fun room(roomId: String): RoomSummary? = null
 
     override fun roomGroups(among: List<String>?, folded: List<String>): List<ListSection> = emptyList()
@@ -70,8 +65,6 @@ object NoRooms : RoomListsInterface {
     override fun spaces(): List<SpaceEntry> = emptyList()
 
     override fun topLevelSpaces(): List<RoomSummary> = emptyList()
-
-    override fun tree(spaceId: String): List<TreeEntry> = emptyList()
 
     override fun unreadBesides(roomId: String) = 0uL
 }

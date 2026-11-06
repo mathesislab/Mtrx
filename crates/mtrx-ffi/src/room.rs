@@ -79,17 +79,6 @@ impl Room {
         run(async move { Ok(room.set_topic(&topic).await?) }).await
     }
 
-    /// The image file at `path` as the room's picture.
-    pub async fn set_picture(&self, path: String) -> Result<(), MtrxError> {
-        let room = self.core();
-        run(async move { Ok(room.set_picture(path.as_ref()).await?) }).await
-    }
-
-    pub async fn remove_picture(&self) -> Result<(), MtrxError> {
-        let room = self.core();
-        run(async move { Ok(room.remove_picture().await?) }).await
-    }
-
     /// Who may join.
     pub async fn set_join_rule(&self, rule: JoinRule) -> Result<(), MtrxError> {
         let rule = core::JoinRule::from(rule);
@@ -165,7 +154,8 @@ impl Room {
         run(async move { Ok(room.unban(&user).await?) }).await
     }
 
-    /// Give someone, or ourselves, a power level (`roleLevel` for a role).
+    /// Give someone, or ourselves, a power level (one of `Member.choices`, or
+    /// a typed one).
     pub async fn set_level(&self, user_id: String, level: i64) -> Result<(), MtrxError> {
         let user = crate::error::user_id(&user_id)?;
         let room = self.core();

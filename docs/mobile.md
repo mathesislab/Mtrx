@@ -70,11 +70,10 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `reconnect`; `connection()`, `subscribeConnection(listener)`;
   `subscribeRoomList(listener)`; `timeline(roomId) -> Timeline`;
   `draftKeeper(roomId) -> DraftKeeper`;
-  `avatar(mxcUri, size) -> Data`, `mediaPreview(media) -> Data`,
-  `mediaFile(media) -> path`; `logout`, `forget`. Encryption (section 6):
-  `encryptionState()`, `subscribeEncryptionState(listener)` (section 9),
-  `recoveryStatus()`, `recover(recoveryKey,
-  listener)`, `enableRecovery() -> key`, `isDeviceVerified()`, `devices()`,
+  `avatar(mxcUri, size) -> Data`, `mediaPreview(media) -> Data`;
+  `logout`, `forget`. Encryption (section 6):
+  `subscribeEncryptionState(listener)` (section 9),
+  `recover(recoveryKey, listener)`, `devices()`,
   `requestSelfVerification() -> Verification`,
   `subscribeVerificationRequests(listener)`. People (section 9):
   `userProfile(userId) -> User`, `invite(roomId, userId)` (to a
@@ -111,8 +110,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   gets each step of a recovery; `VerificationRequestListener.onRequest(Verification)`
   each incoming request. `SecretBackend`: `load`, `save`,
   `delete` (throws `SecretError.Failed`).
-- `TaskHandle` (from each subscribe): `cancel()`, `isFinished()`; dropping
-  it cancels.
+- `TaskHandle` (from each subscribe): `cancel()`; dropping it cancels.
 - Records: `RoomListState { rooms, loaded, spaces, roomsOutsideSpaces }`
   (section 7), `SpaceRooms { spaceId, roomIds }`, `RoomSummary`, `TimelineRow
   { id, content }` (`start`, `day`, `readMarker`, `summary(text)`, `message` with
@@ -142,7 +140,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   pushkey, appId, appName, deviceName, lang, gatewayUrl, eventIdOnly }`,
   `Notification { roomId, eventId, roomName, roomAvatarUrl, direct,
   sender: User, body, highlight, noisy, timestamp }`. Presence: `Presence { state,
-  lastActive, currentlyActive, statusMessage, dot, line }`, `PresenceState`
+  lastActive, statusMessage, dot, line }`, `PresenceState`
   (`online`, `unavailable`, `offline`), `PresenceDot` (`online`, `idle`),
   `PresenceActivity` (`foreground`, `background`, `input`, `signOut`).
 - Errors: `MtrxError` (`NotLoggedIn`, `AlreadyLoggedIn`, `LoginCancelled`,
@@ -199,9 +197,7 @@ sizes. Diffs (the SDK's `VectorDiff`s) can come later for big timelines.
 ### Media
 
 `avatar` and `mediaPreview` return encoded image bytes (cached in the SDK's
-store); `mediaFile` saves the whole decrypted file under
-`<cacheDir>/profiles/default/media/` and returns its path. Signing out
-deletes it.
+store).
 
 ## 3. iOS app
 

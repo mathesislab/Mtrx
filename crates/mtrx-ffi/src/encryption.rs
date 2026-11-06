@@ -11,8 +11,8 @@ use crate::{
     runtime::{InRuntime, follow, forward, run},
 };
 
-/// Whether this device can read encrypted messages: `Session.encryptionState()`
-/// now, `Session.subscribeEncryptionState` now and after every change.
+/// Whether this device can read encrypted messages, from
+/// `Session.subscribeEncryptionState`, now and after every change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct EncryptionState {
     /// Signed by our cross-signing identity: other devices and users trust
@@ -253,13 +253,6 @@ impl Verification {
 
 #[uniffi::export]
 impl Session {
-    /// Whether this device is verified, the account's recovery, and whether
-    /// message keys are arriving.
-    pub async fn encryption_state(&self) -> Result<EncryptionState, MtrxError> {
-        let session = self.core();
-        run(async move { Ok(session.encryption_state().await?.into()) }).await
-    }
-
     /// Call `listener` with the encryption state, now and on every change
     /// (a verification, a recovery, keys arriving and done).
     pub fn subscribe_encryption_state(
@@ -274,11 +267,6 @@ impl Session {
             })
             .await;
         })
-    }
-
-    pub async fn recovery_status(&self) -> RecoveryStatus {
-        let session = self.core();
-        run(async move { session.recovery_status().await.into() }).await
     }
 
     /// Unlock encryption with the recovery key (as the user typed it; spaces
@@ -298,19 +286,6 @@ impl Session {
                 .await?)
         })
         .await
-    }
-
-    /// Set up recovery for the account (when `recoveryStatus()` is
-    /// `Disabled`): backs up message keys and returns the new recovery key,
-    /// to show the user once.
-    pub async fn enable_recovery(&self) -> Result<String, MtrxError> {
-        let session = self.core();
-        run(async move { Ok(session.enable_recovery().await?) }).await
-    }
-
-    pub async fn is_device_verified(&self) -> Result<bool, MtrxError> {
-        let session = self.core();
-        run(async move { Ok(session.is_device_verified().await?) }).await
     }
 
     /// Our devices, this one included.

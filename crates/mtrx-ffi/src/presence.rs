@@ -71,8 +71,6 @@ pub struct Presence {
     pub state: PresenceState,
     /// When they last did something, if the server says.
     pub last_active: Option<SystemTime>,
-    /// Online and active within about the last minute.
-    pub currently_active: bool,
     pub status_message: Option<String>,
     /// The dot on their picture; none offline.
     #[uniffi(default)]
@@ -91,7 +89,6 @@ impl Presence {
             line: presence.line(now),
             state: presence.state.into(),
             last_active: presence.last_active,
-            currently_active: presence.currently_active,
             status_message: presence.status_message,
         }
     }
@@ -103,23 +100,19 @@ impl From<core::Presence> for Presence {
     }
 }
 
-impl From<Presence> for core::Presence {
-    fn from(presence: Presence) -> Self {
-        Self {
-            state: presence.state.into(),
-            last_active: presence.last_active,
-            currently_active: presence.currently_active,
-            status_message: presence.status_message,
-        }
-    }
-}
-
 /// The line under someone's name as of `now`: their status message, else
 /// "Active now", "Idle" or when they were last active ("Last active 2 hr
 /// ago"); none offline with nothing more known.
 #[uniffi::export]
 pub fn presence_line(presence: Presence, now: SystemTime) -> Option<String> {
-    core::Presence::from(presence).line(now)
+    core::Presence {
+        state: presence.state.into(),
+        last_active: presence.last_active,
+        // The line does not read it.
+        currently_active: false,
+        status_message: presence.status_message,
+    }
+    .line(now)
 }
 
 /// What `dot` says, for accessibility: "Online" or "Idle".
@@ -285,15 +278,10 @@ mod tests {
             Presence {
                 state: PresenceState::Unavailable,
                 last_active: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(5)),
-                currently_active: false,
                 status_message: Some("Lunch".into()),
                 dot: Some(PresenceDot::Idle),
                 line: Some("Lunch".into()),
             }
-        );
-        assert_eq!(
-            core::Presence::from(presence),
-            core_presence(core::PresenceState::Unavailable)
         );
         for state in [
             PresenceState::Online,

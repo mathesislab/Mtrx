@@ -537,28 +537,6 @@ impl RoomLists {
         (self.space(&SpaceKey::Space(space.clone())))
             .is_some_and(|e| e.rooms.iter().any(|r| r == room))
     }
-
-    /// The joined spaces that list `room` directly.
-    pub fn parents(&self, room: &RoomId) -> Vec<&RoomSummary> {
-        self.rooms_of(self.graph.parents(room)).collect()
-    }
-
-    /// The joined spaces `room` is in, through nested spaces too, nearest
-    /// first.
-    pub fn ancestors(&self, room: &RoomId) -> Vec<&RoomSummary> {
-        (self.graph.ancestors(room).iter())
-            .filter_map(|id| self.room(id))
-            .collect()
-    }
-
-    /// What `space` lists, through nested spaces too, depth first, each
-    /// with its depth (0 for what `space` lists itself); rooms not in the
-    /// list are left out.
-    pub fn tree(&self, space: &RoomId) -> Vec<(usize, &RoomSummary)> {
-        (self.graph.tree(space).into_iter())
-            .filter_map(|(depth, id)| Some((depth, self.room(&id)?)))
-            .collect()
-    }
 }
 
 /// The phones' Home's name.
@@ -1145,23 +1123,6 @@ mod tests {
         assert_eq!(both.chat_spaces(&id("!bob")), ["One", "Two"]);
         let first = both.first_space_of(&id("!lab")).map(|s| s.id.as_str());
         assert_eq!(first, Some("!one"));
-    }
-
-    /// The spaces around a room, and what a space lists below it, as the
-    /// list has them.
-    #[test]
-    fn parents_ancestors_and_tree() {
-        let lists = phone();
-        let names = |rooms: Vec<&RoomSummary>| -> Vec<String> {
-            rooms.iter().map(|r| r.name.clone()).collect()
-        };
-        assert_eq!(names(lists.parents(&id("!deep"))), ["Sub"]);
-        assert_eq!(names(lists.ancestors(&id("!deep"))), ["Sub", "Team"]);
-        assert!(lists.ancestors(&id("!loose")).is_empty());
-        let tree: Vec<_> = (lists.tree(&id("!team")).into_iter())
-            .map(|(depth, room)| (depth, room.name.as_str()))
-            .collect();
-        assert_eq!(tree, [(0, "Offer"), (0, "Sub"), (1, "Deep"), (0, "Lab")]);
     }
 
     /// Rooms asked to join are in no list; rooms being joined show as

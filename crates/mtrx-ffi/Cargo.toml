@@ -20,7 +20,7 @@ path = "uniffi-bindgen.rs"
 [dependencies]
 mtrx-core.workspace = true
 uniffi = { version = "0.32.2", features = ["cli"] }
-tokio = { workspace = true, features = ["fs"] }
+tokio.workspace = true
 futures-util.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -117,7 +117,7 @@ fn reply_key(event: &str) -> String {
 }
 
 /// The id under which the reply preview of part `key` reports the text it
-/// shows, cut to fit (see [`crate::selectable::Selectable::id`]).
+/// shows, cut to fit (see [`crate::selectable::text::Selectable::id`]).
 pub fn shown_id(key: &str) -> Id {
     Id::from(format!("shown:{key}"))
 }

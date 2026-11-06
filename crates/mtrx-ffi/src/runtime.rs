@@ -111,11 +111,6 @@ impl TaskHandle {
     pub fn cancel(&self) {
         self.0.0.abort();
     }
-
-    /// Whether the subscription ended (cancelled, or its source closed).
-    pub fn is_finished(&self) -> bool {
-        self.0.0.is_finished()
-    }
 }
 
 #[cfg(test)]
@@ -167,15 +162,16 @@ mod tests {
     #[test]
     fn task_handles_cancel_when_dropped() {
         let handle = TaskHandle::spawn(std::future::pending());
-        assert!(!handle.is_finished());
+        let finished = |handle: &TaskHandle| handle.0.0.is_finished();
+        assert!(!finished(&handle));
         handle.cancel();
         for _ in 0..100 {
-            if handle.is_finished() {
+            if finished(&handle) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(handle.is_finished());
+        assert!(finished(&handle));
     }
 
     #[test]
