@@ -728,14 +728,10 @@ enum Make {
             .filter { $0 != .spaceMembers || inSpace || joinRule == .spaceMembers }
             .map { JoinRuleChoice(rule: $0, title: title($0), fact: fact($0)) }
         return RoomSettings(
-            rights: rights(canChange),
-            canRename: canChange, canChangeTopic: canChange, canChangePicture: canChange, canInvite: canChange,
-            notify: .all, joinRule: joinRule, joinRuleFact: fact(joinRule), joinRuleChoices: choices,
-            canChangeAccess: canChange,
-            canAddRooms: canChange, address: address,
-            canChangeAddress: canChange, listed: listed, history: .joined, canChangeHistory: canChange,
-            permissions: .everyone, canChangePermissions: canChange, encrypted: encrypted, canEncrypt: canChange,
-            version: "12", spaces: spaces, canAddTo: canAddTo, banned: banned, canUnban: canChange)
+            rights: rights(canChange), notify: .all, joinRule: joinRule, joinRuleFact: fact(joinRule),
+            joinRuleChoices: choices, address: address, listed: listed, history: .joined,
+            permissions: .everyone, encrypted: encrypted, version: "12", spaces: spaces, canAddTo: canAddTo,
+            banned: banned)
     }
 
     /// A member at `level` (nil: an owner); `upTo`: the highest level we

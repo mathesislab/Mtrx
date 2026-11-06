@@ -22,7 +22,6 @@ import org.junit.Test
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
-import org.mtrx.app.roomSettings
 import org.mtrx.app.textEvent
 import org.mtrx.app.user
 import uniffi.mtrx.Draft
@@ -441,10 +440,8 @@ class TimelineViewModelTest {
     }
 
     @Test
-    fun topicFollowsTheRoomsSettings() = runTest {
-        session.settings = roomSettings(may = true)
+    fun topicIsSavedAndPinnedMessagesShow() = runTest {
         val viewModel = TimelineViewModel("!a:x", session, onRead = {}, composeTopic = { "composed ${it.text}" })
-        assertEquals(true, viewModel.settings.value?.canChangeTopic)
         viewModel.saveTopic(Topic("Ice", emptyList()))
         viewModel.setPinned("\$1", true)
         assertEquals(listOf("topic composed Ice", "pin \$1"), session.roomCalls)

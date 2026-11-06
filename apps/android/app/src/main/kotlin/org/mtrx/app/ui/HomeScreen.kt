@@ -230,7 +230,9 @@ fun HomeScreen(
                     }
                     SortMenu(sort, onSort = account.roomSort::choose)
                 }
-                val space = (selected as? SpaceKey.Space)?.id?.takeIf { onSpaceRooms }
+                // New room in it, if we may add rooms to it.
+                val space = (selected as? SpaceKey.Space)?.id
+                    ?.takeIf { onSpaceRooms && selectedSpace?.space?.rights?.addRooms == true }
                 AddMenu(
                     spaceName = selectedSpace?.name.takeIf { space != null },
                     onNewSpace = routes.newSpace,

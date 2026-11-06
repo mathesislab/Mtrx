@@ -145,10 +145,6 @@ pub struct Banned {
 pub struct RoomSettings {
     /// What we may change; the same as `RoomSummary.rights`.
     pub rights: Rights,
-    pub can_rename: bool,
-    pub can_change_topic: bool,
-    pub can_change_picture: bool,
-    pub can_invite: bool,
     pub notify: NotifyMode,
     pub join_rule: JoinRule,
     /// Who may join, in words: "Public: anyone can join"…
@@ -156,20 +152,13 @@ pub struct RoomSettings {
     /// The rules to offer, in order, with their words: Space members only
     /// for a room in a space, or already so.
     pub join_rule_choices: Vec<JoinRuleChoice>,
-    pub can_change_access: bool,
-    /// For a space: we may list rooms in it.
-    pub can_add_rooms: bool,
     /// `#name:server`, if it has one.
     pub address: Option<String>,
-    pub can_change_address: bool,
     /// Listed in our server's directory; `None` if it would not say.
     pub listed: Option<bool>,
     pub history: History,
-    pub can_change_history: bool,
     pub permissions: Permissions,
-    pub can_change_permissions: bool,
     pub encrypted: bool,
-    pub can_encrypt: bool,
     /// The room version, as "12".
     pub version: Option<String>,
     /// The joined spaces it is in.
@@ -177,18 +166,12 @@ pub struct RoomSettings {
     /// Joined spaces it is not in whose rooms we may change.
     pub can_add_to: Vec<String>,
     pub banned: Vec<Banned>,
-    pub can_unban: bool,
 }
 
 impl From<core::RoomSettings> for RoomSettings {
     fn from(s: core::RoomSettings) -> Self {
-        let r = s.rights;
         Self {
-            rights: r.into(),
-            can_rename: r.rename,
-            can_change_topic: r.change_topic,
-            can_change_picture: r.change_picture,
-            can_invite: r.invite,
+            rights: s.rights.into(),
             notify: match s.notify {
                 core::NotifyMode::All => NotifyMode::All,
                 core::NotifyMode::Mentions => NotifyMode::Mentions,
@@ -197,10 +180,7 @@ impl From<core::RoomSettings> for RoomSettings {
             join_rule: s.join_rule.into(),
             join_rule_fact: s.join_rule.fact().to_owned(),
             join_rule_choices: s.join_rule_choices.into_iter().map(Into::into).collect(),
-            can_change_access: r.change_join_rule,
-            can_add_rooms: r.add_rooms,
             address: s.address.map(|a| a.to_string()),
-            can_change_address: r.change_address,
             listed: s.listed,
             history: match s.history {
                 core::History::Joined => History::Joined,
@@ -208,14 +188,11 @@ impl From<core::RoomSettings> for RoomSettings {
                 core::History::Members => History::Members,
                 core::History::Anyone => History::Anyone,
             },
-            can_change_history: r.change_history,
             permissions: match s.permissions {
                 core::Permissions::Everyone => Permissions::Everyone,
                 core::Permissions::Moderators => Permissions::Moderators,
             },
-            can_change_permissions: r.change_levels,
             encrypted: s.encrypted,
-            can_encrypt: r.encrypt,
             version: s.version,
             spaces: s
                 .spaces
@@ -235,7 +212,6 @@ impl From<core::RoomSettings> for RoomSettings {
                     reason: b.reason,
                 })
                 .collect(),
-            can_unban: r.ban,
         }
     }
 }

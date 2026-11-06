@@ -167,6 +167,16 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   "Invited", "Asked", "Invite only"). `DirectoryRoom.membership` is the
   server's, when listed. Words are fields, not functions: the Android JVM
   tests' fakes supply them.
+- Rights: `Rights {send, redactOthers, pin, mentionRoom, rename,
+  changeTopic, changePicture, invite, kick, ban, changeJoinRule,
+  changeHistory, changeAddress, changeLevels, encrypt, addRooms,
+  setCallService, level, defaultLevel}` is what we may do in a room, from
+  its power levels: `RoomSummary.rights` (live with the room list) and the
+  same in `RoomSettings.rights`. All false until the levels are known, and
+  in rooms we have not joined. Offer an action only with its right
+  (inviting to a space: the space's `invite`; New room in a space:
+  `addRooms`). `level` is ours (nil for a creator), `defaultLevel` a plain
+  member's.
 - `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console),
   `presenceLine(presence, now)`, `presenceDotLabel(dot)`.
 

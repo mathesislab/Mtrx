@@ -198,8 +198,8 @@ data class TimelineState(
 )
 
 /**
- * A room's timeline. [spaces], the top-level ones, to invite a direct
- * chat's person to; [presences], for the header
+ * A room's timeline. [spaces], the top-level ones we may invite to, to
+ * invite a direct chat's person to; [presences], for the header
  * and the person sheet, and [refreshPresence] when the sheet opens.
  * [backCount] on the back button: unread messages in the other rooms and
  * direct chats.
@@ -233,7 +233,6 @@ fun TimelineScreen(
     val highlighted by viewModel.highlighted.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
-    val settings by viewModel.settings.collectAsStateWithLifecycle()
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
     val sharedIds by viewModel.sharedRooms.collectAsStateWithLifecycle()
     val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, among = it) } }
@@ -247,7 +246,7 @@ fun TimelineScreen(
         seeking = seeking,
         highlighted = highlighted,
         error = error,
-        canEditTopic = settings?.canChangeTopic == true,
+        canEditTopic = header.rights.changeTopic,
         pinned = pinned,
         shared = shared,
     )

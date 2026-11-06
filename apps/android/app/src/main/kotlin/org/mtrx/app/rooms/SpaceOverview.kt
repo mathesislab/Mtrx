@@ -156,7 +156,7 @@ fun SpaceOverviewContent(
             ) {
                 item(key = "header") { InfoHeader(header, settings, images, busy, infoActions, onLeave) }
                 item(key = "topic") {
-                    TopicBox(header.topic, settings?.canChangeTopic == true, infoActions::setTopic, onOpenLink)
+                    TopicBox(header.topic, header.rights.changeTopic, infoActions::setTopic, onOpenLink)
                 }
                 item(key = "tabs") {
                     // As the tabs: above the default text size, no tick, and
