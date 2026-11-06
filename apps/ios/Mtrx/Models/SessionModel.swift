@@ -175,9 +175,10 @@ final class SessionModel: ObservableObject {
         rooms.first { $0.id == id }
     }
 
-    /// We are in room `id`, as the room list has it, or it is coming.
-    func joined(_ id: String) -> Bool {
-        joining.contains(id) || room(id).map { !$0.invited } ?? false
+    /// What a listed room's row offers, with our membership as the room
+    /// lists have it: joined once joining here, asked once asked.
+    func button(for room: DirectoryRoom) -> JoinButton {
+        lists.joinButton(room: room)
     }
 
     /// Sync while the app is in the foreground, and set our presence;

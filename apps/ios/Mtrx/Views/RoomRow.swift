@@ -22,7 +22,7 @@ struct RoomRow: View {
     private var unread: Bool { room.unreadMessages > 0 || room.unreadMentions > 0 }
 
     private var subtitle: String? {
-        guard room.invited else { return subline }
+        guard room.membership == .invited else { return subline }
         switch room.kind {
         case .space: return "Invited to the space"
         case .direct: return "Wants to chat"

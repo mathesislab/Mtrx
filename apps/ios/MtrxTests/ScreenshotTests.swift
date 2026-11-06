@@ -204,7 +204,7 @@ final class ScreenshotTests: XCTestCase {
 
     func testSpaceOverview() async throws {
         session.children = .success(Screens.children)
-        session.settings = Make.settings(access: .public, encrypted: false, listed: true)
+        session.settings = Make.settings(joinRule: .public, encrypted: false, listed: true)
         session.memberList = Screens.members
         try await snap("09-space-overview", SpaceOverviewView(space: Screens.polar))
     }
@@ -320,11 +320,12 @@ private enum Screens {
                 "!paper", name: "Ice sheet paper", lastActivity: now.addingTimeInterval(-5_000)),
             Make.room(
                 "!old", name: "Field season 2025", lastActivity: now.addingTimeInterval(-900_000)),
-            Make.room("!join", invited: true, name: "Glacier seminar"),
+            Make.room("!join", membership: .invited, name: "Glacier seminar"),
             Make.room(
                 "!bob", kind: .direct, name: "Bob Meyer", directUser: "@bob:example.org",
                 lastActivity: now.addingTimeInterval(-7_200)),
-            Make.room("!party", invited: true, name: "Summer party", topic: "Saturday at the lake."),
+            Make.room("!party", membership: .invited, name: "Summer party", topic: "Saturday at the lake."),
+            Make.room("!seminar", membership: .asked, name: "Seminar"),
             Make.room(
                 "!cy", kind: .direct, name: "Cy Park", directUser: "@cy:example.org",
                 lastActivity: now.addingTimeInterval(-200_000)),
@@ -396,7 +397,7 @@ private enum Screens {
     }
 
     static let settings = Make.settings(
-        access: .knock, encrypted: true, listed: false,
+        joinRule: .knock, inSpace: true, encrypted: true, listed: false,
         spaces: [SpaceLink(spaceId: "!polar", suggested: true, canChange: true)], canAddTo: ["!teach"],
         banned: [
             Banned(
@@ -409,7 +410,7 @@ private enum Screens {
         Make.member("ann", level: nil),
         Make.member("bob", level: 50, upTo: 100, remove: true, ban: true),
         Make.member("cy", level: 0, upTo: 100, remove: true, ban: true),
-        Make.member("dee", level: 0, upTo: 100, remove: true, invited: true),
+        Make.member("dee", level: 0, upTo: 100, remove: true, membership: .invited),
     ]
 
     static let children = [
@@ -417,16 +418,16 @@ private enum Screens {
             "!ice", name: "Ice sheets", membership: .joined, members: 4, topic: "Models, data and papers",
             role: .admin),
         Make.directoryRoom("!sea", name: "Sea ice", membership: .joined, members: 9),
-        Make.directoryRoom("!field", name: "Fieldwork", access: .spaceMembers, members: 6, topic: "Spring campaign"),
-        Make.directoryRoom("!data", name: "Data", access: .knock, members: 3),
-        Make.directoryRoom("!seminar", name: "Seminar", access: .knock, membership: .asked, members: 15),
+        Make.directoryRoom("!field", name: "Fieldwork", joinRule: .spaceMembers, members: 6, topic: "Spring campaign"),
+        Make.directoryRoom("!data", name: "Data", joinRule: .knock, members: 3),
+        Make.directoryRoom("!seminar", name: "Seminar", joinRule: .knock, membership: .asked, members: 15),
         Make.directoryRoom("!glacio", name: "Glaciology", space: true, members: 20, children: 4),
     ]
 
     static let directory = [
         Make.directoryRoom("!matrix", name: "Matrix HQ", members: 12_000, topic: "The Matrix protocol"),
         Make.directoryRoom("!climate", name: "Climate science", space: true, members: 340, children: 12),
-        Make.directoryRoom("!earth", name: "Earth system models", access: .knock, members: 85),
+        Make.directoryRoom("!earth", name: "Earth system models", joinRule: .knock, members: 85),
         Make.directoryRoom("!ice", name: "Ice sheets", membership: .joined, members: 4, role: .admin),
     ]
 }

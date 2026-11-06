@@ -461,7 +461,7 @@ struct RoomList<Empty: View>: View {
     private func rows(_ rooms: [RoomSummary]) -> some View {
         ForEach(rooms, id: \.id) { room in
             Group {
-                if room.invited {
+                if room.membership == .invited {
                     Button {
                         session.invite = RoomRef(id: room.id)
                     } label: {
@@ -684,7 +684,7 @@ struct OpenRoom: View {
 
     @ViewBuilder
     private var content: some View {
-        if let room = session.room(id), !room.invited {
+        if let room = session.room(id), room.membership != .invited {
             RoomView(room: room, model: session.timeline(for: room), info: session.info(for: room))
         } else if let room = session.room(id) {
             InviteView(room: room)
