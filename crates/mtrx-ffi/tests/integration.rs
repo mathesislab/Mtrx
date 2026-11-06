@@ -266,16 +266,7 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
         })
         .unwrap();
     assert_eq!(media.kind, MediaKind::Image);
-    assert_eq!(
-        block_on(session.media_preview(media.clone())).unwrap(),
-        image
-    );
-    let path = block_on(session.media_file(media.clone())).unwrap();
-    assert!(path.starts_with(&*cache.path().to_string_lossy()));
-    assert!(path.ends_with(".png"));
-    assert_eq!(std::fs::read(&path).unwrap(), image);
-    // A second time from the cache.
-    assert_eq!(block_on(session.media_file(media)).unwrap(), path);
+    assert_eq!(block_on(session.media_preview(media)).unwrap(), image);
 
     block_on(timeline.send_text("hello **world**".into())).unwrap();
     let items = wait_for("our message, sent", &item_updates, |items| {
@@ -291,7 +282,6 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
 
     block_on(session.logout()).unwrap();
     assert!(secrets.0.lock().unwrap().is_empty());
-    assert!(!std::path::Path::new(&path).exists());
     assert!(block_on(mtrx.restore()).unwrap().is_none());
 }
 
@@ -396,20 +386,41 @@ fn paginate_to_start(timeline: &mtrx_ffi::Timeline) {
     panic!("the room's start was not reached");
 }
 
-/// Poll `session`'s encryption state until `pred` holds.
-fn wait_for_encryption(session: &Session, what: &str, pred: impl Fn(&EncryptionState) -> bool) {
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    loop {
-        let state = block_on(session.encryption_state()).unwrap();
-        if pred(&state) {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{what}: still {state:?}"
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    }
+/// The first device of user `name`, outside the bindings (the phones do
+/// not set up recovery): writes `text` in a new encrypted room, then turns
+/// on recovery. Returns the room and the recovery key.
+fn diary_with_recovery(
+    core_runtime: &tokio::runtime::Runtime,
+    name: &str,
+    text: &str,
+) -> (String, String) {
+    core_runtime.block_on(async {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = Profile::new("first", dir.path(), SecretStore::File).unwrap();
+        let first = mtrx_core::Session::login(profile, &homeserver(), name, PASSWORD)
+            .await
+            .unwrap();
+        first.start_sync().await;
+        let room = first
+            .create_room(NewRoom {
+                name: Some("diary".into()),
+                encrypted: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // Sent before the encryption event synced, it would go out
+        // unencrypted ([`wait_for_encrypted_room`]).
+        let list = first.room_list().await.unwrap();
+        let encrypted = list.wait_for(|s| s.rooms.iter().any(|r| r.id == room && r.encrypted));
+        tokio::time::timeout(TIMEOUT, encrypted).await.unwrap();
+        let timeline = first.timeline(&room).await.unwrap();
+        let sent = timeline.send_markdown(text, None).await.unwrap().sent();
+        tokio::time::timeout(TIMEOUT, sent).await.unwrap().unwrap();
+        let key = first.enable_recovery().await.unwrap();
+        first.stop_sync().await;
+        (room.to_string(), key)
+    })
 }
 
 #[test]
@@ -419,45 +430,23 @@ fn recovery_key_decrypts_history_on_a_new_device() {
     let name = unique_name("ffi-recovery");
     core_runtime.block_on(register(&name)).unwrap();
 
-    // The first device sets up cross-signing; it writes in an encrypted
-    // room, then turns on recovery.
-    let first = sign_in(&name);
-    let room_id = encrypted_room(&core_runtime, &name);
-    wait_for_encrypted_room(&first.session, &room_id);
-    send(&first.session, &room_id, "written before recovery");
-    assert_eq!(
-        block_on(first.session.encryption_state()).unwrap(),
-        EncryptionState {
-            device_verified: true,
-            recovery: RecoveryStatus::Disabled,
-            keys_arriving: false,
-        }
-    );
-    let key = block_on(first.session.enable_recovery()).unwrap();
-    assert_eq!(
-        block_on(first.session.recovery_status()),
-        RecoveryStatus::Enabled
-    );
+    let (room_id, key) = diary_with_recovery(&core_runtime, &name, "written before recovery");
 
     // A new device cannot read it, and says why.
     let second = sign_in(&name);
     wait_for_encrypted_room(&second.session, &room_id);
-    wait_for_encryption(&second.session, "unverified, recovery incomplete", |s| {
-        *s == EncryptionState {
-            device_verified: false,
-            recovery: RecoveryStatus::Incomplete,
-            keys_arriving: false,
-        }
-    });
     let (listener, states) = forward();
     let _states_handle = second.session.subscribe_encryption_state(listener);
-    assert_eq!(
-        states.recv_timeout(TIMEOUT).expect("the state now"),
-        EncryptionState {
-            device_verified: false,
-            recovery: RecoveryStatus::Incomplete,
-            keys_arriving: false,
-        }
+    wait_for(
+        "unverified, recovery incomplete",
+        &states,
+        |s: &EncryptionState| {
+            *s == EncryptionState {
+                device_verified: false,
+                recovery: RecoveryStatus::Incomplete,
+                keys_arriving: false,
+            }
+        },
     );
     let timeline = block_on(second.session.timeline(room_id.clone())).unwrap();
     let (items, item_updates) = forward();
@@ -513,14 +502,6 @@ fn recovery_key_decrypts_history_on_a_new_device() {
             keys_arriving: false,
         }
     });
-    assert_eq!(
-        block_on(second.session.encryption_state()).unwrap(),
-        EncryptionState {
-            device_verified: true,
-            recovery: RecoveryStatus::Enabled,
-            keys_arriving: false,
-        }
-    );
 }
 
 #[test]
@@ -535,8 +516,11 @@ fn emoji_verification_between_two_devices() {
     send(&old.session, &room_id, "written before verification");
 
     let new = sign_in(&name);
-    assert!(block_on(old.session.is_device_verified()).unwrap());
-    assert!(!block_on(new.session.is_device_verified()).unwrap());
+    let (listener, old_states) = forward();
+    let _old_states_handle = old.session.subscribe_encryption_state(listener);
+    wait_for("verified (old)", &old_states, |s: &EncryptionState| {
+        s.device_verified
+    });
     let (listener, new_states) = forward();
     let _states_handle = new.session.subscribe_encryption_state(listener);
     wait_for("not verified", &new_states, |s: &EncryptionState| {
@@ -602,7 +586,6 @@ fn emoji_verification_between_two_devices() {
     let done = |state: &VerificationState| *state == VerificationState::Done;
     wait_for("done (new)", &outgoing_states, done);
     wait_for("done (old)", &accepted_states, done);
-    assert!(block_on(new.session.is_device_verified()).unwrap());
     wait_for("verified, through the listener", &new_states, |s| {
         s.device_verified
     });
@@ -960,22 +943,23 @@ fn rooms_made_set_up_joined_and_left() {
     };
     assert!(!shared.contains(&space), "{shared:?}");
 
-    // Alice makes him a moderator; he may not manage her.
-    let level = mtrx_ffi::role_level(mtrx_ffi::Role::Moderator, 0);
+    // Alice makes him a moderator, as her choices offer; he may not manage
+    // her.
     let bob_id = b.session.user_id();
     let deadline = std::time::Instant::now() + TIMEOUT;
-    loop {
+    let level = loop {
         let members = block_on(a_room.members()).unwrap();
         if let Some(bob) = members
             .iter()
             .find(|m| m.user.user_id == bob_id && m.membership == Membership::Joined)
         {
             assert!(bob.manage.up_to.is_some() && bob.manage.remove);
-            break;
+            let moderator = bob.choices.iter().find(|c| c.title == "Moderator");
+            break moderator.expect("a moderator choice").level;
         }
         assert!(std::time::Instant::now() < deadline, "Bob joined");
         std::thread::sleep(Duration::from_millis(200));
-    }
+    };
     block_on(a_room.set_level(bob_id.clone(), level)).unwrap();
     let b_room = b.session.room(room.clone()).unwrap();
     let members = block_on(b_room.members()).unwrap();
@@ -1604,10 +1588,7 @@ fn presence_is_set_read_and_followed() {
     assert_eq!(seen.state, PresenceState::Online);
     assert_eq!(seen.dot, Some(PresenceDot::Online));
     assert_eq!(seen.line.as_deref(), Some("Active now"));
-    assert!(
-        seen.currently_active && seen.last_active.is_some(),
-        "{seen:?}"
-    );
+    assert!(seen.last_active.is_some(), "{seen:?}");
 
     let (listener, updates) = forward::<Presences>();
     let _handle = bob

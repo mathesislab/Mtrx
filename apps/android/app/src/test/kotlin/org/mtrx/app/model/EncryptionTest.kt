@@ -64,7 +64,6 @@ class EncryptionTest {
         account.setForeground(true)
         assertEquals(1, session.encryptionSubscriptions)
         assertFalse(session.encryptionSubscription!!.cancelled)
-        assertEquals(0, session.encryptionAsks)
     }
 
     @Test
@@ -94,7 +93,6 @@ class EncryptionTest {
         assertTrue(account.encryption.value!!.keysArriving)
         session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED, keysArriving = false))
         assertFalse(account.encryption.value!!.keysArriving)
-        assertEquals(0, session.encryptionAsks)
 
         account.resetRecovery()
         assertEquals(Recovery.Idle, account.recovery.value)
@@ -110,7 +108,6 @@ class EncryptionTest {
         account.start()
         account.recover("wrong")
         assertEquals(Recovery.Failed("The Base58 decoded key has an invalid length"), account.recovery.value)
-        assertEquals(0, session.encryptionAsks)
     }
 
     @Test
@@ -124,7 +121,6 @@ class EncryptionTest {
         account.recover("EsTc not a key")
         assertEquals(Recovery.InvalidKey, account.recovery.value)
         assertEquals("The recovery key is not valid.", INVALID_RECOVERY_KEY)
-        assertEquals(0, session.encryptionAsks)
     }
 
     @Test
@@ -180,7 +176,6 @@ class EncryptionTest {
         assertTrue(showsEncryptionBanner(account.encryption.value))
         session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED, keysArriving = true))
         assertFalse(showsEncryptionBanner(account.encryption.value))
-        assertEquals(0, session.encryptionAsks)
 
         // A new one, still waiting at sign-out: cancelled and closed.
         val second = FakeVerification(FakeSession.USER_ID)

@@ -106,8 +106,6 @@ class FakeHandle : TaskHandle(NoHandle) {
     override fun cancel() {
         cancelled = true
     }
-
-    override fun isFinished(): Boolean = cancelled
 }
 
 class FakeSession : Session(NoHandle) {
@@ -119,7 +117,6 @@ class FakeSession : Session(NoHandle) {
     var roomListListener: RoomListsListener? = null
 
     var encryption = EncryptionState(deviceVerified = false, recovery = RecoveryStatus.INCOMPLETE)
-    var encryptionAsks = 0
     var encryptionListener: EncryptionStateListener? = null
     var encryptionSubscription: FakeHandle? = null
     var encryptionSubscriptions = 0
@@ -253,11 +250,6 @@ class FakeSession : Session(NoHandle) {
         onLogout()
         logoutError?.let { throw it }
         loggedOut = true
-    }
-
-    override suspend fun encryptionState(): EncryptionState {
-        encryptionAsks++
-        return encryption
     }
 
     // As the library: the state now, then after each change ([pushEncryption]).
@@ -630,11 +622,6 @@ fun member(
     defaultLevel: Long = 0,
 ): Member = Member(
     user = user(userId, name),
-    role = when (level) {
-        100L -> Role.ADMIN
-        50L -> Role.MODERATOR
-        else -> Role.MEMBER
-    },
     level = level,
     membership = membership,
     own = userId == FakeSession.USER_ID,
@@ -769,7 +756,6 @@ fun makePresence(
 ): Presence = Presence(
     state = state,
     lastActive = lastActive,
-    currentlyActive = state == PresenceState.ONLINE,
     statusMessage = statusMessage,
     dot = when (state) {
         PresenceState.ONLINE -> PresenceDot.ONLINE
