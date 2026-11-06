@@ -409,6 +409,11 @@ fn diary_with_recovery(
             })
             .await
             .unwrap();
+        // Sent before the encryption event synced, it would go out
+        // unencrypted ([`wait_for_encrypted_room`]).
+        let list = first.room_list().await.unwrap();
+        let encrypted = list.wait_for(|s| s.rooms.iter().any(|r| r.id == room && r.encrypted));
+        tokio::time::timeout(TIMEOUT, encrypted).await.unwrap();
         let timeline = first.timeline(&room).await.unwrap();
         let sent = timeline.send_markdown(text, None).await.unwrap().sent();
         tokio::time::timeout(TIMEOUT, sent).await.unwrap().unwrap();
