@@ -1,5 +1,6 @@
 //! Push notifications: the pusher through which the server reaches a
-//! device, and what a push is about, read by the process that receives it.
+//! device, and what a push is about ([`Notification::fetch`]), read by the
+//! process that receives it.
 //!
 //! The server pushes only a room and an event ID (`event_id_only`), so the
 //! device fetches and decrypts the event itself. That happens in a client
@@ -13,13 +14,9 @@ use std::time::SystemTime;
 use matrix_sdk::{
     encryption::EncryptionSettings,
     ruma::{
-        EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
+        EventId, RoomId, UserId,
         api::client::push::{self as api, PusherIds, PusherInit, PusherKind, get_pushers},
-        events::{
-            AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
-            room::message::MessageType,
-        },
-        push::{Action, HttpPusherData, PushFormat},
+        push::{HttpPusherData, PushFormat},
     },
     store::RoomLoadSettings,
 };
@@ -30,7 +27,11 @@ use matrix_sdk_ui::notification_client::{
 use tokio::sync::Mutex;
 use url::Url;
 
-use crate::{Error, Profile, Result, Session, session::restore_client};
+use crate::{
+    Error, Notification, Profile, Result, Session, User,
+    notifications::{self, should_notify},
+    session::restore_client,
+};
 
 /// A pusher posting to an HTTP push gateway, which forwards each push to
 /// the device (UnifiedPush: through the distributor; iOS: through APNs).
@@ -133,46 +134,18 @@ impl Session {
     }
 }
 
-/// What a push is about: the event, decrypted, as the account's push rules
-/// judge it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PushNotification {
-    pub room_id: OwnedRoomId,
-    pub event_id: OwnedEventId,
-    pub room_name: String,
-    /// `mxc://` URI.
-    pub room_avatar_url: Option<String>,
-    pub is_direct: bool,
-    pub sender_id: OwnedUserId,
-    /// The sender's name in the room, else their ID's localpart.
-    pub sender_name: String,
-    /// `mxc://` URI.
-    pub sender_avatar_url: Option<String>,
-    /// A message's text, or what it is ("Image", "Encrypted message", ...).
-    pub body: String,
-    /// Mentions us or matches a keyword (a highlight).
-    pub is_mention: bool,
-    /// The push rules ask for a sound.
-    pub is_noisy: bool,
-    pub timestamp: SystemTime,
-    /// Show it: someone else's event the push rules notify for. Events
-    /// they do not notify for are not returned at all (the push rules
-    /// never notify for our own), so this is false only for our own event
-    /// when the rules could not be read.
-    pub should_notify: bool,
-}
-
 /// One push at a time in a process: the SDK's notification client takes
 /// the store's locks under a fixed name, so two at once would hold them
 /// together.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::const_new(());
 
-impl PushNotification {
-    /// Fetch and decrypt `event_id` of `room_id` with the session saved in
-    /// `profile`, without syncing; from any process, also while the app's
-    /// session syncs (in this process or another). `None` if there is
-    /// nothing to show: the push rules say no (a muted room, our own
-    /// message), the sender is ignored, or the event was deleted.
+impl Notification {
+    /// What a push is about: fetch and decrypt `event_id` of `room_id` with
+    /// the session saved in `profile`, without syncing; from any process,
+    /// also while the app's session syncs (in this process or another).
+    /// `None` if there is nothing to show: the push rules say no (a muted
+    /// room), it is our own event (also when the rules cannot be read), the
+    /// sender is ignored, or the event was deleted.
     pub async fn fetch(
         profile: &Profile,
         room_id: &RoomId,
@@ -196,7 +169,7 @@ impl PushNotification {
             .await
             .map_err(notification_error)?
         {
-            NotificationStatus::Event(item) => Ok(Some(Self::new(room_id, event_id, &item, &own))),
+            NotificationStatus::Event(item) => Ok(Self::pushed(room_id, event_id, &item, &own)),
             NotificationStatus::EventFilteredOut | NotificationStatus::EventRedacted => Ok(None),
             NotificationStatus::EventNotFound => Err(Error::Notifications(format!(
                 "event {event_id} not found in {room_id}"
@@ -204,34 +177,42 @@ impl PushNotification {
         }
     }
 
-    fn new(room_id: &RoomId, event_id: &EventId, item: &NotificationItem, own: &UserId) -> Self {
+    /// The notification of `item`, if someone else's event the push rules
+    /// notify for.
+    fn pushed(
+        room_id: &RoomId,
+        event_id: &EventId,
+        item: &NotificationItem,
+        own: &UserId,
+    ) -> Option<Self> {
         let sender = item.event.sender();
         let notifies = item
             .actions
-            .as_ref()
+            .as_deref()
             // Unknown: the server pushed it, so its rules said to.
-            .is_none_or(|actions| actions.iter().any(Action::should_notify));
-        Self {
+            .is_none_or(should_notify);
+        if !notifies || sender == own {
+            return None;
+        }
+        Some(Self {
             room_id: room_id.to_owned(),
             event_id: event_id.to_owned(),
             room_name: item.room_computed_display_name.clone(),
-            room_avatar_url: item.room_avatar_url.clone(),
-            is_direct: item.is_direct_message_room,
-            sender_id: sender.to_owned(),
-            sender_name: item
-                .sender_display_name
-                .clone()
-                .unwrap_or_else(|| sender.localpart().to_owned()),
-            sender_avatar_url: item.sender_avatar_url.clone(),
+            room_avatar: item.room_avatar_url.clone().map(Into::into),
+            direct: item.is_direct_message_room,
+            sender: User {
+                id: sender.to_owned(),
+                name: item.sender_display_name.clone(),
+                avatar: item.sender_avatar_url.clone().map(Into::into),
+            },
             body: body(&item.event),
-            is_mention: item.has_mention.unwrap_or(false),
-            is_noisy: item.is_noisy.unwrap_or(false),
+            highlight: item.has_mention.unwrap_or(false),
+            noisy: item.is_noisy.unwrap_or(false),
             timestamp: match &item.event {
                 NotificationEvent::Timeline(event) => crate::system_time(event.origin_server_ts()),
                 NotificationEvent::Invite(_) => SystemTime::now(),
             },
-            should_notify: notifies && sender != own,
-        }
+        })
     }
 }
 
@@ -240,27 +221,9 @@ fn notification_error(error: matrix_sdk_ui::notification_client::Error) -> Error
 }
 
 fn body(event: &NotificationEvent) -> String {
-    let AnySyncTimelineEvent::MessageLike(event) = (match event {
-        NotificationEvent::Timeline(event) => &**event,
-        NotificationEvent::Invite(_) => return "Invited you".into(),
-    }) else {
-        return "New event".into();
-    };
     match event {
-        AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(message)) => {
-            match &message.content.msgtype {
-                MessageType::Image(_) => "Image".into(),
-                MessageType::Video(_) => "Video".into(),
-                MessageType::Audio(_) => "Audio".into(),
-                MessageType::File(_) => "File".into(),
-                MessageType::Location(_) => "Location".into(),
-                other => other.body().to_owned(),
-            }
-        }
-        AnySyncMessageLikeEvent::RoomEncrypted(_) => "Encrypted message".into(),
-        AnySyncMessageLikeEvent::Sticker(_) => "Sticker".into(),
-        AnySyncMessageLikeEvent::CallInvite(_) => "Call".into(),
-        _ => "New message".into(),
+        NotificationEvent::Timeline(event) => notifications::body(event),
+        NotificationEvent::Invite(_) => "Invited you".into(),
     }
 }
 
@@ -268,8 +231,8 @@ fn body(event: &NotificationEvent) -> String {
 mod tests {
     use matrix_sdk::ruma::{
         event_id,
-        events::room::member::StrippedRoomMemberEvent,
-        push::{SoundTweakValue, Tweak},
+        events::{AnySyncTimelineEvent, room::member::StrippedRoomMemberEvent},
+        push::{Action, SoundTweakValue, Tweak},
         room_id,
         serde::Raw,
         user_id,
@@ -322,8 +285,8 @@ mod tests {
         json!({ "msgtype": "m.text", "body": body })
     }
 
-    fn notification(item: &NotificationItem) -> PushNotification {
-        PushNotification::new(
+    fn notification(item: &NotificationItem) -> Option<Notification> {
+        Notification::pushed(
             room_id!("!r:example.org"),
             event_id!("$e:example.org"),
             item,
@@ -344,47 +307,49 @@ mod tests {
         ));
         assert_eq!(
             n,
-            PushNotification {
+            Some(Notification {
                 room_id: room_id!("!r:example.org").to_owned(),
                 event_id: event_id!("$e:example.org").to_owned(),
                 room_name: "Ice sheets".into(),
-                room_avatar_url: None,
-                is_direct: true,
-                sender_id: user_id!("@alice:example.org").to_owned(),
-                sender_name: "Alice".into(),
-                sender_avatar_url: Some("mxc://example.org/alice".into()),
+                room_avatar: None,
+                direct: true,
+                sender: User {
+                    id: user_id!("@alice:example.org").to_owned(),
+                    name: Some("Alice".into()),
+                    avatar: Some("mxc://example.org/alice".into()),
+                },
                 body: "Bob: the run finished".into(),
-                is_mention: true,
-                is_noisy: true,
+                highlight: true,
+                noisy: true,
                 timestamp: SystemTime::UNIX_EPOCH
                     + std::time::Duration::from_millis(1_700_000_000_000),
-                should_notify: true,
-            }
+            })
         );
 
         // Push rules that do not notify; and unknown ones (the server
         // pushed it, so they did).
         let quiet = notification(&item(event("@alice:example.org", text("hi")), Some(vec![])));
-        assert!(!quiet.should_notify && !quiet.is_mention && !quiet.is_noisy);
-        assert!(notification(&item(event("@alice:example.org", text("hi")), None)).should_notify);
+        assert_eq!(quiet, None);
+        let unknown = notification(&item(event("@alice:example.org", text("hi")), None));
+        assert!(unknown.is_some_and(|n| !n.highlight && !n.noisy));
     }
 
     #[test]
     fn our_own_message_does_not_notify() {
-        let mut own = item(
-            event("@bob:example.org", text("sent from the desktop")),
-            Some(vec![Action::Notify]),
-        );
-        own.sender_display_name = None;
-        let n = notification(&own);
-        assert!(!n.should_notify);
-        assert_eq!(n.sender_name, "bob");
-        assert_eq!(n.body, "sent from the desktop");
+        let own = |actions| {
+            notification(&item(
+                event("@bob:example.org", text("sent from the desktop")),
+                actions,
+            ))
+        };
+        assert_eq!(own(Some(vec![Action::Notify])), None);
+        // Also when the rules cannot be read.
+        assert_eq!(own(None), None);
     }
 
     #[test]
     fn bodies_name_what_is_not_text() {
-        let body_of = |json: Value| notification(&item(json, None)).body;
+        let body_of = |json: Value| notification(&item(json, None)).unwrap().body;
         let msg = |msgtype: &str, extra: Value| {
             let mut content = json!({ "msgtype": msgtype, "body": "cat.png" });
             content

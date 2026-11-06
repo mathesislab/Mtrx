@@ -63,7 +63,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
 - `Mtrx(dataDir, cacheDir, secrets)`: one per app. `restore() -> Session?`,
   `login(homeserver, user, password)`, `supportsOauth(homeserver)`,
   `startOauthLogin(homeserver) -> OAuthLogin`. Push (section 10):
-  `notification(roomId, eventId) -> NotificationContent?`, from the
+  `notification(roomId, eventId) -> Notification?`, from the
   process that receives a push, with or without the app's session.
 - `OAuthLogin`: `url()`, `finish(redirectUrl) -> Session`.
 - `Session`: `userId`, `deviceId`, `homeserver`; `startSync`, `stopSync`,
@@ -77,7 +77,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   listener)`, `enableRecovery() -> key`, `isDeviceVerified()`, `devices()`,
   `requestSelfVerification() -> Verification`,
   `subscribeVerificationRequests(listener)`. People (section 9):
-  `userProfile(userId) -> UserProfile`, `invite(roomId, userId)` (to a
+  `userProfile(userId) -> User`, `invite(roomId, userId)` (to a
   room or a space). Push (section 10): `setPusher(gatewayUrl, pushkey,
   appId, appName, deviceName, lang)`, `deletePusher(pushkey)`,
   `pushers() -> [PusherInfo]`. Presence (section 11):
@@ -117,11 +117,12 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   (section 7), `SpaceRooms { spaceId, roomIds }`, `RoomSummary`, `TimelineRow
   { id, content }` (`start`, `day`, `readMarker`, `summary(text)`, `message` with
   its grouping, `decrypting` and `actions: [MessageAction]` in the menu's order),
-  `TimelineEvent` (with `editable`, `readBy: [Reader]`), `EventContent`,
+  `TimelineEvent` (with `sender`, `editable`, `readBy: [User]`), `EventContent`,
   `Message { kind, body, edited, media, reactions, replyTo, rawBody }`,
-  `Reaction { key, count, byUs, senders: [Reader] }`, `Reader { userId,
-  name, avatarUrl }`, `ReplyQuote { eventId, state, senderId, senderName,
-  kind, body }`, `QuoteState` (`loading`, `loaded`, `failed`), `Media`,
+  `Reaction { key, count, byUs, senders: [User] }`, `User { userId, name,
+  avatarUrl, displayName }` (`displayName`: the name, else the ID's
+  localpart), `ReplyQuote { eventId, state, sender: User?, kind, body }`,
+  `QuoteState` (`loading`, `loaded`, `failed`), `Media`,
   `SendState` (`failed(error)`: retry or discard). `TimelineRow.id` is unique and stable (also when a
   local echo becomes the server's event): use it as list identity.
   `EventContent.unableToDecrypt`: an encrypted event without its key (yet);
@@ -130,7 +131,7 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `unsignedDevice`, `unknownDevice`, `historicalMessageAndBackupIsDisabled`,
   `historicalMessageAndDeviceIsUnverified`,
   `withheldForUnverifiedOrInsecureDevice`, `withheldBySender`; nil for
-  other events). `UserProfile { userId, name, avatarUrl }`.
+  other events).
   Encryption: `EncryptionState { deviceVerified, recovery, keysArriving }`,
   `RecoveryStatus` (`unknown`, `enabled`, `disabled`, `incomplete`),
   `RecoveryStep` (`checkingKey`, `importingIdentity`,
@@ -139,9 +140,8 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   `cancelled(reason)`), `VerificationEmoji { symbol, description }`,
   `DeviceInfo { id, name, verified, current }`. Push: `PusherInfo {
   pushkey, appId, appName, deviceName, lang, gatewayUrl, eventIdOnly }`,
-  `NotificationContent { roomId, eventId, roomName, roomAvatarUrl,
-  isDirect, senderId, senderName, senderAvatarUrl, body, isMention,
-  isNoisy, timestamp, shouldNotify }`. Presence: `Presence { state,
+  `Notification { roomId, eventId, roomName, roomAvatarUrl, direct,
+  sender: User, body, highlight, noisy, timestamp }`. Presence: `Presence { state,
   lastActive, currentlyActive, statusMessage, dot, line }`, `PresenceState`
   (`online`, `unavailable`, `offline`), `PresenceDot` (`online`, `idle`),
   `PresenceActivity` (`foreground`, `background`, `input`, `signOut`).
@@ -331,7 +331,7 @@ apps/ios/
   gesture (rightward) are left alone; a SwiftUI drag in the flipped list
   stopped it scrolling.
 - Header: in a direct chat with someone else (`TimelineModel.person`: a
-  `directUserId` not ours, so not the Notes to self) the title is the
+  `directUser` not ours, so not the Notes to self) the title is the
   room's picture and name, a button opening the person's info sheet
   (`TimelineModel.personInfo`, a `PersonInfoModel`; medium and large
   detents): the chat's name and picture at once, then the profile's
@@ -503,8 +503,7 @@ and tested by CI only; no Android SDK is used locally.
     `push/PushHandler.kt`, a plain class: parses the gateway's JSON
     (`room_id` and `event_id`; a push with only counts clears all message
     notifications when `unread` is 0; garbage is ignored), then
-    `Mtrx.notification` within 20 s: nil or `shouldNotify` false posts
-    nothing; `NotLoggedIn` unregisters; another error, the timeout or the
+    `Mtrx.notification` within 20 s: nil posts nothing; `NotLoggedIn` unregisters; another error, the timeout or the
     service stopping first posts "New message"; nothing for the room open
     on screen while the app is in the foreground (`Account.foregroundRoom`,
     set by the room screen). `push/MessageNotifications.kt`: a room's
@@ -512,7 +511,7 @@ and tested by CI only; no Android SDK is used locally.
     `MessagingStyle` with its last six messages of this process, the
     sender as `Person` (the avatar through `Images` while the app's session
     is open, waited for up to 3 s), the room's name as title unless
-    direct, silent unless `isNoisy`; group `messages` with a summary from
+    direct, silent unless `noisy`; group `messages` with a summary from
     two rooms on; tap: `MainActivity` with `EXTRA_ROOM_ID`, which the
     `Account` keeps as `roomRequest` until the navigation opens
     `room/{roomId}`. A room's notification goes when its screen shows,
@@ -933,7 +932,7 @@ needed: `rooms` is already ordered by recency (the SDK's: latest message or
 recency stamp, rooms with unsent messages first). Keep that order; do not
 re-sort by `lastActivity`, which is nil for some rooms (an invite, say).
 Show `lastActivity` as the time. Invites to direct chats are there
-(`membership == .invited`), and the Notes to self (`directUserId == session.userId()`).
+(`membership == .invited`), and the Notes to self (`directUser.userId == session.userId()`).
 
 **Rooms.** A horizontal pager of two pages, like the desktop's two columns.
 - Left page, the spaces: `spaces` in order (top-level spaces, most
@@ -1002,9 +1001,9 @@ that did not fail or `discard` of one already sent, are `MtrxError.Other`:
 show the reason in a short alert or snackbar.
 
 **Messages.**
-- Sender: the name (`senderName`, else the ID's localpart) in the normal
+- Sender: the name (`sender.displayName`) in the normal
   text size above the first bubble of a group (it is too small today), and
-  the avatar (`senderAvatarUrl`) beside the bubble, at its side (others'
+  the avatar (`sender.avatarUrl`) beside the bubble, at its side (others'
   messages on the left), not in a corner of the screen. Not for our own.
 - "(edited)", muted, after the text when `Message.edited`.
 - Deleted (`EventContent.redacted`): a muted, italic "Message deleted".
@@ -1031,8 +1030,8 @@ Long-press → a sheet listing `senders` (avatar and name; `name` may be nil
 until known: show the ID's localpart).
 
 **Replies.** `Message.replyTo` is the quote, drawn above the text inside
-the bubble: a bar in the accent colour, the sender (`senderName`, else
-`senderId`'s localpart) in semibold, and up to three lines of `body`
+the bubble: a bar in the accent colour, the sender (`sender.displayName`)
+in semibold, and up to three lines of `body`
 (for `kind` image, video, audio or file: "Image", "Video", "Audio" or
 "File" and the name). While `state == loading`: "Loading…" (the library
 fetches the original, also when it is far back; the quote updates by
@@ -1148,13 +1147,13 @@ an image, and the system's back gesture from the left edge work as
 before.
 
 **Direct chat header.** In a direct chat (`kind == direct` with a
-`directUserId` other than ours: not the Notes to self) the room screen's
+`directUser` other than ours: not the Notes to self) the room screen's
 title shows the room's avatar (`avatarUrl`, which is the person's when
 the chat has none; initials as in the list), 28 pt/dp and round, left of
 the name. Tapping the avatar or the name opens the person's info sheet.
 
 **The person's info sheet.** At once it shows what the room list knows
-(the chat's name and avatar); `userProfile(directUserId)` then fills in
+(the chat's name and avatar); `userProfile(directUser.userId)` then fills in
 the profile's name and avatar where set (a failure keeps the chat's, with
 no message). From the top: the avatar (80 pt/dp, round), the name, the
 user ID (secondary text, selectable) with a copy button beside it (copies
@@ -1162,7 +1161,7 @@ the ID; iOS: shows "Copied" for 2 s; Android: a "Copied" snackbar unless
 the system shows its own clipboard notice, from Android 13), then "Add to
 space…". That opens a list of the top-level spaces (`RoomListState.spaces`
 in order, each with its `RoomSummary` name and avatar); tapping one calls
-`invite(spaceId, directUserId)`, with a spinner on the row meanwhile: on
+`invite(spaceId, directUser.userId)`, with a spinner on the row meanwhile: on
 success "Invited to <space name>." and the list closes back to the sheet;
 on failure the error's reason in an alert (iOS) or snackbar (Android),
 the list stays. "Add to space…" is left out while `spaces` is empty. The
@@ -1276,11 +1275,10 @@ without syncing, fetches the event (a short sliding sync, else
 sync for up to about 6 s), applies the account's push rules, and returns:
 - nil: nothing to show (our own message, a muted room, push rules that do
   not notify, an ignored sender, a deleted event). Post nothing.
-- `NotificationContent`: post it if `shouldNotify` (true for all but
-  rare cases; check it all the same). `body` is the text, or "Image",
+- `Notification`: post it. `body` is the text, or "Image",
   "Video", "Audio", "File", "Location", "Sticker", "Call",
   "Encrypted message" (the key did not come in time), "Invited you",
-  "New message". Text is the message's plain body as sent: a mention
+  "New message", "New event". Text is the message's plain body as sent: a mention
   typed in Mtrx reads `@bob:example.org` there, where the timeline shows
   the name.
 - `MtrxError.NotLoggedIn`: signed out; unregister. `Other(reason)`
@@ -1294,15 +1292,15 @@ the main thread, with a timeout of 20 s.
 
 **Posting.**
 - Channel "Messages" (`messages`, importance high), created at start;
-  category `CATEGORY_MESSAGE`. `isNoisy` false (the push rules ask for
-  no sound) → `setSilent(true)`. `isMention` is there for showing a
+  category `CATEGORY_MESSAGE`. `noisy` false (the push rules ask for
+  no sound) → `setSilent(true)`. `highlight` is there for showing a
   mention apart; not needed now.
 - One notification per room: tag = `roomId`, id = 0, `MessagingStyle`
   with the room's messages so far (keep the last few per room in memory
   or a small file; a new process starts from the one at hand), the
-  sender as `Person` (`senderName`; an avatar only when the app's
-  `Session` is open: `session.avatar(senderAvatarUrl, 96)`), the
-  conversation title `roomName` unless `isDirect`, `timestamp` as `when`.
+  sender as `Person` (`sender.displayName`; an avatar only when the app's
+  `Session` is open: `session.avatar(sender.avatarUrl, 96)`), the
+  conversation title `roomName` unless `direct`, `timestamp` as `when`.
   Grouped (`setGroup("messages")`) with a summary notification from two
   rooms on.
 - Tap: a `PendingIntent` to `MainActivity` with the room ID, which
@@ -1383,11 +1381,11 @@ emulator reaches the host's port as `http://10.0.2.2:8008`, server name
    posts nothing; then open the room (or `markRead`) and assert the
    notification is gone.
 `FakeMtrx` (it implements `MtrxInterface`) needs `override suspend fun
-notification(roomId: String, eventId: String): NotificationContent?`
+notification(roomId: String, eventId: String): Notification?`
 before the unit tests compile again; Android CI on `mobile` fails until
 then. Unit tests (JVM) on fakes: parsing pushes (with and without
-`event_id`, garbage), what to post for each `NotificationContent` (nil,
-`shouldNotify`, silent, the open room skipped, errors as "New message"),
+`event_id`, garbage), what to post for each `Notification` (nil,
+silent, the open room skipped, errors as "New message"),
 the endpoint → `setPusher` arguments (gateway from the origin), the
 Settings states, and clearing on read.
 
@@ -1423,7 +1421,7 @@ later.
 background colour: `Presence.dot`, from the library: green for `online`,
 amber for `idle` (`unavailable`), none for `offline` or unknown. 12 pt/dp on the Chats rows' avatars (44), 9 on the
 direct chat header's (28), 20 on the person sheet's (80). In Chats only on
-direct chats (`kind == direct`, the `directUserId`'s presence; not the
+direct chats (`kind == direct`, the `directUser`'s presence; not the
 Notes to self). Accessibility label `presenceDotLabel(dot)`: "Online" or
 "Idle".
 
@@ -1441,7 +1439,7 @@ text, one line, from the library (`Presence.line` as sent, and
 It follows the presences as they arrive.
 
 **Reading others.** One `subscribePresence` per session, for the
-`directUserId`s of the direct chats in the room list (without our own),
+user IDs of the direct chats' `directUser` in the room list (without our own),
 started after the first loaded `RoomListState`, and replaced (subscribe
 anew, cancel the old handle) only when that set of IDs changes, not on
 every room list update. Cancel it when going to the background and

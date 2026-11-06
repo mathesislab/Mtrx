@@ -1492,7 +1492,7 @@ async fn notifications_for_rooms_never_opened() -> Result<()> {
         let n = wait_for("notified of a mention", notifications, |n| n.body == text).await?;
         assert_eq!(&n.room_id, room);
         assert_eq!(n.room_name, *name);
-        assert_eq!(n.sender_name, "Alice Smith");
+        assert_eq!(n.sender.display_name(), "Alice Smith");
         assert!(n.highlight);
     }
     let notifications = bob.session.notifications();
@@ -1502,7 +1502,7 @@ async fn notifications_for_rooms_never_opened() -> Result<()> {
     })
     .await?;
     assert_eq!(n.room_id, direct);
-    assert_eq!(n.sender_name, "Alice Smith");
+    assert_eq!(n.sender.display_name(), "Alice Smith");
     assert!(n.direct);
 
     // More rooms than the room list syncs first (20).
@@ -1553,7 +1553,7 @@ async fn notifications_for_rooms_never_opened() -> Result<()> {
         assert_eq!(of_room.len(), 1, "{name}: the mention, once: {of_room:?}");
         assert_eq!(&of_room[0].body, mention);
         assert_eq!(of_room[0].room_name, *name);
-        assert_eq!(of_room[0].sender_name, "Alice Smith");
+        assert_eq!(of_room[0].sender.display_name(), "Alice Smith");
     }
 
     // Not for his own messages.

@@ -5284,10 +5284,11 @@ const NOTIFICATION_WAIT: u32 = 12 * 60 * 60 * 1000;
 /// thread.
 async fn notify(notification: Notification) -> bool {
     const MAX_BODY: usize = 200;
+    let sender = notification.sender.display_name();
     let title = if notification.direct {
-        notification.sender_name.clone()
+        sender
     } else {
-        format!("{} in {}", notification.sender_name, notification.room_name)
+        format!("{sender} in {}", notification.room_name)
     };
     let body: String = notification.body.chars().take(MAX_BODY).collect();
     let shown = tokio::task::spawn_blocking(move || {

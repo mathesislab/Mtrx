@@ -1,14 +1,18 @@
 //! Notifications for new messages, as the account's push rules decide
-//! (mentions, direct chats, rooms set to all messages).
+//! (mentions, direct chats, rooms set to all messages): in process, from
+//! sync ([`Session::notifications`]), or for a push, without syncing
+//! ([`Notification::fetch`], in [`crate::push`]).
 //!
-//! Every synced timeline event is looked at, whether or not a timeline is
-//! open for its room. An event sync could not decrypt yet is decrypted by
-//! the SDK's [`NotificationClient`], which waits for its room key, before
-//! the push rules decide about its content: a mention is only seen then.
+//! In process, every synced timeline event is looked at, whether or not a
+//! timeline is open for its room. An event sync could not decrypt yet is
+//! decrypted by the SDK's [`NotificationClient`], which waits for its room
+//! key, before the push rules decide about its content: a mention is only
+//! seen then.
 
 use std::{
     collections::{HashSet, VecDeque},
     sync::{Arc, Mutex},
+    time::SystemTime,
 };
 
 use futures_util::Stream;
@@ -17,8 +21,11 @@ use matrix_sdk::{
     event_handler::EventHandlerDropGuard,
     notification_settings::{NotificationSettings, RoomNotificationMode},
     ruma::{
-        EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, UserId,
-        events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent},
+        EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedMxcUri, OwnedRoomId, UserId,
+        events::{
+            AnySyncMessageLikeEvent, AnySyncTimelineEvent, SyncMessageLikeEvent,
+            room::message::MessageType,
+        },
         push::Action,
         serde::Raw,
     },
@@ -33,19 +40,27 @@ use tokio::sync::{OnceCell, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tracing::warn;
 
-use crate::Session;
+use crate::{Session, User};
 
 /// A message worth telling the user about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notification {
     pub room_id: OwnedRoomId,
+    pub event_id: OwnedEventId,
     pub room_name: String,
-    pub sender_name: String,
-    /// Plain text; "Encrypted message" if it cannot be decrypted yet.
+    pub room_avatar: Option<OwnedMxcUri>,
+    /// A direct chat.
+    pub direct: bool,
+    pub sender: User,
+    /// A message's text, or what it is: "Image", "Video", "Audio", "File",
+    /// "Location", "Sticker", "Call", "Encrypted message" (no key yet),
+    /// "Invited you", "New message", "New event".
     pub body: String,
     /// Mentions us or matches a keyword.
     pub highlight: bool,
-    pub direct: bool,
+    /// The push rules ask for a sound.
+    pub noisy: bool,
+    pub timestamp: SystemTime,
 }
 
 /// How many notified events are remembered, so that one synced again (after
@@ -217,19 +232,27 @@ fn triage(
     }
 }
 
-fn should_notify(actions: &[Action]) -> bool {
+pub(crate) fn should_notify(actions: &[Action]) -> bool {
     actions.iter().any(Action::should_notify)
 }
 
+/// The notification of a message; none for other events.
 async fn describe(
     room: &Room,
     event: &AnySyncTimelineEvent,
     actions: &[Action],
 ) -> Option<Notification> {
-    let body = body(event)?;
-    let sender_name = match room.get_member_no_sync(event.sender()).await {
-        Ok(Some(member)) => member.name().to_owned(),
-        _ => event.sender().localpart().to_owned(),
+    if !is_message(event) {
+        return None;
+    }
+    let id = event.sender().to_owned();
+    let sender = match room.get_member_no_sync(&id).await {
+        Ok(Some(member)) => User {
+            name: member.display_name().map(ToOwned::to_owned),
+            avatar: member.avatar_url().map(ToOwned::to_owned),
+            id,
+        },
+        _ => User::from(id),
     };
     let room_name = match room.display_name().await {
         Ok(name) => name.to_string(),
@@ -237,23 +260,49 @@ async fn describe(
     };
     Some(Notification {
         room_id: room.room_id().to_owned(),
+        event_id: event.event_id().to_owned(),
         room_name,
-        sender_name,
-        body,
-        highlight: actions.iter().any(Action::is_highlight),
+        room_avatar: room.avatar_url(),
         direct: room.direct_targets_length() > 0,
+        sender,
+        body: body(event),
+        highlight: actions.iter().any(Action::is_highlight),
+        noisy: actions.iter().any(|action| action.sound().is_some()),
+        timestamp: crate::system_time(event.origin_server_ts()),
     })
 }
 
-/// The text to show for a message; none for other events.
-fn body(event: &AnySyncTimelineEvent) -> Option<String> {
+/// What a notification says of an event: a message's text, or what it is.
+pub(crate) fn body(event: &AnySyncTimelineEvent) -> String {
+    let AnySyncTimelineEvent::MessageLike(event) = event else {
+        return "New event".into();
+    };
     match event {
-        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
-            SyncMessageLikeEvent::Original(message),
-        )) => Some(message.content.body().to_owned()),
-        _ if is_encrypted(event) => Some("Encrypted message".into()),
-        _ => None,
+        AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(message)) => {
+            match &message.content.msgtype {
+                MessageType::Image(_) => "Image".into(),
+                MessageType::Video(_) => "Video".into(),
+                MessageType::Audio(_) => "Audio".into(),
+                MessageType::File(_) => "File".into(),
+                MessageType::Location(_) => "Location".into(),
+                other => other.body().to_owned(),
+            }
+        }
+        AnySyncMessageLikeEvent::RoomEncrypted(_) => "Encrypted message".into(),
+        AnySyncMessageLikeEvent::Sticker(_) => "Sticker".into(),
+        AnySyncMessageLikeEvent::CallInvite(_) => "Call".into(),
+        _ => "New message".into(),
     }
+}
+
+/// A message, or an event sync could not decrypt (which may be one).
+fn is_message(event: &AnySyncTimelineEvent) -> bool {
+    matches!(
+        event,
+        AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+            SyncMessageLikeEvent::Original(_)
+        ))
+    ) || is_encrypted(event)
 }
 
 fn is_encrypted(event: &AnySyncTimelineEvent) -> bool {
@@ -393,15 +442,22 @@ mod tests {
     }
 
     #[test]
-    fn bodies_of_messages_and_encrypted_ones() {
-        assert_eq!(
-            body(&text("@alice:example.org", 1, "hi")).as_deref(),
-            Some("hi")
+    fn messages_and_encrypted_ones_notify_in_process() {
+        let message = text("@alice:example.org", 1, "hi");
+        assert!(is_message(&message));
+        assert_eq!(body(&message), "hi");
+        let undecrypted = encrypted("@alice:example.org", 1);
+        assert!(is_message(&undecrypted));
+        assert_eq!(body(&undecrypted), "Encrypted message");
+        let image = event(
+            "m.room.message",
+            "@alice:example.org",
+            1,
+            serde_json::json!({
+                "msgtype": "m.image", "body": "cat.png", "url": "mxc://example.org/cat"
+            }),
         );
-        assert_eq!(
-            body(&encrypted("@alice:example.org", 1)).as_deref(),
-            Some("Encrypted message")
-        );
+        assert_eq!(body(&image), "Image");
         let reaction = event(
             "m.reaction",
             "@alice:example.org",
@@ -410,7 +466,7 @@ mod tests {
                 "rel_type": "m.annotation", "event_id": "$x", "key": "👍"
             }}),
         );
-        assert_eq!(body(&reaction), None);
+        assert!(!is_message(&reaction));
     }
 
     #[test]

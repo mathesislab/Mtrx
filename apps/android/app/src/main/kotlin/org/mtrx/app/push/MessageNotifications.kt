@@ -1,6 +1,5 @@
 package org.mtrx.app.push
 
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -15,7 +14,8 @@ import androidx.core.graphics.drawable.IconCompat
 import kotlinx.coroutines.withTimeoutOrNull
 import org.mtrx.app.MainActivity
 import org.mtrx.app.R
-import uniffi.mtrx.NotificationContent
+import uniffi.mtrx.Notification
+import uniffi.mtrx.User
 
 /** How a room's notification shows a message. */
 data class NotificationLook(
@@ -27,9 +27,9 @@ data class NotificationLook(
     val at: Long,
 )
 
-fun lookOf(content: NotificationContent): NotificationLook = NotificationLook(
-    title = if (content.isDirect) null else content.roomName,
-    silent = !content.isNoisy,
+fun lookOf(content: Notification): NotificationLook = NotificationLook(
+    title = if (content.direct) null else content.roomName,
+    silent = !content.noisy,
     at = content.timestamp.toEpochMilli(),
 )
 
@@ -58,7 +58,7 @@ class MessageNotifications(
     // The messages shown per room, newest last; guarded by itself.
     private val shown = mutableMapOf<String, List<Shown>>()
 
-    private data class Shown(val senderId: String, val senderName: String, val body: String, val at: Long, val icon: Bitmap?)
+    private data class Shown(val sender: User, val body: String, val at: Long, val icon: Bitmap?)
 
     /** Create the channel; at start. */
     fun createChannel() {
@@ -66,10 +66,10 @@ class MessageNotifications(
         manager.createNotificationChannel(channel)
     }
 
-    override suspend fun post(content: NotificationContent) {
+    override suspend fun post(content: Notification) {
         if (!notificationsAllowed(context)) return
-        val icon = content.senderAvatarUrl?.let { withTimeoutOrNull(AVATAR_WAIT_MS) { avatar(it) } }
-        val message = Shown(content.senderId, content.senderName, content.body, content.timestamp.toEpochMilli(), icon)
+        val icon = content.sender.avatarUrl?.let { withTimeoutOrNull(AVATAR_WAIT_MS) { avatar(it) } }
+        val message = Shown(content.sender, content.body, content.timestamp.toEpochMilli(), icon)
         val messages = synchronized(shown) {
             val list = (shown[content.roomId].orEmpty() + message).takeLast(KEPT)
             shown[content.roomId] = list
@@ -82,8 +82,8 @@ class MessageNotifications(
         look.title?.let { style.setConversationTitle(it) }
         for (each in messages) {
             val person = Person.Builder()
-                .setKey(each.senderId)
-                .setName(each.senderName)
+                .setKey(each.sender.userId)
+                .setName(each.sender.displayName)
                 .apply { each.icon?.let { setIcon(IconCompat.createWithBitmap(it)) } }
                 .build()
             style.addMessage(each.body, each.at, person)
@@ -143,7 +143,7 @@ class MessageNotifications(
 
     // The permission is checked in notificationsAllowed().
     @Suppress("MissingPermission")
-    private fun show(roomId: String, notification: Notification) {
+    private fun show(roomId: String, notification: android.app.Notification) {
         try {
             manager.notify(roomId, ROOM_ID, notification)
         } catch (e: SecurityException) {
