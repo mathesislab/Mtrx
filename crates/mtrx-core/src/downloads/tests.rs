@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    io::{Read as _, Write as _},
-    net::TcpListener,
-};
+use std::{fs, net::TcpListener};
 
 use matrix_sdk::{media::store::IgnoreMediaRetentionPolicy, ruma::owned_room_id};
 use matrix_sdk_crypto::AttachmentEncryptor;
