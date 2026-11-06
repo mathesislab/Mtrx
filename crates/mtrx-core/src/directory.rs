@@ -217,11 +217,7 @@ fn display_name(name: Option<&str>, alias: Option<&OwnedRoomAliasId>, id: &RoomI
 impl Session {
     /// Our role in a joined room, from its power levels.
     async fn own_role(&self, room: &RoomId) -> Option<Role> {
-        let room = self.client.get_room(room)?;
-        if room.state() != RoomState::Joined {
-            return None;
-        }
-        let levels = crate::permissions::power_levels(&room).await.ok()?;
+        let levels = crate::permissions::levels(&self.client.get_room(room)?).await?;
         Some(crate::members::role(levels.for_user(&self.user_id())))
     }
 

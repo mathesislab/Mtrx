@@ -585,6 +585,7 @@ impl TryFrom<&RoomSummary> for core::RoomSummary {
             alias: room.alias.clone(),
             joined_members: room.joined_members,
             pinned,
+            rights: room.rights.into(),
         })
     }
 }
@@ -634,6 +635,7 @@ mod tests {
             join_rule: crate::JoinRule::Invite,
             join_rule_fact: String::new(),
             pinned: Vec::new(),
+            rights: core::Rights::default().into(),
         }
     }
 

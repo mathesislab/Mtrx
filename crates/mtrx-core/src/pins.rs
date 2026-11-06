@@ -4,13 +4,10 @@
 
 use std::time::Instant;
 
-use matrix_sdk::{
-    Room,
-    ruma::{
-        EventId, OwnedEventId, RoomId,
-        events::{AnySyncTimelineEvent, StateEventType},
-        serde::Raw,
-    },
+use matrix_sdk::ruma::{
+    EventId, OwnedEventId, RoomId,
+    events::{AnySyncTimelineEvent, StateEventType},
+    serde::Raw,
 };
 use matrix_sdk_ui::timeline::{RoomExt, TimelineFocus};
 use serde::Deserialize;
@@ -84,17 +81,6 @@ impl RoomHandle {
         result?;
         Ok(())
     }
-
-    /// Whether we may pin and unpin messages in the room.
-    pub async fn can_pin(&self) -> Result<bool> {
-        can_pin(&self.room).await
-    }
-}
-
-/// Whether we may pin and unpin messages in `room`.
-pub(crate) async fn can_pin(room: &Room) -> Result<bool> {
-    let levels = room.power_levels().await.map_err(matrix_sdk::Error::from)?;
-    Ok(levels.user_can_send_state(room.own_user_id(), StateEventType::RoomPinnedEvents))
 }
 
 /// What an `m.room.pinned_events` event in the timeline changed, from its

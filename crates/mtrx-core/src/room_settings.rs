@@ -13,7 +13,7 @@ use matrix_sdk::{
             room::Visibility,
         },
         events::{
-            EmptyStateKey, StateEventType,
+            EmptyStateKey,
             room::{
                 canonical_alias::RoomCanonicalAliasEventContent,
                 history_visibility::{HistoryVisibility, RoomHistoryVisibilityEventContent},
@@ -28,9 +28,9 @@ use matrix_sdk::{
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    Error, JoinRule, Permissions, Result, RoomHandle, Session, User,
+    Error, JoinRule, Permissions, Result, Rights, RoomHandle, Session, User,
     media::guess_mimetype,
-    permissions::{everyone_can_edit, power_levels},
+    permissions::{known_levels, rights},
     synced,
 };
 
@@ -117,29 +117,20 @@ pub struct Banned {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomSettings {
-    pub can_rename: bool,
-    pub can_change_topic: bool,
-    pub can_change_picture: bool,
-    pub can_invite: bool,
+    /// What we may change; the same as the room list's.
+    pub rights: Rights,
     pub notify: NotifyMode,
     pub join_rule: JoinRule,
     /// The rules to offer, in order: Space members only for a room in a
     /// joined space, or already so.
     pub join_rule_choices: Vec<JoinRule>,
-    pub can_change_access: bool,
-    /// For a space: may list rooms in it.
-    pub can_add_rooms: bool,
     /// The address people join by.
     pub address: Option<OwnedRoomAliasId>,
-    pub can_change_address: bool,
     /// Listed in our server's room directory; `None` if it wouldn't say.
     pub listed: Option<bool>,
     pub history: History,
-    pub can_change_history: bool,
     pub permissions: Permissions,
-    pub can_change_permissions: bool,
     pub encrypted: bool,
-    pub can_encrypt: bool,
     /// The room version, as "12".
     pub version: Option<String>,
     /// The joined spaces listing the room.
@@ -147,22 +138,18 @@ pub struct RoomSettings {
     /// Joined spaces not listing it whose rooms we may change.
     pub can_add_to: Vec<OwnedRoomId>,
     pub banned: Vec<Banned>,
-    pub can_unban: bool,
 }
 
 impl Session {
     /// The joined spaces listing the room, and those we may add it to.
     async fn space_links(&self, room_id: &RoomId) -> (Vec<SpaceLink>, Vec<OwnedRoomId>) {
-        let own = self.user_id();
         let graph = self.space_graph();
         let (mut links, mut others) = (Vec::new(), Vec::new());
         for space in self.client.joined_rooms() {
             if !space.is_space() || space.room_id() == room_id {
                 continue;
             }
-            let can_change = power_levels(&space)
-                .await
-                .is_ok_and(|levels| levels.user_can_send_state(&own, StateEventType::SpaceChild));
+            let can_change = rights(&space).await.add_rooms;
             match graph.child(space.room_id(), room_id) {
                 Some(link) => links.push(SpaceLink {
                     space: space.room_id().to_owned(),
@@ -200,9 +187,7 @@ impl Session {
 impl RoomHandle {
     pub async fn settings(&self) -> Result<RoomSettings> {
         let (session, room) = (&self.session, &self.room);
-        let levels = power_levels(room).await?;
-        let own = session.user_id();
-        let can = |state| levels.user_can_send_state(&own, state);
+        let levels = known_levels(room).await?;
         let listed = session
             .client
             .send(get_room_visibility::v3::Request::new(self.id().to_owned()))
@@ -226,33 +211,19 @@ impl RoomHandle {
         let join_rule = JoinRule::from(room.join_rule().as_ref());
         let in_space = !session.space_graph().parents(self.id()).is_empty();
         Ok(RoomSettings {
-            can_rename: can(StateEventType::RoomName),
-            can_change_topic: can(StateEventType::RoomTopic),
-            can_change_picture: can(StateEventType::RoomAvatar),
-            can_invite: levels.user_can_invite(&own),
+            rights: Rights::of(&levels, &session.user_id()),
             join_rule,
             join_rule_choices: JoinRule::choices(join_rule, in_space),
-            can_change_access: can(StateEventType::RoomJoinRules),
-            can_add_rooms: can(StateEventType::SpaceChild),
             notify: session.notify_mode(room).await.into(),
             address: room.canonical_alias(),
-            can_change_address: can(StateEventType::RoomCanonicalAlias),
             listed,
             history: room.history_visibility_or_default().into(),
-            can_change_history: can(StateEventType::RoomHistoryVisibility),
-            permissions: if everyone_can_edit(&levels) {
-                Permissions::Everyone
-            } else {
-                Permissions::Moderators
-            },
-            can_change_permissions: can(StateEventType::RoomPowerLevels),
+            permissions: Permissions::of(&levels),
             encrypted: room.encryption_state().is_encrypted(),
-            can_encrypt: can(StateEventType::RoomEncryption),
             version: room.version().map(|v| v.to_string()),
             spaces,
             can_add_to,
             banned,
-            can_unban: levels.user_can_ban(&own),
         })
     }
 

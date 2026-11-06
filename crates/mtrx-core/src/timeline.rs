@@ -43,7 +43,7 @@ use crate::{
     AbortOnDrop, Error, Live, PinsChange, Result, Session, User,
     echo::Echoes,
     media::{self, MediaRef},
-    pins, room_links,
+    permissions, pins, room_links,
     rows::{self, Row, RowContext},
     system_time,
 };
@@ -1026,7 +1026,7 @@ async fn row_context(
     let context = RowContext {
         direct: room.is_direct().await.unwrap_or(false),
         keys_arriving,
-        can_pin: pins::can_pin(room).await.unwrap_or(false),
+        can_pin: permissions::rights(room).await.pin,
         pinned,
     };
     (context, timeout)

@@ -21,8 +21,8 @@ use futures_util::{Stream, StreamExt};
 use mtrx_core::{
     Activity, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent, History,
     JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom, NotifyMode,
-    Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Role, RoomKind, SecretStore,
-    Session, TimelineEntry, VerificationState,
+    Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights, Role, RoomKind,
+    SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -82,6 +82,21 @@ async fn wait_for<T>(
         bail!("stream ended: {what}")
     })
     .await?
+}
+
+/// Wait until the room list gives `room` rights that `want` accepts.
+async fn wait_for_rights(
+    what: &str,
+    session: &Session,
+    room: &mtrx_core::OwnedRoomId,
+    want: impl Fn(&Rights) -> bool,
+) -> Result<()> {
+    let list = session.room_list().await?;
+    wait_for(what, list.updates(), |s| {
+        (s.rooms.iter()).any(|r| &r.id == room && want(&r.rights))
+    })
+    .await?;
+    Ok(())
 }
 
 fn has_message(entries: &[TimelineEntry], body: &str) -> bool {
@@ -549,7 +564,7 @@ async fn pinned_messages() -> Result<()> {
         timeline.send_markdown("The plan", None).await?.sent(),
     )
     .await??;
-    assert!(s.room(&room)?.can_pin().await?);
+    wait_for_rights("may pin", s, &room, |r| r.pin).await?;
     s.room(&room)?.set_pinned(&plan, true).await?;
     wait_for(
         "pinned in the list",
@@ -614,7 +629,11 @@ async fn space_call_services() -> Result<()> {
     })
     .await?;
 
-    assert!(s.room(&room)?.can_change_topic().await?);
+    wait_for_rights("may change the topic", s, &room, |r| r.change_topic).await?;
+    wait_for_rights("may set the call service", s, &space, |r| {
+        r.set_call_service
+    })
+    .await?;
 
     let service = CallService::jitsi("Lab Jitsi", "https://video.lab.example")?;
     s.room(&space)?
@@ -641,17 +660,10 @@ async fn space_call_services() -> Result<()> {
     })
     .await?;
     // Power levels arrive with the joined room's state, after the join.
-    let joined = bob.session.room(&room)?;
-    let can_set = timeout("power levels synced", async {
-        loop {
-            match joined.can_change_topic().await {
-                Ok(can_set) => return can_set,
-                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-            }
-        }
+    wait_for_rights("bob may send", &bob.session, &room, |r| {
+        r.send && !r.change_topic
     })
     .await?;
-    assert!(!can_set);
     Ok(())
 }
 
@@ -704,8 +716,10 @@ async fn everyone_can_edit() -> Result<()> {
         bob.session.room(&open)?.permissions().await?,
         Permissions::Everyone
     );
-    assert!(bob.session.room(&open)?.can_change_topic().await?);
-    assert!(!bob.session.room(&open)?.can_change_permissions().await?);
+    wait_for_rights("bob edits the open room", &bob.session, &open, |r| {
+        r.change_topic && r.invite && !r.change_levels
+    })
+    .await?;
     bob.session
         .room(&open)?
         .invite(&carol.session.user_id())
@@ -724,7 +738,10 @@ async fn everyone_can_edit() -> Result<()> {
         bob.session.room(&room)?.permissions().await?,
         Permissions::Moderators
     );
-    assert!(!bob.session.room(&room)?.can_change_topic().await?);
+    wait_for_rights("bob only sends", &bob.session, &room, |r| {
+        r.send && !r.change_topic
+    })
+    .await?;
     wait_for("space synced", s.room_list().await?.updates(), |state| {
         state.rooms.iter().any(|r| r.id == room) && state.graph.parents(&room).contains(&space)
     })
@@ -745,8 +762,10 @@ async fn everyone_can_edit() -> Result<()> {
         }
     })
     .await?;
-    assert!(bob.session.room(&room)?.can_change_topic().await?);
-    assert!(!bob.session.room(&room)?.can_change_permissions().await?);
+    wait_for_rights("bob edits the opened room", &bob.session, &room, |r| {
+        r.change_topic && !r.change_levels
+    })
+    .await?;
     Ok(())
 }
 
@@ -1973,8 +1992,10 @@ async fn room_settings() -> Result<()> {
     })
     .await?;
     let settings = s.room(&room)?.settings().await?;
-    assert!(settings.can_rename && settings.can_change_topic && settings.can_change_picture);
-    assert!(settings.can_invite);
+    let rights = settings.rights;
+    assert!(rights.rename && rights.change_topic && rights.change_picture && rights.invite);
+    // The room list's are the same.
+    wait_for_rights("the list's rights", s, &room, |r| *r == rights).await?;
     assert_eq!(settings.notify, NotifyMode::All);
 
     // Each change returns once sync confirms it: well before its 10 s limit.
@@ -1987,7 +2008,7 @@ async fn room_settings() -> Result<()> {
 
     // Who can join: anyone, the space's members, invited people. Space
     // members only for a room in a space.
-    assert!(settings.can_change_access);
+    assert!(settings.rights.change_join_rule);
     assert_eq!(settings.join_rule, JoinRule::Invite);
     assert_eq!(
         settings.join_rule_choices,
