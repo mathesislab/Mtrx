@@ -7,24 +7,26 @@ import SwiftUI
 struct SpaceOverviewView: View {
     let space: RoomSummary
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            SpaceOverviewPage(
-                space: space,
-                overview: SpaceOverviewModel(session: session.session, spaceId: space.id),
-                info: session.info(for: space), close: { dismiss() }
-            )
-            .navigationDestination(for: RoomRef.self) { ref in
-                if let subspace = session.room(ref.id) {
-                    SpaceOverviewPage(
-                        space: subspace,
-                        overview: SpaceOverviewModel(session: session.session, spaceId: subspace.id),
-                        info: session.info(for: subspace), close: { dismiss() })
+            page(space)
+                .navigationDestination(for: RoomRef.self) { ref in
+                    if let subspace = rooms.room(ref.id) {
+                        page(subspace)
+                    }
                 }
-            }
         }
+    }
+
+    private func page(_ space: RoomSummary) -> SpaceOverviewPage {
+        SpaceOverviewPage(
+            space: space,
+            overview: SpaceOverviewModel(session: session.session, spaceId: space.id),
+            info: RoomInfoModel(session: session.session, roomId: space.id, userId: session.userId),
+            close: { dismiss() })
     }
 }
 
@@ -182,7 +184,8 @@ private struct SpaceRoomsSection: View {
     let space: RoomSummary
     @ObservedObject var model: SpaceOverviewModel
     let close: () -> Void
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
 
     var body: some View {
         Section {
@@ -210,7 +213,7 @@ private struct SpaceRoomsSection: View {
             }
             ForEach(model.shown, id: \.id) { room in
                 DirectoryRoomRow(
-                    room: room, button: session.button(for: room), busy: model.isBusy(room), linksSubspaces: true
+                    room: room, button: rooms.button(for: room), busy: model.isBusy(room), linksSubspaces: true
                 ) {
                     act(on: room)
                 }
@@ -222,26 +225,26 @@ private struct SpaceRoomsSection: View {
 
     private func act(on room: DirectoryRoom) {
         guard !model.isBusy(room) else { return }
-        switch session.button(for: room).action {
+        switch rooms.button(for: room).action {
         case .join, .askToJoin:
             Task { await model.join(room) }
         case .open:
             open(room)
         case .invited:
             close()
-            session.invite = RoomRef(id: room.id)
+            home.invite = RoomRef(id: room.id)
         case .asked, .inviteOnly:
             break
         }
     }
 
     private func open(_ room: DirectoryRoom) {
-        if room.isSpace && session.lists.space(key: .space(id: room.id)) == nil {
+        if room.isSpace && rooms.lists.space(key: .space(id: room.id)) == nil {
             // A subspace: its own overview, over this one.
             return
         }
         close()
-        session.open(room.id, kind: room.isSpace ? .space : .room)
+        home.open(room.id, kind: room.isSpace ? .space : .room)
     }
 }
 
@@ -350,11 +353,11 @@ private struct OpensSubspace: ViewModifier {
     let room: DirectoryRoom
     let action: JoinAction
     let enabled: Bool
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
 
     func body(content: Content) -> some View {
-        if enabled && room.isSpace && action == .open && session.lists.space(key: .space(id: room.id)) == nil
-            && session.room(room.id) != nil
+        if enabled && room.isSpace && action == .open && rooms.lists.space(key: .space(id: room.id)) == nil
+            && rooms.room(room.id) != nil
         {
             NavigationLink(value: RoomRef(id: room.id)) {
                 content
