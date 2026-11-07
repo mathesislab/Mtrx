@@ -272,6 +272,7 @@ pub struct Download {
 **Structure**
 - New `app/downloads.rs`: `enum Message {Toggle, Open(Id), Show(Id), Cancel(Id), Retry(Id), Remove(Id), Clear, GoTo(..)}`, `fn update(&Session, Message) -> Task`, and `fn view(&[Download], open: bool) -> Element`.
 - The list comes from one subscription to `session.downloads().updates()`, like `uploads` (`app.rs:4304-4312`).
+- Step 4 (`docs/app-structure.md`, item 2): the open list is the window's popup, `Popup::Downloads { menu }`, with a download's menu in it. One popup at a time, so another one replaces it. Esc closes the download's menu, then the list.
 - `app/media.rs` uses core's `human_size`.
 
 ## iOS (recommended, Q6)

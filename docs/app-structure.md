@@ -206,7 +206,7 @@ pub fn view<'a, M: Clone + 'a>(entries: Vec<Entry<'a, M>>, width: Width) -> Elem
 - A message's entries are made only while its menu is open. `message_menu::offers` tells whether there is one, without making them.
 - The new popups open with `info::Message::{OpenPictureMenu, OpenSpacesMenu}` and `Message::OpenViewerMenu`. `info::Shown` carries the window's `popup`.
 - Esc closes the popup first, then the modal, the card and so on. Opening a modal (settings, image, PDF) now closes the popup, as a dialog already did, so an open popup is always on top. This is how Esc reaches the viewer's menu before the viewer.
-- Downloads keep their own `open` and `menu` state (`downloads.rs`). Only their menu moved to `menu::view`.
+- The downloads list is a popup too: `Popup::Downloads { menu: Option<DownloadId> }`, opened by `downloads::Message::OpenList`, with `downloads::Message::Menu` for a download's menu in it. `downloads.rs` keeps only the list and its errors. Esc closes the innermost first: the download's menu, then the list (`Popup::escape`). Another popup replaces the list, and it closes once the list is empty.
 
 **Deleted**
 - `context_menu::menu`, `sidebar::menu`, `add_menu_view`'s column, `role_item`, `unsent_menu`'s row, `calls::menu_view`'s frame.

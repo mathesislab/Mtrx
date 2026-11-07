@@ -19,11 +19,11 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, Draft, DraftKeeper, Live, Media, MediaRef, Membership,
-    Notification, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
-    Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists, RoomOrAliasId,
-    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, SpaceKey, Topic,
-    Url,
+    CallService, Connection, Contact, DownloadId, Draft, DraftKeeper, Live, Media, MediaRef,
+    Membership, Notification, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
+    OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists,
+    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
+    SpaceKey, Topic, Url,
 };
 use mtrx_google::Google;
 
@@ -473,6 +473,8 @@ pub enum Popup {
     CardAddToSpace,
     /// The image's in the viewer.
     Viewer,
+    /// The downloads list, and a download's menu in it.
+    Downloads { menu: Option<DownloadId> },
 }
 
 impl Popup {
@@ -488,7 +490,8 @@ impl Popup {
             | Popup::ShowMenu
             | Popup::CardPicture
             | Popup::CardAddToSpace
-            | Popup::Viewer => false,
+            | Popup::Viewer
+            | Popup::Downloads { .. } => false,
             _ => true,
         }
     }
@@ -504,6 +507,15 @@ impl Popup {
     /// It belongs to `field`.
     fn in_field(&self, field: Field) -> bool {
         matches!(self, Popup::FieldMenu(f, _) | Popup::FieldEmoji(f, _) if *f == field)
+    }
+
+    /// Esc closes what is open inside it, if anything: a download's menu,
+    /// leaving the list. False if nothing was.
+    fn escape(&mut self) -> bool {
+        match self {
+            Popup::Downloads { menu } => menu.take().is_some(),
+            _ => false,
+        }
     }
 
     /// The member whose menu it is.
@@ -1740,7 +1752,11 @@ impl App {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                if main.popup.take().is_some() {
+                // The innermost first.
+                if let Some(popup) = &mut main.popup {
+                    if !popup.escape() {
+                        main.popup = None;
+                    }
                     return Task::none();
                 }
                 match &mut main.modal {
@@ -2173,7 +2189,8 @@ impl App {
                 };
                 match message {
                     downloads::Message::GoTo(id, event) => {
-                        main.downloads.close();
+                        main.popup
+                            .take_if(|popup| matches!(popup, Popup::Downloads { .. }));
                         if main.pane.open(&id).is_some() {
                             return Task::done(room::Message::GoTo(event).to(&id));
                         }
@@ -2187,6 +2204,16 @@ impl App {
                         main.report(problem, None);
                         Task::none()
                     }
+                    downloads::Message::OpenList => {
+                        main.popup = Some(Popup::Downloads { menu: None });
+                        Task::none()
+                    }
+                    downloads::Message::Menu(menu) => {
+                        if let Some(Popup::Downloads { menu: open }) = &mut main.popup {
+                            *open = menu;
+                        }
+                        Task::none()
+                    }
                     message => {
                         // Chosen in a message's menu, or the viewer's.
                         if let downloads::Message::SaveAs(_) = &message {
@@ -2194,9 +2221,19 @@ impl App {
                                 matches!(popup, Popup::MessageMenu { .. } | Popup::Viewer)
                             });
                         }
-                        main.downloads
-                            .update(&main.session, message)
-                            .map(Message::Downloads)
+                        // A row's choice closes its menu.
+                        if Downloads::chosen(&message)
+                            && let Some(Popup::Downloads { menu }) = &mut main.popup
+                        {
+                            *menu = None;
+                        }
+                        let updated = matches!(message, downloads::Message::Updated(_));
+                        let task = main.downloads.update(&main.session, message);
+                        if updated && let Some(Popup::Downloads { menu }) = &main.popup {
+                            main.popup =
+                                (main.downloads.kept(*menu)).map(|menu| Popup::Downloads { menu });
+                        }
+                        task.map(Message::Downloads)
                     }
                 }
             }
@@ -4181,9 +4218,10 @@ impl App {
                 _ => None,
             },
             self.updater.unseen(&self.settings.updates),
-            main.downloads
-                .view()
-                .map(|view| view.map(Message::Downloads)),
+            match &main.popup {
+                Some(Popup::Downloads { menu }) => main.downloads.view(true, *menu),
+                _ => main.downloads.view(false, None),
+            },
         );
         let room_list = sidebar::room_list(sidebar::RoomListView {
             // As wide as a room's below its name.

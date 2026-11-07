@@ -914,6 +914,44 @@ async fn esc_closes_a_cards_menu_not_the_card() {
     assert!(ui.main().modal.is_none());
 }
 
+/// The downloads list is the window's popup: Esc closes a download's menu
+/// in it, then the list; another popup replaces it, and it goes once the
+/// list is empty.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn esc_closes_a_downloads_menu_then_the_list() {
+    let (mut ui, _dir) = room_with("downloadmenu", &["Calving"]).await;
+    let esc = |ui: &mut Ui| ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    let listed = vec![mtrx_core::Download::example(1, "report.pdf")];
+    ui.update(Message::Downloads(downloads::Message::Updated(listed)));
+    ui.update(Message::Downloads(downloads::Message::OpenList));
+    ui.update(Message::Downloads(downloads::Message::Menu(Some(1))));
+    assert!(matches!(
+        ui.main().popup,
+        Some(Popup::Downloads { menu: Some(1) })
+    ));
+    esc(&mut ui);
+    assert!(matches!(
+        ui.main().popup,
+        Some(Popup::Downloads { menu: None })
+    ));
+    esc(&mut ui);
+    assert!(ui.main().popup.is_none());
+
+    ui.update(Message::Downloads(downloads::Message::OpenList));
+    let room = ui.room().id.clone();
+    let row = row_of(ui.room(), "Calving");
+    ui.update(actions::act(
+        &room,
+        actions::Message::OpenMenu(row, MenuAt::Toolbar),
+    ));
+    assert!(matches!(ui.main().popup, Some(Popup::MessageMenu { .. })));
+
+    ui.update(Message::Downloads(downloads::Message::OpenList));
+    ui.update(Message::Downloads(downloads::Message::Updated(Vec::new())));
+    assert!(ui.main().popup.is_none());
+}
+
 /// One popup at a time in the whole window: one opened replaces another,
 /// Esc closes it before the card; the open room's closes as its timeline
 /// is reloaded or another pane shows, the room list's stays.
