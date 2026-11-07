@@ -310,3 +310,37 @@ Size: M–L. About 900 lines of core (a third writers), 400 desktop.
 ## Decisions (2026-11-07)
 
 The user took all recommendations: 1a, 2a, 3a, 4a, 5a, 6a, 7a, 8a, 9a. No new dependencies.
+
+## As built
+
+Differences from the design above:
+
+**Core**
+- `fetch.rs`: `fetch_file(client, Fetch { source, size, target, ciphertext, unique, limit }, on_progress)`. The caller gives the ciphertext's place in the cache (downloads by ID, exports in `<cache>/exporting/`). `limit` stops a file that turns out larger than the export's limit when the sender gave no size.
+- `Export` also has `rooms` (the rooms to export, for "Cancelled after 3 of 7 rooms") and `index` (its index file). `ExportSummary::describe` gives the summary line. `Error::Export` says why one can't start (no Downloads folder).
+- `remove_export` on a running export stops it first, writing what it has. `SaveTo::Cache` puts exports in `<cache>/exports/`.
+- Rooms we were never in are named from the space's listing (`Listings::name`), else their ID.
+- **Folders:** a room's folder is its name made safe (slashes as `_`), unique whatever the letters' case and apart from the index's files: `Lab chat/`, not `lab-chat/`. The export's folder drops dots from the title, so `unique_path` adds " (1)" at its end.
+- **Index:** written at the start, after each room and at the end, each time whole (to a part file, then renamed). One left by a quit says "Not finished". Each room's line says how far it got: "120 messages, 3 files", "Not joined", "Stopped after …", "Failed after …: why", "Not exported".
+- **A room that can't be read to its start** keeps what was read (the newest part), ending "Not all of this room could be exported: why", instead of nothing.
+- **Ranges:** `Last(n)` counts messages (deleted and undecryptable ones too), not the room's changes, which come along. JSON also keeps the edits and reactions among them.
+- **Edits** apply only from the original's sender; the newest wins. Reactions count each person's key once, most used first.
+- **HTML:** the policy is `default-src 'none'; img-src 'self' file:; media-src 'self' file:; style-src 'self' file:; base-uri 'none'; form-action 'none'`, with `<meta name="referrer" content="no-referrer">`: `'self'` doesn't match a `file://` page in every browser. ruma-html already drops some schemes as it parses; `Document::to_page_html` keeps `http`, `https` and `mailto` links (`matrix.to` is `https`). Pages also have day headings, a sender's messages within 5 minutes grouped under one name, "In a thread" marks, and spoilers in `spoiler` spans.
+- **Plain text:** a reply's quote is a line after the text, "(in reply to Bob: …)"; reactions "[👍 2 · 🎉 1]"; continued lines indented by 4.
+- **JSON:** each room's file ends with `files` (event ID → path) and `status` (`complete`, `stopped`, `failed` with `error`). `index.json` has the options, state, summary and the tree with each room's file and status.
+- No FFI yet (as planned).
+
+**Desktop**
+- The dialog is a modal of its own (`modal::Message::OpenExport(export::Target, title)`, `modal::Shown::Export`), not a `dialog::Kind`: it shares nothing with `Dialog`'s state.
+- The calendar shows below "Since a day" in the dialog, not in a popover: the dialog's body scrolls. Its month grid is `calendar.rs`, now also the send-later picker's.
+- Format and Messages are rows of buttons. "Leave out files over [100] MB" left empty means no limit.
+- The rooms checklist lists the rooms the room list knows; ones not joined are shown disabled. Rooms never seen aren't listed (the index lists them as not joined).
+- "Export…" in the overview's Rooms tab shows for everyone: exporting needs no rights. "Export chat…" is the room menu's last item.
+- The popover: an "Exports" heading over rows "Ice sheets · HTML", then "Downloads". Running: ✕ stops it. Finished: a click opens the index, the folder button shows the folder. Right-click: "Open" (finished), "Show in folder", "Remove from list". "Clear" also removes finished exports. `Popup::Downloads { menu: Option<downloads::Row> }`.
+- The icon's ring averages the downloads (as one) and each export whose progress is known. Its hint names both.
+- An export that ends says "Exported Ice sheets: 7 rooms, 12 340 messages" (a failure as a problem); a cancelled one says nothing.
+
+**Tests**
+- No 1200-event integration test: sending that many is slow on CI. Paging is covered by unit tests (the spool's pages come back oldest first; HTML splits at 2000).
+- The cancel test cancels at once, so it always lands while running: the folder renamed, valid JSON files, the index "cancelled", the list entry removed while the folder stays.
+- Desktop: the dialog's request (pure), the space and room menus' items, the popover's export entries, notices and progress, and opening the dialog, ⌘↩ starting an export and Esc (UI test).
