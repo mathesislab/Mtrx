@@ -66,7 +66,7 @@ fun InviteContent(room: RoomSummary, images: Images, busy: Boolean, onAccept: ()
                 if (space) "You are invited to this space." else "You are invited to this room.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            room.topic?.takeIf { it.isNotBlank() }?.let {
+            room.topic.text.takeIf { it.isNotBlank() }?.let {
                 Text(it, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, maxLines = 6)
             }
             if (busy) {

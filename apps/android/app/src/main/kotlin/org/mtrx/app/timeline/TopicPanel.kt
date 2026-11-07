@@ -32,10 +32,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import org.mtrx.app.rooms.TopicDraft
 import org.mtrx.app.rooms.TopicEditor
 import org.mtrx.app.rooms.TopicLinks
 import org.mtrx.app.rooms.TopicText
+import org.mtrx.app.rooms.hasLinks
 import org.mtrx.app.ui.MtrxIcons
+import uniffi.mtrx.RoomLink
 import uniffi.mtrx.Topic
 
 /**
@@ -53,10 +56,10 @@ fun TopicPanel(
     canEdit: Boolean,
     editing: Boolean,
     onEdit: () -> Unit,
-    onSave: (Topic) -> Unit,
+    onSave: (TopicDraft) -> Unit,
     onCancel: () -> Unit,
     onClose: () -> Unit,
-    onOpenLink: (String) -> Unit,
+    onOpenLink: (RoomLink) -> Unit,
     onPinned: (String) -> Unit,
 ) {
     Box(
@@ -89,7 +92,7 @@ fun TopicPanel(
                 }
                 Row(verticalAlignment = Alignment.Top) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (topic.text.isBlank() && topic.links.isEmpty()) {
+                        if (topic.text.isBlank() && !topic.hasLinks) {
                             Text(
                                 "No topic or links yet.",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -100,7 +103,7 @@ fun TopicPanel(
                     }
                     if (canEdit) TextButton(onClick = onEdit) { Text("Edit") }
                 }
-                TopicLinks(topic.links, onOpen = onOpenLink)
+                TopicLinks(topic, onOpen = onOpenLink)
                 if (pinnedCount > 0) {
                     HorizontalDivider()
                     Row(verticalAlignment = Alignment.CenterVertically) {

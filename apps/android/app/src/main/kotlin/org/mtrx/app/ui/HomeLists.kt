@@ -381,7 +381,7 @@ fun RoomRow(
             .ifEmpty { null }
         room.membership == Membership.INVITED -> "Invited"
         room.kind == RoomKind.SPACE -> "Space"
-        else -> room.topic?.lineSequence()?.firstOrNull { it.isNotBlank() } ?: room.alias
+        else -> room.topic.firstLine ?: room.alias
     }
     CompactRow(
         title = room.name,
