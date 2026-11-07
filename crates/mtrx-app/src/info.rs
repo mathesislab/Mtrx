@@ -77,6 +77,8 @@ pub enum Target {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Show who someone is or what a room is; a space's card on this tab.
+    Show(Target, overview::Tab),
     UserLoaded(OwnedUserId, Result<UserInfo, String>),
     /// The room's settings, once read and after each change (those made
     /// here at once); or why they can't be read.
@@ -108,6 +110,16 @@ pub enum Message {
     Opened(Result<String, String>),
     Overview(overview::Message),
     Close,
+}
+
+/// Show the card of a person or room.
+pub fn show(target: Target) -> app::Message {
+    app::Message::Card(Message::Show(target, overview::Tab::Rooms))
+}
+
+/// Show a space's card on `tab`.
+pub fn show_space(space: OwnedRoomId, tab: overview::Tab) -> app::Message {
+    app::Message::Card(Message::Show(Target::Room(space), tab))
 }
 
 /// A setting changed on a room's card, saved at once.
@@ -146,7 +158,7 @@ impl Card {
             stream::once(async move { room.settings().await })
                 .flat_map(|settings| settings.updates())
                 .map(move |settings| {
-                    app::Message::Info(Message::Settings(id.clone(), Ok(settings)))
+                    app::Message::Card(Message::Settings(id.clone(), Ok(settings)))
                 })
         })
     }
@@ -303,7 +315,7 @@ impl Card {
                     return overview.update(message);
                 }
             }
-            Message::Close => {}
+            Message::Show(..) | Message::Close => {}
         }
         overview::Action::None
     }
@@ -331,7 +343,7 @@ impl Card {
         frame::with_bar(
             title,
             actions,
-            app::Message::Info(Message::Close),
+            app::Message::Card(Message::Close),
             bar,
             body,
             status,
@@ -352,11 +364,17 @@ impl Card {
                 "Save",
                 self.topic
                     .valid()
-                    .then_some(app::Message::Info(Message::SaveDetails)),
+                    .then_some(app::Message::Card(Message::SaveDetails)),
             ))
         } else {
-            (room.kind != RoomKind::Space && room.membership == Membership::Joined)
-                .then(|| frame::primary("Open", Some(app::Message::OpenRoom(room.id.clone()))))
+            (room.kind != RoomKind::Space && room.membership == Membership::Joined).then(|| {
+                frame::primary(
+                    "Open",
+                    Some(app::Message::Pane(app::pane::Message::Open(
+                        room.id.clone(),
+                    ))),
+                )
+            })
         }
     }
 
@@ -365,7 +383,7 @@ impl Card {
         let room = rooms.iter().find(|r| Some(&r.id) == self.room())?;
         let (name, topic) = self.changed_details(room);
         ((name.is_some() || topic.is_some()) && self.topic.valid())
-            .then_some(app::Message::Info(Message::SaveDetails))
+            .then_some(app::Message::Card(Message::SaveDetails))
     }
 
     fn user_view<'a>(&'a self, user: &'a User, shown: Shown<'a>) -> Framed<'a> {
@@ -387,7 +405,10 @@ impl Card {
         });
         let star = match chat {
             Some(chat) => sidebar::star_button(&chat.id, chat.tag == RoomTag::Favourite),
-            None => sidebar::star_for(app::Message::FavouritePerson(user.id.clone()), false),
+            None => sidebar::star_for(
+                app::Message::People(app::people::Message::FavouritePerson(user.id.clone())),
+                false,
+            ),
         };
         let picture = avatars.view(
             user.id.as_str(),
@@ -443,7 +464,9 @@ impl Card {
             title: title.into(),
             actions: vec![frame::primary(
                 message,
-                Some(app::Message::ChatWith(user.id.clone())),
+                Some(app::Message::People(app::people::Message::ChatWith(
+                    user.id.clone(),
+                ))),
             )],
             bar: None,
             body: card.into(),
@@ -486,8 +509,8 @@ impl Card {
                     .font(fonts::SEMIBOLD)
                     .size(18)
                     .padding([2, 6])
-                    .on_input(|value| app::Message::Info(Message::Name(value)))
-                    .on_submit(app::Message::Info(Message::SaveDetails)),
+                    .on_input(|value| app::Message::Card(Message::Name(value)))
+                    .on_submit(app::Message::Card(Message::SaveDetails)),
                 "Rename",
                 Position::Bottom,
             )
@@ -523,20 +546,20 @@ impl Card {
         if joined {
             if rights.invite {
                 let invite = match &self.overview {
-                    Some(_) => app::Message::Info(Message::Overview(overview::Message::Tab(
+                    Some(_) => app::Message::Card(Message::Overview(overview::Message::Tab(
                         overview::Tab::Members,
                     ))),
-                    None => app::Message::ShowMembers(room.id.clone()),
+                    None => app::Message::Pane(app::pane::Message::ShowMembers(room.id.clone())),
                 };
                 actions.push(header_button("Invite…", style::soft_button, invite));
             }
             actions.push(header_button(
                 "Leave…",
                 style::secondary_button,
-                app::Message::OpenDialog(Kind::Leave {
+                app::Message::Modal(app::modal::Message::OpenDialog(Kind::Leave {
                     room: room.id.clone(),
                     name: room.name.clone(),
-                }),
+                })),
             ));
         }
         actions.extend(self.room_action(room));
@@ -579,7 +602,7 @@ impl Card {
     ) -> Element<'a, app::Message> {
         let rooms: &'a [RoomSummary] = &shown.lists.rooms;
         let settings = self.settings.as_ref();
-        let change = |change| app::Message::Info(Message::Change(change));
+        let change = |change| app::Message::Card(Message::Change(change));
         let mut card = column![].spacing(14);
         if let Some(settings) = settings {
             card = card.push(settings::option(
@@ -588,7 +611,7 @@ impl Card {
                 pick_list(
                     NotifyMode::ALL.map(Notify),
                     Some(Notify(settings.notify)),
-                    |Notify(mode)| app::Message::Info(Message::Notify(mode)),
+                    |Notify(mode)| app::Message::Card(Message::Notify(mode)),
                 )
                 .text_size(13)
                 .padding(6)
@@ -601,14 +624,14 @@ impl Card {
             "Listed after your other rooms, when the room list groups them.",
             toggler(low_priority)
                 .on_toggle(|on| {
-                    app::Message::Arrange(arrange::Message::Tag(
+                    app::Message::Sidebar(sidebar::Message::Arrange(arrange::Message::Tag(
                         room.id.clone(),
                         if on {
                             RoomTag::LowPriority
                         } else {
                             RoomTag::None
                         },
-                    ))
+                    )))
                 })
                 .into(),
         ));
@@ -625,7 +648,7 @@ impl Card {
                 "Who can join",
                 settings.join_rule.fact(),
                 pick_list(choices, Some(Join(settings.join_rule)), |Join(rule)| {
-                    app::Message::Info(Message::JoinRule(rule))
+                    app::Message::Card(Message::JoinRule(rule))
                 })
                 .text_size(13)
                 .padding(6)
@@ -700,7 +723,7 @@ impl Card {
                 button(text("Let everyone edit").size(13))
                     .padding([4, 10])
                     .style(style::secondary_button)
-                    .on_press(app::Message::Info(Message::LetEveryoneEdit))
+                    .on_press(app::Message::Card(Message::LetEveryoneEdit))
                     .into(),
             ));
         }
@@ -711,10 +734,12 @@ impl Card {
                 button(text("Turn on…").size(13))
                     .padding([4, 10])
                     .style(style::secondary_button)
-                    .on_press(app::Message::OpenDialog(Kind::Encrypt {
-                        room: room.id.clone(),
-                        name: room.name.clone(),
-                    }))
+                    .on_press(app::Message::Modal(app::modal::Message::OpenDialog(
+                        Kind::Encrypt {
+                            room: room.id.clone(),
+                            name: room.name.clone(),
+                        },
+                    )))
                     .into()
             } else {
                 text("Off").size(13).style(text::secondary).into()
@@ -784,7 +809,7 @@ impl Card {
                 .font(iced::Font::MONOSPACE)
                 .padding([4, 8])
                 .style(style::input)
-                .on_input(|name| app::Message::Info(Message::AddressName(name)))
+                .on_input(|name| app::Message::Card(Message::AddressName(name)))
                 .on_submit_maybe(changed.then(|| self.save_address())),
             text(format!(":{}", shown.own_user.server_name()))
                 .size(13)
@@ -819,7 +844,7 @@ impl Card {
 
     fn save_address(&self) -> app::Message {
         let name = self.address.trim();
-        app::Message::Info(Message::Change(Change::Address(
+        app::Message::Card(Message::Change(Change::Address(
             (!name.is_empty()).then(|| name.to_owned()),
         )))
     }
@@ -839,7 +864,7 @@ impl Card {
                 .find(|r| &r.id == id)
                 .map_or_else(|| id.to_string(), |r| r.name.clone())
         };
-        let change = |change| app::Message::Info(Message::Change(change));
+        let change = |change| app::Message::Card(Message::Change(change));
         let mut chips = row![].spacing(6).align_y(Alignment::Center);
         for link in &settings.spaces {
             let mut chip = row![text(name_of(&link.space)).size(13)]
@@ -874,7 +899,7 @@ impl Card {
                         .padding([4, 10])
                         .style(style::text_button)
                         .on_press_maybe(
-                            (!adding).then_some(app::Message::Info(Message::OpenSpacesMenu)),
+                            (!adding).then_some(app::Message::Card(Message::OpenSpacesMenu)),
                         ),
                     adding.then(|| menu::view(others, Width::Menu)),
                     Side::Below,
@@ -915,7 +940,7 @@ impl Card {
         let button = button(shown)
             .padding(0)
             .style(style::list_item(open))
-            .on_press_maybe((!open).then_some(app::Message::Info(Message::OpenPictureMenu)));
+            .on_press_maybe((!open).then_some(app::Message::Card(Message::OpenPictureMenu)));
         let menu = open.then(|| menu::view(picture_entries(has_picture), Width::Menu));
         hint(
             popover(button, menu, Side::Below, Edge::Left).on_dismiss(app::Message::ClosePopup),
@@ -936,13 +961,13 @@ impl Card {
         let synced = room.topic.clone().unwrap_or_default();
         let content: Element<'a, app::Message> = if self.editing_topic && can_edit {
             column![
-                (self.topic.view(services)).map(|edit| app::Message::Info(Message::Topic(edit))),
+                (self.topic.view(services)).map(|edit| app::Message::Card(Message::Topic(edit))),
                 row![
                     space::horizontal(),
                     button(text("Cancel").size(13))
                         .padding([4, 10])
                         .style(style::text_button)
-                        .on_press(app::Message::Info(Message::CancelTopic(synced))),
+                        .on_press(app::Message::Card(Message::CancelTopic(synced))),
                 ],
             ]
             .spacing(8)
@@ -975,7 +1000,7 @@ impl Card {
                     )
                     .padding([4, 10])
                     .style(style::secondary_button)
-                    .on_press(app::Message::Info(Message::EditTopic)),
+                    .on_press(app::Message::Card(Message::EditTopic)),
                 );
             }
             line.into()
@@ -1019,7 +1044,7 @@ impl Card {
                     })
                     .padding(6)
                     .style(style::list_item(false))
-                    .on_press(app::Message::Info(Message::Copy(value))),
+                    .on_press(app::Message::Card(Message::Copy(value))),
                     if copied { "Copied" } else { "Copy" },
                     Position::Left,
                 ),
@@ -1035,13 +1060,13 @@ fn picture_entries(has_picture: bool) -> Vec<Entry<'static, app::Message>> {
     let mut entries = vec![
         Item::new(
             "Change picture…",
-            app::Message::Info(Message::ChangePicture),
+            app::Message::Card(Message::ChangePicture),
         )
         .into(),
     ];
     if has_picture {
         entries
-            .push(Item::new("Remove picture", app::Message::Info(Message::RemovePicture)).into());
+            .push(Item::new("Remove picture", app::Message::Card(Message::RemovePicture)).into());
     }
     entries
 }
@@ -1056,7 +1081,7 @@ fn add_to_space_entries(
         .filter(|space| *space != room)
         .map(|space| {
             let add = Message::Change(Change::AddToSpace(space.clone()));
-            Item::new(name_of(space), app::Message::Info(add)).into()
+            Item::new(name_of(space), app::Message::Card(add)).into()
         })
         .collect()
 }
@@ -1088,8 +1113,10 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
     let mut list = column![].spacing(2);
     for room in known {
         let target = match room.kind {
-            RoomKind::Space => app::Message::SelectSpace(Some(room.id.clone())),
-            _ => app::Message::OpenRoom(room.id.clone()),
+            RoomKind::Space => {
+                app::Message::Sidebar(sidebar::Message::SelectSpace(Some(room.id.clone())))
+            }
+            _ => app::Message::Pane(app::pane::Message::Open(room.id.clone())),
         };
         list = list.push(
             button(text(&room.name).size(13))
@@ -1179,7 +1206,7 @@ fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Mes
                 button(text("Unban").size(12))
                     .padding([3, 10])
                     .style(style::secondary_button)
-                    .on_press(app::Message::Info(Message::Change(Change::Unban(
+                    .on_press(app::Message::Card(Message::Change(Change::Unban(
                         banned.user.id.clone(),
                     )))),
             );

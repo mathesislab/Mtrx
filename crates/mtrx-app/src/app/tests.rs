@@ -9,12 +9,12 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use iced::Size;
+use iced::{Rectangle, Size};
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    Attachment, Connection, EventContent, NewRoom, OwnedEventId, Profile, RoomKind, RoomOrAliasId,
-    RoomTag, Row, RowContext, ScheduledFile, SecretStore, Section, SendState, Session,
-    TimelineEntry,
+    Attachment, Connection, EventContent, Media, NewRoom, OwnedEventId, Profile, RoomKind,
+    RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile, SecretStore, Section,
+    SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -158,7 +158,7 @@ async fn load_wanted(app: &mut App, session: &Session) {
             let _rendering = rendering();
             let mut ui =
                 Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
-            let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
+            let _ = ui.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(
                 std::time::Instant::now(),
             ))]);
             (ui.into_messages())
@@ -223,7 +223,9 @@ fn login_screen() {
 fn login_without_keyring() {
     let mut app = app(Screen::Starting, Mode::Light);
     let error = mtrx_core::Error::NoSecretStore("no secrets service".into());
-    let _ = app.update(Message::Restored(Err(Shared(Arc::new(error)))));
+    let _ = app.update(Message::Start(start::Message::Restored(Err(Shared(
+        Arc::new(error),
+    )))));
     let Screen::Login(login) = &app.screen else {
         panic!("not the sign-in screen");
     };
@@ -292,7 +294,7 @@ fn clicking_a_mention_shows_the_persons_card() {
     assert!(
         matches!(
             &sent[..],
-            [Message::ShowInfo(info::Target::User(user))] if user.id == "@nils:server.org"
+            [Message::Card(info::Message::Show(info::Target::User(user), _))] if user.id == "@nils:server.org"
         ),
         "{sent:?}"
     );
@@ -306,21 +308,23 @@ fn zoom_steps_the_text_size() {
     use crate::text_size::TextSize;
 
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
-    let _ = app.update(Message::Zoom(Zoom::In));
+    let _ = app.update(Message::Window(window::Message::Zoom(Zoom::In)));
     assert_eq!(app.settings.text_size, TextSize::Larger);
     assert_eq!(app.scale_factor(), 1.25);
     for _ in 0..5 {
-        let _ = app.update(Message::Zoom(Zoom::In));
+        let _ = app.update(Message::Window(window::Message::Zoom(Zoom::In)));
     }
     assert_eq!(app.settings.text_size, TextSize::Largest);
     assert_eq!(app.viewport(), Size::new(800.0, 800.0 / 1.5));
     assert_eq!(app.pixel_scale(), 3.0);
     // Resizes come in layout units.
-    let _ = app.update(Message::WindowResized(Size::new(600.0, 400.0)));
+    let _ = app.update(Message::Window(window::Message::Resized(Size::new(
+        600.0, 400.0,
+    ))));
     assert_eq!(app.window, Size::new(900.0, 600.0));
-    let _ = app.update(Message::Zoom(Zoom::Out));
+    let _ = app.update(Message::Window(window::Message::Zoom(Zoom::Out)));
     assert_eq!(app.settings.text_size, TextSize::Larger);
-    let _ = app.update(Message::Zoom(Zoom::Reset));
+    let _ = app.update(Message::Window(window::Message::Zoom(Zoom::Reset)));
     assert_eq!(app.settings.text_size, TextSize::Default);
     assert_eq!(app.viewport(), Size::new(900.0, 600.0) / 1.1);
     assert_eq!(app.pixel_scale(), 2.0 * 1.1);
@@ -344,7 +348,7 @@ fn find_keys() {
             text: None,
             repeat: false,
         });
-        shortcuts(event, Status::Captured, window::Id::unique())
+        shortcuts(event, Status::Captured, iced::window::Id::unique())
     };
     let command = keyboard::Modifiers::COMMAND;
     assert!(matches!(
@@ -408,16 +412,18 @@ fn window_placement_is_saved() {
     app.placement_file = Some(file.clone());
     app.scale = 2.0;
     app.settings.text_size = crate::text_size::TextSize::Default;
-    let placed = |maximized| Message::WindowPlaced {
-        position: Some(iced::Point::new(1800.0, 200.0)),
-        maximized,
-        fullscreen: false,
+    let placed = |maximized| {
+        Message::Window(window::Message::Placed {
+            position: Some(iced::Point::new(1800.0, 200.0)),
+            maximized,
+            fullscreen: false,
+        })
     };
 
     // Reported in layout units.
-    let _ = app.update(Message::WindowResized(
+    let _ = app.update(Message::Window(window::Message::Resized(
         Size::new(1000.0, 700.0) / app.scale_factor(),
-    ));
+    )));
     let _ = app.update(placed(false));
     let left = Frame::new(iced::Point::new(1800.0, 200.0), Size::new(1000.0, 700.0));
     let saved = Placement::load(&file);
@@ -426,9 +432,9 @@ fn window_placement_is_saved() {
     assert_eq!(frame.position(), left.position());
     assert!((frame.width - left.width).abs() < 1e-3 && (frame.height - left.height).abs() < 1e-3);
 
-    let _ = app.update(Message::WindowResized(
+    let _ = app.update(Message::Window(window::Message::Resized(
         Size::new(1512.0, 920.0) / app.scale_factor(),
-    ));
+    )));
     let _ = app.update(placed(true));
     let saved = Placement::load(&file);
     assert!(saved.maximized);
@@ -455,9 +461,11 @@ fn quitting_ends_the_session() {
         // As iced runs the app.
         let _runtime = runtime.enter();
         let mut app = app(Screen::Main(Box::new(Main::new(open.0))), Mode::Light);
-        let close = app.update(Message::CloseWindow(window::Id::unique()));
+        let close = app.update(Message::Window(window::Message::Close(
+            iced::window::Id::unique(),
+        )));
         assert!(matches!(app.screen, Screen::Closing));
-        let restored = app.update(Message::Restored(Ok(restored)));
+        let restored = app.update(Message::Start(start::Message::Restored(Ok(restored))));
         drop((close, restored));
         app
     };
@@ -473,12 +481,14 @@ async fn closing_the_window_cancels_a_browser_sign_in() {
     let Screen::Login(login) = &mut app.screen else {
         unreachable!()
     };
-    let signed_in = Message::LoggedIn(Err("signed in".into()));
+    let signed_in = Message::Start(start::Message::LoggedIn(Err("signed in".into())));
     let sign_in = login.browser_sign_in(Task::perform(
         tokio::time::sleep(Duration::from_millis(10)),
         move |()| signed_in,
     ));
-    let _ = app.update(Message::CloseWindow(window::Id::unique()));
+    let _ = app.update(Message::Window(window::Message::Close(
+        iced::window::Id::unique(),
+    )));
     assert!(messages_of(sign_in).await.is_empty());
 }
 
@@ -505,17 +515,25 @@ fn window_left_off_screen_opens_on_the_main_display() {
     let left = iced::Point::new(1800.0, 200.0);
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
     app.placement.frame = Some(Frame::new(left, Size::new(1000.0, 700.0)));
-    let id = window::Id::unique();
+    let id = iced::window::Id::unique();
 
-    let both = app.update(Message::WindowOpened(
+    let both = app.update(Message::Window(window::Message::Opened(
         id,
         Some(vec![laptop, monitor]),
         Some(left),
-    ));
+    )));
     assert_eq!(moves(both), []);
-    let unknown = app.update(Message::WindowOpened(id, None, Some(left)));
+    let unknown = app.update(Message::Window(window::Message::Opened(
+        id,
+        None,
+        Some(left),
+    )));
     assert_eq!(moves(unknown), []);
-    let unplugged = app.update(Message::WindowOpened(id, Some(vec![laptop]), Some(left)));
+    let unplugged = app.update(Message::Window(window::Message::Opened(
+        id,
+        Some(vec![laptop]),
+        Some(left),
+    )));
     assert_eq!(moves(unplugged), [iced::Point::new(156.0, 85.0)]);
 }
 
@@ -523,7 +541,7 @@ fn window_left_off_screen_opens_on_the_main_display() {
 /// the app gets the close request, and quits through `CloseWindow`.
 #[test]
 fn closing_the_window_hides_it_on_macos_and_quits_elsewhere() {
-    let settings = closing(window::Settings::default());
+    let settings = closing(iced::window::Settings::default());
     assert!(!settings.exit_on_close_request);
     #[cfg(target_os = "macos")]
     assert!(settings.platform_specific.hides_on_close);
@@ -536,7 +554,7 @@ fn closing_the_window_hides_it_on_macos_and_quits_elsewhere() {
 fn command_w_closes_the_window() {
     use iced::{event::Status, keyboard};
 
-    let id = window::Id::unique();
+    let id = iced::window::Id::unique();
     let press = |with: keyboard::Modifiers| {
         let mut event =
             iced_test::simulator::press_key(keyboard::Key::Character("w".into()), Some("w".into()));
@@ -551,7 +569,7 @@ fn command_w_closes_the_window() {
         assert!(close.is_none());
         return;
     }
-    assert!(matches!(close, Some(Message::CloseWindow(closed)) if closed == id));
+    assert!(matches!(close, Some(Message::Window(window::Message::Close(closed))) if closed == id));
 
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
     let _ = app.update(close.unwrap());
@@ -1818,10 +1836,13 @@ async fn room_management_screens() {
         let room = main.pane.room_mut().unwrap();
         room.members_loaded(Ok(members.clone()));
     });
-    let _ = app.update(Message::OpenRoom(other.clone()));
+    let _ = app.update(Message::Pane(pane::Message::Open(other.clone())));
     snapshot(&app, "members-opening");
     let opened = Shared(Arc::new(session.timeline(&other).await.unwrap()));
-    let _ = app.update(Message::RoomOpened(other.clone(), Ok(opened)));
+    let _ = app.update(Message::Pane(pane::Message::Opened(
+        other.clone(),
+        Ok(opened),
+    )));
     let Screen::Main(main) = &app.screen else {
         unreachable!()
     };
@@ -3163,7 +3184,7 @@ async fn typing_while_a_room_opens_goes_nowhere() {
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
-    let opened = messages_of(app.update(Message::OpenRoom(b.clone()))).await;
+    let opened = messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await;
     assert!(matches!(pane(&app), Pane::Opening(id) if *id == b));
     let _ =
         messages_of(app.update(Message::Shown(room::Message::TypeInComposer("x".into())))).await;
@@ -3209,8 +3230,8 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
     });
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
-    let opened = messages_of(app.update(Message::OpenRoom(a.clone()))).await;
-    let _ = app.update(Message::OpenRoom(invite.clone()));
+    let opened = messages_of(app.update(Message::Pane(pane::Message::Open(a.clone())))).await;
+    let _ = app.update(Message::Pane(pane::Message::Open(invite.clone())));
     for message in opened {
         let _ = app.update(message);
     }
@@ -3249,7 +3270,7 @@ async fn results_stay_with_their_room() {
     let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
     let later = send_later::Message::At(in_an_hour);
     let scheduled = app.update(room::Message::Later(later).to(&a));
-    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+    for message in messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await {
         let _ = app.update(message);
     }
     open_room(&mut app).composer.set_text("Draft in b");
@@ -3296,15 +3317,21 @@ async fn a_room_that_failed_to_open_opens_again() {
         _ => None,
     };
 
-    let _ = app.update(Message::OpenRoom(a.clone()));
-    let _ = app.update(Message::RoomOpened(a.clone(), Err("timed out".into())));
+    let _ = app.update(Message::Pane(pane::Message::Open(a.clone())));
+    let _ = app.update(Message::Pane(pane::Message::Opened(
+        a.clone(),
+        Err("timed out".into()),
+    )));
     assert!(matches!(pane(&app), Pane::Empty));
     assert_eq!(
         problem(&app).as_deref(),
         Some("Could not open the room: timed out")
     );
-    let _ = app.update(Message::OpenRoom(a.clone()));
-    let _ = app.update(Message::RoomOpened(a.clone(), Ok(Shared(timeline))));
+    let _ = app.update(Message::Pane(pane::Message::Open(a.clone())));
+    let _ = app.update(Message::Pane(pane::Message::Opened(
+        a.clone(),
+        Ok(Shared(timeline)),
+    )));
     assert_eq!(open_room(&mut app).id, a);
     assert_eq!(problem(&app), None);
 }
@@ -3331,18 +3358,26 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     };
 
     // Not run: the result is given below.
-    let _ = app.update(Message::OpenDialog(leave("first")));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(leave("first"))));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
     let first = main(&mut app).last_request;
-    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Cancel,
+    )));
     assert!(main(&mut app).modal.is_none());
-    let _ = app.update(Message::OpenDialog(leave("second")));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(leave("second"))));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
     let second = main(&mut app).last_request;
     assert_ne!(first, second);
 
     let failed = Err("no such room".into());
-    let _ = app.update(Message::Dialog(dialog::Message::Done(first, failed)));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(first, failed),
+    )));
     let notice = main(&mut app).notice.take().expect("a notice");
     assert!(notice.error);
     assert_eq!(notice.text, "Could not leave first: no such room");
@@ -3353,7 +3388,9 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
 
     // Its own result, which only it takes.
     let failed = Err("not a member".into());
-    let _ = app.update(Message::Dialog(dialog::Message::Done(second, failed)));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(second, failed),
+    )));
     let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
         panic!("the second dialog closed");
     };
@@ -3386,12 +3423,18 @@ async fn a_cancelled_request_still_takes_effect() {
         room: lab.clone(),
         name: "Lab".into(),
     };
-    let _ = app.update(Message::OpenDialog(leave));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(leave)));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
     let left = main(&mut app).last_request;
-    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Cancel,
+    )));
     let done = Ok(dialog::Opened::Left(lab.clone()));
-    let _ = app.update(Message::Dialog(dialog::Message::Done(left, done)));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(left, done),
+    )));
     assert!(main(&mut app).notice.is_some());
     assert!(
         main(&mut app).pane.id().is_none(),
@@ -3399,12 +3442,20 @@ async fn a_cancelled_request_still_takes_effect() {
     );
     assert!(main(&mut app).space.is_none(), "the space left still shows");
 
-    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(
+        dialog::Kind::SignOut,
+    )));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
     let out = main(&mut app).last_request;
-    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Cancel,
+    )));
     let done = Ok(dialog::Opened::SignedOut);
-    let _ = app.update(Message::Dialog(dialog::Message::Done(out, done)));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(out, done),
+    )));
     assert!(matches!(app.screen, Screen::Login(_)), "still signed in");
 }
 
@@ -3421,12 +3472,17 @@ async fn a_chat_that_cannot_start_reports_in_the_notice_bar() {
     let mut main = Main::new(alice);
     main.verified = Some(true);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
-    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(
+        dialog::Kind::SignOut,
+    )));
 
     let ghost: OwnedUserId = "@ghost:localhost".try_into().unwrap();
-    let started = messages_of(app.update(Message::ChatWith(ghost))).await;
+    let started = messages_of(app.update(Message::People(people::Message::ChatWith(ghost)))).await;
     assert!(
-        matches!(&started[..], [Message::ChatStarted(Err(_))]),
+        matches!(
+            &started[..],
+            [Message::People(people::Message::ChatStarted(Err(_)))]
+        ),
         "{started:?}"
     );
     for message in started {
@@ -3474,7 +3530,7 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
     let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
     let later = send_later::Message::At(in_an_hour);
     let scheduled = app.update(room::Message::Later(later).to(&a));
-    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+    for message in messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await {
         let _ = app.update(message);
     }
     let kept = mtrx_core::Draft {
@@ -3524,7 +3580,7 @@ async fn loads_end_with_their_room_and_requests_run_on() {
     let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
     let later = send_later::Message::At(in_an_hour);
     let scheduled = app.update(room::Message::Later(later).to(&a));
-    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+    for message in messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await {
         let _ = app.update(message);
     }
     assert_eq!(open_room(&mut app).id, b);

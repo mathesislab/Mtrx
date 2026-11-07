@@ -1080,7 +1080,7 @@ fn option<'a>(
 }
 
 fn message(message: Message) -> app::Message {
-    app::Message::Dialog(message)
+    app::Message::Modal(app::modal::Message::Dialog(message))
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use iced::{
 use mtrx_core::{Member, Membership, OwnedRoomId, OwnedUserId};
 
 use crate::{
-    app::Message,
+    app::{self, Message},
     avatar::{Avatars, Shape},
     dialog::{Kind, LevelChange},
     ellipsis::ellipsis,
@@ -69,17 +69,19 @@ pub fn view<'a>(
             button(text("Invite…").size(12))
                 .padding([2, 8])
                 .style(style::soft_button)
-                .on_press(Message::OpenDialog(Kind::Invite {
-                    room: room.clone(),
-                    name: room_name.to_owned(),
-                })),
+                .on_press(Message::Modal(app::modal::Message::OpenDialog(
+                    Kind::Invite {
+                        room: room.clone(),
+                        name: room_name.to_owned(),
+                    },
+                ))),
         );
     }
     header = header.push(
         button(text("×").size(14))
             .padding([0, 6])
             .style(style::text_button)
-            .on_press(Message::ToggleMembers),
+            .on_press(Message::Pane(app::pane::Message::ToggleMembers)),
     );
     let panel = column![header].spacing(2).padding(8);
     container(frame::scroll(panel.push(rows(list, shown))))
@@ -178,7 +180,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
             .width(Length::Fill)
             .padding([3, 4])
             .style(style::list_item(menu_open))
-            .on_press(Message::ShowInfo(crate::info::Target::User(user.clone())));
+            .on_press(crate::info::show(crate::info::Target::User(user.clone())));
         if menu_open {
             card.into()
         } else {
@@ -200,7 +202,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
         if opened(menu) {
             Message::ClosePopup
         } else {
-            Message::MemberMenu(menu_of(menu))
+            Message::Pane(app::pane::Message::MemberMenu(menu_of(menu)))
         }
     };
     let chip: Element<'a, Message> = match manage.up_to {
@@ -284,11 +286,17 @@ fn role_entries(member: &Member, room: &OwnedRoomId) -> Vec<Entry<'static, Messa
                 (true, _) => Item::disabled(choice.title),
                 (false, Some(asked)) => Item::new(
                     choice.title,
-                    Message::OpenDialog(Kind::Level(change(Some((choice.level, asked))))),
+                    Message::Modal(app::modal::Message::OpenDialog(Kind::Level(change(Some(
+                        (choice.level, asked),
+                    ))))),
                 ),
                 (false, None) => Item::new(
                     choice.title,
-                    Message::SetLevel(room.clone(), member.user.id.clone(), choice.level),
+                    Message::Pane(app::pane::Message::SetLevel(
+                        room.clone(),
+                        member.user.id.clone(),
+                        choice.level,
+                    )),
                 ),
             };
             item.checked(choice.current)
@@ -299,7 +307,7 @@ fn role_entries(member: &Member, room: &OwnedRoomId) -> Vec<Entry<'static, Messa
     entries.push(
         Item::new(
             "Custom level…",
-            Message::OpenDialog(Kind::Level(change(None))),
+            Message::Modal(app::modal::Message::OpenDialog(Kind::Level(change(None)))),
         )
         .into(),
     );
@@ -310,12 +318,12 @@ fn role_entries(member: &Member, room: &OwnedRoomId) -> Vec<Entry<'static, Messa
 fn more_entries(member: &Member, name: &str, room: &OwnedRoomId) -> Vec<Entry<'static, Message>> {
     let mut items = Vec::new();
     let remove = |ban| {
-        Message::OpenDialog(Kind::RemoveMember {
+        Message::Modal(app::modal::Message::OpenDialog(Kind::RemoveMember {
             room: room.clone(),
             user: member.user.id.clone(),
             name: name.to_owned(),
             ban,
-        })
+        }))
     };
     if member.manage.remove {
         items.push(Item::new("Remove…", remove(false)).into());

@@ -143,7 +143,7 @@ impl Field {
     fn enables(&mut self, actions: &[StandardAction]) -> Vec<bool> {
         let mut ui = ui(&self.content, &mut self.cache, &mut self.renderer);
         let (state, _) = ui.update(
-            &[Event::Window(window::Event::RedrawRequested(
+            &[Event::Window(iced::window::Event::RedrawRequested(
                 iced::time::Instant::now(),
             ))],
             mouse::Cursor::Available(self.cursor),

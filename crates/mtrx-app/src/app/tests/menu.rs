@@ -114,7 +114,9 @@ impl Input {
 
     /// Whether its input method enables each of `actions`.
     fn enables(&mut self, actions: &[StandardAction]) -> Vec<bool> {
-        let redraw = Event::Window(window::Event::RedrawRequested(iced::time::Instant::now()));
+        let redraw = Event::Window(iced::window::Event::RedrawRequested(
+            iced::time::Instant::now(),
+        ));
         let (_, input_method) = self.update(&[redraw]);
         actions
             .iter()
@@ -210,7 +212,7 @@ fn without_a_field_the_app_keeps_its_actions() {
 /// Smaller and Actual Size on the text size, as their keys do.
 #[test]
 fn the_menus_actions_no_field_takes_go_to_the_app() {
-    let id = window::Id::unique();
+    let id = iced::window::Id::unique();
     let shortcut =
         |action, status| format!("{:?}", shortcuts(Event::StandardAction(action), status, id));
     let expected = |message: Message| format!("{:?}", Some(message));
@@ -249,6 +251,9 @@ fn the_menus_actions_no_field_takes_go_to_the_app() {
         (ZoomReset, Zoom::Reset),
     ] {
         let zoomed = window_keys(Event::StandardAction(action), Status::Captured, id);
-        assert_eq!(format!("{zoomed:?}"), expected(Message::Zoom(zoom)));
+        assert_eq!(
+            format!("{zoomed:?}"),
+            expected(Message::Window(window::Message::Zoom(zoom)))
+        );
     }
 }

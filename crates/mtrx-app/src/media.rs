@@ -46,7 +46,8 @@ pub enum Origin {
 }
 
 /// Pictures the views show: asked for while not loaded
-/// ([`crate::want`]), and loaded (`None` if that failed).
+/// ([`crate::want`]), and loaded (`None` if that failed); copying images,
+/// and downloads.
 #[derive(Debug, Clone)]
 pub enum Message {
     AvatarWanted(avatar::Key),
@@ -57,6 +58,12 @@ pub enum Message {
     /// A message's math, typeset.
     MathWanted(math::Request),
     MathRendered(math::Key, math::Rendered),
+    /// Put a message's image on the clipboard.
+    CopyImage(Media, Origin),
+    /// Copying an image finished, or failed: shown where it was asked
+    /// from.
+    Done(Origin, Result<(), String>),
+    Downloads(downloads::Message),
 }
 
 /// Largest size of an image in the timeline, in logical pixels.
@@ -313,7 +320,7 @@ pub fn view<'a>(
         _ if pdf::is_pdf(media) => match (previewed(media), previews.readable(&media.source)) {
             (false, _) => open_card(file, Some("Too large to preview here")),
             (true, Some(true)) => {
-                let open = app::Message::OpenPdf(file.clone());
+                let open = app::Message::Modal(app::modal::Message::OpenPdf(file.clone()));
                 card(&file, open, "Open in the viewer", None)
             }
             (true, Some(false)) => open_card(file, Some("Preview not available for this document")),
@@ -343,7 +350,9 @@ fn inline_image<'a>(file: &File, picture: Option<&Picture>) -> Element<'a, app::
         None => placeholder(size),
     };
     mouse_area(content)
-        .on_press(app::Message::OpenImage(file.clone()))
+        .on_press(app::Message::Modal(app::modal::Message::OpenImage(
+            file.clone(),
+        )))
         .interaction(mouse::Interaction::Pointer)
         .into()
 }
@@ -358,7 +367,9 @@ fn placeholder<'a>(size: Size) -> Element<'a, app::Message> {
 
 /// A card that opens the file in its app (downloading it first).
 fn open_card<'a>(file: File, note: Option<&'a str>) -> Element<'a, app::Message> {
-    let open = app::Message::Downloads(downloads::Message::OpenFile(file.clone()));
+    let open = app::Message::Media(Message::Downloads(downloads::Message::OpenFile(
+        file.clone(),
+    )));
     card(&file, open, "Open in its app", note)
 }
 
@@ -419,8 +430,8 @@ pub fn download_button<'a>(file: &File) -> Element<'a, app::Message> {
         }))
         .padding([6, 8])
         .style(style::secondary_button)
-        .on_press(app::Message::Downloads(downloads::Message::Download(
-            file.clone(),
+        .on_press(app::Message::Media(Message::Downloads(
+            downloads::Message::Download(file.clone()),
         ))),
         "Download to your Downloads folder",
         Position::Top,
@@ -498,7 +509,7 @@ impl Viewer {
                         .ok_or_else(|| "not an image we can show".to_owned())
                 }
             },
-            move |result| app::Message::ImageLoaded(media, result),
+            move |result| app::Message::Modal(app::modal::Message::ImageLoaded(media, result)),
         );
         self.loading.run("image", load)
     }
@@ -543,8 +554,12 @@ impl Viewer {
                     Width::Menu,
                 )
             });
-            let shown = context_menu(shown, menu, app::Message::OpenViewerMenu)
-                .on_dismiss(app::Message::ClosePopup);
+            let shown = context_menu(
+                shown,
+                menu,
+                app::Message::Modal(app::modal::Message::OpenViewerMenu),
+            )
+            .on_dismiss(app::Message::ClosePopup);
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);
             container(
                 column![opaque(shown), opaque(self.bar(bar_width))]
@@ -559,7 +574,7 @@ impl Viewer {
                 .padding(VIEWER_MARGIN)
                 .style(style::viewer_backdrop),
         )
-        .on_press(app::Message::CloseImage)
+        .on_press(app::Message::Modal(app::modal::Message::CloseImage))
         .into()
     }
 
@@ -577,7 +592,7 @@ impl Viewer {
             row![
                 name,
                 download_button(&self.file),
-                frame::close_button(app::Message::CloseImage),
+                frame::close_button(app::Message::Modal(app::modal::Message::CloseImage)),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -783,11 +798,11 @@ mod tests {
         let inline = context_menu(
             view(&room, None, &media, &media.filename, &previews, false),
             None,
-            app::Message::CloseImage,
+            app::Message::Modal(app::modal::Message::CloseImage),
         );
         assert!(matches!(
             right_click(inline.into(), (50.0, 50.0))[..],
-            [app::Message::CloseImage]
+            [app::Message::Modal(app::modal::Message::CloseImage)]
         ));
         // Shown large, it has a menu of its own, not around it.
         let viewer = Viewer::new(File {
@@ -813,7 +828,10 @@ mod tests {
             mouse::Button::Right,
         ))];
         let sent = send(&mut ui, &mut renderer, &right, (400.0, 270.0));
-        assert!(matches!(sent[..], [app::Message::OpenViewerMenu]));
+        assert!(matches!(
+            sent[..],
+            [app::Message::Modal(app::modal::Message::OpenViewerMenu)]
+        ));
         // Its first item, just below where it was right-clicked.
         let cache = ui.into_cache();
         let mut ui =
@@ -825,7 +843,7 @@ mod tests {
             (420.0, 285.0),
         );
         assert!(
-            matches!(&sent[..], [app::Message::CopyImage(copied, Origin::Viewer)] if *copied == media),
+            matches!(&sent[..], [app::Message::Media(Message::CopyImage(copied, Origin::Viewer))] if *copied == media),
             "{sent:?}"
         );
     }

@@ -406,7 +406,9 @@ impl Arrange {
         let session = session.clone();
         task::request(
             async move { session.change_room_categories(change).await },
-            |result| app::Message::Arrange(Message::Saved(result)),
+            |result| {
+                app::Message::Sidebar(crate::sidebar::Message::Arrange(Message::Saved(result)))
+            },
         )
     }
 
@@ -415,7 +417,9 @@ impl Arrange {
         match self.drag {
             Some(_) => event::listen_with(|event, _status, _window| match event {
                 iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Some(app::Message::Arrange(Message::Moved(position)))
+                    Some(app::Message::Sidebar(crate::sidebar::Message::Arrange(
+                        Message::Moved(position),
+                    )))
                 }
                 _ => None,
             }),
@@ -432,7 +436,7 @@ fn set_tag(summary: &RoomSummary, tag: RoomTag, session: &Arc<Session>) -> Task<
     let (session, room) = (session.clone(), summary.id.clone());
     task::request(
         async move { session.room(&room)?.set_tag(tag).await },
-        |result| app::Message::Arrange(Message::Saved(result)),
+        |result| app::Message::Sidebar(crate::sidebar::Message::Arrange(Message::Saved(result))),
     )
 }
 
@@ -456,7 +460,9 @@ fn tag_elsewhere(tag: RoomTag, grouping: Grouping) -> RoomTag {
 }
 
 fn failed(error: String) -> Task<app::Message> {
-    Task::done(app::Message::ArrangeFailed(error))
+    Task::done(app::Message::Sidebar(
+        crate::sidebar::Message::ArrangeFailed(error),
+    ))
 }
 
 #[cfg(test)]

@@ -95,9 +95,9 @@ pub fn entry<'a>(
         .push(container(action(room, membership, busy, on_join, on_knock)).width(ACTION_WIDTH))
         .align_y(Alignment::Center);
     let open = if room.is_space {
-        app::Message::SelectSpace(Some(room.id.clone()))
+        app::Message::Sidebar(crate::sidebar::Message::SelectSpace(Some(room.id.clone())))
     } else {
-        app::Message::OpenRoom(room.id.clone())
+        app::Message::Pane(app::pane::Message::Open(room.id.clone()))
     };
     let base = match membership {
         // Opens the room, or shows the invite.
@@ -115,10 +115,12 @@ pub fn entry<'a>(
         .width(Length::Fill)
         .padding([4, 8])
         .style(style::secondary_button)
-        .on_press(app::Message::OpenDialog(Kind::Leave {
-            room: room.id.clone(),
-            name: room.name.clone(),
-        }));
+        .on_press(app::Message::Modal(app::modal::Message::OpenDialog(
+            Kind::Leave {
+                room: room.id.clone(),
+                name: room.name.clone(),
+            },
+        )));
     let top = row![
         space::horizontal(),
         container(leave).width(LEAVE_WIDTH),
@@ -175,9 +177,9 @@ fn action<'a>(
         });
     }
     let open = if room.is_space {
-        app::Message::SelectSpace(Some(room.id.clone()))
+        app::Message::Sidebar(crate::sidebar::Message::SelectSpace(Some(room.id.clone())))
     } else {
-        app::Message::OpenRoom(room.id.clone())
+        app::Message::Pane(app::pane::Message::Open(room.id.clone()))
     };
     let action = room.action(membership);
     match action {

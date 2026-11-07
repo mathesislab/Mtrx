@@ -1,5 +1,14 @@
 //! Application state, messages and top-level layout.
 
+pub mod account;
+pub mod modal;
+pub mod pane;
+pub mod people;
+pub mod start;
+pub mod window;
+
+use self::window::Resize;
+
 use std::{
     collections::{BTreeSet, HashMap},
     fmt,
@@ -11,19 +20,17 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use iced::{
-    Element, Length, Point, Rectangle, Size, Subscription, Task, Theme, mouse,
+    Element, Length, Size, Subscription, Task, Theme, mouse,
     theme::Mode,
     widget::{
         button, column, container, mouse_area, opaque, row, stack, text, text_editor, text_input,
     },
-    window,
 };
 use mtrx_core::{
-    CallService, Connection, Contact, DownloadId, Draft, DraftKeeper, Live, Media, MediaRef,
-    Membership, Notification, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
-    OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists,
-    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
-    SpaceKey, Topic, Url,
+    CallService, Connection, Contact, DownloadId, Draft, DraftKeeper, Live, Membership,
+    Notification, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
+    Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists, RoomOrAliasId,
+    RoomTag, ScheduledMessage, SecretStore, ServiceKind, Session, SpaceKey, Topic, Url,
 };
 use mtrx_google::Google;
 
@@ -99,161 +106,37 @@ impl<T> Hash for Shared<T> {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The saved session, or why there is none to open.
-    Restored(Result<Shared<Session>, Shared<mtrx_core::Error>>),
-    Login(login::Message),
-    LoggedIn(Result<Shared<Session>, String>),
-    Ready(Result<(Shared<LiveLists>, bool), String>),
+    Window(window::Message),
+    Start(start::Message),
+    /// The room lists changed.
     Rooms(Arc<RoomLists>),
-    SelectSpace(Option<OwnedRoomId>),
-    OpenRoom(OwnedRoomId),
-    RoomOpened(OwnedRoomId, Result<Shared<RoomTimeline>, String>),
+    Sidebar(sidebar::Message),
+    Pane(pane::Message),
     /// For room `.0`: built by its views, or by a task it started. Dropped
     /// unless that room is open.
     Room(OwnedRoomId, room::Message),
     /// For the room shown, whichever it is: input to the whole window, such
     /// as shortcuts and dropped files. Dropped while no room is open.
     Shown(room::Message),
-    /// The room list's colours changed, here or on another device.
-    Colours(RoomListColours),
-    /// Colours from the settings file were moved to the account, or not.
-    ColoursMoved(Result<(), String>),
-    Scheduled(Vec<ScheduledMessage>),
-    /// Refreshes times shown relative to now.
-    Tick,
-    ShowSettings(bool),
-    Settings(settings::Message),
+    /// The info card: who someone is or what a room is.
+    Card(info::Message),
+    Modal(modal::Message),
+    Account(account::Message),
+    People(people::Message),
+    /// Pictures and typeset math, copying images, and downloads.
+    Media(media::Message),
     Update(update::Message),
     /// Open the settings and look for updates: Check for Updates… in the
     /// app menu, which only macOS has.
     #[cfg(target_os = "macos")]
     CheckForUpdates,
-    /// Open the room list's "+".
-    AddMenu,
-    SpaceMenu(sidebar::SpaceMenu),
-    /// Close the popup: a click outside it, or its Cancel.
-    ClosePopup,
-    OpenDialog(dialog::Kind),
-    /// Join a space or room from elsewhere.
-    OpenJoin,
-    Join(join::Message),
-    Dialog(dialog::Message),
-    /// Accept (`true`) or decline an invite.
-    AnswerInvite(OwnedRoomId, bool),
-    InviteAnswered(OwnedRoomId, bool, Result<(), String>),
-    CloseNotice,
-    /// Fast ticks while something is in progress.
-    Progress,
-    RoomFilter(String),
-    /// Open the first room matching the search.
-    OpenFirstMatch,
-    /// Open the room above or below in the room list, or one by its row.
-    GoToRoom(sidebar::Go),
-    /// The rooms of our spaces, as their servers list them.
-    /// A space's rooms as its server listed them, or why not.
-    SpaceRoomsLoaded(OwnedRoomId, Result<Vec<mtrx_core::DirectoryRoom>, String>),
-    /// Join a room the search found in our spaces, or ask to (`true`).
-    JoinFound(OwnedRoomId, Vec<OwnedServerName>, bool),
-    /// Joined it (or asked to, `true`), or not.
-    FoundJoined(OwnedRoomId, bool, Result<(), String>),
-    FocusSearch,
     Escape,
     /// ⌘↩: the open dialog's main action, or saving the card's changes.
     Submit,
-    ToggleMembers,
-    /// Open the room with its members shown (where Invite is).
-    ShowMembers(OwnedRoomId),
-    MemberMenu(members::MenuKey),
-    /// Give a member a power level, without asking.
-    SetLevel(OwnedRoomId, OwnedUserId, i64),
-    /// A room's members were changed by us, or not.
-    MembersChanged(OwnedRoomId, Result<(), String>),
-    /// A space's card, on one of its tabs.
-    ShowSpace(OwnedRoomId, overview::Tab),
-    /// Start or open a direct chat with a member.
-    ChatWith(OwnedUserId),
-    /// The direct chat started or found, or why not.
-    ChatStarted(Result<OwnedRoomId, String>),
-    /// Start the Notes to self and open them.
-    StartNotes,
-    Notified(Notification),
-    /// A desktop notification about the room was clicked.
-    NotificationClicked(OwnedRoomId),
-    WindowFocused(bool),
-    /// Quit (⌘Q, in the Dock, logging out) on macOS; elsewhere the window's
-    /// close button (or Ctrl+W, Alt+F4, ...) was pressed. See [`closing`].
-    CloseWindow(window::Id),
-    /// Others' presence, and ours.
-    Presence(presence::Message),
-    /// The selected space's topic and links, in its topic panel.
-    SpaceTopic(OwnedRoomId, topic::Message),
-    RecoveryKey(String),
-    Recover,
-    RecoveryProgress(RecoveryStep),
-    Recovered(Result<bool, String>),
     LinkClicked(String),
-    WindowResized(Size),
-    /// The window opened at `.2` (its outer position), with these displays
-    /// attached (`None` where the platform does not say).
-    WindowOpened(window::Id, Option<Vec<Rectangle>>, Option<Point>),
-    /// The window was moved or resized.
-    WindowMoved(window::Id),
-    /// Where the window now is, to open there next time.
-    WindowPlaced {
-        position: Option<Point>,
-        maximized: bool,
-        fullscreen: bool,
-    },
-    ScaleFactor(f32),
-    /// Text size, or the PDF viewer's zoom while it is open.
-    Zoom(Zoom),
-    ThemeMode(Mode),
-    /// Pictures and typeset math: asked for by the views, and loaded.
-    Media(media::Message),
-    /// Show an image large.
-    OpenImage(downloads::File),
-    CloseImage,
-    /// Open the menu of the image in the viewer.
-    OpenViewerMenu,
-    /// The whole image for the viewer.
-    ImageLoaded(MediaRef, Result<media::Picture, String>),
-    /// Show a PDF large.
-    OpenPdf(downloads::File),
-    Pdf(pdf_viewer::Message),
-    /// Put a message's image on the clipboard.
-    CopyImage(Media, media::Origin),
-    /// Copying an image finished, or failed: shown where it was asked
-    /// from.
-    MediaDone(media::Origin, Result<(), String>),
-    Downloads(downloads::Message),
-    Arrange(arrange::Message),
-    ArrangeFailed(String),
-    /// Show who someone is or what a room is.
-    ShowInfo(info::Target),
-    Info(info::Message),
-    /// Star the direct chat with someone, starting it if there is none.
-    FavouritePerson(OwnedUserId),
-    /// Reload the open room's timeline (⌘R / Ctrl+R); while offline, try
-    /// the server now.
-    Reload,
-    /// The server became reachable or not.
-    Connection(Connection),
-    RoomListScrolled,
-    OutOfView(sidebar::OutOfView),
-    /// Scroll the room list to this offset.
-    ScrollRoomList(f32),
-    /// Dragging the room list's edge.
-    Resize(Resize),
-    /// Try the server now.
-    Reconnect,
-    /// The server no longer accepts the session: forget it and log in again.
-    SignInAgain,
-    /// The ended session's local data is gone.
-    Forgotten(Result<(), String>),
-    /// People the user knows, for suggestions.
-    ContactsLoaded(Vec<Contact>),
-    /// The emoji the user reacts with, most used first.
-    FrequentEmoji(Vec<String>),
+    /// Close the popup: a click outside it, or its Cancel.
+    ClosePopup,
+    CloseNotice,
 }
 
 pub struct App {
@@ -533,14 +416,6 @@ const MIN_ROOM_LIST_WIDTH: f32 = 200.0;
 const MAX_ROOM_LIST_WIDTH: f32 = 520.0;
 const RESIZE_HANDLE: f32 = 5.0;
 
-#[derive(Debug, Clone, Copy)]
-pub enum Resize {
-    Start,
-    /// The cursor's x in the window.
-    Move(f32),
-    End,
-}
-
 /// Something finished in the background, or failed.
 struct Notice {
     text: String,
@@ -681,7 +556,9 @@ impl Main {
         let people = self.shown_people(settings);
         match self.presences.show(people) {
             Some(generation) => Task::perform(tokio::time::sleep(presence::SETTLE), move |()| {
-                Message::Presence(presence::Message::Settle(generation))
+                Message::People(people::Message::Presence(presence::Message::Settle(
+                    generation,
+                )))
             }),
             None => Task::none(),
         }
@@ -693,7 +570,8 @@ impl Main {
         if self.presences.unavailable() {
             return Task::none();
         }
-        presence::activity(&self.session, activity).map(Message::Presence)
+        presence::activity(&self.session, activity)
+            .map(|m| Message::People(people::Message::Presence(m)))
     }
 
     /// The Notes to self if pinned; missing ones only once the room list
@@ -749,7 +627,7 @@ impl Environment {
     /// The window's size, position and whether it is maximised on opening,
     /// as it was left. Its size is in layout units, which iced scales by the
     /// text size: the same in logical pixels at any text size.
-    pub fn window(&self) -> window::Settings {
+    pub fn window(&self) -> iced::window::Settings {
         self.placement.settings(self.settings.text_size.scale())
     }
 
@@ -763,8 +641,8 @@ impl Environment {
 /// macOS closing it hides it, as a Mac app's main window, and the app goes
 /// on (synced, notifying); clicking its Dock icon shows it again (our
 /// winit). Quitting, and elsewhere closing, requests to close it: the app
-/// goes offline and ends its session first, see [`Message::CloseWindow`].
-pub fn closing(mut window: window::Settings) -> window::Settings {
+/// goes offline and ends its session first, see [`window::Message::Close`].
+pub fn closing(mut window: iced::window::Settings) -> iced::window::Settings {
     window.exit_on_close_request = false;
     #[cfg(target_os = "macos")]
     {
@@ -809,26 +687,32 @@ impl App {
         };
         let restore = Task::perform(
             async move { Session::restore(profile).await.map(|s| Shared(Arc::new(s))) },
-            |result| Message::Restored(result.map_err(|e| Shared(Arc::new(e)))),
+            |result| {
+                Message::Start(start::Message::Restored(
+                    result.map_err(|e| Shared(Arc::new(e))),
+                ))
+            },
         );
-        let scale = window::oldest().then(|id| match id {
-            Some(id) => window::scale_factor(id).map(Message::ScaleFactor),
+        let scale = iced::window::oldest().then(|id| match id {
+            Some(id) => iced::window::scale_factor(id)
+                .map(|m| Message::Window(window::Message::ScaleFactor(m))),
             None => Task::none(),
         });
-        let mode = iced::system::theme().map(Message::ThemeMode);
+        let mode = iced::system::theme().map(|m| Message::Window(window::Message::Theme(m)));
         // Once the app has launched, over winit's own.
         #[cfg(target_os = "macos")]
-        let menu_bar = window::oldest().then(|id| match id {
-            Some(id) => window::run(id, |_| crate::menu_bar::install()).discard(),
+        let menu_bar = iced::window::oldest().then(|id| match id {
+            Some(id) => iced::window::run(id, |_| crate::menu_bar::install()).discard(),
             None => Task::none(),
         });
         #[cfg(not(target_os = "macos"))]
         let menu_bar = Task::none();
-        // Whether the window opened on a display, see `Message::WindowOpened`.
-        let opened = window::oldest().then(|id| match id {
-            Some(id) => window::run(id, placement::displays).then(move |displays| {
-                window::position(id)
-                    .map(move |position| Message::WindowOpened(id, displays.clone(), position))
+        // Whether the window opened on a display, see `window::Message::Opened`.
+        let opened = iced::window::oldest().then(|id| match id {
+            Some(id) => iced::window::run(id, placement::displays).then(move |displays| {
+                iced::window::position(id).map(move |position| {
+                    Message::Window(window::Message::Opened(id, displays.clone(), position))
+                })
             }),
             None => Task::none(),
         });
@@ -875,7 +759,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         // What messages still bring, e.g. a session restored meanwhile, is
-        // dropped here, while the runtime runs (see `Message::CloseWindow`).
+        // dropped here, while the runtime runs (see `window::Message::Close`).
         if let Screen::Closing = self.screen {
             return Task::none();
         }
@@ -883,35 +767,38 @@ impl App {
         let moved = matches!(
             message,
             Message::Rooms(_)
-                | Message::Ready(_)
-                | Message::RoomListScrolled
-                | Message::SelectSpace(_)
-                | Message::RoomFilter(_)
-                | Message::Arrange(_)
-                | Message::AddMenu
+                | Message::Start(start::Message::Ready(_))
+                | Message::Sidebar(sidebar::Message::Scrolled)
+                | Message::Sidebar(sidebar::Message::SelectSpace(_))
+                | Message::Sidebar(sidebar::Message::Filter(_))
+                | Message::Sidebar(sidebar::Message::Arrange(_))
+                | Message::Sidebar(sidebar::Message::AddMenu)
                 | Message::ClosePopup
-                | Message::OpenRoom(_)
-                | Message::WindowResized(_)
+                | Message::Pane(pane::Message::Open(_))
+                | Message::Window(window::Message::Resized(_))
         );
         // A menu's choice closes it, as does what opens over it: so an
         // open popup is always on top.
         if let Screen::Main(main) = &mut self.screen
             && matches!(
                 message,
-                Message::OpenDialog(_)
-                    | Message::OpenJoin
-                    | Message::ShowSettings(true)
-                    | Message::OpenImage(_)
-                    | Message::OpenPdf(_)
-                    | Message::ShowSpace(..)
-                    | Message::ShowInfo(_)
-                    | Message::SelectSpace(_)
-                    | Message::OpenRoom(_)
+                Message::Modal(modal::Message::OpenDialog(_))
+                    | Message::Modal(modal::Message::OpenJoin)
+                    | Message::Modal(modal::Message::ShowSettings(true))
+                    | Message::Modal(modal::Message::OpenImage(_))
+                    | Message::Modal(modal::Message::OpenPdf(_))
+                    | Message::Card(info::Message::Show(..))
+                    | Message::Sidebar(sidebar::Message::SelectSpace(_))
+                    | Message::Pane(pane::Message::Open(_))
             )
         {
             main.popup = None;
         }
-        let remember = matches!(message, Message::OpenRoom(_) | Message::SelectSpace(_));
+        let remember = matches!(
+            message,
+            Message::Pane(pane::Message::Open(_))
+                | Message::Sidebar(sidebar::Message::SelectSpace(_))
+        );
         let card = self.card_shown();
         let edit = self.edit_shown();
         let space = self.selected_space();
@@ -946,9 +833,8 @@ impl App {
             _ => 0,
         });
         let out_of_view = match &self.screen {
-            Screen::Main(main) if moved => {
-                sidebar::find_out_of_view(&main.lists.rooms).map(Message::OutOfView)
-            }
+            Screen::Main(main) if moved => sidebar::find_out_of_view(&main.lists.rooms)
+                .map(|m| Message::Sidebar(sidebar::Message::OutOfView(m))),
             _ => Task::none(),
         };
         let presence = match &mut self.screen {
@@ -993,24 +879,24 @@ impl App {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::RoomListScrolled => Task::none(),
-            Message::OutOfView(out_of_view) => {
+            Message::Sidebar(sidebar::Message::Scrolled) => Task::none(),
+            Message::Sidebar(sidebar::Message::OutOfView(out_of_view)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.out_of_view = out_of_view;
                 }
                 Task::none()
             }
-            Message::ScrollRoomList(offset) => sidebar::scroll_to(offset),
-            Message::Resize(Resize::Start) => {
+            Message::Sidebar(sidebar::Message::ScrollTo(offset)) => sidebar::scroll_to(offset),
+            Message::Window(window::Message::Resize(Resize::Start)) => {
                 self.resizing = true;
                 Task::none()
             }
-            Message::Resize(Resize::Move(x)) => {
+            Message::Window(window::Message::Resize(Resize::Move(x))) => {
                 self.settings.room_list_width =
                     (x - SPACE_BAR_WIDTH).clamp(MIN_ROOM_LIST_WIDTH, MAX_ROOM_LIST_WIDTH);
                 Task::none()
             }
-            Message::Resize(Resize::End) => {
+            Message::Window(window::Message::Resize(Resize::End)) => {
                 self.resizing = false;
                 if let Some(file) = &self.settings_file
                     && let Err(e) = self.settings.save(file)
@@ -1019,13 +905,15 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Restored(Ok(Shared(session))) | Message::LoggedIn(Ok(Shared(session))) => {
+            Message::Start(start::Message::Restored(Ok(Shared(session))))
+            | Message::Start(start::Message::LoggedIn(Ok(Shared(session)))) => {
                 let mut main = Main::new(session.clone());
                 main.restore = self.view_file.as_deref().map(LastView::load);
                 self.screen = Screen::Main(Box::new(main));
                 let migrate = self.move_colours_to_account(&session);
                 let share = self.settings.share_presence;
-                let presence = presence::start(&session, share).map(Message::Presence);
+                let presence = presence::start(&session, share)
+                    .map(|m| Message::People(people::Message::Presence(m)));
                 let start = task::request(
                     async move {
                         session.start_sync().await;
@@ -1035,7 +923,7 @@ impl App {
                         let verified = session.is_device_verified().await?;
                         Ok((Shared(Arc::new(lists)), verified))
                     },
-                    Message::Ready,
+                    |m| Message::Start(start::Message::Ready(m)),
                 );
                 // Not sharing, offline before syncing, whose requests would
                 // say online; sharing, sync need not wait.
@@ -1046,13 +934,13 @@ impl App {
                 };
                 Task::batch([start, migrate])
             }
-            Message::Colours(colours) => {
+            Message::Sidebar(sidebar::Message::Colours(colours)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.colours = colours;
                 }
                 Task::none()
             }
-            Message::ColoursMoved(result) => {
+            Message::Sidebar(sidebar::Message::ColoursMoved(result)) => {
                 match result {
                     Ok(()) => {
                         self.settings.legacy_home_tint = None;
@@ -1067,7 +955,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Restored(Err(Shared(error))) => {
+            Message::Start(start::Message::Restored(Err(Shared(error)))) => {
                 let mut login = Login::default();
                 // Usually nobody is signed in yet. Without a keyring signing
                 // in would fail too, so say so before the user tries.
@@ -1077,7 +965,7 @@ impl App {
                 self.screen = Screen::Login(login);
                 Task::none()
             }
-            Message::Login(message) => {
+            Message::Start(start::Message::Login(message)) => {
                 let Screen::Login(login) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1092,7 +980,7 @@ impl App {
                                     .await
                                     .map(|s| Shared(Arc::new(s)))
                             },
-                            Message::LoggedIn,
+                            |m| Message::Start(start::Message::LoggedIn(m)),
                         ))
                     }
                     login::Action::Browser => login.browser_sign_in(task::request(
@@ -1103,17 +991,17 @@ impl App {
                             .await
                             .map(|s| Shared(Arc::new(s)))
                         },
-                        Message::LoggedIn,
+                        |m| Message::Start(start::Message::LoggedIn(m)),
                     )),
                 }
             }
-            Message::LoggedIn(Err(error)) => {
+            Message::Start(start::Message::LoggedIn(Err(error))) => {
                 if let Screen::Login(login) = &mut self.screen {
                     login.failed(error);
                 }
                 Task::none()
             }
-            Message::Ready(result) => {
+            Message::Start(start::Message::Ready(result)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1135,11 +1023,11 @@ impl App {
                     .joined_space
                     .take_if(|space| main.lists.rooms.iter().any(|r| r.id == *space))
                     .map_or(Task::none(), |space| {
-                        Task::done(Message::ShowSpace(space, overview::Tab::Rooms))
+                        Task::done(info::show_space(space, overview::Tab::Rooms))
                     });
                 Task::batch([joined, self.load_pinned(), self.restore_view()])
             }
-            Message::SelectSpace(space) => {
+            Message::Sidebar(sidebar::Message::SelectSpace(space)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1149,7 +1037,7 @@ impl App {
                 main.arrange.escape();
                 Task::none()
             }
-            Message::Arrange(message) => {
+            Message::Sidebar(sidebar::Message::Arrange(message)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1162,13 +1050,13 @@ impl App {
                 };
                 main.arrange.update(message, context)
             }
-            Message::ArrangeFailed(e) => {
+            Message::Sidebar(sidebar::Message::ArrangeFailed(e)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.report(format!("Could not rearrange the room list: {e}"), None);
                 }
                 Task::none()
             }
-            Message::OpenRoom(id) => {
+            Message::Pane(pane::Message::Open(id)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1195,10 +1083,10 @@ impl App {
                         let id = id.clone();
                         async move { session.timeline(&id).await.map(|t| Shared(Arc::new(t))) }
                     },
-                    move |result| Message::RoomOpened(id, result),
+                    move |result| Message::Pane(pane::Message::Opened(id, result)),
                 )
             }
-            Message::RoomOpened(id, result) => {
+            Message::Pane(pane::Message::Opened(id, result)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1257,15 +1145,15 @@ impl App {
                     }
                 }
             }
-            Message::ShowSettings(false) => {
+            Message::Modal(modal::Message::ShowSettings(false)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.modal
                         .take_if(|modal| matches!(modal, Modal::Settings(_)));
                 }
                 Task::none()
             }
-            Message::ShowSettings(true) => self.open_settings(),
-            Message::Settings(message) => self.settings_update(message),
+            Message::Modal(modal::Message::ShowSettings(true)) => self.open_settings(),
+            Message::Modal(modal::Message::Settings(message)) => self.settings_update(message),
             #[cfg(target_os = "macos")]
             Message::CheckForUpdates => {
                 let check = (self.updater).update(update::Message::Check, &self.settings.updates);
@@ -1289,14 +1177,16 @@ impl App {
                     None => Task::none(),
                 }
             }
-            Message::SpaceTopic(space, message) => self.space_topic(space, message),
-            Message::AddMenu => {
+            Message::Sidebar(sidebar::Message::SpaceTopic(space, message)) => {
+                self.space_topic(space, message)
+            }
+            Message::Sidebar(sidebar::Message::AddMenu) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.popup = Some(Popup::AddMenu);
                 }
                 Task::none()
             }
-            Message::SpaceMenu(menu) => {
+            Message::Sidebar(sidebar::Message::SpaceMenu(menu)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.popup = Some(Popup::SpaceMenu(menu));
                 }
@@ -1308,7 +1198,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::OpenDialog(kind) => {
+            Message::Modal(modal::Message::OpenDialog(kind)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1330,7 +1220,11 @@ impl App {
                     let session = session.clone();
                     dialog.offer_owners(Task::perform(
                         async move { session.offers_owners().await },
-                        |offered| Message::Dialog(dialog::Message::OwnersOffered(offered)),
+                        |offered| {
+                            Message::Modal(modal::Message::Dialog(dialog::Message::OwnersOffered(
+                                offered,
+                            )))
+                        },
                     ))
                 } else {
                     Task::none()
@@ -1339,18 +1233,18 @@ impl App {
                 Task::batch([
                     Task::perform(
                         async move { session.contacts().await.unwrap_or_default() },
-                        Message::ContactsLoaded,
+                        |m| Message::People(people::Message::ContactsLoaded(m)),
                     ),
                     owners,
                 ])
             }
-            Message::FrequentEmoji(emoji) => {
+            Message::People(people::Message::FrequentEmoji(emoji)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.frequent_emoji = emoji;
                 }
                 Task::none()
             }
-            Message::ContactsLoaded(contacts) => {
+            Message::People(people::Message::ContactsLoaded(contacts)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(Modal::Dialog(dialog)) = &mut main.modal {
                         dialog.update(dialog::Message::Contacts(contacts.clone()));
@@ -1359,8 +1253,8 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ShowInfo(target) => self.show_card(target, overview::Tab::Rooms),
-            Message::OpenJoin => {
+            Message::Card(info::Message::Show(target, tab)) => self.show_card(target, tab),
+            Message::Modal(modal::Message::OpenJoin) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1376,7 +1270,7 @@ impl App {
                     iced::widget::operation::focus(join::SEARCH),
                 ])
             }
-            Message::Join(message) => {
+            Message::Modal(modal::Message::Join(message)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1399,8 +1293,7 @@ impl App {
                     self.join_action(action),
                 ])
             }
-            Message::ShowSpace(space, tab) => self.show_card(info::Target::Room(space), tab),
-            Message::Info(message) => {
+            Message::Card(message) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1409,7 +1302,7 @@ impl App {
                 };
                 let overview_session = main.session.clone();
                 let room = card.handle.clone();
-                let saved = |result| Message::Info(info::Message::Saved(result));
+                let saved = |result| Message::Card(info::Message::Saved(result));
                 // A menu's choice closes it.
                 match &message {
                     info::Message::OpenPictureMenu => {
@@ -1520,7 +1413,7 @@ impl App {
                             let opened = update.changed.len();
                             Ok(format!("Opened {opened} room(s).{skipped}"))
                         },
-                        |result| Message::Info(info::Message::Opened(result)),
+                        |result| Message::Card(info::Message::Opened(result)),
                     ),
                     _ => Task::none(),
                 };
@@ -1539,7 +1432,7 @@ impl App {
                 };
                 Task::batch([task, overview])
             }
-            Message::FavouritePerson(user) => {
+            Message::People(people::Message::FavouritePerson(user)) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
@@ -1550,15 +1443,19 @@ impl App {
                 })
                 .then(|result| match result {
                     Ok(()) => Task::none(),
-                    Err(e) => Task::done(Message::ArrangeFailed(e.to_string())),
+                    Err(e) => Task::done(Message::Sidebar(sidebar::Message::ArrangeFailed(
+                        e.to_string(),
+                    ))),
                 })
             }
-            Message::Reload => {
+            Message::Pane(pane::Message::Reload) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
                 match main.connection {
-                    Connection::Offline => return self.update(Message::Reconnect),
+                    Connection::Offline => {
+                        return self.update(Message::Account(account::Message::Reconnect));
+                    }
                     // Its bar offers signing in again.
                     Connection::SignedOut => return Task::none(),
                     Connection::Online => {}
@@ -1576,7 +1473,7 @@ impl App {
                     move |result| room::Message::Reloaded(result).to(&id),
                 )
             }
-            Message::Connection(connection) => {
+            Message::Account(account::Message::Connection(connection)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1589,14 +1486,16 @@ impl App {
                     _ => Task::none(),
                 }
             }
-            Message::SignInAgain => {
+            Message::Start(start::Message::SignInAgain) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
                 let session = main.session.clone();
-                task::request(async move { session.forget().await }, Message::Forgotten)
+                task::request(async move { session.forget().await }, |m| {
+                    Message::Start(start::Message::Forgotten(m))
+                })
             }
-            Message::Forgotten(result) => {
+            Message::Start(start::Message::Forgotten(result)) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
@@ -1608,15 +1507,15 @@ impl App {
                 self.screen = Screen::Login(login);
                 Task::none()
             }
-            Message::Reconnect => {
+            Message::Account(account::Message::Reconnect) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
                 let session = main.session.clone();
                 Task::future(async move { session.reconnect().await }).discard()
             }
-            Message::Dialog(message) => self.dialog(message),
-            Message::AnswerInvite(id, accept) => {
+            Message::Modal(modal::Message::Dialog(message)) => self.dialog(message),
+            Message::Pane(pane::Message::Answer(id, accept)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1639,10 +1538,10 @@ impl App {
                             }
                         }
                     },
-                    move |result| Message::InviteAnswered(id, accept, result),
+                    move |result| Message::Pane(pane::Message::Answered(id, accept, result)),
                 )
             }
-            Message::InviteAnswered(id, accept, result) => {
+            Message::Pane(pane::Message::Answered(id, accept, result)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1650,7 +1549,7 @@ impl App {
                     main.set_pane(Pane::Empty);
                 }
                 match result {
-                    Ok(()) if accept => self.update(Message::OpenRoom(id)),
+                    Ok(()) if accept => self.update(Message::Pane(pane::Message::Open(id))),
                     Ok(()) => Task::none(),
                     Err(e) => {
                         let answer = if accept { "accept" } else { "decline" };
@@ -1659,7 +1558,7 @@ impl App {
                     }
                 }
             }
-            Message::RoomFilter(filter) => {
+            Message::Sidebar(sidebar::Message::Filter(filter)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1672,37 +1571,41 @@ impl App {
                 main.filter = filter;
                 load
             }
-            Message::SpaceRoomsLoaded(space, result) => {
+            Message::Sidebar(sidebar::Message::SpaceRoomsLoaded(space, result)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.space_rooms.loaded(space, result);
                 }
                 Task::none()
             }
-            Message::JoinFound(room, via, knock) => {
+            Message::Sidebar(sidebar::Message::JoinFound(room, via, knock)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
                 main.space_rooms.busy.insert(room.clone());
                 let join = join_listed(main.session.clone(), room.clone().into(), via, knock);
                 task::request(join, move |result| {
-                    Message::FoundJoined(room, knock, result.map(|_| ()))
+                    Message::Sidebar(sidebar::Message::FoundJoined(
+                        room,
+                        knock,
+                        result.map(|_| ()),
+                    ))
                 })
             }
-            Message::FoundJoined(room, knock, result) => {
+            Message::Sidebar(sidebar::Message::FoundJoined(room, knock, result)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
                 main.space_rooms.busy.remove(&room);
                 match result {
                     Ok(()) if knock => Task::none(),
-                    Ok(()) => self.update(Message::OpenRoom(room)),
+                    Ok(()) => self.update(Message::Pane(pane::Message::Open(room))),
                     Err(e) => {
                         main.report(format!("Could not join: {e}"), None);
                         Task::none()
                     }
                 }
             }
-            Message::OpenFirstMatch => {
+            Message::Sidebar(sidebar::Message::OpenFirstMatch) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1712,24 +1615,26 @@ impl App {
                     Some(room) => {
                         let id = room.id.clone();
                         main.filter.clear();
-                        self.update(Message::OpenRoom(id))
+                        self.update(Message::Pane(pane::Message::Open(id)))
                     }
                     None => Task::none(),
                 }
             }
-            Message::GoToRoom(go) => {
+            Message::Sidebar(sidebar::Message::GoTo(go)) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
                 match sidebar::go_to(&main.room_list_view(&self.settings), go) {
                     Some(room) => {
                         let id = room.id.clone();
-                        self.update(Message::OpenRoom(id))
+                        self.update(Message::Pane(pane::Message::Open(id)))
                     }
                     None => Task::none(),
                 }
             }
-            Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
+            Message::Sidebar(sidebar::Message::FocusSearch) => {
+                iced::widget::operation::focus(sidebar::SEARCH)
+            }
             // Closes the topmost thing: the popup (on top, as what opens
             // over it closes it), the modal, the card, then in the open room
             // the mention offered, the find bar, the selection, the reply
@@ -1748,9 +1653,15 @@ impl App {
                 }
                 match &mut main.modal {
                     Some(Modal::Dialog(_)) => {
-                        return Task::done(Message::Dialog(dialog::Message::Cancel));
+                        return Task::done(Message::Modal(modal::Message::Dialog(
+                            dialog::Message::Cancel,
+                        )));
                     }
-                    Some(Modal::Join(_)) => return Task::done(Message::Join(join::Message::Close)),
+                    Some(Modal::Join(_)) => {
+                        return Task::done(Message::Modal(modal::Message::Join(
+                            join::Message::Close,
+                        )));
+                    }
                     Some(_) => main.modal = None,
                     None if main.card.is_some() => main.card = None,
                     None => match main.pane.room_mut() {
@@ -1785,7 +1696,9 @@ impl App {
                     return Task::none();
                 };
                 let submit = match (&main.modal, &main.card) {
-                    (Some(Modal::Dialog(_)), _) => Some(Message::Dialog(dialog::Message::Submit)),
+                    (Some(Modal::Dialog(_)), _) => Some(Message::Modal(modal::Message::Dialog(
+                        dialog::Message::Submit,
+                    ))),
                     (Some(_), _) => None,
                     (None, card) => card
                         .as_ref()
@@ -1793,13 +1706,13 @@ impl App {
                 };
                 submit.map_or_else(Task::none, Task::done)
             }
-            Message::MemberMenu(menu) => {
+            Message::Pane(pane::Message::MemberMenu(menu)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.popup = Some(Popup::MemberMenu(menu));
                 }
                 Task::none()
             }
-            Message::SetLevel(room, user, level) => {
+            Message::Pane(pane::Message::SetLevel(room, user, level)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1810,16 +1723,16 @@ impl App {
                         let room = room.clone();
                         async move { session.room(&room)?.set_level(&user, level).await }
                     },
-                    move |result| Message::MembersChanged(room, result),
+                    move |result| Message::Pane(pane::Message::MembersChanged(room, result)),
                 )
             }
-            Message::MembersChanged(room, result) => {
+            Message::Pane(pane::Message::MembersChanged(room, result)) => {
                 if let (Err(e), Screen::Main(main)) = (&result, &mut self.screen) {
                     main.report(format!("Could not change the members: {e}"), None);
                 }
                 self.refresh_members(&room)
             }
-            Message::ShowMembers(id) => {
+            Message::Pane(pane::Message::ShowMembers(id)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1828,10 +1741,10 @@ impl App {
                 match main.pane.open_mut(&id) {
                     Some(room) if room.tasks.running(&Load::Members) => Task::none(),
                     Some(room) => load_members(room),
-                    None => Task::done(Message::OpenRoom(id)),
+                    None => Task::done(Message::Pane(pane::Message::Open(id))),
                 }
             }
-            Message::ToggleMembers => {
+            Message::Pane(pane::Message::ToggleMembers) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1844,32 +1757,33 @@ impl App {
                     _ => Task::none(),
                 }
             }
-            Message::StartNotes => {
+            Message::People(people::Message::StartNotes) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
                 let own_user = main.own_user.clone();
-                self.update(Message::ChatWith(own_user))
+                self.update(Message::People(people::Message::ChatWith(own_user)))
             }
-            Message::ChatWith(user) => {
+            Message::People(people::Message::ChatWith(user)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
                 main.card = None;
                 let session = main.session.clone();
-                task::request(
-                    async move { session.direct_chat(&user).await },
-                    Message::ChatStarted,
-                )
+                task::request(async move { session.direct_chat(&user).await }, |m| {
+                    Message::People(people::Message::ChatStarted(m))
+                })
             }
-            Message::ChatStarted(Ok(room)) => self.update(Message::OpenRoom(room)),
-            Message::ChatStarted(Err(e)) => {
+            Message::People(people::Message::ChatStarted(Ok(room))) => {
+                self.update(Message::Pane(pane::Message::Open(room)))
+            }
+            Message::People(people::Message::ChatStarted(Err(e))) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.report(format!("Could not open the direct chat: {e}"), None);
                 }
                 Task::none()
             }
-            Message::Notified(notification) => {
+            Message::Account(account::Message::Notified(notification)) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
@@ -1884,28 +1798,30 @@ impl App {
                 let room = notification.room_id.clone();
                 Task::future(notify(notification)).then(move |clicked| {
                     if clicked {
-                        Task::done(Message::NotificationClicked(room.clone()))
+                        Task::done(Message::Account(account::Message::NotificationClicked(
+                            room.clone(),
+                        )))
                     } else {
                         Task::none()
                     }
                 })
             }
-            Message::NotificationClicked(room) => {
+            Message::Account(account::Message::NotificationClicked(room)) => {
                 // Shown again if closing hid it (macOS).
-                let raise = window::oldest().then(|id| match id {
-                    Some(id) => window::mode(id).then(move |mode| {
-                        if mode == window::Mode::Hidden {
-                            window::set_mode(id, window::Mode::Windowed)
-                                .chain(window::gain_focus(id))
+                let raise = iced::window::oldest().then(|id| match id {
+                    Some(id) => iced::window::mode(id).then(move |mode| {
+                        if mode == iced::window::Mode::Hidden {
+                            iced::window::set_mode(id, iced::window::Mode::Windowed)
+                                .chain(iced::window::gain_focus(id))
                         } else {
-                            window::gain_focus(id)
+                            iced::window::gain_focus(id)
                         }
                     }),
                     None => Task::none(),
                 });
-                Task::batch([raise, self.update(Message::OpenRoom(room))])
+                Task::batch([raise, self.update(Message::Pane(pane::Message::Open(room)))])
             }
-            Message::WindowFocused(focused) => {
+            Message::Window(window::Message::Focused(focused)) => {
                 self.focused = focused;
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
@@ -1913,7 +1829,7 @@ impl App {
                 // The window was in use until now.
                 main.activity(mtrx_core::Activity::Input)
             }
-            Message::CloseWindow(id) => {
+            Message::Window(window::Message::Close(id)) => {
                 // What is being written is kept before the session ends.
                 let draft = match &self.screen {
                     Screen::Main(main) => {
@@ -1937,16 +1853,16 @@ impl App {
                 // the SDK's stores can no longer close: end the session (once
                 // it is offline), or a browser sign-in, now.
                 self.screen = Screen::Closing;
-                Task::batch([offline, draft]).chain(window::close(id))
+                Task::batch([offline, draft]).chain(iced::window::close(id))
             }
-            Message::Presence(message) => self.presence(message),
+            Message::People(people::Message::Presence(message)) => self.presence(message),
             Message::CloseNotice => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.notice = None;
                 }
                 Task::none()
             }
-            Message::Progress => {
+            Message::Modal(modal::Message::Progress) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(Modal::Dialog(dialog)) = &mut main.modal
                 {
@@ -1954,7 +1870,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Scheduled(scheduled) => {
+            Message::Account(account::Message::Scheduled(scheduled)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     if let Some(room) = main.pane.room_mut() {
                         room.scheduled_changed(&scheduled);
@@ -1971,19 +1887,19 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Tick => {
+            Message::Account(account::Message::Tick) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.now = SystemTime::now();
                 }
                 Task::none()
             }
-            Message::RecoveryKey(key) => {
+            Message::Account(account::Message::RecoveryKey(key)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.recovery_key = key;
                 }
                 Task::none()
             }
-            Message::Recover => {
+            Message::Account(account::Message::Recover) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -1996,7 +1912,9 @@ impl App {
                 Task::run(
                     iced::stream::channel(16, async move |mut tx| {
                         let progress = |step| {
-                            let _ = tx.clone().try_send(Message::RecoveryProgress(step));
+                            let _ = tx.clone().try_send(Message::Account(
+                                account::Message::RecoveryProgress(step),
+                            ));
                         };
                         let result = async {
                             session.recover(&key, progress).await?;
@@ -2004,13 +1922,15 @@ impl App {
                         }
                         .await;
                         let _ = tx
-                            .send(Message::Recovered(result.map_err(|e| e.to_string())))
+                            .send(Message::Account(account::Message::Recovered(
+                                result.map_err(|e| e.to_string()),
+                            )))
                             .await;
                     }),
                     |message| message,
                 )
             }
-            Message::RecoveryProgress(step) => {
+            Message::Account(account::Message::RecoveryProgress(step)) => {
                 if let Screen::Main(main) = &mut self.screen
                     && main.recovery_step.is_some()
                 {
@@ -2018,7 +1938,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Recovered(result) => {
+            Message::Account(account::Message::Recovered(result)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.recovery_step = None;
                     match result {
@@ -2043,19 +1963,19 @@ impl App {
                         Some(room) => room.mentioned(user),
                         None => info::Target::User(mtrx_core::User::from(user)),
                     };
-                    Task::done(Message::ShowInfo(card))
+                    Task::done(info::show(card))
                 }
                 None => {
                     let _ = open::that_detached(url);
                     Task::none()
                 }
             },
-            Message::WindowResized(size) => {
+            Message::Window(window::Message::Resized(size)) => {
                 // Reported in layout units.
                 self.window = size * self.scale_factor();
                 self.pdf_resized()
             }
-            Message::WindowOpened(id, Some(displays), Some(position)) => {
+            Message::Window(window::Message::Opened(id, Some(displays), Some(position))) => {
                 // Left on a display since unplugged, the window opens on the
                 // main one instead, as the first time.
                 let Some(left) = self.placement.frame else {
@@ -2068,30 +1988,34 @@ impl App {
                     return Task::none();
                 };
                 Task::batch([
-                    window::maximize(id, false),
-                    window::resize(id, frame.size() / self.scale_factor()),
-                    window::move_to(id, frame.position()),
+                    iced::window::maximize(id, false),
+                    iced::window::resize(id, frame.size() / self.scale_factor()),
+                    iced::window::move_to(id, frame.position()),
                 ])
             }
-            Message::WindowOpened(..) => Task::none(),
+            Message::Window(window::Message::Opened(..)) => Task::none(),
             // Not while closing hid it (macOS): where it is not shown.
-            Message::WindowMoved(id) => window::mode(id).then(move |mode| {
-                if mode == window::Mode::Hidden {
-                    return Task::none();
-                }
-                window::is_maximized(id).then(move |maximized| {
-                    window::position(id).map(move |position| Message::WindowPlaced {
-                        position,
-                        maximized,
-                        fullscreen: mode == window::Mode::Fullscreen,
+            Message::Window(window::Message::Moved(id)) => {
+                iced::window::mode(id).then(move |mode| {
+                    if mode == iced::window::Mode::Hidden {
+                        return Task::none();
+                    }
+                    iced::window::is_maximized(id).then(move |maximized| {
+                        iced::window::position(id).map(move |position| {
+                            Message::Window(window::Message::Placed {
+                                position,
+                                maximized,
+                                fullscreen: mode == iced::window::Mode::Fullscreen,
+                            })
+                        })
                     })
                 })
-            }),
-            Message::WindowPlaced {
+            }
+            Message::Window(window::Message::Placed {
                 position: Some(position),
                 maximized,
                 fullscreen,
-            } => {
+            }) => {
                 let frame = Frame::new(position, self.window);
                 if self.placement.follow(frame, maximized, fullscreen)
                     && let Some(file) = &self.placement_file
@@ -2100,12 +2024,12 @@ impl App {
                 }
                 Task::none()
             }
-            Message::WindowPlaced { position: None, .. } => Task::none(),
-            Message::ScaleFactor(scale) => {
+            Message::Window(window::Message::Placed { position: None, .. }) => Task::none(),
+            Message::Window(window::Message::ScaleFactor(scale)) => {
                 self.scale = scale;
                 self.pdf_resized()
             }
-            Message::Zoom(zoom) => {
+            Message::Window(window::Message::Zoom(zoom)) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(Modal::Pdf(pdf)) = &mut main.modal
                 {
@@ -2119,12 +2043,11 @@ impl App {
                 self.save_settings();
                 self.pdf_resized()
             }
-            Message::ThemeMode(mode) => {
+            Message::Window(window::Message::Theme(mode)) => {
                 self.system_mode = mode;
                 Task::none()
             }
-            Message::Media(message) => self.media(message),
-            Message::OpenImage(file) => {
+            Message::Modal(modal::Message::OpenImage(file)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -2133,7 +2056,7 @@ impl App {
                 main.modal = Some(Modal::Image(viewer));
                 load
             }
-            Message::OpenViewerMenu => {
+            Message::Modal(modal::Message::OpenViewerMenu) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(Modal::Image(_)) = &main.modal
                 {
@@ -2141,7 +2064,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::CloseImage => {
+            Message::Modal(modal::Message::CloseImage) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.modal
                         .take_if(|modal| matches!(modal, Modal::Image(_) | Modal::Pdf(_)));
@@ -2149,7 +2072,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::OpenPdf(file) => {
+            Message::Modal(modal::Message::OpenPdf(file)) => {
                 let mut viewer = pdf_viewer::Viewer::new(file, self.viewport(), self.pixel_scale());
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -2158,14 +2081,14 @@ impl App {
                 main.modal = Some(Modal::Pdf(viewer));
                 open
             }
-            Message::Pdf(message) => match &mut self.screen {
+            Message::Modal(modal::Message::Pdf(message)) => match &mut self.screen {
                 Screen::Main(main) => match &mut main.modal {
                     Some(Modal::Pdf(viewer)) => viewer.update(message),
                     _ => Task::none(),
                 },
                 _ => Task::none(),
             },
-            Message::Downloads(message) => {
+            Message::Media(media::Message::Downloads(message)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -2176,7 +2099,7 @@ impl App {
                         if main.pane.open(&id).is_some() {
                             return Task::done(room::Message::GoTo(event).to(&id));
                         }
-                        let open = self.update(Message::OpenRoom(id.clone()));
+                        let open = self.update(Message::Pane(pane::Message::Open(id.clone())));
                         if let Screen::Main(main) = &mut self.screen {
                             main.go_to = Some((id, event));
                         }
@@ -2215,21 +2138,21 @@ impl App {
                             main.popup =
                                 (main.downloads.kept(*menu)).map(|menu| Popup::Downloads { menu });
                         }
-                        task.map(Message::Downloads)
+                        task.map(|m| Message::Media(media::Message::Downloads(m)))
                     }
                 }
             }
-            Message::CopyImage(file, from) => {
+            Message::Media(media::Message::CopyImage(file, from)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
                 close_menu(main, &from);
                 Task::perform(
                     media::copy_image(main.session.clone(), file),
-                    move |result| Message::MediaDone(from.clone(), result),
+                    move |result| Message::Media(media::Message::Done(from.clone(), result)),
                 )
             }
-            Message::MediaDone(from, result) => {
+            Message::Media(media::Message::Done(from, result)) => {
                 let (Screen::Main(main), Err(e)) = (&mut self.screen, result) else {
                     return Task::none();
                 };
@@ -2248,7 +2171,8 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ImageLoaded(media, result) => {
+            Message::Media(message) => self.media(message),
+            Message::Modal(modal::Message::ImageLoaded(media, result)) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(Modal::Image(viewer)) = &mut main.modal
                 {
@@ -2716,27 +2640,33 @@ impl App {
                     let query = query.clone();
                     async move { session.search_users(&query, 10).await.unwrap_or_default() }
                 },
-                move |users| Message::Dialog(dialog::Message::Suggestions(query, users)),
+                move |users| {
+                    Message::Modal(modal::Message::Dialog(dialog::Message::Suggestions(
+                        query, users,
+                    )))
+                },
             )),
             dialog::Action::Arrange(message) => {
                 main.modal = None;
-                self.update(Message::Arrange(message))
+                self.update(Message::Sidebar(sidebar::Message::Arrange(message)))
             }
             dialog::Action::Submit(request) => {
                 let id = main.last_request.next();
                 main.last_request = id;
                 dialog.sent(id);
                 Task::perform(run_request(session, request), move |result| {
-                    Message::Dialog(dialog::Message::Done(id, result))
+                    Message::Modal(modal::Message::Dialog(dialog::Message::Done(id, result)))
                 })
             }
             dialog::Action::Finished(opened) => {
                 main.modal = None;
                 let show = match &opened {
-                    dialog::Opened::Room(id) => self.update(Message::OpenRoom(id.clone())),
-                    dialog::Opened::Space(id) => {
-                        self.update(Message::SelectSpace(Some(id.clone())))
+                    dialog::Opened::Room(id) => {
+                        self.update(Message::Pane(pane::Message::Open(id.clone())))
                     }
+                    dialog::Opened::Space(id) => self.update(Message::Sidebar(
+                        sidebar::Message::SelectSpace(Some(id.clone())),
+                    )),
                     _ => Task::none(),
                 };
                 Task::batch([self.request_done(opened), show])
@@ -2803,7 +2733,7 @@ impl App {
                         };
                         settings::Message::SpaceLoaded(space, service)
                     },
-                    Message::Settings,
+                    |m| Message::Modal(modal::Message::Settings(m)),
                 )));
             }
         }
@@ -2841,7 +2771,7 @@ impl App {
                     .change_room_list_colours(|colours| *colours = legacy)
                     .await
             },
-            Message::ColoursMoved,
+            |m| Message::Sidebar(sidebar::Message::ColoursMoved(m)),
         )
     }
 
@@ -2906,7 +2836,7 @@ impl App {
                 };
                 // The switch is off while the server does not share presence.
                 presence::sharing(&main.session, self.settings.share_presence)
-                    .map(Message::Presence)
+                    .map(|m| Message::People(people::Message::Presence(m)))
             }
             settings::Action::GoogleSignIn(client) => {
                 let google = self.google.clone();
@@ -2919,9 +2849,9 @@ impl App {
                             .await
                     },
                     |result| {
-                        Message::Settings(settings::Message::GoogleSignedIn(
+                        Message::Modal(modal::Message::Settings(settings::Message::GoogleSignedIn(
                             result.map_err(|e| e.to_string()),
-                        ))
+                        )))
                     },
                 );
                 // Asked for from the panel, which shows it signing in.
@@ -2949,20 +2879,24 @@ impl App {
                             })
                             .await
                     },
-                    |result| Message::Settings(settings::Message::ColourSaved(result)),
+                    |result| {
+                        Message::Modal(modal::Message::Settings(settings::Message::ColourSaved(
+                            result,
+                        )))
+                    },
                 )
             }
-            settings::Action::AtHome(at_home) => {
-                self.update(Message::Arrange(arrange::Message::AtHome(at_home)))
-            }
-            settings::Action::NotesAtTop(on) => {
-                self.update(Message::Arrange(arrange::Message::NotesAtTop(on)))
-            }
+            settings::Action::AtHome(at_home) => self.update(Message::Sidebar(
+                sidebar::Message::Arrange(arrange::Message::AtHome(at_home)),
+            )),
+            settings::Action::NotesAtTop(on) => self.update(Message::Sidebar(
+                sidebar::Message::Arrange(arrange::Message::NotesAtTop(on)),
+            )),
             settings::Action::GoogleSignOut => {
                 let google = self.google.clone();
                 Task::perform(async move { google.sign_out().await }, |result| {
-                    Message::Settings(settings::Message::GoogleSignedOut(
-                        result.map_err(|e| e.to_string()),
+                    Message::Modal(modal::Message::Settings(
+                        settings::Message::GoogleSignedOut(result.map_err(|e| e.to_string())),
                     ))
                 })
             }
@@ -2973,7 +2907,11 @@ impl App {
                 let session = main.session.clone();
                 task::request(
                     async move { session.room(&space)?.set_call_service(service).await },
-                    |result| Message::Settings(settings::Message::SpaceSaved(result)),
+                    |result| {
+                        Message::Modal(modal::Message::Settings(settings::Message::SpaceSaved(
+                            result,
+                        )))
+                    },
                 )
             }
         }
@@ -3105,7 +3043,7 @@ impl App {
             space.clone(),
             listed,
             message,
-            move |message| Message::SpaceTopic(space.clone(), message),
+            move |message| Message::Sidebar(sidebar::Message::SpaceTopic(space.clone(), message)),
         )
     }
 
@@ -3625,7 +3563,7 @@ impl App {
             Some((space, room)) => {
                 main.restore = None;
                 main.space = space;
-                self.update(Message::OpenRoom(room))
+                self.update(Message::Pane(pane::Message::Open(room)))
             }
             None => {
                 if main.lists.loaded {
@@ -3707,8 +3645,8 @@ impl App {
             return Task::none();
         }
         main.notes_moved = true;
-        Task::done(Message::Arrange(arrange::Message::NotesAtTop(
-            self.settings.pinned_notes,
+        Task::done(Message::Sidebar(sidebar::Message::Arrange(
+            arrange::Message::NotesAtTop(self.settings.pinned_notes),
         )))
     }
 
@@ -3744,7 +3682,7 @@ impl App {
         };
         let session = main.session.clone();
         let done = |room: OwnedRoomOrAliasId| {
-            move |result| Message::Join(join::Message::Done(room, result))
+            move |result| Message::Modal(modal::Message::Join(join::Message::Done(room, result)))
         };
         let join = match &mut main.modal {
             Some(Modal::Join(join)) => Some(join),
@@ -3771,7 +3709,9 @@ impl App {
                                 .await
                         }
                     },
-                    move |result| Message::Join(join::Message::Found(search, result)),
+                    move |result| {
+                        Message::Modal(modal::Message::Join(join::Message::Found(search, result)))
+                    },
                 ))
             }),
             join::Action::Preview(address, via) => join.map_or_else(Task::none, |join| {
@@ -3781,7 +3721,10 @@ impl App {
                         async move { session.preview(&address, via).await }
                     },
                     move |result| {
-                        Message::Join(join::Message::Previewed(address.to_string(), result))
+                        Message::Modal(modal::Message::Join(join::Message::Previewed(
+                            address.to_string(),
+                            result,
+                        )))
                     },
                 ))
             }),
@@ -3810,14 +3753,16 @@ impl App {
                 main.modal = None;
                 main.joined_space = Some(space.clone());
                 let shown = main.lists.rooms.iter().any(|r| r.id == space);
-                let select = self.update(Message::SelectSpace(Some(space.clone())));
+                let select = self.update(Message::Sidebar(sidebar::Message::SelectSpace(Some(
+                    space.clone(),
+                ))));
                 if shown {
                     if let Screen::Main(main) = &mut self.screen {
                         main.joined_space = None;
                     }
                     Task::batch([
                         select,
-                        Task::done(Message::ShowSpace(space, overview::Tab::Rooms)),
+                        Task::done(info::show_space(space, overview::Tab::Rooms)),
                     ])
                 } else {
                     select
@@ -3840,7 +3785,8 @@ impl App {
         // Fresher than the watcher's, and for people it does not follow.
         let presence = match card.user() {
             Some(user) if *user != main.own_user && !main.presences.unavailable() => {
-                presence::look_up(&main.session, user.clone()).map(Message::Presence)
+                presence::look_up(&main.session, user.clone())
+                    .map(|m| Message::People(people::Message::Presence(m)))
             }
             _ => Task::none(),
         };
@@ -3853,13 +3799,13 @@ impl App {
                         let user = user.clone();
                         async move { session.user_info(&user).await }
                     },
-                    move |result| Message::Info(info::Message::UserLoaded(user, result)),
+                    move |result| Message::Card(info::Message::UserLoaded(user, result)),
                 )
             }
             // A room's settings are followed while its card shows
             // (`subscription`).
             None => match room {
-                Some((id, Err(e))) => Task::done(Message::Info(info::Message::Settings(
+                Some((id, Err(e))) => Task::done(Message::Card(info::Message::Settings(
                     id,
                     Err(e.to_string()),
                 ))),
@@ -3917,20 +3863,28 @@ impl App {
             (AvatarWanted(_) | AvatarLoaded(..) | PreviewWanted(_) | PreviewLoaded(..), _) => {
                 Task::none()
             }
+            // See `App::handle`.
+            (
+                media::Message::CopyImage(..)
+                | media::Message::Done(..)
+                | media::Message::Downloads(_),
+                _,
+            ) => Task::none(),
         }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
-            window::resize_events().map(|(_, size)| Message::WindowResized(size)),
-            window::events().filter_map(|(id, event)| match event {
-                window::Event::Moved(_) | window::Event::Resized(_) => {
-                    Some(Message::WindowMoved(id))
+            iced::window::resize_events()
+                .map(|(_, size)| Message::Window(window::Message::Resized(size))),
+            iced::window::events().filter_map(|(id, event)| match event {
+                iced::window::Event::Moved(_) | iced::window::Event::Resized(_) => {
+                    Some(Message::Window(window::Message::Moved(id)))
                 }
                 _ => None,
             }),
-            window::close_requests().map(Message::CloseWindow),
-            iced::system::theme_changes().map(Message::ThemeMode),
+            iced::window::close_requests().map(|m| Message::Window(window::Message::Close(m))),
+            iced::system::theme_changes().map(|m| Message::Window(window::Message::Theme(m))),
             // Also on the sign-in screen.
             iced::event::listen_with(window_keys),
             iced::time::every(update::TICK).map(|_| Message::Update(update::Message::Tick)),
@@ -3938,7 +3892,7 @@ impl App {
         // Settings… and Check for Updates… in the app menu.
         #[cfg(target_os = "macos")]
         subscriptions.push(crate::menu_bar::chosen().map(|chosen| match chosen {
-            crate::menu_bar::Chosen::Settings => Message::ShowSettings(true),
+            crate::menu_bar::Chosen::Settings => Message::Modal(modal::Message::ShowSettings(true)),
             crate::menu_bar::Chosen::CheckForUpdates => Message::CheckForUpdates,
         }));
         if let Screen::Main(main) = &self.screen {
@@ -3946,14 +3900,14 @@ impl App {
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.scheduled_updates().updates()
                 })
-                .map(Message::Scheduled),
+                .map(|m| Message::Account(account::Message::Scheduled(m))),
             );
             subscriptions.push(
                 Subscription::run_with(
                     (Shared(main.session.clone()), "notifications"),
                     |(s, _)| s.0.notifications(),
                 )
-                .map(Message::Notified),
+                .map(|m| Message::Account(account::Message::Notified(m))),
             );
             subscriptions.push(iced::event::listen_with(shortcuts));
             // A selection being dragged ends wherever the button is released.
@@ -3972,11 +3926,11 @@ impl App {
             }
             if self.resizing {
                 subscriptions.push(iced::event::listen_with(|event, _, _| match event {
-                    iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                        Some(Message::Resize(Resize::Move(position.x)))
-                    }
+                    iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(
+                        Message::Window(window::Message::Resize(Resize::Move(position.x))),
+                    ),
                     iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                        Some(Message::Resize(Resize::End))
+                        Some(Message::Window(window::Message::Resize(Resize::End)))
                     }
                     _ => None,
                 }));
@@ -3985,27 +3939,31 @@ impl App {
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.connection_updates().updates()
                 })
-                .map(Message::Connection),
+                .map(|m| Message::Account(account::Message::Connection(m))),
             );
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.room_categories_updates().updates()
                 })
-                .map(|c| Message::Arrange(arrange::Message::Categories(c))),
+                .map(|c| {
+                    Message::Sidebar(sidebar::Message::Arrange(arrange::Message::Categories(c)))
+                }),
             );
             subscriptions.push(main.arrange.subscription());
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.room_list_colours_updates().updates()
                 })
-                .map(Message::Colours),
+                .map(|m| Message::Sidebar(sidebar::Message::Colours(m))),
             );
             // Times shown relative to now: scheduled messages, last activity.
             if !main.scheduled.is_empty() || main.presences.following() {
-                subscriptions.push(iced::time::every(TICK).map(|_| Message::Tick));
+                subscriptions.push(
+                    iced::time::every(TICK).map(|_| Message::Account(account::Message::Tick)),
+                );
             }
             if let Some(watcher) = main.presences.subscription(&main.session) {
-                subscriptions.push(watcher.map(Message::Presence));
+                subscriptions.push(watcher.map(|m| Message::People(people::Message::Presence(m))));
             }
             if self.settings.share_presence && !main.presences.unavailable() {
                 subscriptions.push(iced::event::listen_with(input));
@@ -4013,7 +3971,10 @@ impl App {
             if let Some(Modal::Dialog(dialog)) = &main.modal
                 && dialog.busy()
             {
-                subscriptions.push(iced::time::every(PROGRESS_TICK).map(|_| Message::Progress));
+                subscriptions.push(
+                    iced::time::every(PROGRESS_TICK)
+                        .map(|_| Message::Modal(modal::Message::Progress)),
+                );
             }
             if let Some(lists) = &main.room_lists {
                 subscriptions.push(
@@ -4060,7 +4021,10 @@ impl App {
                 }
                 subscriptions.push(media::dropped_files());
             }
-            subscriptions.push(downloads::subscription(&main.session).map(Message::Downloads));
+            subscriptions.push(
+                downloads::subscription(&main.session)
+                    .map(|m| Message::Media(media::Message::Downloads(m))),
+            );
         }
         Subscription::batch(subscriptions)
     }
@@ -4069,7 +4033,9 @@ impl App {
         match &self.screen {
             Screen::Starting => container(text("Starting…")).center(Length::Fill).into(),
             Screen::Closing => container("").into(),
-            Screen::Login(login) => login.view().map(Message::Login),
+            Screen::Login(login) => login
+                .view()
+                .map(|m| Message::Start(start::Message::Login(m))),
             // The main view is always the stack's first layer, so opening
             // and closing what floats over it keeps its widgets' state.
             Screen::Main(main) => {
@@ -4087,7 +4053,7 @@ impl App {
                         popup: main.popup.as_ref(),
                         space_rooms: &main.space_rooms,
                     });
-                    layers = layers.push(panel(card, Message::Info(info::Message::Close), true));
+                    layers = layers.push(panel(card, Message::Card(info::Message::Close), true));
                 }
                 let modal = match &main.modal {
                     None => return layers.into(),
@@ -4103,16 +4069,20 @@ impl App {
                             !main.presences.unavailable(),
                             &self.updater,
                         );
-                        panel(view, Message::ShowSettings(false), true)
+                        panel(
+                            view,
+                            Message::Modal(modal::Message::ShowSettings(false)),
+                            true,
+                        )
                     }
                     Some(Modal::Dialog(dialog)) => panel(
                         dialog.view(&main.lists, &main.arrange, &self.settings.room_list),
-                        Message::Dialog(dialog::Message::Cancel),
+                        Message::Modal(modal::Message::Dialog(dialog::Message::Cancel)),
                         false,
                     ),
                     Some(Modal::Join(join)) => panel(
                         join.view(&main.lists, &main.avatars, self.settings.room_pictures),
-                        Message::Join(join::Message::Close),
+                        Message::Modal(modal::Message::Join(join::Message::Close)),
                         true,
                     ),
                     // Fill the window, with their own backdrop.
@@ -4234,7 +4204,7 @@ impl App {
                 .height(Length::Fill),
         )
         .interaction(mouse::Interaction::ResizingHorizontally)
-        .on_press(Message::Resize(Resize::Start));
+        .on_press(Message::Window(window::Message::Resize(Resize::Start)));
         let main_row = row![space_bar, room_list, handle, content.width(Length::Fill)];
         // Bars and the drag preview come after the rooms, keeping them in
         // place.
@@ -4282,12 +4252,12 @@ fn recovery_banner(main: &Main) -> Element<'_, Message> {
         .width(320);
     if !busy {
         input = input
-            .on_input(Message::RecoveryKey)
-            .on_submit(Message::Recover);
+            .on_input(|m| Message::Account(account::Message::RecoveryKey(m)))
+            .on_submit(Message::Account(account::Message::Recover));
     }
     let unlock = button(text(if busy { "Unlocking…" } else { "Unlock" }))
         .style(style::primary_button)
-        .on_press_maybe((!busy).then_some(Message::Recover));
+        .on_press_maybe((!busy).then_some(Message::Account(account::Message::Recover)));
     let mut banner = column![
         text("This device is not verified, so older encrypted messages cannot be read."),
         row![input, unlock].spacing(8),
@@ -4349,7 +4319,7 @@ fn overdue_banner(main: &Main) -> Option<Element<'_, Message>> {
             button(text(label).size(13))
                 .padding([2, 8])
                 .style(style::secondary_button)
-                .on_press(Message::OpenRoom(id.clone())),
+                .on_press(Message::Pane(pane::Message::Open(id.clone()))),
         );
     }
     Some(
@@ -4378,7 +4348,7 @@ fn offline_bar<'a>() -> Element<'a, Message> {
             button(text("Retry now").size(13))
                 .padding([3, 10])
                 .style(style::problem_button)
-                .on_press(Message::Reconnect),
+                .on_press(Message::Account(account::Message::Reconnect)),
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center),
@@ -4403,7 +4373,7 @@ fn signed_out_bar<'a>() -> Element<'a, Message> {
                 button(text("Sign in again").size(13))
                     .padding([3, 10])
                     .style(style::problem_button)
-                    .on_press(Message::SignInAgain),
+                    .on_press(Message::Start(start::Message::SignInAgain)),
                 "Remove this device's data and log in again (your recovery key unlocks older messages)",
                 Position::Top,
             ),
@@ -4435,7 +4405,7 @@ fn notice_bar(notice: &Notice) -> Element<'_, Message> {
             button(text("Open").size(13))
                 .padding([3, 10])
                 .style(style::primary_button)
-                .on_press(Message::OpenRoom(room.clone())),
+                .on_press(Message::Pane(pane::Message::Open(room.clone()))),
         );
     }
     bar = bar.push(
@@ -4462,10 +4432,10 @@ fn invite_view<'a>(
         row![
             button(text("Decline"))
                 .style(style::secondary_button)
-                .on_press(Message::AnswerInvite(id.clone(), false)),
+                .on_press(Message::Pane(pane::Message::Answer(id.clone(), false))),
             button(text("Accept"))
                 .style(style::primary_button)
-                .on_press(Message::AnswerInvite(id.clone(), true)),
+                .on_press(Message::Pane(pane::Message::Answer(id.clone(), true))),
         ]
         .spacing(8)
         .into()
@@ -4547,16 +4517,16 @@ async fn run_request(
 fn window_keys(
     event: iced::Event,
     _status: iced::event::Status,
-    window: window::Id,
+    window: iced::window::Id,
 ) -> Option<Message> {
     use iced::keyboard;
     match as_key(event) {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
             #[cfg(not(target_os = "macos"))]
             if key.as_ref() == keyboard::Key::Character("w") && modifiers.command() {
-                return Some(Message::CloseWindow(window));
+                return Some(Message::Window(window::Message::Close(window)));
             }
-            Zoom::from_key(&key, modifiers).map(Message::Zoom)
+            Zoom::from_key(&key, modifiers).map(|m| Message::Window(window::Message::Zoom(m)))
         }
         _ => None,
     }
@@ -4568,7 +4538,7 @@ fn window_keys(
 fn shortcuts(
     event: iced::Event,
     status: iced::event::Status,
-    _window: window::Id,
+    _window: iced::window::Id,
 ) -> Option<Message> {
     use iced::keyboard::{self, Key, key::Named};
     match as_key(event) {
@@ -4578,7 +4548,7 @@ fn shortcuts(
             modifiers,
             ..
         }) if let Some(go) = sidebar::Go::from_key(&key, physical_key, modifiers) => {
-            Some(Message::GoToRoom(go))
+            Some(Message::Sidebar(sidebar::Message::GoTo(go)))
         }
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key,
@@ -4615,7 +4585,9 @@ fn shortcuts(
                     },
                 )))
             }
-            Key::Character(c) if c == "k" && modifiers.command() => Some(Message::FocusSearch),
+            Key::Character(c) if c == "k" && modifiers.command() => {
+                Some(Message::Sidebar(sidebar::Message::FocusSearch))
+            }
             Key::Character(c) if c == "f" && modifiers.command() => {
                 Some(Message::Shown(room::Message::Find(find::Message::Open)))
             }
@@ -4626,7 +4598,9 @@ fn shortcuts(
                     find::Message::Next
                 })))
             }
-            Key::Character(c) if c == "r" && modifiers.command() => Some(Message::Reload),
+            Key::Character(c) if c == "r" && modifiers.command() => {
+                Some(Message::Pane(pane::Message::Reload))
+            }
             Key::Named(Named::Escape) => Some(Message::Escape),
             Key::Named(Named::Enter) if modifiers.command() => Some(Message::Submit),
             // Typed with nothing focused: a character, not a shortcut.
@@ -4639,14 +4613,18 @@ fn shortcuts(
             }
             _ => None,
         },
-        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-            Some(Message::Arrange(arrange::Message::Pressed))
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => Some(
+            Message::Sidebar(sidebar::Message::Arrange(arrange::Message::Pressed)),
+        ),
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(
+            Message::Sidebar(sidebar::Message::Arrange(arrange::Message::Released)),
+        ),
+        iced::Event::Window(iced::window::Event::Focused) => {
+            Some(Message::Window(window::Message::Focused(true)))
         }
-        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-            Some(Message::Arrange(arrange::Message::Released))
+        iced::Event::Window(iced::window::Event::Unfocused) => {
+            Some(Message::Window(window::Message::Focused(false)))
         }
-        iced::Event::Window(window::Event::Focused) => Some(Message::WindowFocused(true)),
-        iced::Event::Window(window::Event::Unfocused) => Some(Message::WindowFocused(false)),
         _ => None,
     }
 }
@@ -4698,13 +4676,19 @@ fn arrow_key(
 }
 
 /// Keys, clicks and scrolling: we are here (see [`mtrx_core::Activity::Input`]).
-fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) -> Option<Message> {
+fn input(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
     use iced::keyboard;
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { .. })
         | iced::Event::StandardAction(_)
         | iced::Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. }) => {
-            Some(Message::Presence(presence::Message::Input))
+            Some(Message::People(people::Message::Presence(
+                presence::Message::Input,
+            )))
         }
         _ => None,
     }
@@ -4817,7 +4801,7 @@ fn list_space_rooms(
                 let space = space.clone();
                 async move { session.space_children(&space).await }
             },
-            move |result| Message::SpaceRoomsLoaded(space, result),
+            move |result| Message::Sidebar(sidebar::Message::SpaceRoomsLoaded(space, result)),
         )
     })
 }
@@ -4832,7 +4816,7 @@ fn overview_task(
 ) -> Task<Message> {
     use overview::{Action, Message as Overview};
     let session = session.clone();
-    let done = |message: Overview| Message::Info(info::Message::Overview(message));
+    let done = |message: Overview| Message::Card(info::Message::Overview(message));
     match action {
         Action::None => Task::none(),
         Action::Load(spaces) => Task::batch(
@@ -4862,7 +4846,7 @@ fn joined_in_overview(
 ) -> Task<Message> {
     let join = join_listed(session, room.clone().into(), via, knock);
     task::request(join, move |result| {
-        Message::Info(info::Message::Overview(overview::Message::Done(
+        Message::Card(info::Message::Overview(overview::Message::Done(
             room,
             result.map(|_| ()),
         )))
@@ -5008,10 +4992,9 @@ fn paginate(room: &mut Room) -> Task<Message> {
 /// The user's most used emoji, from account data.
 fn load_frequent_emoji(session: &Arc<Session>) -> Task<Message> {
     let session = session.clone();
-    Task::perform(
-        async move { session.frequent_emoji().await },
-        Message::FrequentEmoji,
-    )
+    Task::perform(async move { session.frequent_emoji().await }, |m| {
+        Message::People(people::Message::FrequentEmoji(m))
+    })
 }
 
 /// Count the uses of `used` (reacted with, sent): first among the most

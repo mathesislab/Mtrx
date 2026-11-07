@@ -232,10 +232,13 @@ impl Downloads {
             n => format!("Downloading {n} files…"),
         };
         let anchor: Element<'_, Message> = hint(anchor, tip, Position::Right);
-        let panel = open.then(|| self.panel(menu).map(app::Message::Downloads));
+        let panel = open.then(|| {
+            self.panel(menu)
+                .map(|m| app::Message::Media(crate::media::Message::Downloads(m)))
+        });
         Some(
             popover(
-                anchor.map(app::Message::Downloads),
+                anchor.map(|m| app::Message::Media(crate::media::Message::Downloads(m))),
                 panel,
                 Side::Above,
                 Edge::Left,

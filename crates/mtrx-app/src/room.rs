@@ -1121,7 +1121,7 @@ impl Room {
             hint(
                 mouse_area(content)
                     .interaction(mouse::Interaction::Pointer)
-                    .on_press(app::Message::ShowInfo(info.clone())),
+                    .on_press(info::show(info.clone())),
                 about_tip,
                 Position::Bottom,
             )
@@ -1220,7 +1220,7 @@ impl Room {
                     button(text("Members").size(13))
                         .padding([5, 10])
                         .style(style::list_item(look.show_members))
-                        .on_press(app::Message::ToggleMembers),
+                        .on_press(app::Message::Pane(app::pane::Message::ToggleMembers)),
                     members_tip,
                     Position::Bottom,
                 ),
@@ -1235,7 +1235,7 @@ impl Room {
                     }))
                     .padding([5, 8])
                     .style(style::list_item(false))
-                    .on_press(app::Message::ShowInfo(info::Target::Room(self.id.clone()))),
+                    .on_press(info::show(info::Target::Room(self.id.clone()))),
                     "Room settings: name, notifications, favourite",
                     Position::Bottom,
                 ),
@@ -2097,7 +2097,7 @@ fn mentioned(user: OwnedUserId, members: Option<&[Member]>, rows: &[Row]) -> inf
 
 /// Opens the sender's info card.
 fn sender_info(event: &Event) -> app::Message {
-    app::Message::ShowInfo(info::Target::User(event.sender.clone()))
+    info::show(info::Target::User(event.sender.clone()))
 }
 
 /// A muted line in the text column, e.g. "Loading…".

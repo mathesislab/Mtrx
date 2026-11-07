@@ -785,7 +785,7 @@ fn people<'a>(people: &[User], avatars: &Avatars) -> Element<'a, app::Message> {
             .width(Length::Fill)
             .padding([4, 6])
             .style(style::list_item(false))
-            .on_press(app::Message::ShowInfo(info::Target::User(reader.clone())))
+            .on_press(info::show(info::Target::User(reader.clone())))
             .into()
     });
     container(scrollable(column(rows).spacing(2)))

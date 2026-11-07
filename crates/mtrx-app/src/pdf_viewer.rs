@@ -88,7 +88,7 @@ fn key(zoom: f32) -> u32 {
 }
 
 fn message(message: Message) -> app::Message {
-    app::Message::Pdf(message)
+    app::Message::Modal(app::modal::Message::Pdf(message))
 }
 
 impl Viewer {
@@ -305,7 +305,7 @@ impl Viewer {
             .padding(MARGIN)
             .style(style::viewer_backdrop),
         )
-        .on_press(app::Message::CloseImage)
+        .on_press(app::Message::Modal(app::modal::Message::CloseImage))
         .into()
     }
 
@@ -401,7 +401,9 @@ impl Viewer {
         }
         container(
             bar.push(download_button(&self.file))
-                .push(frame::close_button(app::Message::CloseImage)),
+                .push(frame::close_button(app::Message::Modal(
+                    app::modal::Message::CloseImage,
+                ))),
         )
         .padding(Padding::from([0, 12]))
         .center_y(BAR)

@@ -84,7 +84,11 @@ impl Ui {
         );
         self.cache = ui.into_cache();
         for (event, status) in events.iter().zip(&statuses) {
-            messages.extend(shortcuts(event.clone(), *status, window::Id::unique()));
+            messages.extend(shortcuts(
+                event.clone(),
+                *status,
+                iced::window::Id::unique(),
+            ));
         }
         (statuses, messages)
     }
@@ -192,7 +196,7 @@ fn assert_shortcuts(cases: Vec<(Key, Modifiers, Message)>) {
         let message = shortcuts(
             press(key.clone(), modifiers),
             Status::Ignored,
-            window::Id::unique(),
+            iced::window::Id::unique(),
         );
         assert_eq!(
             format!("{message:?}"),
@@ -202,7 +206,7 @@ fn assert_shortcuts(cases: Vec<(Key, Modifiers, Message)>) {
         let taken = shortcuts(
             press(key.clone(), modifiers),
             Status::Captured,
-            window::Id::unique(),
+            iced::window::Id::unique(),
         );
         assert!(taken.is_none(), "{key:?} with {modifiers:?}");
     }
@@ -409,10 +413,14 @@ fn keys_go_to_rooms_from_fields_too() {
     ];
     for (key, modifiers, go) in cases {
         for status in [Status::Ignored, Status::Captured] {
-            let message = shortcuts(press(key.clone(), modifiers), status, window::Id::unique());
+            let message = shortcuts(
+                press(key.clone(), modifiers),
+                status,
+                iced::window::Id::unique(),
+            );
             assert_eq!(
                 format!("{message:?}"),
-                format!("{:?}", Some(Message::GoToRoom(go))),
+                format!("{:?}", Some(Message::Sidebar(sidebar::Message::GoTo(go)))),
                 "{key:?} with {modifiers:?}"
             );
         }
@@ -480,7 +488,7 @@ fn characters_typed_with_nothing_focused_go_to_the_composer() {
         let key = Key::Character(key.into());
         format!(
             "{:?}",
-            shortcuts(press(key, modifiers), status, window::Id::unique())
+            shortcuts(press(key, modifiers), status, iced::window::Id::unique())
         )
     };
     let to_composer = |text: &str| {
@@ -509,7 +517,7 @@ fn characters_typed_with_nothing_focused_go_to_the_composer() {
     assert_eq!(typed("j", Modifiers::CTRL, Status::Ignored), "None");
     // Not a character.
     let enter = press(Key::Named(Named::Enter), Modifiers::empty());
-    assert!(shortcuts(enter, Status::Ignored, window::Id::unique()).is_none());
+    assert!(shortcuts(enter, Status::Ignored, iced::window::Id::unique()).is_none());
 }
 
 impl Ui {
@@ -848,10 +856,12 @@ async fn escape_closes_the_modal_then_the_card() {
         overview::Tab::Rooms,
     ));
     ui.main().modal = Some(Modal::Settings(settings::Panel::default()));
-    ui.update(Message::OpenDialog(dialog::Kind::Leave {
-        room,
-        name: "modal".into(),
-    }));
+    ui.update(Message::Modal(modal::Message::OpenDialog(
+        dialog::Kind::Leave {
+            room,
+            name: "modal".into(),
+        },
+    )));
     assert!(matches!(ui.main().modal, Some(Modal::Dialog(_))));
 
     ui.press(Key::Named(Named::Escape), Modifiers::empty());
@@ -874,12 +884,12 @@ async fn esc_closes_a_cards_menu_not_the_card() {
         &[],
         overview::Tab::Rooms,
     ));
-    ui.update(Message::Info(info::Message::OpenPictureMenu));
+    ui.update(Message::Card(info::Message::OpenPictureMenu));
     assert!(matches!(ui.main().popup, Some(Popup::CardPicture)));
     esc(&mut ui);
     assert!(ui.main().popup.is_none());
     assert!(ui.main().card.is_some(), "the card stays");
-    ui.update(Message::Info(info::Message::OpenSpacesMenu));
+    ui.update(Message::Card(info::Message::OpenSpacesMenu));
     assert!(matches!(ui.main().popup, Some(Popup::CardAddToSpace)));
     esc(&mut ui);
     assert!(ui.main().popup.is_none());
@@ -902,7 +912,7 @@ async fn esc_closes_a_cards_menu_not_the_card() {
         event: None,
     };
     ui.main().modal = Some(Modal::Image(Viewer::new(file)));
-    ui.update(Message::OpenViewerMenu);
+    ui.update(Message::Modal(modal::Message::OpenViewerMenu));
     assert!(matches!(ui.main().popup, Some(Popup::Viewer)));
     esc(&mut ui);
     assert!(ui.main().popup.is_none());
@@ -923,9 +933,15 @@ async fn esc_closes_a_downloads_menu_then_the_list() {
     let (mut ui, _dir) = room_with("downloadmenu", &["Calving"]).await;
     let esc = |ui: &mut Ui| ui.press(Key::Named(Named::Escape), Modifiers::empty());
     let listed = vec![mtrx_core::Download::example(1, "report.pdf")];
-    ui.update(Message::Downloads(downloads::Message::Updated(listed)));
-    ui.update(Message::Downloads(downloads::Message::OpenList));
-    ui.update(Message::Downloads(downloads::Message::Menu(Some(1))));
+    ui.update(Message::Media(media::Message::Downloads(
+        downloads::Message::Updated(listed),
+    )));
+    ui.update(Message::Media(media::Message::Downloads(
+        downloads::Message::OpenList,
+    )));
+    ui.update(Message::Media(media::Message::Downloads(
+        downloads::Message::Menu(Some(1)),
+    )));
     assert!(matches!(
         ui.main().popup,
         Some(Popup::Downloads { menu: Some(1) })
@@ -938,7 +954,9 @@ async fn esc_closes_a_downloads_menu_then_the_list() {
     esc(&mut ui);
     assert!(ui.main().popup.is_none());
 
-    ui.update(Message::Downloads(downloads::Message::OpenList));
+    ui.update(Message::Media(media::Message::Downloads(
+        downloads::Message::OpenList,
+    )));
     let room = ui.room().id.clone();
     let row = row_of(ui.room(), "Calving");
     ui.update(actions::act(
@@ -947,8 +965,12 @@ async fn esc_closes_a_downloads_menu_then_the_list() {
     ));
     assert!(matches!(ui.main().popup, Some(Popup::MessageMenu { .. })));
 
-    ui.update(Message::Downloads(downloads::Message::OpenList));
-    ui.update(Message::Downloads(downloads::Message::Updated(Vec::new())));
+    ui.update(Message::Media(media::Message::Downloads(
+        downloads::Message::OpenList,
+    )));
+    ui.update(Message::Media(media::Message::Downloads(
+        downloads::Message::Updated(Vec::new()),
+    )));
     assert!(ui.main().popup.is_none());
 }
 
@@ -964,7 +986,7 @@ async fn one_popup_in_the_window() {
     let menu = actions::Message::OpenMenu(row.clone(), MenuAt::Toolbar);
     ui.update(actions::act(&room, menu));
     assert!(matches!(ui.main().popup, Some(Popup::MessageMenu { .. })));
-    ui.update(Message::AddMenu);
+    ui.update(Message::Sidebar(sidebar::Message::AddMenu));
     assert!(matches!(ui.main().popup, Some(Popup::AddMenu)));
 
     ui.main().card = Some(info::Card::new(

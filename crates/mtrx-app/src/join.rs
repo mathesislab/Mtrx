@@ -410,7 +410,7 @@ fn quiet<'a>(label: &'a str) -> Element<'a, app::Message> {
 }
 
 fn message(message: Message) -> app::Message {
-    app::Message::Join(message)
+    app::Message::Modal(app::modal::Message::Join(message))
 }
 
 #[cfg(test)]
