@@ -519,8 +519,8 @@ and tested by CI only; no Android SDK is used locally.
     is open, waited for up to 3 s), the room's name as title unless
     direct, silent unless `noisy`; group `messages` with a summary from
     two rooms on; tap: `MainActivity` with `EXTRA_ROOM_ID`, which the
-    `Account` keeps as `roomRequest` until the navigation opens
-    `room/{roomId}`. A room's notification goes when its screen shows,
+    `Account` keeps as `roomRequest` until the navigation opens the room
+    on the home. A room's notification goes when its screen shows,
     when it is marked read, and when its `unreadNotifications` drops to 0
     in a `RoomListState`; all go at sign-out. Settings: "Notifications"
     above "Encryption", the switch "Push notifications" (off and fixed
@@ -692,8 +692,14 @@ and tested by CI only; no Android SDK is used locally.
     with another device", or the note that another device is needed); the
     recovery key screen with its steps and progress; the verification
     screen (one for both directions; back cancels it while it runs); the
-    prompt for a request, over any screen. Navigation Compose: `home`,
-    `room/{roomId}`, `settings/recovery`, `settings/verification`. Icons
+    prompt for a request, over any screen. Navigation Compose, typed
+    (`ui/Destination.kt`, no serialization plugin): a `Destination` per
+    screen (`Home`, `Info`, `Space`, `Join`, `New`, `Recovery`,
+    `Verification`, with their arguments), written as a route in one place
+    (`Destination.route()`, arguments `Uri`-encoded); each kind's `Route`
+    has its pattern and arguments and reads the destination back from an
+    entry. `nav.go(destination)` navigates, `screen(route) { destination
+    -> }` adds a screen; rooms open on the home's tabs, not as a route. Icons
     the core set lacks (spaces, reply, sort) are drawn from their Material
     paths (`ui/Icons.kt`).
   - Unit tests (JVM) on fakes of the library's objects (subclasses made with
