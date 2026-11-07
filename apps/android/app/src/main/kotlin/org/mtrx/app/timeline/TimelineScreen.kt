@@ -212,7 +212,7 @@ fun TimelineScreen(
     personInfo?.let { model ->
         // Fresher than the subscription's, and for someone not in it.
         LaunchedEffect(model) { refreshPresence(model.userId) }
-        PersonInfoSheet(model, header, presences[model.userId], spaces, images, onDismiss = viewModel::closePersonInfo)
+        PersonInfoSheet(model, presences[model.userId], spaces, images, onDismiss = viewModel::closePersonInfo)
     }
 }
 
@@ -346,6 +346,7 @@ fun TimelineContent(
             showReactors = { rowId, key -> overlay = Overlay.Reactors(rowId, key) },
             showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
             openLink = { url -> openLink(url) },
+            showPerson = { userId, name -> actions.showPersonInfo(PersonCard(userId, name, avatarUrl = null)) },
             unsent = { rowId -> overlay = Overlay.Menu(rowId, unsent = true) },
             openFile = { row ->
                 row.message?.media?.let { actions.file(it, row.event.eventId, FileUse.OPEN) }
@@ -370,7 +371,9 @@ fun TimelineContent(
                             images,
                             topicLine = topicPreview(header.topic, state.canEditTopic),
                             topicOpen = panelOpen,
-                            onTitle = { if (person != null) actions.showPersonInfo(person) else onRoomInfo() },
+                            onTitle = {
+                                if (person != null) actions.showPersonInfo(PersonCard(person, header.name, header.avatarUrl)) else onRoomInfo()
+                            },
                             onTopic = { panel = if (panelOpen) null else TopicPanelMode.SHOWING },
                         )
                     },

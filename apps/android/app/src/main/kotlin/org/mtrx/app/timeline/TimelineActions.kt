@@ -34,7 +34,8 @@ interface TimelineActions {
 
     fun goToOriginal(eventId: String)
 
-    fun showPersonInfo(userId: String)
+    /** The sheet about [person], shown as they are until their profile loads: a direct chat's, or a mention's. */
+    fun showPersonInfo(person: PersonCard)
 
     fun setPinned(eventId: String, pin: Boolean)
 

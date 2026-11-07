@@ -54,7 +54,7 @@ import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomSummary
 
 /**
- * The person of a direct chat ([header]): avatar and name with their
+ * A person (a direct chat's, or one mentioned): avatar and name with their
  * [presence], user ID with a copy button, and "Add to space…", which lists
  * [spaces] (the top-level ones) to invite them to. Messages show in the
  * sheet, over its bottom.
@@ -63,7 +63,6 @@ import uniffi.mtrx.RoomSummary
 @Composable
 fun PersonInfoSheet(
     model: PersonInfoModel,
-    header: RoomHeader,
     presence: Presence?,
     spaces: List<RoomSummary>,
     images: Images,
@@ -73,7 +72,7 @@ fun PersonInfoSheet(
     val choosingSpace by model.choosingSpace.collectAsStateWithLifecycle()
     val inviting by model.inviting.collectAsStateWithLifecycle()
     val message by model.message.collectAsStateWithLifecycle()
-    val card = personCard(model.userId, header, profile)
+    val card = personCard(model.shown, profile)
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     @Suppress("DEPRECATION") // LocalClipboard's API is suspending; this is a plain copy.

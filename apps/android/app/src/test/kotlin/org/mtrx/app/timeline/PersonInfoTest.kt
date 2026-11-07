@@ -26,6 +26,8 @@ class PersonInfoTest {
     private val chat = summary(SpacesFixture.WITH_BOB, RoomKind.DIRECT, directUserId = bob, name = "Bob (chat)")
         .copy(avatarUrl = "mxc://x/chat")
     private val header = roomHeader(chat.id, chat, FakeSession.USER_ID)
+    /** As the chat's header shows Bob. */
+    private val shown = PersonCard(bob, header.name, header.avatarUrl)
     private val team = summary(SpacesFixture.TEAM, RoomKind.SPACE, name = "Team")
 
     // The room's scope (the profile) and the actions' (invites), apart.
@@ -33,7 +35,7 @@ class PersonInfoTest {
 
     private fun TestScope.model(): PersonInfoModel {
         val dispatcher = UnconfinedTestDispatcher(testScheduler)
-        return PersonInfoModel(bob, session, CoroutineScope(dispatcher + roomJob), CoroutineScope(dispatcher))
+        return PersonInfoModel(shown, session, CoroutineScope(dispatcher + roomJob), CoroutineScope(dispatcher))
     }
 
     @Test
@@ -51,18 +53,18 @@ class PersonInfoTest {
         session.profileGate = gate
         session.profile = User(userId = bob, name = "Bob", avatarUrl = "mxc://x/bob", displayName = "Bob")
         val model = model()
-        assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/chat"), personCard(bob, header, model.profile.value))
+        assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/chat"), personCard(shown, model.profile.value))
 
         gate.complete(Unit)
-        assertEquals(PersonCard(bob, "Bob", "mxc://x/bob"), personCard(bob, header, model.profile.value))
+        assertEquals(PersonCard(bob, "Bob", "mxc://x/bob"), personCard(shown, model.profile.value))
     }
 
     @Test
     fun profileFillsInOnlyWhatIsSet() {
         val noName = User(userId = bob, name = null, avatarUrl = "mxc://x/bob", displayName = "bob")
-        assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/bob"), personCard(bob, header, noName))
+        assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/bob"), personCard(shown, noName))
         val noAvatar = User(userId = bob, name = "Bob", avatarUrl = null, displayName = "Bob")
-        assertEquals(PersonCard(bob, "Bob", "mxc://x/chat"), personCard(bob, header, noAvatar))
+        assertEquals(PersonCard(bob, "Bob", "mxc://x/chat"), personCard(shown, noAvatar))
     }
 
     @Test
@@ -70,7 +72,7 @@ class PersonInfoTest {
         session.profileError = MtrxException.Other("M_NOT_FOUND")
         val model = model()
         assertNull(model.profile.value)
-        assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/chat"), personCard(bob, header, model.profile.value))
+        assertEquals(PersonCard(bob, "Bob (chat)", "mxc://x/chat"), personCard(shown, model.profile.value))
         assertNull(model.message.value)
     }
 

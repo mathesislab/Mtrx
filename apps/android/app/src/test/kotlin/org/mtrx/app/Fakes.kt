@@ -54,7 +54,13 @@ import uniffi.mtrx.DraftKeeper
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
 import uniffi.mtrx.EventContent
+import uniffi.mtrx.BlockKind
 import uniffi.mtrx.Message
+import uniffi.mtrx.Reaction
+import uniffi.mtrx.ReplyQuote
+import uniffi.mtrx.TextBlock
+import uniffi.mtrx.TextRun
+import uniffi.mtrx.TextStyle
 import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.DownloadsListener
@@ -970,7 +976,28 @@ class FakeTimeline : Timeline(NoHandle) {
 }
 
 fun textEvent(id: String, sender: String, body: String, own: Boolean = false, at: Long = 0): TimelineRow =
-    messageEvent(id, sender, Message(kind = MessageKind.TEXT, body = body, edited = false, media = null), own = own, at = at)
+    messageEvent(id, sender, textMessage(body), own = own, at = at)
+
+/** A text message: [body], its text one paragraph of it unless [text] says otherwise. */
+fun textMessage(
+    body: String,
+    text: List<TextBlock> = listOf(paragraph(plain(body))),
+    kind: MessageKind = MessageKind.TEXT,
+    edited: Boolean = false,
+    reactions: List<Reaction> = emptyList(),
+    replyTo: ReplyQuote? = null,
+    rawBody: String = body,
+) = Message(
+    kind = kind, body = body, edited = edited, media = null, reactions = reactions, replyTo = replyTo, rawBody = rawBody, text = text,
+)
+
+/** A paragraph of [runs], outside quotes and lists. */
+fun paragraph(vararg runs: TextRun) = TextBlock(BlockKind.Paragraph(runs.toList()), quotes = 0u, lists = 0u, marker = null)
+
+val PLAIN = TextStyle(bold = false, italic = false, strikethrough = false, underline = false, superscript = false, subscript = false, spoiler = false)
+
+/** Text without style, in [link] if given. */
+fun plain(text: String, link: String? = null) = TextRun.Text(text, PLAIN, link)
 
 /** A message's row; [eventId] null while not sent. */
 fun messageEvent(

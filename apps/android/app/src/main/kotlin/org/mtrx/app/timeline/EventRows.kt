@@ -61,23 +61,10 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.CustomAccessibilityAction
-import androidx.compose.ui.semantics.customActions
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.ui.text.TextLayoutResult
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -109,6 +96,8 @@ internal class RowHandlers(
     val showReactors: (String, String) -> Unit,
     val showReaders: (String) -> Unit,
     val openLink: (String) -> Unit,
+    /** A mention was tapped: the person's sheet (user ID, name). */
+    val showPerson: (String, String) -> Unit,
     /** The send state of a message not sent yet was tapped. */
     val unsent: (String) -> Unit,
     /** A message's file was tapped: open it once downloaded. */
@@ -185,13 +174,12 @@ internal fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, do
                             MessageBody(
                                 event,
                                 row.edited,
-                                name,
                                 images,
                                 row.undecryptableText,
                                 colors,
                                 download,
                                 onOpenLink = handlers.openLink,
-                                onHold = { handlers.hold(row) },
+                                onShowPerson = handlers.showPerson,
                                 onCancelDownload = handlers.cancelDownload,
                                 onOpenFile = { handlers.openFile(row) },
                             )
@@ -375,50 +363,45 @@ private fun ReadersLine(readers: Readers, images: Images, onClick: () -> Unit, m
 
 /**
  * A message's content; notices, deleted and undecryptable messages in the
- * bubble's secondary colour. Web addresses in its text are links in the
- * bubble's link colour, tapped with [onOpenLink]; a hold on the text is
- * [onHold], as on the bubble.
+ * bubble's secondary colour. Its text is [MessageText]: links open with
+ * [onOpenLink], mentions with [onShowPerson].
  */
 @Composable
 private fun MessageBody(
     event: TimelineEvent,
     edited: Boolean,
-    name: String,
     images: Images,
     undecryptableText: String,
     colors: BubbleColors,
     download: Download?,
     onOpenLink: (String) -> Unit,
-    onHold: () -> Unit,
+    onShowPerson: (String, String) -> Unit,
     onCancelDownload: (ULong) -> Unit,
     onOpenFile: () -> Unit,
 ) {
     val secondary = colors.secondary
-    // Its links, and "(edited)", muted, after the text.
-    fun text(body: String) = buildAnnotatedString {
-        append(body)
-        for (link in findLinks(body)) {
-            addStyle(SpanStyle(color = colors.link, textDecoration = TextDecoration.Underline), link.start, link.end)
-            addStringAnnotation(URL_TAG, link.url, link.start, link.end)
-        }
-        if (edited) withStyle(SpanStyle(color = secondary, fontStyle = FontStyle.Normal)) { append(" (edited)") }
-    }
     when (val content = event.content) {
         is EventContent.Message -> {
             val message = content.message
             val media = message.media
+            val look = TextLook(
+                text = if (message.kind == MessageKind.NOTICE) secondary else colors.content,
+                link = colors.link,
+                muted = secondary,
+            )
+            val text = @Composable { modifier: Modifier ->
+                MessageText(message.text, edited, look, images, onOpenLink, onShowPerson, modifier)
+            }
             when {
                 media != null && (media.kind == MediaKind.IMAGE || media.kind == MediaKind.VIDEO) -> {
                     Box(contentAlignment = Alignment.Center) {
                         MediaPreview(media, images)
                         DownloadProgress(download, onCancelDownload, onOpenFile)
                     }
-                    messageText(message)?.let { LinkedText(text(it), onOpenLink, onHold, Modifier.padding(top = 6.dp)) }
+                    if (message.text.isNotEmpty()) text(Modifier.padding(top = 6.dp))
                 }
                 media != null -> FileRow(media, download, secondary, onCancelDownload, onOpenFile)
-                message.kind == MessageKind.EMOTE -> LinkedText(text("* $name ${message.body}"), onOpenLink, onHold, fontStyle = FontStyle.Italic)
-                message.kind == MessageKind.NOTICE -> LinkedText(text(message.body), onOpenLink, onHold, color = secondary)
-                else -> LinkedText(text(message.body), onOpenLink, onHold)
+                else -> text(Modifier)
             }
         }
         EventContent.Redacted -> Text("Message deleted", color = secondary, fontStyle = FontStyle.Italic)
@@ -432,59 +415,6 @@ private fun MessageBody(
         // State events are StateRows.
         is EventContent.Membership, is EventContent.DisplayNameChange, is EventContent.OtherState -> {}
     }
-}
-
-/** The annotation of a link's URL in a message's text. */
-private const val URL_TAG = "url"
-
-/**
- * [text] whose links ([URL_TAG]) open with [onOpenLink] when tapped (and
- * by the screen reader's actions); held anywhere it is [onHold]. Without
- * links, plain text: the bubble takes the touches.
- */
-@Composable
-private fun LinkedText(
-    text: AnnotatedString,
-    onOpenLink: (String) -> Unit,
-    onHold: () -> Unit,
-    modifier: Modifier = Modifier,
-    color: Color = Color.Unspecified,
-    fontStyle: FontStyle? = null,
-) {
-    val links = remember(text) { text.getStringAnnotations(URL_TAG, 0, text.length) }
-    if (links.isEmpty()) {
-        Text(text, modifier, color = color, fontStyle = fontStyle)
-        return
-    }
-    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    val open by rememberUpdatedState(onOpenLink)
-    val hold by rememberUpdatedState(onHold)
-    Text(
-        text,
-        modifier
-            .pointerInput(links) {
-                detectTapGestures(
-                    onTap = { position -> layout?.let { linkAt(it, links, position) }?.let(open) },
-                    onLongPress = { hold() },
-                )
-            }
-            .semantics {
-                customActions = links.map { link -> CustomAccessibilityAction("Open ${link.item}") { open(link.item); true } }
-            },
-        color = color,
-        fontStyle = fontStyle,
-        onTextLayout = { layout = it },
-    )
-}
-
-/** The URL of the link of [links] at [position] in the text laid out as [layout], if any. */
-private fun linkAt(layout: TextLayoutResult, links: List<AnnotatedString.Range<String>>, position: Offset): String? {
-    // The character under it: before or after the nearest caret position.
-    val nearest = layout.getOffsetForPosition(position)
-    val char = listOf(nearest, nearest - 1).firstOrNull {
-        it in 0 until layout.layoutInput.text.length && layout.getBoundingBox(it).contains(position)
-    } ?: return null
-    return links.firstOrNull { char >= it.start && char < it.end }?.item
 }
 
 /** An image's (or video's) preview, laid out at its size before it loads. */

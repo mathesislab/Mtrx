@@ -10,7 +10,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.eventItem
 import org.mtrx.app.messageEvent
+import org.mtrx.app.paragraph
+import org.mtrx.app.plain
 import org.mtrx.app.textEvent
+import org.mtrx.app.textMessage
 import org.mtrx.app.user
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
@@ -55,7 +58,7 @@ class TimelineRowsTest {
     }
 
     private fun text(body: String, edited: Boolean = false, reactions: List<Reaction> = emptyList(), replyTo: ReplyQuote? = null) =
-        Message(kind = MessageKind.TEXT, body = body, edited = edited, media = null, reactions = reactions, replyTo = replyTo, rawBody = body)
+        textMessage(body, edited = edited, reactions = reactions, replyTo = replyTo)
 
     private fun row(row: LibraryRow): EventRow = shownRows(listOf(row)).single() as EventRow
 
@@ -132,6 +135,10 @@ class TimelineRowsTest {
         val imageRow = row(messageEvent("8", bob, image))
         assertNull(messageText(image))
         assertEquals("Image · ice.png", preview(imageRow))
+        // With a caption, the library gives it as text.
+        val captioned = image.copy(body = "The ice sheet", text = listOf(paragraph(plain("The ice sheet"))))
+        assertEquals("The ice sheet", messageText(captioned))
+        assertEquals("Image · The ice sheet", preview(row(messageEvent("9", bob, captioned))))
     }
 
     @Test
