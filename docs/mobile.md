@@ -686,7 +686,19 @@ and tested by CI only; no Android SDK is used locally.
     new tap replaces the one under way) and scrolls once the rows have
     the row it returns. The room's `DraftKeeper` restores the draft (its
     reply found with `itemOf`), hears each change of the draft and flushes when the room is left, on send and when the app
-    stops; leaving a room (the membership) keeps its draft. Encryption: the banner over
+    stops; leaving a room (the membership) keeps its draft. A room's
+    models live while it shows, in a store of its own (as iOS): the
+    timeline's view model (rows, composer, typing, message actions, the
+    person sheet), `PinnedModel` (the pinned timeline, followed while the
+    topic panel is open) and the room's `RoomInfoModel`, which saves the
+    topic and reads nothing until `load()` (Room info and a space's
+    overview call it as they show: the settings followed from then on,
+    the members read each time); its changes, like the timeline's, run in
+    a scope of its own. The rooms shared with a direct chat's person are
+    read by their panel each time it opens (its error in their place).
+    `timeline/TimelineScreen.kt` has the screen and its overlays,
+    `Composer.kt` the composer, `EventRows.kt` the bubbles and rows.
+    Encryption: the banner over
     Chats and Spaces (opens the Settings tab); the Settings tab with the
     account and "Encryption" (status lines, "Enter recovery key", "Verify
     with another device", or the note that another device is needed); the
