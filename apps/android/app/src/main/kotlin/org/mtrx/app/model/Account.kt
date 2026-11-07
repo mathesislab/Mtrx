@@ -43,7 +43,8 @@ sealed interface BrowserLogin {
 /**
  * The app's one account: signs in, restores and signs out the session
  * ([SignedInSession], in [state]), and syncs it while the app is in the
- * foreground. Lives as long as the process; [scope] runs on the main
+ * foreground, trying the server again when [network] is back. Lives as
+ * long as the process; [scope] runs on the main
  * thread. Each session keeps the space selected on the Spaces tab in
  * [selectedSpaceStore] until sign-out. The device's preferences outlive
  * the sessions: the order of the spaces' rooms ([roomSortStore]), "Share
@@ -62,6 +63,7 @@ class Account(
     private val notifications: RoomNotifications,
     sharePresenceStore: PreferenceStore<Boolean>,
     sectionStore: PreferenceStore<Map<String, SectionPrefs>>,
+    private val network: NetworkMonitor,
     private val log: Logger = AndroidLog,
 ) {
     // Changed under the lock only.
@@ -120,8 +122,17 @@ class Account(
     /** The app came to the foreground (sync) or went to the background (stop). */
     fun setForeground(value: Boolean): Job {
         foreground = value
+        if (value) network.start(::reconnect) else network.stop()
         return scope.launch {
             lock.withLock { updateSync() }
+        }
+    }
+
+    // The network is back (from any thread): sync tries the server now if
+    // it was unreachable, after the last start or stop.
+    private fun reconnect() {
+        scope.launch {
+            lock.withLock { current?.reconnect() }
         }
     }
 

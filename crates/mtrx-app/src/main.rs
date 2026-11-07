@@ -70,6 +70,8 @@ mod text_size;
 mod tint;
 mod topic;
 mod update;
+#[cfg(target_os = "macos")]
+mod wake;
 mod want;
 #[cfg(windows)]
 mod windows;

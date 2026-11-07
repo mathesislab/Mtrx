@@ -1075,6 +1075,10 @@ impl App {
                 })
                 .map(|m| Message::Account(account::Message::Connection(m))),
             );
+            // The network may be back after sleep, with the window focused.
+            #[cfg(target_os = "macos")]
+            subscriptions
+                .push(crate::wake::woke().map(|()| Message::Account(account::Message::Reconnect)));
             subscriptions.push(
                 Subscription::run_with(Shared(main.session.clone()), |s| {
                     s.0.room_categories_updates().updates()

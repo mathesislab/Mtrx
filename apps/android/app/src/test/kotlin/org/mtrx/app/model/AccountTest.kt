@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeDistributors
 import org.mtrx.app.FakeMtrx
+import org.mtrx.app.FakeNetwork
 import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.FakeNotifier
 import org.mtrx.app.FakePushStore
@@ -43,6 +44,29 @@ class AccountTest {
         assertEquals(1, session.syncStarts)
         account.setForeground(false)
         assertEquals(1, session.syncStops)
+    }
+
+    @Test
+    fun theNetworkBackReconnectsWhileInTheForeground() = runTest {
+        val session = FakeSession()
+        val network = FakeNetwork()
+        val account = testAccount(
+            FakeMtrx(restored = session),
+            CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
+            network = network,
+        )
+        account.start()
+        account.setForeground(true)
+        network.back!!.invoke()
+        assertEquals(1, session.reconnects)
+
+        account.setForeground(false)
+        assertNull(network.back)
+        account.signOut()
+        account.setForeground(true)
+        // Signed out: nothing to reconnect.
+        network.back!!.invoke()
+        assertEquals(1, session.reconnects)
     }
 
     @Test

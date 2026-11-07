@@ -484,6 +484,45 @@ fn quitting_ends_the_session() {
     drop(app);
 }
 
+/// Focusing the window while offline tries the server now (after sleep
+/// or a network change); not while online, nor when the focus goes.
+#[test]
+fn focusing_the_window_while_offline_reconnects() {
+    use futures_util::FutureExt;
+
+    fn reconnects(app: &mut App, focused: bool) -> bool {
+        let task = app.update(Message::Window(window::Message::Focused(focused)));
+        let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+            return false;
+        };
+        std::iter::from_fn(|| stream.next().now_or_never().flatten()).any(|action| {
+            matches!(
+                action,
+                iced_runtime::Action::Output(Message::Account(account::Message::Reconnect))
+            )
+        })
+    }
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _runtime = runtime.enter();
+    let dir = TempDir::new().unwrap();
+    let profile = Profile::new("p", dir.path(), SecretStore::File).unwrap();
+    let session = runtime
+        .block_on(mtrx_core::test_support::offline_session(profile))
+        .unwrap();
+    let mut app = app(
+        Screen::Main(Box::new(Main::new(Arc::new(session)))),
+        Mode::Light,
+    );
+    assert!(!reconnects(&mut app, true), "online");
+    let Screen::Main(main) = &mut app.screen else {
+        unreachable!()
+    };
+    main.account.connection = Connection::Offline;
+    assert!(!reconnects(&mut app, false), "the focus goes");
+    assert!(reconnects(&mut app, true), "offline");
+}
+
 /// Closing the window cancels a browser sign-in.
 #[tokio::test]
 async fn closing_the_window_cancels_a_browser_sign_in() {

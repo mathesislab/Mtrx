@@ -3,7 +3,8 @@ import MtrxFFI
 import UIKit
 
 /// A signed-in account: its connection, pictures, presence and downloads,
-/// sync, which runs while the app is in the foreground, and signing out.
+/// sync, which runs while the app is in the foreground and tries the server
+/// again when the network comes back, and signing out.
 /// Its room lists, the home screen's navigation and its encryption are
 /// models of their own (`rooms`, `home`, `encryption`), which views
 /// observe apart: a room-list update draws again only the views that show
@@ -30,8 +31,10 @@ final class SessionModel: ObservableObject {
     private var foreground = false
     /// Sync has started once.
     private var started = false
-    /// The last start or stop of sync; the next waits for it.
+    /// The last start, stop or reconnect of sync; the next waits for it.
     private var syncChange: Task<Void, Never>?
+    /// While in the foreground: the network back, sync tries the server.
+    private(set) lazy var network = NetworkMonitor { [weak self] in self?.reconnect() }
 
     init(session: Session, defaults: UserDefaults = .standard) {
         self.session = session
@@ -105,7 +108,9 @@ final class SessionModel: ObservableObject {
                 await ours?.value
                 await session.startSync()
             }
+            network.start()
         } else {
+            network.stop()
             let background = BackgroundTask(name: "Stop sync")
             let offline = presence.enterBackground()
             syncChange = Task {
@@ -114,6 +119,17 @@ final class SessionModel: ObservableObject {
                 await session.stopSync()
                 background.end()
             }
+        }
+    }
+
+    /// Try the server now if it was unreachable, after the last start or
+    /// stop of sync.
+    private func reconnect() {
+        let previous = syncChange
+        let session = self.session
+        syncChange = Task {
+            await previous?.value
+            await session.reconnect()
         }
     }
 
@@ -154,6 +170,7 @@ final class SessionModel: ObservableObject {
     /// Sign out on the server and delete the account's data here.
     func logout() async throws {
         work.cancelAll()
+        network.stop()
         encryption.closeVerification()
         await presence.signOut()?.value
         try await session.logout()
@@ -163,6 +180,7 @@ final class SessionModel: ObservableObject {
     /// Delete the data of a session the server no longer accepts.
     func forget() async throws {
         work.cancelAll()
+        network.stop()
         encryption.closeVerification()
         // The server no longer accepts the session: nothing to set.
         presence.forget()

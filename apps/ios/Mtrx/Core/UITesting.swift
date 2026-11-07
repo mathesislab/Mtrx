@@ -162,6 +162,7 @@ private final class UITestSession: Session, @unchecked Sendable {
 
     override func startSync() async {}
     override func stopSync() async {}
+    override func reconnect() async {}
     override func presenceActivity(activity: PresenceActivity) async throws {}
     override func setPresenceSharing(on: Bool) async throws {}
 

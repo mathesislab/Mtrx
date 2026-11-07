@@ -11,6 +11,7 @@ import kotlinx.coroutines.MainScope
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
 import org.mtrx.app.model.AesGcmSealer
+import org.mtrx.app.model.ConnectivityMonitor
 import org.mtrx.app.model.DataStorePush
 import org.mtrx.app.model.FileSecretBackend
 import org.mtrx.app.model.PushRegistration
@@ -72,6 +73,7 @@ class MtrxApplication : Application() {
             notifications,
             sharePresenceStore(viewPreferences),
             sectionStore(viewPreferences),
+            ConnectivityMonitor(this),
         )
         pushHandler = PushHandler(
             mtrx,
@@ -80,7 +82,8 @@ class MtrxApplication : Application() {
             onSignedOut = { push.signedOut() },
         )
         account.start()
-        // Sync, and our presence, while the app is in the foreground.
+        // Sync, and our presence, while the app is in the foreground; and
+        // the network watched, to reconnect.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 account.setForeground(true)

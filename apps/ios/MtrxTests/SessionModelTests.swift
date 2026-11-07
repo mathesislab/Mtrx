@@ -170,6 +170,15 @@ final class SessionModelTests: XCTestCase {
         XCTAssertTrue(encryption.verification === shown)
     }
 
+    /// A usable network path tries the server again.
+    func testTheNetworkBackReconnects() async {
+        model.network.pathChanged(usable: false)
+        await settle()
+        XCTAssertEqual(session.reconnects, 0)
+        model.network.pathChanged(usable: true)
+        await eventually { self.session.reconnects == 1 }
+    }
+
     /// Let tasks started on the main actor run.
     private func settle() async {
         try? await Task.sleep(nanoseconds: 50_000_000)

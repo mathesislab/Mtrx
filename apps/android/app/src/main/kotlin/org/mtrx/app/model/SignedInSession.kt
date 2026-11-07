@@ -35,8 +35,8 @@ data class SessionInfo(val userId: String, val homeserver: String, val deviceId:
 /**
  * A signed-in session and what lives with it: its room list, connection,
  * encryption, devices, recovery, verification and presence, and the space
- * selected on the Spaces tab. The [Account] opens it ([open]), starts and
- * stops its sync, and closes it at sign-out; nothing of it outlives
+ * selected on the Spaces tab. The [Account] opens it ([open]), starts,
+ * stops and reconnects its sync, and closes it at sign-out; nothing of it outlives
  * [close]. Its work runs in a scope of its own, cancelled at [close];
  * verifications and declined requests run in [parent], so that a cancel at
  * [close] still reaches the other device. Used on [parent]'s (main)
@@ -257,6 +257,12 @@ class SignedInSession private constructor(
         presence.background()
         session.stopSync()
         syncing = false
+    }
+
+    // By the Account, under its lock: while syncing, the server now if it
+    // was unreachable.
+    internal suspend fun reconnect() {
+        if (syncing) session.reconnect()
     }
 
     // By the Account, under its lock, sync stopped: false (said in

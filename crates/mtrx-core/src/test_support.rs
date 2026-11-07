@@ -143,3 +143,9 @@ pub async fn offline_session(profile: Profile) -> crate::Result<Session> {
     })?;
     Session::restore(profile).await
 }
+
+/// Whether `session` syncs: running, or offline and checking the server.
+pub fn syncing(session: &Session) -> bool {
+    use matrix_sdk_ui::sync_service::State;
+    matches!(session.sync.state().get(), State::Running | State::Offline)
+}

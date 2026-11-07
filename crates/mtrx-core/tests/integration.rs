@@ -2157,12 +2157,50 @@ async fn signed_out_elsewhere() -> Result<()> {
     })
     .await?;
     assert_eq!(session.connection(), Connection::SignedOut);
+    session.reconnect().await;
+    assert!(
+        !test_support::syncing(&session),
+        "signed out, sync stays stopped"
+    );
 
     session.forget().await?;
     assert!(matches!(
         Session::restore(profile()?).await,
         Err(mtrx_core::Error::NotLoggedIn(_))
     ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn reconnect_leaves_working_sync_alone() -> Result<()> {
+    let (_, alice) = new_user("online").await?;
+    let session = &alice.session;
+    // Online once a room created here comes back through sync.
+    let room = session.create_room(NewRoom::default()).await?;
+    let list = session.room_list().await?;
+    wait_for("synced", list.updates(), |s| {
+        s.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    assert_eq!(session.connection(), Connection::Online);
+
+    let mut changes = std::pin::pin!(session.connection_updates().updates());
+    changes.next().await; // the current one
+    session.reconnect().await;
+    assert!(test_support::syncing(session));
+    assert_eq!(session.connection(), Connection::Online);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), changes.next())
+            .await
+            .is_err(),
+        "online, reconnecting changes nothing"
+    );
+
+    // Stopped (the app in the background), it stays stopped.
+    session.stop_sync().await;
+    session.reconnect().await;
+    assert!(!test_support::syncing(session));
     Ok(())
 }
 

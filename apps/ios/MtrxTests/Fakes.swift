@@ -209,6 +209,7 @@ final class FakeSession: Session, @unchecked Sendable {
     var verificationRequestListener: VerificationRequestListener?
     var syncStarts = 0
     var syncStops = 0
+    var reconnects = 0
     /// The subscription's first state.
     var encryption = EncryptionState(deviceVerified: false, recovery: .unknown)
     var encryptionListener: EncryptionStateListener?
@@ -307,6 +308,10 @@ final class FakeSession: Session, @unchecked Sendable {
     override func stopSync() async {
         syncStops += 1
         record("stopSync")
+    }
+
+    override func reconnect() async {
+        reconnects += 1
     }
 
     override func presence(userId: String) async throws -> Presence {

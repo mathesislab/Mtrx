@@ -8,7 +8,9 @@ use iced::{
     window::{self, Id},
 };
 
-use super::{App, Screen, as_key};
+use mtrx_core::Connection;
+
+use super::{App, Screen, account, as_key};
 use crate::{
     app, math,
     placement::{self, Frame, Placement},
@@ -287,8 +289,8 @@ impl Window {
 
 impl App {
     /// A message to the window, and what it changes elsewhere: closing it
-    /// ends the session, the focus is input, and zooming zooms the PDF
-    /// viewer while it shows.
+    /// ends the session, the focus is input (and while offline tries the
+    /// server), and zooming zooms the PDF viewer while it shows.
     pub(super) fn window_update(&mut self, message: Message) -> Task<app::Message> {
         let input = match message {
             Message::Close(id) => return self.close(id),
@@ -304,11 +306,21 @@ impl App {
                 }
                 Task::none()
             }
-            // The window was in use until now.
-            Message::Focused(_) => match &self.screen {
-                Screen::Main(main) => main
-                    .people
-                    .activity(&main.session, mtrx_core::Activity::Input),
+            Message::Focused(focused) => match &self.screen {
+                Screen::Main(main) => {
+                    // The window was in use until now.
+                    let input = main
+                        .people
+                        .activity(&main.session, mtrx_core::Activity::Input);
+                    // Back at the window, after sleep or a network change
+                    // perhaps: the server is tried now, not after the wait.
+                    let reconnect = if focused && main.account.connection == Connection::Offline {
+                        Task::done(account::to(account::Message::Reconnect))
+                    } else {
+                        Task::none()
+                    };
+                    Task::batch([input, reconnect])
+                }
                 _ => Task::none(),
             },
             _ => Task::none(),
