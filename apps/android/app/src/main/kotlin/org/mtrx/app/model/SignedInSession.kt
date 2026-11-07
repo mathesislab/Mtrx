@@ -24,6 +24,7 @@ import uniffi.mtrx.RoomLists
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomListsListener
 import uniffi.mtrx.Session
+import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Verification
 import uniffi.mtrx.VerificationRequestListener
@@ -47,8 +48,8 @@ data class SessionInfo(val userId: String, val homeserver: String, val deviceId:
 class SignedInSession private constructor(
     val session: Session,
     private val parent: CoroutineScope,
-    selectedSpace: SelectedSpaceStore,
-    sharePresence: SharePresence,
+    selectedSpace: Preference<SpaceKey?>,
+    sharePresence: Preference<Boolean>,
     private val notifications: RoomNotifications,
     private val log: Logger,
 ) : AutoCloseable {
@@ -331,8 +332,8 @@ class SignedInSession private constructor(
         suspend fun open(
             session: Session,
             parent: CoroutineScope,
-            selectedSpace: SelectedSpaceStore,
-            sharePresence: SharePresence,
+            selectedSpace: Preference<SpaceKey?>,
+            sharePresence: Preference<Boolean>,
             notifications: RoomNotifications,
             log: Logger,
         ): SignedInSession =

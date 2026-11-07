@@ -2,7 +2,7 @@ package org.mtrx.app.model
 
 import java.util.concurrent.atomic.AtomicReference
 import org.mtrx.app.rooms.SectionLayouts
-import org.mtrx.app.rooms.SectionStore
+import org.mtrx.app.rooms.SectionPrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,6 +16,7 @@ import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.OAuthLogin
 import uniffi.mtrx.Session
+import uniffi.mtrx.SpaceKey
 
 sealed interface AccountState {
     /** Restoring the saved session. */
@@ -44,22 +45,23 @@ sealed interface BrowserLogin {
  * ([SignedInSession], in [state]), and syncs it while the app is in the
  * foreground. Lives as long as the process; [scope] runs on the main
  * thread. Each session keeps the space selected on the Spaces tab in
- * [selectedSpace] until sign-out. The device's preferences outlive the
- * sessions: the order of the spaces' rooms ([roomSortStore]), "Share my
- * presence" ([sharePresenceStore], which each session's presence follows)
- * and how this phone arranges the spaces' sections ([sectionStore]). [push]
- * is told when a session opens and before it closes; [notifications] are
- * cleared as rooms are opened or read; [log] has what goes wrong.
+ * [selectedSpaceStore] until sign-out. The device's preferences outlive
+ * the sessions: the order of the spaces' rooms ([roomSortStore]), "Share
+ * my presence" ([sharePresenceStore], which each session's presence
+ * follows) and how this phone arranges the spaces' sections
+ * ([sectionStore]). [push] is told when a session opens and before it
+ * closes; [notifications] are cleared as rooms are opened or read; [log]
+ * has what goes wrong.
  */
 class Account(
     private val mtrx: MtrxInterface,
     private val scope: CoroutineScope,
-    private val selectedSpace: SelectedSpaceStore,
-    roomSortStore: RoomSortStore,
+    selectedSpaceStore: PreferenceStore<SpaceKey?>,
+    roomSortStore: PreferenceStore<RoomSort>,
     private val push: PushRegistration,
     private val notifications: RoomNotifications,
-    sharePresenceStore: SharePresenceStore,
-    sectionStore: SectionStore,
+    sharePresenceStore: PreferenceStore<Boolean>,
+    sectionStore: PreferenceStore<Map<String, SectionPrefs>>,
     private val log: Logger = AndroidLog,
 ) {
     // Changed under the lock only.
@@ -67,13 +69,16 @@ class Account(
     val state: StateFlow<AccountState> = _state.asStateFlow()
 
     /** The order of a space's rooms and direct messages. */
-    val roomSort = RoomSortChoice(roomSortStore, scope)
+    val roomSort = Preference(roomSortStore, RoomSort.DEFAULT, scope)
 
-    /** "Share my presence". */
-    val sharePresence = SharePresence(sharePresenceStore, scope)
+    /** "Share my presence": on by default, kept at sign-out. */
+    val sharePresence = Preference(sharePresenceStore, true, scope)
 
     /** How this phone arranges each space's sections. */
-    val sections = SectionLayouts(sectionStore, scope)
+    val sections = SectionLayouts(Preference(sectionStore, emptyMap(), scope))
+
+    /** The space selected on the Spaces tab; forgotten at sign-out. */
+    private val selectedSpace = Preference(selectedSpaceStore, null, scope)
 
     private val _browserLogin = MutableStateFlow<BrowserLogin>(BrowserLogin.Idle)
     val browserLogin: StateFlow<BrowserLogin> = _browserLogin.asStateFlow()
@@ -146,7 +151,7 @@ class Account(
 
     /** Turn "Share my presence" on or off; the session's presence follows at once. */
     fun setSharePresence(on: Boolean) {
-        if (on == sharePresence.on.value) return
+        if (on == sharePresence.value.value) return
         sharePresence.set(on)
         current?.presence?.sharingChanged(on)
     }
@@ -256,7 +261,7 @@ class Account(
     private suspend fun close(signedIn: SignedInSession) {
         _state.value = AccountState.SignedOut()
         signedIn.close()
-        signedIn.spaceSelection.clear()
+        selectedSpace.set(null)
         _roomRequest.value = null
         notifications.clearAll()
     }

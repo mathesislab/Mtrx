@@ -15,8 +15,6 @@ import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.FakeNotifier
 import org.mtrx.app.FakePushStore
 import org.mtrx.app.FakeSession
-import org.mtrx.app.FakeSortStore
-import org.mtrx.app.FakeSpaceStore
 import org.mtrx.app.pushRegistration
 import org.mtrx.app.signedIn
 import org.mtrx.app.summary
@@ -27,7 +25,7 @@ import uniffi.mtrx.MtrxException
 class AccountTest {
     @Test
     fun withoutASavedSessionItIsSignedOut() = runTest {
-        val account = testAccount(FakeMtrx(restored = null), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = null), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         assertEquals(AccountState.SignedOut(), account.state.value)
     }
@@ -35,7 +33,7 @@ class AccountTest {
     @Test
     fun restoredSessionSyncsInTheForegroundOnly() = runTest {
         val session = FakeSession()
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         assertTrue(account.state.value is AccountState.SignedIn)
         assertEquals(0, session.syncStarts)
@@ -50,7 +48,7 @@ class AccountTest {
     @Test
     fun roomListUpdatesBecomeState() = runTest {
         val session = FakeSession()
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         val rooms = account.signedIn.rooms
         assertFalse(rooms.value.loaded())
@@ -61,7 +59,7 @@ class AccountTest {
     @Test
     fun signingOutStopsSyncAndSubscriptions() = runTest {
         val session = FakeSession()
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         account.setForeground(true)
         account.signOut()
@@ -78,7 +76,7 @@ class AccountTest {
     @Test
     fun failedSignOutKeepsTheSessionSyncing() = runTest {
         val session = FakeSession().apply { logoutError = MtrxException.Other("offline") }
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         account.setForeground(true)
         account.signOut()
@@ -91,7 +89,7 @@ class AccountTest {
     fun passwordSignIn() = runTest {
         val session = FakeSession()
         val mtrx = FakeMtrx(restored = null).apply { loginSession = session }
-        val account = testAccount(mtrx, CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(mtrx, CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         account.setForeground(true)
         account.login("example.org", "me", "secret")
