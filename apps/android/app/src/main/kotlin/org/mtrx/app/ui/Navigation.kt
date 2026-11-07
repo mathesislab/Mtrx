@@ -1,7 +1,6 @@
 package org.mtrx.app.ui
 
 import android.content.ActivityNotFoundException
-import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -17,11 +16,8 @@ import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
-import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.SignedInSession
@@ -57,14 +53,6 @@ import uniffi.mtrx.parseAddress
 import uniffi.mtrx.composeTopic
 import uniffi.mtrx.parseTopic
 
-private const val HOME = "home"
-private const val INFO = "info/{roomId}"
-private const val SPACE = "space/{roomId}"
-private const val JOIN = "join"
-private const val NEW = "new?space={space}&parent={parent}"
-private const val RECOVERY = "settings/recovery"
-private const val VERIFICATION = "settings/verification"
-
 /**
  * The screens of a signed-in session: the home (its tabs, with a room open
  * in Chats or Rooms), Room info, a space's overview, joining, a new room
@@ -89,12 +77,12 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
     // A room from another screen: back to the home, where it opens.
     val openRoom: (String) -> Unit = { roomId ->
         home.open(roomId, rooms.room(roomId))
-        nav.popBackStack(HOME, inclusive = false)
+        nav.popBackTo(Route.HOME)
     }
     // The verification screen shows the session's verification of the moment:
     // a new one replaces a finished one still on screen.
     val openVerification = {
-        nav.navigate(VERIFICATION) { popUpTo(VERIFICATION) { inclusive = true } }
+        nav.go(Destination.Verification) { popUpTo(Route.VERIFICATION.pattern) { inclusive = true } }
     }
     AskNotificationPermissionOnce(push)
 
@@ -109,49 +97,47 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
         )
     }
 
-    NavHost(nav, startDestination = HOME) {
-        composable(HOME) {
+    NavHost(nav, startDestination = Route.HOME.pattern) {
+        screen(Route.HOME) {
             HomeScreen(
                 account,
                 session,
                 push,
                 home,
                 HomeRoutes(
-                    openOverview = { nav.navigate("space/${Uri.encode(it)}") },
-                    newSpace = { nav.navigate("new?space=true&parent=") },
-                    newRoom = { parent -> nav.navigate("new?space=false&parent=${Uri.encode(parent)}") },
-                    join = { nav.navigate(JOIN) },
+                    openOverview = { nav.go(Destination.Space(it)) },
+                    newSpace = { nav.go(Destination.New(space = true, parent = null)) },
+                    newRoom = { parent -> nav.go(Destination.New(space = false, parent = parent)) },
+                    join = { nav.go(Destination.Join) },
                 ),
-                onEnterRecoveryKey = { nav.navigate(RECOVERY) },
+                onEnterRecoveryKey = { nav.go(Destination.Recovery) },
                 onVerify = {
                     session.verifyWithAnotherDevice()
                     openVerification()
                 },
                 roomPane = { roomId, backCount, onBack, openSpace ->
                     RoomPane(account, session, rooms, roomId, backCount, onBack, openLink, openRoom, openSpace) {
-                        nav.navigate("info/${Uri.encode(roomId)}")
+                        nav.go(Destination.Info(roomId))
                     }
                 },
             )
         }
-        composable(RECOVERY) {
+        screen(Route.RECOVERY) {
             RecoveryScreen(session, onBack = { nav.popBackStack() }, onDone = { nav.popBackStack() })
         }
-        composable(VERIFICATION) {
+        screen(Route.VERIFICATION) {
             VerificationScreen(session, onClose = { nav.popBackStack() })
         }
-        composable(INFO, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
-            val roomId = entry.arguments?.getString("roomId") ?: return@composable
+        screen(Route.INFO) { (roomId) ->
             val model: RoomInfoModel = viewModel { RoomInfoModel(roomId, session.session, ::composeTopic) }
             InfoScreen(session, rooms, model, nav, openLink)
         }
-        composable(SPACE, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
-            val spaceId = entry.arguments?.getString("roomId") ?: return@composable
+        screen(Route.SPACE) { (spaceId) ->
             val model: RoomInfoModel = viewModel { RoomInfoModel(spaceId, session.session, ::composeTopic) }
             val overview: SpaceOverviewModel = viewModel { SpaceOverviewModel(spaceId, session.session) }
             OverviewScreen(session, rooms, model, overview, nav, openLink, openRoom)
         }
-        composable(JOIN) {
+        screen(Route.JOIN) {
             val model: JoinModel = viewModel { JoinModel(session.session, ::parseAddress) }
             val server by model.server.collectAsStateWithLifecycle()
             val query by model.query.collectAsStateWithLifecycle()
@@ -184,18 +170,7 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
                 onBack = { nav.popBackStack() },
             )
         }
-        composable(
-            NEW,
-            arguments = listOf(
-                navArgument("space") { type = NavType.BoolType },
-                navArgument("parent") {
-                    type = NavType.StringType
-                    defaultValue = ""
-                },
-            ),
-        ) { entry ->
-            val space = entry.arguments?.getBoolean("space") ?: false
-            val parent = entry.arguments?.getString("parent")?.ifEmpty { null }
+        screen(Route.NEW) { (space, parent) ->
             val model: NewRoomModel = viewModel { NewRoomModel(session.session, space, parent) }
             val form by model.form.collectAsStateWithLifecycle()
             val offersOwners by model.offersOwners.collectAsStateWithLifecycle()
@@ -216,7 +191,7 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
                     create = {
                         model.create { roomId ->
                             if (space) {
-                                nav.navigate("space/${Uri.encode(roomId)}") { popUpTo(HOME) }
+                                nav.go(Destination.Space(roomId)) { popUpTo(Route.HOME.pattern) }
                             } else {
                                 openRoom(roomId)
                             }
@@ -252,7 +227,7 @@ private fun rowActions(
     join = join,
     knock = knock,
     open = { room ->
-        if (room.isSpace) nav.navigate("space/${Uri.encode(room.id)}") else openRoom(room.id)
+        if (room.isSpace) nav.go(Destination.Space(room.id)) else openRoom(room.id)
     },
     answer = { room -> openRoom(room.id) },
     retry = retry,
@@ -376,7 +351,7 @@ private fun InfoScreen(
     if (leaving) {
         LeaveDialog(header.name, onLeave = {
             leaving = false
-            session.leave(model.roomId, header.name) { left -> if (left) nav.popBackStack(HOME, inclusive = false) }
+            session.leave(model.roomId, header.name) { left -> if (left) nav.popBackTo(Route.HOME) }
         }, onDismiss = { leaving = false })
     }
 }
@@ -428,7 +403,7 @@ private fun OverviewScreen(
     if (leaving) {
         LeaveDialog(header.name, onLeave = {
             leaving = false
-            session.leave(model.roomId, header.name) { left -> if (left) nav.popBackStack(HOME, inclusive = false) }
+            session.leave(model.roomId, header.name) { left -> if (left) nav.popBackTo(Route.HOME) }
         }, onDismiss = { leaving = false })
     }
 }
