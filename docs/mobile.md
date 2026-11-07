@@ -540,42 +540,58 @@ and tested by CI only; no Android SDK is used locally.
     with AES-256-GCM (random IV, the key as associated data) by a key that
     stays in the Android Keystore (alias `mtrx-secrets`). Backups and device
     transfer are off, as the key cannot follow the data.
-  - `model/Account.kt`: the session holder (no Compose): `restore()` at
-    start, sign-in, sign-out and `forget()`; state, room list and connection
-    as `StateFlow`s set by the listeners (on the library's threads); session
-    changes and sync under one mutex; subscriptions cancelled and closed at
-    sign-out. Browser sign-in: `startOauthLogin`, the page in a Custom Tab,
-    and `OAuthRedirectActivity` (intent filter for scheme
+  - `model/Account.kt`: the account (no Compose): `restore()` at start,
+    sign-in, sign-out and `forget()`; the session as `AccountState.SignedIn`;
+    opening, closing and sync under one mutex. Browser sign-in:
+    `startOauthLogin`, the page in a Custom Tab, and
+    `OAuthRedirectActivity` (intent filter for scheme
     `io.github.alex-robinson`; the path `/oauth` is checked in code, as
     Android ignores path filters without a host) calls `finish` and returns
     to `MainActivity`. Back from the browser without the redirect cancels.
-    Encryption (section 6) too: `encryption`, as `subscribeEncryptionState`
-    reports it (section 9; subscribed at the first `startSync`, the handle
-    with the session's other subscriptions, cancelled and closed at
-    sign-out; a state arriving after sign-out is dropped; never asked with
-    `encryptionState()`), `recover` with its
-    steps as a flow (in the account's scope, so leaving the screen does not
-    stop it), our `devices`, and the verification: the request subscription
-    is one of the session's; a request from another user is cancelled, one
-    from our own device is offered (one at a time; declined while a
-    verification runs).
+    It also keeps the requested room, the open room and the device's
+    preferences. `model/SignedInSession.kt`: the signed-in session and what
+    lives with it, made by the `Account` and closed at sign-out, so nothing
+    of it outlives the session: its own scope (cancelled at close), room
+    list and connection as `StateFlow`s set by the listeners (on the
+    library's threads), subscriptions cancelled and closed at close, the
+    `Images`, the presence and the space selection. Screens take the
+    `SignedInSession`. Encryption (section 6) too: `encryption`, as
+    `subscribeEncryptionState` reports it (section 9; subscribed at the
+    first `startSync`, the handle with the session's other subscriptions;
+    a state arriving after close is dropped; never asked with
+    `encryptionState()`), `recover` with its steps as a flow (in the
+    session's scope, so leaving the screen does not stop it), our
+    `devices`, and the verification: the request subscription is one of
+    the session's; a request from another user is cancelled, one from our
+    own device is offered (one at a time; declined while a verification
+    runs).
   - `model/VerificationModel.kt`: a `Verification` and its subscription,
-    held by the `Account` (outgoing or accepted), its state, `confirm`,
-    `mismatch`, `cancel` in the account's scope; `close()` cancels it unless
+    held by the session (outgoing or accepted), its state, `confirm`,
+    `mismatch`, `cancel` in the account's scope (so a cancel at sign-out
+    still reaches the other device); `close()` cancels it unless
     it ended, then closes both. `model/Encryption.kt`: the banner rule and
     the recovery's state (`InvalidInput` from `recover` is
     `Recovery.InvalidKey`: "The recovery key is not valid." under the
     field, the key kept).
-  - `model/Spaces.kt` (section 7): `SpaceEntry` (a space, or "Other
-    rooms") and `SpaceSelection`, held by the `Account`: the selected entry
-    while the room list has it, saved through `SelectedSpaceStore`
-    (`model/ViewPreferences.kt`: Preferences DataStore `view`, key
-    `selected_space`; `androidx.datastore:datastore-preferences`); a saved
-    one waits for a list that has it and is forgotten when a loaded list
-    does not; cleared at sign-out (and `forget`). `RoomSortChoice`, also
-    the `Account`'s: the order of the spaces' rooms (`RoomSort`: Default,
-    A to Z, Z to A, Most recent), saved through `RoomSortStore` (key
-    `room_sort`), kept at sign-out (the device's, not the account's).
+  - Device preferences, `model/Preference.kt`: a `Preference<T>` over a
+    `PreferenceStore<T>`, its value a `StateFlow` at once (the default
+    until the saved one is read; a change before then wins), saved in
+    order on each change; `current()` waits for the saved value. The
+    stores (`model/ViewPreferences.kt`, Preferences DataStore `view`,
+    `androidx.datastore:datastore-preferences`) are one key each,
+    `DataStoreText` or `DataStoreFlag`; one that cannot be read or saved
+    is not remembered. Tests use `MemoryStore`. The `Account` holds them:
+    `roomSort`, `sharePresence`, `sections` and the selected space.
+  - `model/Spaces.kt` (section 7): `SpaceSelection`, the session's, over
+    the `Account`'s selected space (key `selected_space`): the selected
+    entry while the room list has it; a saved one waits for a list that
+    has it and is forgotten when a loaded list does not; cleared at
+    sign-out (and `forget`). `roomSort`: the order of the spaces' rooms
+    (`RoomSort`: Default, A to Z, Z to A, Most recent; key `room_sort`),
+    kept at sign-out (the device's, not the account's). `rooms/Sections.kt`:
+    `SectionLayouts` over `sections` (key `space_sections`, JSON by space),
+    how this phone arranges each space's sections and folds its group on
+    the Rooms tab.
     `rooms/RoomLists.kt`: the tabs' lists from each `RoomListState`
     (`chats`, `spaceRows` with the unread dot, `roomsOf`, and `sectionsOf`:
     a space's rooms and its direct chats apart, each `sorted`: by name with
@@ -584,8 +600,8 @@ and tested by CI only; no Android SDK is used locally.
   - `model/Images.kt`: avatars and image previews, decoded (downsampled)
     and kept in an in-memory LRU cache.
   - Presence (section 11), `model/Presence.kt`: `PresenceModel`, one per
-    session, made by the `Account` and in `AccountState.SignedIn`,
-    closed at sign-out. The `Account` runs the lifecycle under its lock:
+    session, held by the `SignedInSession` and closed with it. The
+    `Account` runs the lifecycle under its lock:
     `foreground()` before `startSync()` (`presenceActivity(FOREGROUND)`,
     the session's first time after `setPresenceSharing`, waited for), and
     `background()` before `stopSync()` (`BACKGROUND`, waited for); a
@@ -602,8 +618,8 @@ and tested by CI only; no Android SDK is used locally.
     background and at sign-out; dots only in Chats, not in a space's
     People section. `refresh(userId)` when the person sheet opens, into
     the map. Once the server does not share presence, nothing more is
-    told either. "Share my presence": `SharePresence` (DataStore `view`,
-    key `share_presence`), the `Account`'s, read before the first sync.
+    told either. "Share my presence": the `Account`'s `sharePresence`
+    (key `share_presence`), read before the first sync.
     The dot (`ui/PresenceViews.kt`): `Presence.dot`, its ring outside its
     size (12 + 2 + 2 dp), centred on the avatar's circle at 45°; 10 dp on
     the header's 32 dp avatar. The line re-renders each minute, with
