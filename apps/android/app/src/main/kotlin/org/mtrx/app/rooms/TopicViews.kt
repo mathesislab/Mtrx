@@ -95,7 +95,7 @@ fun rememberRoomLinkOpener(onOpenLink: (String) -> Unit, snackbar: SnackbarHostS
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val open by rememberUpdatedState(onOpenLink)
-    return remember(clipboard, scope, snackbar) {
+    return remember<(RoomLink) -> Unit>(clipboard, scope, snackbar) {
         { link: RoomLink ->
             val passcode = link.passcode
             if (passcode == null) {

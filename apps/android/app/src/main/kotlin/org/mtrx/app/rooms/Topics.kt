@@ -69,19 +69,19 @@ data class TopicDraft(val text: String = "", val calls: List<Link> = emptyList()
     /** The calls, or the other links. */
     fun kind(call: Boolean): List<Link> = if (call) calls else links
 
-    private fun with(call: Boolean, change: (MutableList<Link>) -> Unit): TopicDraft {
+    private fun edited(call: Boolean, change: (MutableList<Link>) -> Unit): TopicDraft {
         val changed = kind(call).toMutableList().also(change)
         return if (call) copy(calls = changed) else copy(links = changed)
     }
 
-    fun add(call: Boolean) = with(call) { it.add(Link()) }
+    fun add(call: Boolean) = edited(call) { it.add(Link()) }
 
-    fun change(call: Boolean, index: Int, link: Link) = with(call) { it[index] = link }
+    fun change(call: Boolean, index: Int, link: Link) = edited(call) { it[index] = link }
 
-    fun remove(call: Boolean, index: Int) = with(call) { it.removeAt(index) }
+    fun remove(call: Boolean, index: Int) = edited(call) { it.removeAt(index) }
 
     /** With the call or link at [from] moved to [to] among its kind. */
-    fun move(call: Boolean, from: Int, to: Int) = with(call) { it.add(to, it.removeAt(from)) }
+    fun move(call: Boolean, from: Int, to: Int) = edited(call) { it.add(to, it.removeAt(from)) }
 
     /** Calls and links typed in without a web address (none from [linkUrl]): left out when saved. */
     fun dropped(linkUrl: (String) -> String?): Int =
@@ -93,6 +93,6 @@ data class TopicDraft(val text: String = "", val calls: List<Link> = emptyList()
         composeTopic(text, calls.map { it.draft(call = true) } + links.map { it.draft(call = false) })
 
     companion object {
-        fun of(topic: Topic) = TopicDraft(topic.text, topic.calls.map(Link::of), topic.links.map(Link::of))
+        fun of(topic: Topic) = TopicDraft(topic.text, topic.calls.map { Link.of(it) }, topic.links.map { Link.of(it) })
     }
 }
