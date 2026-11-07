@@ -20,11 +20,11 @@ use mtrx_core::{
 use crate::{
     app, arrange,
     avatar::{Avatars, Shape},
-    context_menu,
     dialog::Kind,
     directory, fonts, frame,
     hint::{Position, hint},
     icons,
+    menu::{self, Entry, Item, Width},
     overview::{self, Overview},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
@@ -858,12 +858,7 @@ impl Card {
                     .style(style::chip),
             );
         }
-        let others: Vec<_> = settings
-            .can_add_to
-            .iter()
-            .filter(|space| **space != room.id)
-            .map(|space| (name_of(space), change(Change::AddToSpace(space.clone()))))
-            .collect();
+        let others = add_to_space_entries(settings, &room.id, name_of);
         if !others.is_empty() {
             let open = self.spaces_menu;
             chips = chips.push(
@@ -872,7 +867,7 @@ impl Card {
                         .padding([4, 10])
                         .style(style::text_button)
                         .on_press(app::Message::Info(Message::SpacesMenu(!open))),
-                    open.then(|| context_menu::menu(others)),
+                    open.then(|| menu::view(others, Width::Menu)),
                     Side::Below,
                     Edge::Left,
                 )
@@ -910,17 +905,7 @@ impl Card {
             .padding(0)
             .style(style::list_item(open))
             .on_press(app::Message::Info(Message::PictureMenu(!open)));
-        let mut items = vec![(
-            "Change picture…".to_owned(),
-            app::Message::Info(Message::ChangePicture),
-        )];
-        if has_picture {
-            items.push((
-                "Remove picture".to_owned(),
-                app::Message::Info(Message::RemovePicture),
-            ));
-        }
-        let menu = open.then(|| context_menu::menu(items));
+        let menu = open.then(|| menu::view(picture_entries(has_picture), Width::Menu));
         hint(
             popover(button, menu, Side::Below, Edge::Left)
                 .on_dismiss(app::Message::Info(Message::PictureMenu(false))),
@@ -1033,6 +1018,37 @@ impl Card {
             .align_y(Alignment::Center),
         )
     }
+}
+
+/// The picture's menu: change it, and remove it if there is one.
+fn picture_entries(has_picture: bool) -> Vec<Entry<'static, app::Message>> {
+    let mut entries = vec![
+        Item::new(
+            "Change picture…",
+            app::Message::Info(Message::ChangePicture),
+        )
+        .into(),
+    ];
+    if has_picture {
+        entries
+            .push(Item::new("Remove picture", app::Message::Info(Message::RemovePicture)).into());
+    }
+    entries
+}
+
+/// The spaces `room` may be added to, besides itself, named by `name_of`.
+fn add_to_space_entries(
+    settings: &RoomSettings,
+    room: &OwnedRoomId,
+    name_of: impl Fn(&OwnedRoomId) -> String,
+) -> Vec<Entry<'static, app::Message>> {
+    (settings.can_add_to.iter())
+        .filter(|space| *space != room)
+        .map(|space| {
+            let add = Message::Change(Change::AddToSpace(space.clone()));
+            Item::new(name_of(space), app::Message::Info(add)).into()
+        })
+        .collect()
 }
 
 fn labelled<'a>(

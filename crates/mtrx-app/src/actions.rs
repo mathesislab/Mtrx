@@ -24,7 +24,9 @@ use crate::{
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint, hint_with},
-    icons, info, message,
+    icons, info,
+    menu::{self, Entry, Item, Width},
+    message,
     message_field::{self, Field, MessageField},
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
@@ -728,7 +730,7 @@ pub fn send_status<'a>(
         return Some(
             popover(
                 cross,
-                Some(unsent_menu(room, event, failed)),
+                Some(menu::view(unsent_entries(room, event, failed), Width::Menu)),
                 Side::Above,
                 Edge::Right,
             )
@@ -747,23 +749,23 @@ pub fn send_status<'a>(
 
 /// Retry a message that could not be sent (`failed`), or take back one not
 /// sent: its text goes back to the composer.
-fn unsent_menu<'a>(room: &OwnedRoomId, event: &Event, failed: bool) -> Element<'a, app::Message> {
-    let retry = button(text("Retry").size(12))
-        .padding([2, 8])
-        .style(style::text_button)
-        .on_press(act(room, Message::Retry(event.key.clone())));
-    let unsend = button(text("Cancel and put back").size(12))
-        .padding([2, 8])
-        .style(style::text_button)
-        .on_press(act(room, Message::Unsend(event.key.clone())));
-    let mut choices = row![].spacing(4).align_y(Alignment::Center);
+fn unsent_entries(
+    room: &OwnedRoomId,
+    event: &Event,
+    failed: bool,
+) -> Vec<Entry<'static, app::Message>> {
+    let mut entries = Vec::new();
     if failed {
-        choices = choices.push(retry);
+        entries.push(Item::new("Retry", act(room, Message::Retry(event.key.clone()))).into());
     }
-    container(choices.push(unsend))
-        .padding(4)
-        .style(style::toolbar)
-        .into()
+    entries.push(
+        Item::new(
+            "Cancel and put back",
+            act(room, Message::Unsend(event.key.clone())),
+        )
+        .into(),
+    );
+    entries
 }
 
 /// People who read up to a message or reacted to it; a click on one opens

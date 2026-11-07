@@ -29,7 +29,9 @@ use crate::{
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint},
-    icons, math, message_menu, pdf, room, style,
+    icons, math,
+    menu::{self, Width},
+    message_menu, pdf, room, style,
     want::wanting,
 };
 
@@ -532,9 +534,12 @@ impl Viewer {
                     .into(),
                 None => placeholder(size),
             };
-            let menu = self
-                .menu
-                .then(|| message_menu::view(message_menu::media_items(&self.file, Origin::Viewer)));
+            let menu = self.menu.then(|| {
+                menu::view(
+                    message_menu::media_entries(&self.file, Origin::Viewer),
+                    Width::Menu,
+                )
+            });
             let shown = context_menu(shown, menu, app::Message::ViewerMenu(true))
                 .on_dismiss(app::Message::ViewerMenu(false));
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);

@@ -11,7 +11,8 @@ use iced::{
 };
 
 use crate::{
-    context_menu::{self, context_menu},
+    context_menu::context_menu,
+    menu::{self, Entry, Item, Width},
     spelling,
 };
 
@@ -95,35 +96,31 @@ impl Misspelled {
 
 /// What `menu` offers: the spellings of its misspelled word, then Cut and
 /// Copy with text `selected`.
-pub fn items(menu: &Menu, selected: bool) -> Vec<(String, Message)> {
+pub fn entries(menu: &Menu, selected: bool) -> Vec<Entry<'static, Message>> {
     let mut items = Vec::new();
     if let Some(misspelled) = &menu.misspelled {
         items.extend(
             (misspelled.suggestions.iter().enumerate())
-                .map(|(i, suggestion)| (suggestion.clone(), Message::Correct(i))),
+                .map(|(i, suggestion)| Item::new(suggestion.clone(), Message::Correct(i))),
         );
         items.extend([
-            ("Learn Spelling".to_owned(), Message::LearnSpelling),
-            ("Ignore Spelling".to_owned(), Message::IgnoreSpelling),
+            Item::new("Learn Spelling", Message::LearnSpelling),
+            Item::new("Ignore Spelling", Message::IgnoreSpelling),
         ]);
     }
     if selected {
-        items.extend([("Cut", Message::Cut), ("Copy", Message::Copy)].map(owned));
+        items.extend([
+            Item::new("Cut", Message::Cut),
+            Item::new("Copy", Message::Copy),
+        ]);
     }
-    items.extend(
-        [
-            ("Paste", Message::Paste),
-            ("Select All", Message::SelectAll),
-        ]
-        .map(owned),
-    );
+    items.extend([
+        Item::new("Paste", Message::Paste),
+        Item::new("Select All", Message::SelectAll),
+    ]);
     #[cfg(target_os = "macos")]
-    items.push(owned(("Emoji & Symbols", Message::EmojiAndSymbols)));
-    items
-}
-
-fn owned((label, message): (&str, Message)) -> (String, Message) {
-    (label.to_owned(), message)
+    items.push(Item::new("Emoji & Symbols", Message::EmojiAndSymbols));
+    items.into_iter().map(Entry::Item).collect()
 }
 
 /// `editor` with its menu on right-click: shown while open (`menu`), Cut
@@ -132,14 +129,14 @@ pub fn with_menu<'a, M: Clone + 'a>(
     editor: impl Into<Element<'a, M>>,
     menu: Option<&Menu>,
     selected: bool,
-    to: impl Fn(Message) -> M,
+    to: impl Fn(Message) -> M + Clone + 'a,
 ) -> Element<'a, M> {
     let menu = menu.map(|menu| {
-        context_menu::menu(
-            items(menu, selected)
-                .into_iter()
-                .map(|(label, message)| (label, to(message))),
-        )
+        let entries = entries(menu, selected)
+            .into_iter()
+            .map(|entry| entry.map(to.clone()))
+            .collect();
+        menu::view(entries, Width::Menu)
     });
     context_menu(editor, menu, to(Message::Open))
         .on_dismiss(to(Message::Close))
@@ -178,9 +175,10 @@ mod tests {
     }
 
     fn labels(menu: &Menu, selected: bool) -> Vec<String> {
-        items(menu, selected)
-            .into_iter()
-            .map(|(label, _)| label)
+        entries(menu, selected)
+            .iter()
+            .filter_map(Entry::label)
+            .map(str::to_owned)
             .collect()
     }
 
@@ -215,7 +213,10 @@ mod tests {
                 "Paste"
             ]
         );
-        assert_eq!(items(&menu, false)[1].1, Message::Correct(1));
+        assert_eq!(
+            entries(&menu, false)[1].on_choose(),
+            Some(&Message::Correct(1))
+        );
     }
 
     #[test]

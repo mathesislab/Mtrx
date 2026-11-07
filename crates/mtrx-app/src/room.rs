@@ -41,6 +41,7 @@ use crate::{
     media::{self, Attached, Previews},
     members,
     mention::{self, Mentionable},
+    menu::{self, Width},
     message,
     message_field::{self, Field, MessageField},
     message_menu::{self, MenuAt},
@@ -1551,19 +1552,19 @@ fn event_view<'a>(
             .get(event.id.as_str())
             .is_some_and(|&i| bounds.in_message(i).is_some())
     });
-    let menu_items = Some(message_menu::items(
-        context.room,
-        shown,
-        math_shown,
-        in_selection,
-    ))
-    .filter(|items| !items.is_empty());
-    let menu_view = |at| match menu_at {
-        Some(MenuAt::Link(url)) if at == MenuAt::Cursor => Some(message_menu::view(
-            message_menu::link_items(context.room, url),
-        )),
-        Some(open) if *open == at => menu_items.clone().map(message_menu::view),
-        _ => None,
+    // Its entries are made only while it is open.
+    let has_menu = message_menu::offers(shown, math_shown);
+    let menu_view = |at| {
+        let entries = match menu_at {
+            Some(MenuAt::Link(url)) if at == MenuAt::Cursor => {
+                message_menu::link_entries(context.room, url)
+            }
+            Some(open) if *open == at => {
+                message_menu::entries(context.room, shown, math_shown, in_selection)
+            }
+            _ => return None,
+        };
+        Some(menu::view(entries, Width::Menu))
     };
     if context.confirm_delete == Some(event.id.as_str()) {
         item = item.push(actions::confirm_delete(context.room, event));
@@ -1635,7 +1636,7 @@ fn event_view<'a>(
     // Also while its reaction window or menu is open.
     let toolbar_shown =
         (hovered || picking == Some(PickerAt::Toolbar) || menu_at == Some(&MenuAt::Toolbar))
-            && (actions::has_tools(&shown.actions) || menu_items.is_some())
+            && (actions::has_tools(&shown.actions) || has_menu)
             && edit.is_none();
     let toolbar = toolbar_shown.then(|| {
         let target = message.and_then(|m| {
@@ -1654,9 +1655,7 @@ fn event_view<'a>(
                     context.emoji,
                 )
             });
-        let menu = menu_items
-            .is_some()
-            .then(|| actions::Menu(menu_view(MenuAt::Toolbar)));
+        let menu = has_menu.then(|| actions::Menu(menu_view(MenuAt::Toolbar)));
         container(actions::toolbar(
             context.room,
             shown,
@@ -1677,7 +1676,7 @@ fn event_view<'a>(
             .into()
     };
     // Right-click opens the menu where the cursor is.
-    let row: Element<'a, app::Message> = if menu_items.is_some() {
+    let row: Element<'a, app::Message> = if has_menu {
         context_menu(
             row,
             menu_view(MenuAt::Cursor),

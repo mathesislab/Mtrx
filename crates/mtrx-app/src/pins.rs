@@ -16,7 +16,9 @@ use crate::{
     ellipsis::ellipsis,
     fonts,
     hint::{Position, hint},
-    icons, room, style,
+    icons,
+    menu::Item,
+    room, style,
 };
 
 #[derive(Debug, Clone)]
@@ -158,10 +160,10 @@ fn preview(event: &Event) -> String {
 }
 
 /// Pin or Unpin, for the menu of a message in `room`.
-pub fn menu_item(room: &OwnedRoomId, event: &OwnedEventId, pinned: bool) -> (String, app::Message) {
+pub fn menu_item(room: &OwnedRoomId, event: &OwnedEventId, pinned: bool) -> Item<app::Message> {
     let label = if pinned { "Unpin" } else { "Pin" };
-    (
-        label.to_owned(),
+    Item::new(
+        label,
         actions::act(room, actions::Message::Pin(event.clone(), !pinned)),
     )
 }
@@ -183,10 +185,13 @@ mod tests {
     fn pin_or_unpin() {
         let id: OwnedEventId = "$a:x".try_into().unwrap();
         let room: OwnedRoomId = "!r:x".try_into().unwrap();
-        assert_eq!(menu_item(&room, &id, false).0, "Pin");
+        assert_eq!(menu_item(&room, &id, false).label, "Pin");
         assert!(matches!(
-            menu_item(&room, &id, true).1,
-            app::Message::Room(_, room::Message::Act(actions::Message::Pin(_, false)))
+            menu_item(&room, &id, true).on_choose,
+            Some(app::Message::Room(
+                _,
+                room::Message::Act(actions::Message::Pin(_, false))
+            ))
         ));
     }
 }

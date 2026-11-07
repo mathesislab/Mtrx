@@ -14,11 +14,12 @@ use mtrx_core::{
 
 use crate::{
     app::Shared,
-    context_menu::{self, context_menu},
+    context_menu::context_menu,
     ellipsis::ellipsis,
     files, fonts,
     hint::{Position, hint},
     icons,
+    menu::{self, Entry, Item, Width},
     popover::{Edge, Side, popover},
     style,
 };
@@ -322,7 +323,7 @@ impl Downloads {
             .width(Length::Fill)
             .style(style::list_item(false))
             .on_press_maybe(done.then_some(Message::Open(id)));
-        let menu = (self.menu == Some(id)).then(|| context_menu::menu(menu_items(download)));
+        let menu = (self.menu == Some(id)).then(|| menu::view(entries(download), Width::Menu));
         context_menu(entry, menu, Message::Menu(Some(id)))
             .on_dismiss(Message::Menu(None))
             .into()
@@ -330,20 +331,20 @@ impl Downloads {
 }
 
 /// A download's menu: what can be done with it.
-fn menu_items(download: &Download) -> Vec<(String, Message)> {
+fn entries(download: &Download) -> Vec<Entry<'static, Message>> {
     let mut items = Vec::new();
     if matches!(download.state, DownloadState::Done { .. }) {
-        items.push(("Open".to_owned(), Message::Open(download.id)));
-        items.push(("Show in folder".to_owned(), Message::Show(download.id)));
+        items.push(Item::new("Open", Message::Open(download.id)));
+        items.push(Item::new("Show in folder", Message::Show(download.id)));
     }
     if let Some(event) = &download.event_id {
-        items.push((
-            "Go to message".to_owned(),
+        items.push(Item::new(
+            "Go to message",
             Message::GoTo(download.room_id.clone(), event.clone()),
         ));
     }
-    items.push(("Remove from list".to_owned(), Message::Remove(download.id)));
-    items
+    items.push(Item::new("Remove from list", Message::Remove(download.id)));
+    items.into_iter().map(Entry::Item).collect()
 }
 
 /// A small borderless button with a hint.
@@ -432,7 +433,11 @@ mod tests {
     #[test]
     fn menus_offer_what_fits_the_state() {
         let labels = |download: &Download| -> Vec<String> {
-            menu_items(download).into_iter().map(|(l, _)| l).collect()
+            entries(download)
+                .iter()
+                .filter_map(Entry::label)
+                .map(str::to_owned)
+                .collect()
         };
         let mut done = test_download(1);
         done.state = DownloadState::Done {
