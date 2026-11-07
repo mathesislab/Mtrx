@@ -30,7 +30,7 @@ use matrix_sdk::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Child, JoinAction, JoinRule, Live, Membership, Result, Role, Session, SpaceGraph,
+    Child, JoinAction, JoinRule, Live, Membership, Result, Role, Session, SpaceGraph, Topic,
     account_data::AccountData,
 };
 
@@ -41,7 +41,7 @@ pub struct DirectoryRoom {
     pub alias: Option<OwnedRoomAliasId>,
     /// The room's name, else its address, else its ID.
     pub name: String,
-    pub topic: Option<String>,
+    pub topic: Topic,
     pub avatar: Option<OwnedMxcUri>,
     pub members: u64,
     pub is_space: bool,
@@ -194,7 +194,7 @@ fn known_child(room: &Room, child: &Child, graph: &SpaceGraph) -> DirectoryRoom 
         id: child.room.clone(),
         name: display_name(name.as_deref(), alias.as_ref(), &child.room),
         alias,
-        topic: room.topic(),
+        topic: Topic::parse(&room.topic().unwrap_or_default()),
         avatar: room.avatar_url(),
         members: room.joined_members_count(),
         is_space: room.is_space(),
@@ -315,7 +315,7 @@ impl Session {
                     ),
                     membership: None,
                     alias: summary.canonical_alias,
-                    topic: summary.topic,
+                    topic: Topic::parse(summary.topic.as_deref().unwrap_or_default()),
                     avatar: summary.avatar_url,
                     members: summary.num_joined_members.into(),
                     is_space: summary.room_type == Some(RoomType::Space),
@@ -383,7 +383,7 @@ impl Session {
             ),
             membership: self.membership(&chunk.room_id),
             alias: chunk.canonical_alias,
-            topic: chunk.topic,
+            topic: Topic::parse(chunk.topic.as_deref().unwrap_or_default()),
             avatar: chunk.avatar_url,
             members: chunk.num_joined_members.into(),
             is_space: chunk.room_type == Some(RoomType::Space),
@@ -412,7 +412,7 @@ impl Session {
             ),
             membership: self.membership(&preview.room_id),
             alias: preview.canonical_alias,
-            topic: preview.topic,
+            topic: Topic::parse(preview.topic.as_deref().unwrap_or_default()),
             avatar: preview.avatar_url,
             members: preview.num_joined_members,
             is_space: preview.room_type == Some(RoomType::Space),

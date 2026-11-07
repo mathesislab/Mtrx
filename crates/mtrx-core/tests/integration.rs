@@ -805,9 +805,10 @@ async fn room_management() -> Result<()> {
     s.room(&room)?.set_name("reading list").await?;
     s.room(&room)?.set_topic("Papers to read").await?;
     wait_for("renamed", list.updates(), |state| {
-        state.rooms.iter().any(|r| {
-            r.id == room && r.name == "reading list" && r.topic.as_deref() == Some("Papers to read")
-        })
+        state
+            .rooms
+            .iter()
+            .any(|r| r.id == room && r.name == "reading list" && r.topic.text == "Papers to read")
     })
     .await?;
 
@@ -2517,7 +2518,7 @@ async fn changes_show_before_sync_brings_them() -> Result<()> {
     s.room(&room)?.set_pinned(&plan, true).await?;
     wait_for("the changes listed", &mut lists, |l| {
         l.room(&room).is_some_and(|r| {
-            r.topic.as_deref() == Some("About.")
+            r.topic.text == "About."
                 && r.tag == mtrx_core::RoomTag::Favourite
                 && r.pinned == [plan.clone()]
         })
@@ -2544,9 +2545,8 @@ async fn changes_show_before_sync_brings_them() -> Result<()> {
     // Synced, as shown.
     s.start_sync().await;
     wait_for("synced", list.updates(), |state| {
-        (state.rooms.iter()).any(|r| {
-            r.id == room && r.topic.as_deref() == Some("About.") && r.pinned == [plan.clone()]
-        })
+        (state.rooms.iter())
+            .any(|r| r.id == room && r.topic.text == "About." && r.pinned == [plan.clone()])
     })
     .await?;
     Ok(())

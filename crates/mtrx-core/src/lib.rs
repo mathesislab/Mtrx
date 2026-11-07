@@ -79,7 +79,7 @@ pub use profile::Profile;
 pub use push::{HttpPusher, PusherInfo};
 pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
-pub use room_links::{LinkKind, RoomLink, Topic, describe_change};
+pub use room_links::{LinkDraft, LinkKind, RoomLink, Topic, describe_change, typed_link_url};
 pub use room_settings::{Banned, History, NotifyMode, RoomSettings, SpaceLink};
 pub use rooms::{JoinAction, JoinRule, Membership, NewRoom, RoomKind, RoomListState, RoomSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};

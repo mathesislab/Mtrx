@@ -401,7 +401,7 @@ mod tests {
             id: OwnedRoomId::try_from(id).unwrap(),
             name: name.into(),
             avatar: None,
-            topic: None,
+            topic: crate::Topic::default(),
             kind,
             membership: crate::Membership::Joined,
             encrypted: false,

@@ -10,7 +10,7 @@ use iced::{
     Alignment, Color, Element, Font, Length, Task, Theme,
     widget::{button, column, container, row, space, text, text_editor, text_input, toggler},
 };
-use mtrx_core::{CallService, LinkKind, OwnedRoomId, RoomLink, Session, Topic, Url};
+use mtrx_core::{CallService, LinkDraft, OwnedRoomId, RoomSummary, Session, Topic};
 
 use crate::{
     app,
@@ -63,7 +63,7 @@ impl Panel {
         self.error = None;
     }
 
-    pub fn update(&mut self, message: Message, topic: &str) -> Task<Message> {
+    pub fn update(&mut self, message: Message, topic: &Topic) -> Task<Message> {
         match message {
             Message::Toggle => {
                 self.open = !self.open;
@@ -71,7 +71,7 @@ impl Panel {
                 self.error = None;
             }
             Message::Dismiss => {
-                if self.editor.as_ref().is_some_and(|e| e.changed(Some(topic))) {
+                if self.editor.as_ref().is_some_and(|e| e.changed(topic)) {
                     let nudge = self.nudge.0 + 1;
                     self.nudge = (nudge, true);
                     let settle = async { tokio::time::sleep(NUDGE).await };
@@ -173,29 +173,31 @@ impl Panel {
     }
 }
 
-/// The line the room header previews the topic with, beside the caret:
-/// its text's first line, else its links' names, else "Add a topic" if
-/// `can_edit`.
+/// `room`'s topic as the room list has it; empty for a room not listed
+/// (yet).
+pub fn of(room: Option<&RoomSummary>) -> &Topic {
+    static NONE: Topic = Topic {
+        text: String::new(),
+        links: Vec::new(),
+    };
+    room.map_or(&NONE, |r| &r.topic)
+}
+
+/// The line the room header previews the topic with, beside the caret
+/// ([`Topic::preview`]), else "Add a topic" if `can_edit`.
 pub fn preview(topic: &Topic, services: &[CallService], can_edit: bool) -> Option<String> {
-    if let Some(first) = topic.text.lines().next() {
-        return Some(first.to_owned());
-    }
-    if !topic.links.is_empty() {
-        let names: Vec<String> = topic.links.iter().map(|l| l.name(services)).collect();
-        return Some(names.join(" · "));
-    }
-    can_edit.then(|| "Add a topic".to_owned())
+    (topic.preview(services)).or_else(|| can_edit.then(|| "Add a topic".to_owned()))
 }
 
 /// The topic's text in full, to select and copy, and a button for each
-/// link.
+/// call, then each other link.
 pub fn details<'a>(topic: &Topic, services: &[CallService]) -> Element<'a, app::Message> {
     let mut details = column![].spacing(10);
     if !topic.text.is_empty() {
         details = details.push(selectable_text(topic.text.clone()).size(13));
     }
     let mut links = row![].spacing(6);
-    for link in &topic.links {
+    for link in topic.calls().chain(topic.others()) {
         let mut label = row![
             kind_icon(link.is_call()),
             text(link.name(services)).size(13)
@@ -218,7 +220,7 @@ pub fn details<'a>(topic: &Topic, services: &[CallService]) -> Element<'a, app::
             Position::Bottom,
         ));
     }
-    if topic.text.is_empty() && topic.links.is_empty() {
+    if topic.is_empty() {
         details = details.push(
             text("No topic or links yet.")
                 .size(13)
@@ -237,36 +239,17 @@ pub fn kind_icon<'a, M: 'a>(call: bool) -> Element<'a, M> {
     }
 }
 
-/// `topic` with its calls (`calls`) or other links moved: the calls come
-/// first.
-pub fn moved(mut topic: Topic, calls: bool, moved: (usize, usize)) -> Topic {
-    let (mut call_links, mut other): (Vec<_>, Vec<_>) =
-        topic.links.into_iter().partition(RoomLink::is_call);
-    reorder::apply(if calls { &mut call_links } else { &mut other }, moved);
-    topic.links = call_links.into_iter().chain(other).collect();
-    topic
-}
-
 /// A topic being edited: its text and links, or all of it as text.
 pub struct Editor {
     text: text_editor::Content,
     /// The calls, then the other links.
-    links: Vec<Draft>,
+    links: Vec<LinkDraft>,
     /// The link whose fields are open.
     open: Option<usize>,
     /// The whole topic, while edited as text.
     raw: Option<text_editor::Content>,
     calls: Reorder,
     others: Reorder,
-}
-
-/// A link as typed.
-#[derive(Debug, Clone, Default, PartialEq)]
-struct Draft {
-    call: bool,
-    title: String,
-    passcode: String,
-    url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -287,13 +270,12 @@ pub enum Edit {
 }
 
 impl Editor {
-    pub fn new(topic: &str) -> Self {
-        let topic = Topic::parse(topic);
-        let mut links: Vec<Draft> = topic.links.iter().map(Draft::from).collect();
-        links.sort_by_key(|d| !d.call);
+    pub fn new(topic: &Topic) -> Self {
         Self {
             text: text_editor::Content::with_text(&topic.text),
-            links,
+            links: (topic.calls().chain(topic.others()))
+                .map(LinkDraft::from)
+                .collect(),
             open: None,
             raw: None,
             calls: Reorder::default(),
@@ -301,14 +283,20 @@ impl Editor {
         }
     }
 
-    /// The topic as edited, tidied: its text, then the links.
+    /// The topic typed as text, as the toggle back from text has it.
+    pub fn from_text(topic: &str) -> Self {
+        Self::new(&Topic::parse(topic))
+    }
+
+    /// The topic as edited, tidied: its text, then the links; a link
+    /// without a web address yet reads as text.
     pub fn topic(&self) -> String {
         Topic::parse(&self.written()).to_topic()
     }
 
     /// The topic differs from `topic`.
-    pub fn changed(&self, topic: Option<&str>) -> bool {
-        self.topic() != Topic::parse(topic.unwrap_or_default()).to_topic()
+    pub fn changed(&self, topic: &Topic) -> bool {
+        self.topic() != topic.to_topic()
     }
 
     /// Every link has a web address.
@@ -324,7 +312,7 @@ impl Editor {
         }
         let links = (self.links.iter())
             .filter(|d| !d.is_blank())
-            .map(Draft::line);
+            .map(LinkDraft::line);
         std::iter::once(self.text.text())
             .chain(links)
             .collect::<Vec<_>>()
@@ -350,16 +338,16 @@ impl Editor {
             }
             Edit::AsText(false) => {
                 if let Some(raw) = self.raw.take() {
-                    *self = Self::new(&raw.text());
+                    *self = Self::from_text(&raw.text());
                 }
             }
             Edit::Add(call) => {
                 let at = if call { calls } else { self.links.len() };
                 self.links.insert(
                     at,
-                    Draft {
+                    LinkDraft {
                         call,
-                        ..Draft::default()
+                        ..LinkDraft::default()
                     },
                 );
                 self.open = Some(at);
@@ -553,64 +541,6 @@ impl Editor {
     }
 }
 
-impl From<&RoomLink> for Draft {
-    fn from(link: &RoomLink) -> Self {
-        Self {
-            call: link.is_call(),
-            title: link.title.clone().unwrap_or_default(),
-            passcode: link.passcode().unwrap_or_default().to_owned(),
-            url: link.url.to_string(),
-        }
-    }
-}
-
-impl Draft {
-    /// The link, if its address is a web address ("https://" may be left
-    /// out).
-    fn link(&self) -> Option<RoomLink> {
-        let url = self.url.trim();
-        let url = match Url::parse(url) {
-            Ok(url) => url,
-            Err(_) if !url.contains("://") => Url::parse(&format!("https://{url}")).ok()?,
-            Err(_) => return None,
-        };
-        if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() {
-            return None;
-        }
-        let some = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
-        Some(RoomLink {
-            kind: if self.call {
-                LinkKind::Call {
-                    passcode: some(&self.passcode),
-                }
-            } else {
-                LinkKind::Link
-            },
-            title: some(&self.title),
-            url,
-        })
-    }
-
-    /// Nothing typed in.
-    fn is_blank(&self) -> bool {
-        [&self.title, &self.passcode, &self.url]
-            .iter()
-            .all(|s| s.trim().is_empty())
-    }
-
-    /// Its line in the topic, as typed if not a link yet.
-    fn line(&self) -> String {
-        match self.link() {
-            Some(link) => link.line(),
-            None => format!(
-                "[{}] {}",
-                if self.call { "call" } else { "link" },
-                self.url.trim()
-            ),
-        }
-    }
-}
-
 /// A text editor with the app's look and keys.
 fn field<'a>(
     content: &'a text_editor::Content,
@@ -665,7 +595,7 @@ pub fn update(
     session: &Arc<Session>,
     panel: &mut Panel,
     room: OwnedRoomId,
-    listed: Option<&str>,
+    listed: &Topic,
     message: Message,
     reply: impl Fn(Message) -> app::Message + Clone + Send + 'static,
 ) -> Task<app::Message> {
@@ -676,7 +606,7 @@ pub fn update(
         let topic = editor.topic();
         return save(session, panel, room, topic, reply);
     }
-    (panel.update(message, listed.unwrap_or_default())).map(reply)
+    (panel.update(message, listed)).map(reply)
 }
 
 /// Save `topic` as `room`'s, which the room list shows at once; its topic
@@ -707,8 +637,11 @@ mod tests {
 
     #[test]
     fn edits_links_and_the_text() {
-        let mut editor = Editor::new(TOPIC);
-        assert!(!editor.changed(Some(TOPIC)), "only reordered: calls first");
+        let mut editor = Editor::new(&Topic::parse(TOPIC));
+        assert!(
+            !editor.changed(&Topic::parse(TOPIC)),
+            "only reordered: calls first"
+        );
         assert_eq!(
             editor.topic(),
             "About.\n\
@@ -726,7 +659,7 @@ mod tests {
         editor.update(Edit::Url(3, "drive.google.com/x".into()));
         editor.update(Edit::Remove(2));
         assert!(editor.valid());
-        assert!(editor.changed(Some(TOPIC)));
+        assert!(editor.changed(&Topic::parse(TOPIC)));
         assert_eq!(
             editor.topic(),
             "About.\n\
@@ -738,7 +671,7 @@ mod tests {
 
     #[test]
     fn switches_to_text_and_back() {
-        let mut editor = Editor::new(TOPIC);
+        let mut editor = Editor::new(&Topic::parse(TOPIC));
         editor.update(Edit::Add(true));
         editor.update(Edit::Url(2, "not a link".into()));
         editor.update(Edit::AsText(true));
@@ -757,56 +690,34 @@ mod tests {
     }
 
     #[test]
-    fn moves_calls_or_links() {
-        let topic = moved(Topic::parse(TOPIC), true, (1, 0));
-        assert_eq!(
-            topic.to_topic(),
-            "About.\n\
-             [call Weekly passcode 123] https://zoom.us/j/1\n\
-             [call] https://meet.google.com/abc-defg-hij\n\
-             [link Draft] https://overleaf.com/project/a"
-        );
-    }
-
-    #[test]
-    fn previews_the_text_else_the_links() {
+    fn previews_the_topic_else_offers_to_add_one() {
         let preview = |topic: &str, can_edit| preview(&Topic::parse(topic), &[], can_edit);
         assert_eq!(preview(TOPIC, false).as_deref(), Some("About."));
-        assert_eq!(
-            preview(
-                "[call Weekly] https://zoom.us/j/1\n[link] https://overleaf.com/a",
-                false
-            )
-            .as_deref(),
-            Some("Weekly · overleaf.com")
-        );
         assert_eq!(preview("", true).as_deref(), Some("Add a topic"));
         assert_eq!(preview("", false), None);
     }
 
     #[test]
     fn a_click_outside_closes_unless_changes_are_edited() {
+        let about = Topic::parse("About.");
         let mut panel = Panel::default();
-        let _ = panel.update(Message::Toggle, "About.");
-        let _ = panel.update(Message::Dismiss, "About.");
+        let _ = panel.update(Message::Toggle, &about);
+        let _ = panel.update(Message::Dismiss, &about);
         assert!(!panel.open);
         // Editing, unchanged.
-        let _ = panel.update(Message::Edit, "About.");
-        let _ = panel.update(Message::Dismiss, "About.");
+        let _ = panel.update(Message::Edit, &about);
+        let _ = panel.update(Message::Dismiss, &about);
         assert!(!panel.open && panel.editor.is_none());
         // Changed: Cancel and Save stand out until the last nudge settles.
-        let _ = panel.update(Message::Edit, "About.");
-        let _ = panel.update(Message::Editor(Edit::Add(false)), "About.");
-        let _ = panel.update(
-            Message::Editor(Edit::Url(0, "overleaf.com".into())),
-            "About.",
-        );
-        let _ = panel.update(Message::Dismiss, "About.");
-        let _ = panel.update(Message::Dismiss, "About.");
+        let _ = panel.update(Message::Edit, &about);
+        let _ = panel.update(Message::Editor(Edit::Add(false)), &about);
+        let _ = panel.update(Message::Editor(Edit::Url(0, "overleaf.com".into())), &about);
+        let _ = panel.update(Message::Dismiss, &about);
+        let _ = panel.update(Message::Dismiss, &about);
         assert!(panel.open && panel.editor.is_some() && panel.nudge == (2, true));
-        let _ = panel.update(Message::Settle(1), "About.");
+        let _ = panel.update(Message::Settle(1), &about);
         assert!(panel.nudge.1);
-        let _ = panel.update(Message::Settle(2), "About.");
+        let _ = panel.update(Message::Settle(2), &about);
         assert!(!panel.nudge.1);
     }
 }
