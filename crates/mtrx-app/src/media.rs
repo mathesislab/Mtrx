@@ -30,6 +30,7 @@ use crate::{
     fonts, frame,
     hint::{Position, hint},
     icons, message_menu, pdf, room, style,
+    want::wanting,
 };
 
 /// Where copying an image was asked from, to show there how it went.
@@ -46,6 +47,8 @@ pub enum Origin {
 #[derive(Debug, Clone)]
 pub enum Message {
     AvatarWanted(avatar::Key),
+    /// An image's preview, or whether a PDF can be read.
+    PreviewWanted(Media),
 }
 
 /// Largest size of an image in the timeline, in logical pixels.
@@ -127,25 +130,35 @@ impl Previews {
         matches!(self.loaded.get(media), Some(Loaded::Failed(_)))
     }
 
-    /// Start downloading unless it is cached, running, or failed recently:
-    /// an image's preview, or a PDF to check it can be read.
+    /// Whether to download it: not loaded, nor loading, nor failed
+    /// recently.
+    fn wanted(&self, media: &MediaRef) -> bool {
+        let loaded = match self.loaded.get(media) {
+            Some(Loaded::Ready(_)) => true,
+            Some(Loaded::Failed(at)) => at.elapsed() < RETRY_AFTER,
+            None => false,
+        };
+        !loaded && !self.pending.contains(media)
+    }
+
+    /// Start downloading if [wanted](Self::wanted): an image's preview, or
+    /// a PDF to check it can be read.
     pub fn request<M: Send + 'static>(
         &mut self,
         session: &Arc<Session>,
         media: &Media,
         done: fn(MediaRef, Option<Preview>) -> M,
     ) -> Task<M> {
-        let is_pdf = pdf::is_pdf(media);
-        let media = &media.source;
-        let wanted = match self.loaded.get(media) {
-            Some(Loaded::Ready(_)) => false,
-            Some(Loaded::Failed(at)) => at.elapsed() >= RETRY_AFTER,
-            None => true,
-        };
-        if !wanted || !self.pending.insert(media.clone()) {
+        if !self.wanted(&media.source) {
             return Task::none();
         }
-        let (session, downloads, media) = (session.clone(), self.downloads.clone(), media.clone());
+        self.pending.insert(media.source.clone());
+        let is_pdf = pdf::is_pdf(media);
+        let (session, downloads, media) = (
+            session.clone(),
+            self.downloads.clone(),
+            media.source.clone(),
+        );
         Task::perform(
             async move {
                 let picture = async {
@@ -208,7 +221,7 @@ fn check_pdf(bytes: Vec<u8>) -> Preview {
 
 /// Whether a message's file is looked at in the background: images for
 /// their previews, and PDFs that are not too large to check.
-pub fn previewed(media: &Media) -> bool {
+fn previewed(media: &Media) -> bool {
     media.kind == MediaKind::Image
         || (pdf::is_pdf(media) && media.size.is_none_or(|size| size <= pdf::MAX_BYTES))
 }
@@ -262,7 +275,8 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
 /// a PDF's card opens the viewer once known to be readable, other cards the
 /// file in its app. `body` shows below it if it is a caption rather than
 /// the filename. The file is in `room`, in message `event`; an image has a
-/// download button beside it while the message is `hovered`.
+/// download button beside it while the message is `hovered`. An image's
+/// preview, or whether a PDF can be read, is asked for.
 pub fn view<'a>(
     room: &OwnedRoomId,
     event: Option<&OwnedEventId>,
@@ -299,6 +313,9 @@ pub fn view<'a>(
         },
         _ => open_card(file, None),
     };
+    let want = (previewed(media) && previews.wanted(&media.source))
+        .then(|| app::Message::Media(Message::PreviewWanted(media.clone())));
+    let content = wanting(content, want);
     if body == media.filename {
         content
     } else {
@@ -816,6 +833,45 @@ mod tests {
             &mut sent,
         );
         sent
+    }
+
+    /// An image asks for its preview and a PDF to be checked, until loaded
+    /// (or failed); a PDF too large to check does not.
+    #[test]
+    fn files_ask_for_their_previews() {
+        let file = |filename: &str, kind, size| Media {
+            kind,
+            filename: filename.into(),
+            size,
+            mimetype: None,
+            width: None,
+            height: None,
+            source: MediaRef::plain(&format!("mxc://example.org/{filename}")),
+        };
+        let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
+        let asked = |media: &Media, previews: &Previews| -> Vec<app::Message> {
+            let shown = view(&room, None, media, &media.filename, previews, false);
+            let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), shown);
+            let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
+                Instant::now(),
+            ))]);
+            ui.into_messages().collect()
+        };
+        let mut previews = Previews::new();
+        let image = file("ice.png", MediaKind::Image, None);
+        let pdf = file("melt.pdf", MediaKind::File, Some(1000));
+        let large = file("atlas.pdf", MediaKind::File, Some(pdf::MAX_BYTES + 1));
+        for media in [&image, &pdf] {
+            assert!(matches!(
+                &asked(media, &previews)[..],
+                [app::Message::Media(Message::PreviewWanted(wanted))] if wanted == media
+            ));
+        }
+        assert!(asked(&large, &previews).is_empty());
+        previews.insert(image.source.clone(), None);
+        previews.insert(pdf.source.clone(), Some(Preview::Readable));
+        assert!(asked(&image, &previews).is_empty());
+        assert!(asked(&pdf, &previews).is_empty());
     }
 
     #[test]

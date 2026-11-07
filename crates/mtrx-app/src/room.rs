@@ -595,15 +595,6 @@ impl Room {
         })
     }
 
-    /// Images of the rendered messages, for loading their previews.
-    /// Files with previews: images and PDFs.
-    pub fn previewed(&self) -> impl Iterator<Item = &Media> {
-        self.visible_events().filter_map(|e| match &e.content {
-            EventContent::Message(m) => m.media.as_ref().filter(|media| media::previewed(media)),
-            _ => None,
-        })
-    }
-
     /// Move the end of the selection by `step`, on into the part of the
     /// timeline's text before or after.
     pub fn extend(&mut self, step: Step) {

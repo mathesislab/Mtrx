@@ -169,6 +169,9 @@ async fn load_wanted(app: &mut App, session: &Session) {
         for want in wanted {
             match want {
                 media::Message::AvatarWanted(key) => main.avatars.load_now(session, key).await,
+                media::Message::PreviewWanted(media) => {
+                    main.previews.load_now(session, &media).await
+                }
             }
         }
     }
@@ -2194,7 +2197,7 @@ async fn media_messages() {
     let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
-    let main_with = async |modal: Option<Modal>| {
+    let app_with = async |modal: Option<Modal>, mode: Mode| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
         main.verified = Some(true);
@@ -2204,16 +2207,14 @@ async fn media_messages() {
             main.session.draft_keeper(&room),
         );
         show(&mut open, entries.clone());
-        let images: Vec<Media> = open.previewed().cloned().collect();
-        for media in &images {
-            main.previews.load_now(&session, media).await;
-        }
         main.pane = Pane::Open(open);
         main.modal = modal;
-        Box::new(main)
+        let mut app = app(Screen::Main(Box::new(main)), mode);
+        load_wanted(&mut app, &session).await;
+        app
     };
     for (mode, name) in [(Mode::Light, "media-light"), (Mode::Dark, "media-dark")] {
-        snapshot(&app(Screen::Main(main_with(None).await), mode), name);
+        snapshot(&app_with(None, mode).await, name);
     }
     // Files attached to a message being written sit in the composer.
     let files = dir.path().join("attach");
@@ -2225,7 +2226,10 @@ async fn media_messages() {
     )
     .unwrap();
     std::fs::write(&paths[1], crate::pdf::sample()).unwrap();
-    let mut main = main_with(None).await;
+    let mut app = app_with(None, Mode::Light).await;
+    let Screen::Main(main) = &mut app.screen else {
+        unreachable!()
+    };
     let open = main.pane.room_mut().unwrap();
     open.attachments = crate::media::read_attached(paths)
         .await
@@ -2233,10 +2237,7 @@ async fn media_messages() {
         .map(Result::unwrap)
         .collect();
     open.composer = text_editor::Content::with_text("The calving front this morning:");
-    snapshot(
-        &app(Screen::Main(main), Mode::Light),
-        "composer-attachments",
-    );
+    snapshot(&app, "composer-attachments");
     let in_room = |media: Media| crate::downloads::File {
         media,
         room: room.clone(),
@@ -2245,29 +2246,20 @@ async fn media_messages() {
     let mut viewer = Viewer::new(in_room(image));
     viewer.load_now(&session).await;
     snapshot(
-        &app(
-            Screen::Main(main_with(Some(Modal::Image(viewer))).await),
-            Mode::Light,
-        ),
+        &app_with(Some(Modal::Image(viewer)), Mode::Light).await,
         "image-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf.clone()), Size::new(1200.0, 800.0), 2.0);
     viewer.open_now(&session).await;
     snapshot(
-        &app(
-            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
-            Mode::Light,
-        ),
+        &app_with(Some(Modal::Pdf(viewer)), Mode::Light).await,
         "pdf-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf), Size::new(1200.0, 800.0), 2.0);
     viewer.set_zoom(0.5);
     viewer.open_now(&session).await;
     snapshot(
-        &app(
-            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
-            Mode::Dark,
-        ),
+        &app_with(Some(Modal::Pdf(viewer)), Mode::Dark).await,
         "pdf-viewer-zoomed-out",
     );
 }

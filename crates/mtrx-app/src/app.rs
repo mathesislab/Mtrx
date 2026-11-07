@@ -1219,7 +1219,6 @@ impl App {
                             draft,
                             go_to,
                             self.render_math(),
-                            self.load_previews(),
                             self.load_call_service(&id),
                             self.load_pinned(),
                         ])
@@ -2247,13 +2246,7 @@ impl App {
                         room::Message::SendingSlow(row.clone()).to(&id)
                     })
                 });
-                Task::batch([
-                    Task::batch(clocks),
-                    read,
-                    fill(room),
-                    self.render_math(),
-                    self.load_previews(),
-                ])
+                Task::batch([Task::batch(clocks), read, fill(room), self.render_math()])
             }
             room::Message::Scrolled(viewport) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2266,7 +2259,7 @@ impl App {
                     Older::None => Task::none(),
                     Older::ShowMore => {
                         room.show_more();
-                        Task::batch([self.render_math(), self.load_previews()])
+                        self.render_math()
                     }
                     Older::Paginate => paginate(room),
                 }
@@ -2291,7 +2284,7 @@ impl App {
                         Task::none()
                     }
                 };
-                Task::batch([more, self.render_math(), self.load_previews()])
+                Task::batch([more, self.render_math()])
             }
             room::Message::Composer(action) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2458,11 +2451,7 @@ impl App {
                     return room::scroll(scroll);
                 }
                 room.show_all();
-                Task::batch([
-                    room::scroll(scroll),
-                    self.render_math(),
-                    self.load_previews(),
-                ])
+                Task::batch([room::scroll(scroll), self.render_math()])
             }
             room::Message::Select(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2590,7 +2579,6 @@ impl App {
                             fill(room),
                             mark_read(room),
                             self.render_math(),
-                            self.load_previews(),
                             self.load_call_service(&id),
                         ])
                     }
@@ -2637,7 +2625,7 @@ impl App {
                     // A new one replaces the one under way.
                     None => seek(room, event),
                 };
-                Task::batch([go, self.render_math(), self.load_previews()])
+                Task::batch([go, self.render_math()])
             }
             room::Message::Sought(result) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2670,7 +2658,7 @@ impl App {
                 {
                     go = go_to(room, row);
                 }
-                Task::batch([caught_up, go, self.render_math(), self.load_previews()])
+                Task::batch([caught_up, go, self.render_math()])
             }
             room::Message::Unmark(row) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -3688,7 +3676,7 @@ impl App {
         }
         let scroll = room.show_found();
         // The match may be in a message not rendered before.
-        Task::batch([focus, scroll, self.render_math(), self.load_previews()])
+        Task::batch([focus, scroll, self.render_math()])
     }
 
     fn later(&mut self, id: OwnedRoomId, message: send_later::Message) -> Task<Message> {
@@ -4131,25 +4119,11 @@ impl App {
                 main.avatars
                     .request(&main.session, key, Message::AvatarLoaded)
             }
-        }
-    }
-
-    /// Request the previews of the open room's rendered images.
-    fn load_previews(&mut self) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
-        };
-        let Some(room) = main.pane.room() else {
-            return Task::none();
-        };
-        let tasks: Vec<_> = room
-            .previewed()
-            .map(|media| {
+            media::Message::PreviewWanted(media) => {
                 main.previews
-                    .request(&main.session, media, Message::PreviewLoaded)
-            })
-            .collect();
-        Task::batch(tasks)
+                    .request(&main.session, &media, Message::PreviewLoaded)
+            }
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
