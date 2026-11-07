@@ -262,6 +262,17 @@ pub struct Message {
     pub media: Option<Media>,
 }
 
+impl Message {
+    /// What its text shows: `None` for a file without a caption (its body
+    /// is the file's name).
+    pub fn text(&self) -> Option<&Document> {
+        match &self.media {
+            Some(media) if self.body == media.filename => None,
+            _ => Some(&self.document),
+        }
+    }
+}
+
 /// A file sent in a message.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Media {
@@ -365,6 +376,11 @@ pub struct RoomTimeline {
 impl RoomTimeline {
     pub fn room_id(&self) -> &OwnedRoomId {
         &self.room_id
+    }
+
+    /// Ours, the account's.
+    pub fn own_user_id(&self) -> &UserId {
+        self.timeline.room().own_user_id()
     }
 
     /// Oldest first.

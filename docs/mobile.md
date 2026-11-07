@@ -116,7 +116,8 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   { id, content }` (`start`, `day`, `readMarker`, `summary(text)`, `message` with
   its grouping, `decrypting` and `actions: [MessageAction]` in the menu's order),
   `TimelineEvent` (with `sender`, `editable`, `readBy: [User]`), `EventContent`,
-  `Message { kind, body, edited, media, reactions, replyTo, rawBody }`,
+  `Message { kind, body, edited, media, reactions, replyTo, rawBody, text }`
+  (`text`: what to draw, see "Message text" below),
   `Reaction { key, count, byUs, senders: [User] }`, `User { userId, name,
   avatarUrl, displayName }` (`displayName`: the name, else the ID's
   localpart), `ReplyQuote { eventId, state, sender: User?, kind, body }`,
@@ -198,6 +199,30 @@ sizes. Diffs (the SDK's `VectorDiff`s) can come later for big timelines.
 
 `avatar` and `mediaPreview` return encoded image bytes (cached in the SDK's
 store).
+
+### Message text
+
+`Message.text: [TextBlock]` is the formatted text, finished by the library
+(`docs/phone-formatting.md`): the apps parse no HTML, Markdown or LaTeX and
+look for no links. Empty for a file without a caption; an emote starts
+with the sender's name, all of it italic.
+- `TextBlock { kind, quotes, lists, marker }`, flat: one column of blocks,
+  each with its quote bars and list indents, and `marker` ("•", "3.") on an
+  item's first block. `BlockKind`: `paragraph(runs)`, `heading(level,
+  runs)` (one size), `code(code, language)` (wrapped), `math(formula)`
+  (centred, scaled down to 60 % to fit, then scrolling), `rule`.
+- `TextRun`: `text(text, style, link)` ("\n" breaks lines), `code(code,
+  style, link)`, `math(formula, link)`, `mention(userId, name, style,
+  you)`: in the link colour, bold if `you`; a tap shows the person.
+  `TextStyle { bold, italic, strikethrough, underline, superscript,
+  subscript, spoiler }`; a spoiler is a filled box until tapped.
+- `Formula { tex, display }`. `typesetFormula(formula, emPixels)` returns a
+  `FormulaImage { png, width, height, baseline }`: black on transparent,
+  drawn tinted with the text's colour, inline on the line's baseline.
+  `emPixels` is the body text size times the screen scale; the apps keep
+  the images in their image caches, keyed by formula and size. Until
+  typeset, or if it fails, a formula shows as `$tex$` in monospace.
+- `body` stays: Copy, Select text, edits.
 
 ## 3. iOS app
 

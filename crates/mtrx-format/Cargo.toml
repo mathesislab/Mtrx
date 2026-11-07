@@ -6,7 +6,12 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-render = ["dep:idna_adapter", "dep:mitex", "dep:mitex-spec-gen", "dep:fxhash", "dep:memmap2", "dep:typst", "dep:typst-layout", "dep:typst-render", "dep:typst-assets", "dep:thiserror", "dep:unicode-segmentation"]
+# Typeset with Typst. Its fonts come with `typst-fonts` or `math-font`.
+render = ["dep:idna_adapter", "dep:mitex", "dep:mitex-spec-gen", "dep:fxhash", "dep:memmap2", "dep:typst", "dep:typst-layout", "dep:typst-render", "dep:thiserror", "dep:unicode-segmentation"]
+# All of Typst's fonts (9.6 MB): text, math and monospace (the desktop).
+typst-fonts = ["render", "dep:typst-assets", "typst-assets/fonts"]
+# Only the math font (1.2 MB, in `fonts/`), for formulas (the phones).
+math-font = ["render"]
 
 [dependencies]
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
@@ -20,7 +25,7 @@ memmap2 = { version = "0.9.11", optional = true }
 typst = { version = "0.15.1", optional = true }
 typst-layout = { version = "0.15.1", optional = true }
 typst-render = { version = "0.15.1", optional = true }
-typst-assets = { version = "0.15.1", features = ["fonts"], optional = true }
+typst-assets = { version = "0.15.1", optional = true }
 thiserror = { workspace = true, optional = true }
 unicode-segmentation = { version = "1.13.3", optional = true }
 # Typst turns on zerovec's `serde` feature, which makes ruma-common fail to
@@ -33,4 +38,4 @@ png = "0.18"
 
 [[example]]
 name = "render"
-required-features = ["render"]
+required-features = ["typst-fonts"]

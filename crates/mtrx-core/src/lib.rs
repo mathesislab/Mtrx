@@ -19,6 +19,8 @@ mod encryption;
 mod error;
 mod lists;
 mod live;
+#[cfg(feature = "math")]
+mod math;
 mod media;
 mod members;
 mod notes;
@@ -61,6 +63,8 @@ pub use lists::{
     Badges, ListSection, RoomLists, RoomSort, SectionChoice, SectionLayout, SpaceEntry, SpaceKey,
 };
 pub use live::{AbortOnDrop, Live};
+#[cfg(feature = "math")]
+pub use math::{Typeset, typeset};
 pub use media::MediaRef;
 pub use members::{
     Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,

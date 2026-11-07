@@ -49,6 +49,19 @@ jobs:
         run: |
           xcodebuild build -project Mtrx.xcodeproj -scheme Mtrx -configuration Release \
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build -quiet
+      - name: Sizes
+        if: env.WARM != 'true'
+        # The app's binary (the library linked in) and the device library, in
+        # bytes, in the job's summary: what a change adds.
+        run: |
+          {
+            echo "| File | Bytes |"
+            echo "|---|---:|"
+            for file in apps/ios/build/Build/Products/Release-iphonesimulator/Mtrx.app/Mtrx \
+                apps/ios/MtrxFFI/mtrxFFI.xcframework/ios-arm64/libmtrx_ffi.a; do
+              echo "| ${file##*/} | $(stat -f %z "$file") |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Choose a simulator
         if: env.WARM != 'true'
         # The first available iPhone, whichever the runner has.

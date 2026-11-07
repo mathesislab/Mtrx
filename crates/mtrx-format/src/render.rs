@@ -1,6 +1,8 @@
 //! Typeset a [`Document`] with Typst into an RGBA image. LaTeX math is
 //! converted to Typst math with `mitex`. The image comes with where each
 //! piece of the message's text is drawn, for selecting it.
+//!
+//! Or typeset one [`Formula`] into an alpha mask, to place in native text.
 
 use std::{collections::HashMap, fmt::Write, ops::Range, sync::LazyLock};
 
@@ -11,15 +13,15 @@ use typst::{
     diag::{FileError, FileResult},
     foundations::{Bytes, Datetime, Duration, Value},
     introspection::{MetadataElem, Tag},
-    layout::{Frame, FrameItem, Point},
+    layout::{Abs, Frame, FrameItem, Point},
     syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot},
     text::{Font, FontBook},
     utils::LazyHash,
 };
-use typst_layout::PagedDocument;
+use typst_layout::{Page, PagedDocument};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::{Block, Document, Inline, Style};
+use crate::{Block, Document, Formula, Inline, Style};
 
 /// Typst definitions used by mitex output, served as project files.
 const MITEX_FILES: &[(&str, &str)] = &[
@@ -37,6 +39,12 @@ const MAIN: &str = "/main.typ";
 /// Vertical page margin for content outside the line boxes, in em.
 const OVERFLOW_EM: f32 = 2.0;
 const MATH_FONT: &str = "New Computer Modern Math";
+/// Its file, built in for formulas without Typst's other fonts (the phones).
+/// GUST Font License: `fonts/NewCMMath-LICENSE.txt`.
+#[cfg(all(feature = "math-font", not(feature = "typst-fonts")))]
+const MATH_FONT_FILE: &[u8] = include_bytes!("../fonts/NewCMMath-Regular.otf");
+/// A formula image's largest side, in pixels.
+const MAX_FORMULA_SIDE: u32 = 4096;
 const MONO_FONT: &str = "DejaVu Sans Mono";
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +53,8 @@ pub enum RenderError {
     Latex { tex: String, message: String },
     #[error("typesetting failed: {0}")]
     Typst(String),
+    #[error("too large to show: {width}×{height} pixels")]
+    TooLarge { width: u32, height: u32 },
 }
 
 /// How to typeset. Lengths are in logical pixels.
@@ -87,6 +97,19 @@ pub struct Piece {
     pub rect: [f32; 4],
 }
 
+/// A formula typeset as black ink on transparent: tint it with the text's
+/// colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormulaImage {
+    pub width: u32,
+    pub height: u32,
+    /// One byte per pixel, rows top to bottom.
+    pub alpha: Vec<u8>,
+    /// Pixels from the top to the baseline it sits on, at most `height`.
+    /// Display math sits on its bottom.
+    pub baseline: u32,
+}
+
 /// Holds fonts and the Typst standard library; create once and reuse.
 pub struct Renderer {
     library: LazyHash<Library>,
@@ -104,12 +127,21 @@ impl Renderer {
     where
         F: AsRef<[u8]> + Send + Sync + 'static,
     {
-        let fonts: Vec<Font> = typst_assets::fonts()
-            .map(Bytes::new)
-            .chain(text_fonts.into_iter().map(Bytes::new))
-            .chain(system_emoji_font())
-            .flat_map(Font::iter)
-            .collect();
+        Self::with_fonts(
+            built_in_fonts()
+                .chain(text_fonts.into_iter().map(Bytes::new))
+                .chain(system_emoji_font()),
+        )
+    }
+
+    /// For [`Renderer::formula`] only: the built-in fonts, no text fonts and
+    /// no system emoji (the phones).
+    pub fn for_formulas() -> Self {
+        Self::with_fonts(built_in_fonts())
+    }
+
+    fn with_fonts(fonts: impl Iterator<Item = Bytes>) -> Self {
+        let fonts: Vec<Font> = fonts.flat_map(Font::iter).collect();
         let files = MITEX_FILES
             .iter()
             .map(|(path, text)| {
@@ -128,26 +160,8 @@ impl Renderer {
 
     pub fn render(&self, document: &Document, style: &RenderStyle) -> Result<Image, RenderError> {
         let mut leaves = Vec::new();
-        let source = Source::new(self.main_id, typst_source(document, style, &mut leaves)?);
-        let world = MessageWorld {
-            renderer: self,
-            main: source,
-        };
-        let compiled = typst::compile::<PagedDocument>(&world)
-            .output
-            .map_err(|errors| {
-                RenderError::Typst(
-                    errors
-                        .iter()
-                        .map(|e| e.message.to_string())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                )
-            })?;
-        let page = compiled
-            .pages()
-            .first()
-            .ok_or_else(|| RenderError::Typst("no page".into()))?;
+        let compiled = self.compile(typst_source(document, style, &mut leaves)?)?;
+        let page = first_page(&compiled)?;
         let pixmap = typst_render::render(
             page,
             &typst_render::RenderOptions {
@@ -184,6 +198,135 @@ impl Renderer {
             .collect();
         Ok(image)
     }
+
+    /// `formula` at `em_pixels` device pixels per em, cropped to its ink
+    /// (keeping the baseline). Fails for LaTeX it cannot read, and above
+    /// 4096 pixels a side.
+    pub fn formula(&self, formula: &Formula, em_pixels: f32) -> Result<FormulaImage, RenderError> {
+        let mut equation = String::new();
+        math(&formula.tex, formula.display, &mut equation)?;
+        // Inline: a marker before the formula is placed on the line's
+        // baseline. The line has no leading and its edges at the ink, so it
+        // holds all of the formula; the margin keeps antialiasing and ink
+        // beyond the glyphs' advances.
+        let marked = match formula.display {
+            true => equation,
+            false => format!("metadata(none); {equation}"),
+        };
+        let compiled = self.compile(format!(
+            r#"#import "/mitex/mod.typ": mitex-scope
+#set page(width: auto, height: auto, margin: {margin}pt, fill: none)
+#set par(leading: 0pt)
+#set text(font: {math}, size: {size}pt, top-edge: "bounds", bottom-edge: "bounds")
+#{{ {marked} }}
+"#,
+            margin = em_pixels * 0.1,
+            math = string(MATH_FONT),
+            size = em_pixels,
+        ))?;
+        let page = first_page(&compiled)?;
+        // One pixel per point: the text size is in pixels.
+        let size = page.frame.size();
+        let (width, height) = (size.x.to_pt().round(), size.y.to_pt().round());
+        if width > f64::from(MAX_FORMULA_SIDE) || height > f64::from(MAX_FORMULA_SIDE) {
+            return Err(RenderError::TooLarge {
+                width: width as u32,
+                height: height as u32,
+            });
+        }
+        let pixmap = typst_render::render(
+            page,
+            &typst_render::RenderOptions {
+                pixel_per_pt: 1.0_f64.into(),
+                render_bleed: false,
+            },
+        );
+        let (width, height) = (pixmap.width() as usize, pixmap.height() as usize);
+        let alpha: Vec<u8> = pixmap.pixels().iter().map(|p| p.alpha()).collect();
+        let baseline = match marker_y(&page.frame, Point::zero()) {
+            Some(y) => (y.to_pt().round().max(0.0) as usize).min(height),
+            None => height,
+        };
+        // The rows with ink, and the baseline's.
+        let inked = |row: usize| alpha[row * width..(row + 1) * width].iter().any(|&a| a > 0);
+        let mut top = (0..height)
+            .find(|&r| inked(r))
+            .unwrap_or(baseline)
+            .min(baseline);
+        let mut bottom = (0..height)
+            .rfind(|&r| inked(r))
+            .map_or(baseline, |r| r + 1)
+            .max(baseline);
+        // At least a row (a formula of spaces).
+        if bottom == top {
+            if bottom < height {
+                bottom += 1;
+            } else {
+                top -= 1;
+            }
+        }
+        Ok(FormulaImage {
+            width: width as u32,
+            height: (bottom - top) as u32,
+            alpha: alpha[top * width..bottom * width].to_vec(),
+            baseline: (baseline - top) as u32,
+        })
+    }
+
+    fn compile(&self, source: String) -> Result<PagedDocument, RenderError> {
+        let world = MessageWorld {
+            renderer: self,
+            main: Source::new(self.main_id, source),
+        };
+        let compiled = typst::compile::<PagedDocument>(&world).output;
+        // As typst-cli does after each compilation: memoized results not
+        // used in the last 10 are dropped, else they pile up.
+        typst::comemo::evict(10);
+        compiled.map_err(|errors| {
+            RenderError::Typst(
+                errors
+                    .iter()
+                    .map(|e| e.message.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })
+    }
+}
+
+fn first_page(document: &PagedDocument) -> Result<&Page, RenderError> {
+    document
+        .pages()
+        .first()
+        .ok_or_else(|| RenderError::Typst("no page".into()))
+}
+
+/// Where the first metadata marker in `frame` (placed at `origin`) is: in a
+/// line, on its baseline.
+fn marker_y(frame: &Frame, origin: Point) -> Option<Abs> {
+    frame.items().find_map(|(pos, item)| {
+        let pos = origin + *pos;
+        match item {
+            FrameItem::Group(group) => {
+                let shift = Point::new(group.transform.tx, group.transform.ty);
+                marker_y(&group.frame, pos + shift)
+            }
+            FrameItem::Tag(Tag::Start(content, _)) if content.is::<MetadataElem>() => Some(pos.y),
+            _ => None,
+        }
+    })
+}
+
+/// The fonts built in: all of Typst's (feature `typst-fonts`), else its
+/// math font (`math-font`).
+fn built_in_fonts() -> impl Iterator<Item = Bytes> {
+    #[cfg(feature = "typst-fonts")]
+    let fonts = typst_assets::fonts();
+    #[cfg(all(feature = "math-font", not(feature = "typst-fonts")))]
+    let fonts = std::iter::once(MATH_FONT_FILE);
+    #[cfg(not(any(feature = "math-font", feature = "typst-fonts")))]
+    let fonts = std::iter::empty::<&'static [u8]>();
+    fonts.map(Bytes::new)
 }
 
 /// A piece in points: leaf, its range, and its rectangle.

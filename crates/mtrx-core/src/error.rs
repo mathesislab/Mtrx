@@ -78,6 +78,9 @@ pub enum Error {
     /// The app's secret store failed ([`crate::SecretStore::Custom`]).
     #[error("secret storage: {0}")]
     SecretStorage(String),
+    /// A formula could not be typeset (LaTeX it cannot read, say).
+    #[error("formula: {0}")]
+    Formula(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

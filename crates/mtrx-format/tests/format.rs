@@ -105,7 +105,7 @@ fn parses_structure_and_drops_reply_fallback() {
     );
 }
 
-#[cfg(feature = "render")]
+#[cfg(feature = "typst-fonts")]
 mod render {
     use mtrx_format::{Document, RenderError, RenderStyle, Renderer, markdown_to_matrix};
 
@@ -327,6 +327,312 @@ fn bare_urls_become_links() {
          <code>https://d.example</code>",
     );
     assert_eq!(doc.links(), ["https://a.example/x", "https://b.example"]);
+}
+
+#[test]
+fn www_addresses_open_over_https() {
+    let doc = Document::from_plain("see www.awi.de or WWW.AWI.DE");
+    assert_eq!(
+        doc.blocks,
+        vec![Block::Paragraph(vec![
+            Inline::Text("see ".into()),
+            Inline::Link {
+                url: "https://www.awi.de".into(),
+                content: vec![Inline::Text("www.awi.de".into())],
+            },
+            Inline::Text(" or ".into()),
+            Inline::Link {
+                url: "https://WWW.AWI.DE".into(),
+                content: vec![Inline::Text("WWW.AWI.DE".into())],
+            },
+        ])]
+    );
+}
+
+#[test]
+fn punctuation_after_an_address_is_not_part_of_it() {
+    let links = |text: &str| -> Vec<String> {
+        let doc = Document::from_plain(text);
+        doc.links().into_iter().map(str::to_owned).collect()
+    };
+    assert_eq!(
+        links(
+            "Plots: https://drive.example.org/ice?run=2 and the room https://matrix.to/#/#ice:example.org"
+        ),
+        [
+            "https://drive.example.org/ice?run=2",
+            "https://matrix.to/#/#ice:example.org"
+        ]
+    );
+    assert_eq!(
+        links("Look at https://example.org/a."),
+        ["https://example.org/a"]
+    );
+    assert_eq!(links("(https://example.org/a)"), ["https://example.org/a"]);
+    assert_eq!(
+        links("https://en.wikipedia.org/wiki/Ice_(disambiguation), yes"),
+        ["https://en.wikipedia.org/wiki/Ice_(disambiguation)"]
+    );
+    assert_eq!(links("\"http://example.org\"!"), ["http://example.org"]);
+}
+
+#[test]
+fn no_web_address_no_link() {
+    for text in [
+        "no links here, nor in example.org or https:// or www.",
+        "ftp://example.org",
+        "nothttps://example.org",
+    ] {
+        let doc = Document::from_plain(text);
+        // One text, as written.
+        assert_eq!(
+            doc.blocks,
+            vec![Block::Paragraph(vec![Inline::Text(text.into())])],
+            "{text}"
+        );
+    }
+}
+
+mod text_blocks {
+    use mtrx_format::{BlockKind, Document, Formula, Run, TextBlock, TextStyle};
+
+    fn text(text: &str) -> Run {
+        Run::Text {
+            text: text.into(),
+            style: TextStyle::default(),
+            link: None,
+        }
+    }
+
+    fn paragraph(runs: Vec<Run>, quotes: u8, lists: u8, marker: Option<&str>) -> TextBlock {
+        TextBlock {
+            kind: BlockKind::Paragraph(runs),
+            quotes,
+            lists,
+            marker: marker.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn a_quote_in_a_list_item_is_quoted_and_listed() {
+        let doc = Document::from_html(
+            "<ul><li><p>one</p><blockquote><p>said</p></blockquote></li><li>two</li></ul><p>after</p>",
+        );
+        assert_eq!(
+            doc.text_blocks(),
+            [
+                paragraph(vec![text("one")], 0, 1, Some("•")),
+                paragraph(vec![text("said")], 1, 1, None),
+                paragraph(vec![text("two")], 0, 1, Some("•")),
+                paragraph(vec![text("after")], 0, 0, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn ordered_lists_count_from_their_start() {
+        let doc =
+            Document::from_html(r#"<ol start="3"><li>a</li><li>b<ol><li>c</li></ol></li></ol>"#);
+        assert_eq!(
+            doc.text_blocks(),
+            [
+                paragraph(vec![text("a")], 0, 1, Some("3.")),
+                paragraph(vec![text("b")], 0, 1, Some("4.")),
+                paragraph(vec![text("c")], 0, 2, Some("1.")),
+            ]
+        );
+    }
+
+    #[test]
+    fn runs_merge_where_style_and_link_agree() {
+        let doc =
+            Document::from_html(r#"<b>x</b><b>y</b> <a href="https://x.org">a <i>b</i> c</a>"#);
+        let bold = TextStyle {
+            bold: true,
+            ..TextStyle::default()
+        };
+        let link = |text: &str, style| Run::Text {
+            text: text.into(),
+            style,
+            link: Some("https://x.org".into()),
+        };
+        let italic = TextStyle {
+            italic: true,
+            ..TextStyle::default()
+        };
+        assert_eq!(
+            doc.text_blocks(),
+            [paragraph(
+                vec![
+                    Run::Text {
+                        text: "xy".into(),
+                        style: bold,
+                        link: None
+                    },
+                    text(" "),
+                    link("a ", TextStyle::default()),
+                    link("b", italic),
+                    link(" c", TextStyle::default()),
+                ],
+                0,
+                0,
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn a_mention_keeps_the_style_around_it() {
+        let doc = Document::from_html(
+            r#"<b>ask <a href="https://matrix.to/#/@ana:x.org">Ana</a></b><br>now"#,
+        );
+        let bold = TextStyle {
+            bold: true,
+            ..TextStyle::default()
+        };
+        assert_eq!(
+            doc.text_blocks(),
+            [paragraph(
+                vec![
+                    Run::Text {
+                        text: "ask ".into(),
+                        style: bold,
+                        link: None
+                    },
+                    Run::Mention {
+                        user_id: "@ana:x.org".into(),
+                        name: "Ana".into(),
+                        style: bold
+                    },
+                    text("\nnow"),
+                ],
+                0,
+                0,
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn math_inline_and_displayed() {
+        let doc = Document::from_html(
+            r#"Energy <span data-mx-maths="E=mc^2"><code>E=mc^2</code></span><div data-mx-maths="\sum_i x_i"><code>\sum_i x_i</code></div><pre><code>a
+b
+
+</code></pre><hr>"#,
+        );
+        assert_eq!(
+            doc.text_blocks(),
+            [
+                paragraph(
+                    vec![
+                        text("Energy "),
+                        Run::Math {
+                            formula: Formula {
+                                tex: "E=mc^2".into(),
+                                display: false
+                            },
+                            link: None
+                        }
+                    ],
+                    0,
+                    0,
+                    None
+                ),
+                TextBlock {
+                    kind: BlockKind::Math(Formula {
+                        tex: r"\sum_i x_i".into(),
+                        display: true
+                    }),
+                    quotes: 0,
+                    lists: 0,
+                    marker: None
+                },
+                TextBlock {
+                    kind: BlockKind::Code {
+                        code: "a\nb".into(),
+                        language: None
+                    },
+                    quotes: 0,
+                    lists: 0,
+                    marker: None
+                },
+                TextBlock {
+                    kind: BlockKind::Rule,
+                    quotes: 0,
+                    lists: 0,
+                    marker: None
+                },
+            ]
+        );
+    }
+}
+
+#[cfg(any(feature = "math-font", feature = "typst-fonts"))]
+mod formula {
+    use std::sync::LazyLock;
+
+    use mtrx_format::{Formula, RenderError, Renderer};
+
+    static RENDERER: LazyLock<Renderer> = LazyLock::new(Renderer::for_formulas);
+
+    fn inline(tex: &str) -> Formula {
+        Formula {
+            tex: tex.into(),
+            display: false,
+        }
+    }
+
+    #[test]
+    fn grows_with_the_text_size() {
+        let small = RENDERER.formula(&inline("x^2"), 17.0).unwrap();
+        let big = RENDERER.formula(&inline("x^2"), 34.0).unwrap();
+        assert!(big.width > small.width && big.height > small.height);
+        assert_eq!(small.alpha.len(), (small.width * small.height) as usize);
+        assert!(small.alpha.iter().any(|&a| a > 0), "ink");
+    }
+
+    #[test]
+    fn x_sits_on_its_baseline() {
+        let x = RENDERER.formula(&inline("x"), 40.0).unwrap();
+        assert!(
+            x.baseline <= x.height && x.baseline > x.height / 2,
+            "{} of {}",
+            x.baseline,
+            x.height
+        );
+        // A subscript hangs below it.
+        let sub = RENDERER.formula(&inline("x_i"), 40.0).unwrap();
+        assert!(sub.height - sub.baseline > x.height - x.baseline);
+    }
+
+    #[test]
+    fn a_fraction_is_taller_than_x() {
+        let x = RENDERER.formula(&inline("x"), 17.0).unwrap();
+        let fraction = RENDERER.formula(&inline(r"\frac{a}{b}"), 17.0).unwrap();
+        assert!(fraction.height > x.height);
+        let display = Formula {
+            tex: r"\frac{a}{b}".into(),
+            display: true,
+        };
+        let displayed = RENDERER.formula(&display, 17.0).unwrap();
+        assert!(displayed.height >= fraction.height);
+        assert!(displayed.baseline <= displayed.height);
+    }
+
+    #[test]
+    fn bad_latex_and_huge_sizes_are_errors() {
+        let bad = RENDERER.formula(&inline(r"\notacommand{x}"), 17.0);
+        assert!(
+            matches!(bad, Err(RenderError::Latex { .. } | RenderError::Typst(_))),
+            "{bad:?}"
+        );
+        let huge = RENDERER.formula(&inline("x"), 5000.0);
+        assert!(
+            matches!(huge, Err(RenderError::TooLarge { .. })),
+            "{huge:?}"
+        );
+    }
 }
 
 fn user(text: &str, id: &str, name: &str) -> MentionTarget {
