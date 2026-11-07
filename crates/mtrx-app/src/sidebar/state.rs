@@ -189,7 +189,7 @@ impl Sidebar {
                 if self.space.as_ref() != Some(&space) {
                     return Task::none();
                 }
-                let listed = (cx.lists.room(&space)).and_then(|r| r.topic.as_deref());
+                let listed = topic::of(cx.lists.room(&space));
                 topic::update(
                     cx.session,
                     &mut self.space_topic,

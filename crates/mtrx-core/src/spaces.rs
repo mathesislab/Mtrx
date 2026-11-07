@@ -131,7 +131,7 @@ pub(crate) mod tests {
             id: OwnedRoomId::try_from(id).unwrap(),
             name: id.into(),
             avatar: None,
-            topic: None,
+            topic: crate::Topic::default(),
             kind,
             membership: Membership::Joined,
             encrypted: false,

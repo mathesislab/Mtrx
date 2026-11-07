@@ -4,7 +4,6 @@ import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
-import uniffi.mtrx.Topic
 
 /**
  * The changes Room info makes ([RoomInfoModel]); the screenshot tests give
@@ -13,7 +12,8 @@ import uniffi.mtrx.Topic
 interface RoomInfoActions {
     fun rename(name: String)
 
-    fun setTopic(topic: Topic)
+    /** The topic as typed in the editor; the library composes it. */
+    fun setTopic(draft: TopicDraft)
 
     fun setNotify(mode: NotifyMode)
 

@@ -57,8 +57,8 @@ pub use room_list::{
     SpaceEntry, SpaceKey,
 };
 pub use rooms::{
-    Address, DirectoryKind, DirectoryPage, DirectoryRoom, JoinAction, JoinButton, NewRoom,
-    RoomLink, Topic, compose_topic, parse_address, parse_topic,
+    Address, DirectoryKind, DirectoryPage, DirectoryRoom, JoinAction, JoinButton, LinkDraft,
+    NewRoom, RoomLink, Topic, compose_topic, link_url, parse_address,
 };
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};

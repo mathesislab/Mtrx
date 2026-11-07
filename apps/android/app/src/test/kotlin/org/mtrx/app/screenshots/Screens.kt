@@ -27,7 +27,11 @@ import org.mtrx.app.rooms.JoinActions
 import org.mtrx.app.rooms.NewRoomActions
 import org.mtrx.app.rooms.OverviewRowActions
 import org.mtrx.app.rooms.RoomInfoActions
+import org.mtrx.app.rooms.LocalLinkUrl
 import org.mtrx.app.rooms.RoomInfoHeader
+import org.mtrx.app.rooms.TopicDraft
+import org.mtrx.app.roomLink
+import org.mtrx.app.topicOf
 import org.mtrx.app.summary
 import org.mtrx.app.textMessage
 import org.mtrx.app.user
@@ -52,7 +56,6 @@ import uniffi.mtrx.Reaction
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.Role
 import uniffi.mtrx.RoomKind
-import uniffi.mtrx.RoomLink
 import uniffi.mtrx.SendState
 import uniffi.mtrx.SpaceLink
 import uniffi.mtrx.SectionChoice
@@ -62,7 +65,6 @@ import uniffi.mtrx.TextBlock
 import uniffi.mtrx.TextRun
 import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineRow
-import uniffi.mtrx.Topic
 import uniffi.mtrx.User
 
 // Fake data for the screenshot tests: a team working on ice sheets. No
@@ -91,20 +93,19 @@ const val CODE = "!code:example.org"
 const val ARCHIVE = "!archive:example.org"
 const val SUMMIT = "!summit:example.org"
 
-val iceTopic = Topic(
-    text = "Ice sheet modelling: runs, papers and the weekly call.\nNotes from each call go to the drive.",
-    links = listOf(
-        RoomLink(call = true, title = "Weekly", url = "https://meet.example.org/ice", passcode = "4242", name = "Weekly"),
-        RoomLink(call = false, title = "Drive", url = "https://drive.example.org/ice", passcode = null, name = "Drive"),
-    ),
+/** With a call (Join in the header) and its passcode. */
+val iceTopic = topicOf(
+    "Ice sheet modelling: runs, papers and the weekly call.\nNotes from each call go to the drive.",
+    calls = listOf(roomLink("https://meet.example.org/ice", title = "Weekly", passcode = "4242")),
+    links = listOf(roomLink("https://drive.example.org/ice", title = "Drive")),
 )
 
 /** The rooms, most recently active first. */
 val roomList = listOf(
     summary("!with-bob:example.org", RoomKind.DIRECT, unread = 2, directUserId = "@bob:example.org", name = "Bob Berg", lastActivity = at(10, 42)),
-    summary(ICE, unread = 3, name = "Ice sheets", lastActivity = at(10, 30), topic = iceTopic.text, pinned = listOf("\$p1", "\$p2")),
+    summary(ICE, unread = 3, name = "Ice sheets", lastActivity = at(10, 30), topic = iceTopic, pinned = listOf("\$p1", "\$p2")),
     summary("!with-carol:example.org", RoomKind.DIRECT, Membership.INVITED, directUserId = "@carol:example.org", name = "Carol Chen"),
-    summary(SEA, name = "Sea ice", lastActivity = at(9, 5), topic = "Sea ice and the ocean"),
+    summary(SEA, name = "Sea ice", lastActivity = at(9, 5), topic = topicOf("Sea ice and the ocean")),
     summary(PAPERS, unread = 1, mentions = 1, name = "Papers", lastActivity = at(17, 20, daysAgo = 1)),
     summary(WORKSHOP, membership = Membership.INVITED, name = "Workshop 2027"),
     summary("!notes:example.org", RoomKind.DIRECT, directUserId = ME, name = "Notes to self", lastActivity = at(8, 0, daysAgo = 2)),
@@ -113,7 +114,7 @@ val roomList = listOf(
     summary(TEAM, RoomKind.SPACE, name = "Ice team"),
     summary(OUTREACH, RoomKind.SPACE, name = "Outreach"),
     summary("!with-dan:example.org", RoomKind.DIRECT, directUserId = "@dan:example.org", name = "Dan Dahl", lastActivity = at(16, 0, daysAgo = 4)),
-    summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = "Radargrams from the traverse"),
+    summary(RADAR, name = "Radar data", lastActivity = at(15, 10, daysAgo = 1), topic = topicOf("Radargrams from the traverse")),
     summary(CODE, unread = 4, name = "Model code", lastActivity = at(11, 0, daysAgo = 1)),
     summary(ARCHIVE, name = "Archive 2025", lastActivity = at(9, 0, daysAgo = 40)),
     summary(SUMMIT, membership = Membership.INVITED, name = "Ice summit 2027"),
@@ -324,14 +325,19 @@ val teamHeader = RoomInfoHeader(
     roomId = TEAM,
     name = "Ice team",
     avatarUrl = null,
-    topic = Topic("The ice sheet group: modelling, field work and papers.", emptyList()),
+    // Its calls and links: chips in the overview.
+    topic = topicOf(
+        "The ice sheet group: modelling, field work and papers.",
+        calls = listOf(roomLink("https://meet.example.org/team", name = "meet.example.org")),
+        links = listOf(roomLink("https://drive.example.org/team", title = "Shared drive"), roomLink("https://wiki.example.org/team", title = "Wiki")),
+    ),
     space = true,
     rights = rights(),
 )
 
 val teamChildren = listOf(
-    directoryRoom("!ice:example.org", "Ice sheets", membership = Membership.JOINED, members = 12, topic = iceTopic.text, role = Role.ADMIN),
-    directoryRoom("!field:example.org", "Field work 2027", members = 7, topic = "Planning the Greenland traverse"),
+    directoryRoom("!ice:example.org", "Ice sheets", membership = Membership.JOINED, members = 12, topic = iceTopic, role = Role.ADMIN),
+    directoryRoom("!field:example.org", "Field work 2027", members = 7, topic = topicOf("Planning the Greenland traverse")),
     directoryRoom("!models:example.org", "Model development", joinRule = JoinRule.KNOCK, members = 5),
     directoryRoom("!review:example.org", "Reviews", joinRule = JoinRule.KNOCK, membership = Membership.ASKED, members = 3),
     directoryRoom("!board:example.org", "Board", joinRule = JoinRule.INVITE, members = 4),
@@ -360,7 +366,7 @@ object NoTimelineActions : TimelineActions {
 
 object NoRoomInfoActions : RoomInfoActions {
     override fun rename(name: String) {}
-    override fun setTopic(topic: Topic) {}
+    override fun setTopic(draft: TopicDraft) {}
     override fun setNotify(mode: NotifyMode) {}
     override fun setJoinRule(rule: JoinRule) {}
     override fun setListed(listed: Boolean) {}
@@ -402,5 +408,7 @@ fun WithBack(content: @Composable () -> Unit) {
             override val onBackPressedDispatcher = OnBackPressedDispatcher()
         }
     }
-    CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides owner, content = content)
+    // Without the library: an address is a web address if it says so.
+    val linkUrl = { url: String -> url.trim().takeIf { it.startsWith("https://") } }
+    CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides owner, LocalLinkUrl provides linkUrl, content = content)
 }

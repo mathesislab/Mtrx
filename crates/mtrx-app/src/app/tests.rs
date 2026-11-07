@@ -951,7 +951,7 @@ async fn main_screen_with_math() {
             })
             .unwrap();
         if let Some(summary) = state.rooms.iter_mut().find(|r| r.id == room) {
-            summary.topic = Some(TOPIC.into());
+            summary.topic = mtrx_core::Topic::parse(TOPIC);
             summary.pinned = vec![first];
             summary.rights.pin = true;
             summary.rights.change_topic = true;
@@ -968,7 +968,7 @@ async fn main_screen_with_math() {
         }
         if mode == Mode::Light {
             open.topic.open = true;
-            open.topic.editor = Some(topic::Editor::new(TOPIC));
+            open.topic.editor = Some(topic::Editor::from_text(TOPIC));
             // The hovered message's menu, from its toolbar.
             main.popup = Some(Popup::MessageMenu {
                 row: hovered.clone(),
@@ -2008,11 +2008,10 @@ async fn room_management_screens() {
             &main_with(&|main| {
                 let mut state = rooms.clone();
                 if let Some(summary) = state.rooms.iter_mut().find(|r| r.id == space) {
-                    summary.topic = Some(
+                    summary.topic = mtrx_core::Topic::parse(
                         "Paleoclimate modelling and analysis, ice group\n\
                          [call Weekly] https://meet.google.com/abc-defg-hij\n\
-                         [link Shared drive] https://drive.google.com/drive/folders/xyz"
-                            .into(),
+                         [link Shared drive] https://drive.google.com/drive/folders/xyz",
                     );
                     summary.rights.change_topic = true;
                 }
@@ -3071,7 +3070,7 @@ fn summary(id: &OwnedRoomId, name: &str) -> mtrx_core::RoomSummary {
         id: id.clone(),
         name: name.into(),
         avatar: None,
-        topic: None,
+        topic: Default::default(),
         kind: RoomKind::Room,
         membership: mtrx_core::Membership::Joined,
         encrypted: false,

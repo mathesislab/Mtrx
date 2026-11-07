@@ -101,7 +101,7 @@ pub enum Message {
     OpenPictureMenu,
     EditTopic,
     /// Stop editing the topic, back to this one.
-    CancelTopic(String),
+    CancelTopic(Topic),
     /// The address's name, as edited.
     AddressName(String),
     Change(Change),
@@ -249,7 +249,7 @@ impl Card {
                 .filter(|r| r.kind == RoomKind::Space)
                 .map(|r| Overview::new(r.id.clone(), tab)),
             name: room.map(|r| r.name.clone()).unwrap_or_default(),
-            topic: topic::Editor::new(room.and_then(|r| r.topic.as_deref()).unwrap_or_default()),
+            topic: topic::Editor::new(topic::of(room)),
             target,
             handle: None,
             shared: None,
@@ -282,7 +282,7 @@ impl Card {
         let name = self.name.trim();
         (
             (!name.is_empty() && name != room.name).then(|| name.to_owned()),
-            (self.topic.changed(room.topic.as_deref())).then(|| self.topic.topic()),
+            (self.topic.changed(&room.topic)).then(|| self.topic.topic()),
         )
     }
 
@@ -1193,7 +1193,7 @@ impl Card {
         services: &'a [CallService],
         can_edit: bool,
     ) -> Element<'a, app::Message> {
-        let synced = room.topic.clone().unwrap_or_default();
+        let synced = &room.topic;
         let content: Element<'a, app::Message> = if self.editing_topic && can_edit {
             column![
                 (self.topic.view(services)).map(|edit| app::Message::Card(Message::Topic(edit))),
@@ -1202,18 +1202,17 @@ impl Card {
                     button(text("Cancel").size(13))
                         .padding([4, 10])
                         .style(style::text_button)
-                        .on_press(app::Message::Card(Message::CancelTopic(synced))),
+                        .on_press(app::Message::Card(Message::CancelTopic(synced.clone()))),
                 ],
             ]
             .spacing(8)
             .into()
         } else {
-            let topic = Topic::parse(&synced);
-            let empty = topic.text.trim().is_empty() && topic.links.is_empty();
+            let empty = synced.is_empty();
             let details: Element<'a, app::Message> = if empty {
                 text("No topic").size(13).style(text::secondary).into()
             } else {
-                topic::details(&topic, services)
+                topic::details(synced, services)
             };
             let mut line = row![container(details).width(Length::Fill)].spacing(12);
             if can_edit {

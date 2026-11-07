@@ -893,16 +893,23 @@ fn rooms_made_set_up_joined_and_left() {
     assert_eq!(listed, Some(settings.rights));
     assert_eq!(settings.version.as_deref(), Some("12"));
     assert_eq!(settings.spaces[0].space_id, space);
-    let topic = mtrx_ffi::compose_topic(mtrx_ffi::Topic {
-        text: "Breaks".into(),
-        links: vec![mtrx_ffi::RoomLink {
-            call: true,
-            title: Some("Daily".into()),
-            url: "https://meet.example.org/coffee".into(),
-            passcode: None,
-            name: String::new(),
-        }],
-    });
+    let topic = mtrx_ffi::compose_topic(
+        "Breaks".into(),
+        vec![
+            mtrx_ffi::LinkDraft {
+                call: false,
+                title: "Menu".into(),
+                url: "example.org/menu".into(),
+                passcode: String::new(),
+            },
+            mtrx_ffi::LinkDraft {
+                call: true,
+                title: "Daily".into(),
+                url: "https://meet.example.org/coffee".into(),
+                passcode: "42".into(),
+            },
+        ],
+    );
     block_on(a_room.set_topic(topic)).unwrap();
     block_on(a_room.set_notify(mtrx_ffi::NotifyMode::Mentions)).unwrap();
     block_on(a_room.set_join_rule(JoinRule::SpaceMembers)).unwrap();
@@ -929,15 +936,21 @@ fn rooms_made_set_up_joined_and_left() {
     let state = wait_for("the topic", &a_updates, |s: &Arc<RoomLists>| {
         s.rooms()
             .iter()
-            .any(|r| r.id == room && r.topic.as_deref().is_some_and(|t| t.contains("[call")))
+            .any(|r| r.id == room && !r.topic.calls.is_empty())
     });
     let rooms = state.rooms();
-    let summary = rooms.iter().find(|r| r.id == room).unwrap();
-    let parsed = mtrx_ffi::parse_topic(summary.topic.clone().unwrap());
+    let topic = &rooms.iter().find(|r| r.id == room).unwrap().topic;
+    let call = &topic.calls[0];
     assert_eq!(
-        (parsed.text.as_str(), parsed.links[0].name.as_str()),
-        ("Breaks", "Daily")
+        (
+            topic.text.as_str(),
+            call.name.as_str(),
+            call.passcode.as_deref()
+        ),
+        ("Breaks", "Daily", Some("42"))
     );
+    assert_eq!(topic.links[0].url, "https://example.org/menu");
+    assert_eq!(topic.first_line.as_deref(), Some("Breaks"));
 
     // The space lists it; Bob accepts the invite.
     let children = block_on(a.session.space_children(space.clone())).unwrap();

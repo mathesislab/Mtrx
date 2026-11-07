@@ -13,7 +13,7 @@ pub struct DirectoryRoom {
     pub alias: Option<String>,
     /// Its name, else its address, else its ID.
     pub name: String,
-    pub topic: Option<String>,
+    pub topic: Topic,
     /// `mxc://` URI, for `Session.avatar`.
     pub avatar_url: Option<String>,
     pub members: u64,
@@ -40,7 +40,7 @@ impl From<core::DirectoryRoom> for DirectoryRoom {
             id: room.id.to_string(),
             alias: room.alias.map(|a| a.to_string()),
             name: room.name,
-            topic: room.topic,
+            topic: Topic::from(&room.topic),
             avatar_url: room.avatar.map(|a| a.to_string()),
             members: room.members,
             is_space: room.is_space,
@@ -144,10 +144,10 @@ pub struct NewRoom {
     pub parent: Option<String>,
 }
 
-/// A link on its own line in a topic: a call or another link.
+/// A call or link on its own line in a topic. Output only: the editor
+/// types `LinkDraft`s.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct RoomLink {
-    pub call: bool,
     pub title: Option<String>,
     pub url: String,
     /// A call's passcode, if any.
@@ -156,58 +156,105 @@ pub struct RoomLink {
     pub name: String,
 }
 
-/// A room's topic: its text, and the links on lines of their own.
+/// A room's topic, parsed by core: its text, and the calls and links on
+/// lines of their own.
 #[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
 pub struct Topic {
+    /// Without the link lines.
     pub text: String,
+    /// In order; the first is the room's call, which the header joins.
+    pub calls: Vec<RoomLink>,
+    /// The other links, in order.
     pub links: Vec<RoomLink>,
+    /// The text's first non-blank line: list rows and directory entries.
+    pub first_line: Option<String>,
+    /// The first line, else the links' names: under the room's name.
+    pub preview: Option<String>,
 }
 
-/// `topic` as its text and links (`[call] …` and `[link] …` lines).
-#[uniffi::export]
-pub fn parse_topic(topic: String) -> Topic {
-    let parsed = core::Topic::parse(&topic);
-    Topic {
-        links: parsed
-            .links
-            .iter()
-            .map(|link| RoomLink {
-                call: link.is_call(),
-                title: link.title.clone(),
-                url: link.url.to_string(),
-                passcode: link.passcode().map(ToOwned::to_owned),
-                name: link.name(&[]),
-            })
-            .collect(),
-        text: parsed.text,
+impl From<&core::Topic> for Topic {
+    /// The calls named after the well-known services: the phones have no
+    /// call services of their own.
+    fn from(topic: &core::Topic) -> Self {
+        let link = |link: &core::RoomLink| RoomLink {
+            title: link.title.clone(),
+            url: link.url.to_string(),
+            passcode: link.passcode().map(ToOwned::to_owned),
+            name: link.name(&[]),
+        };
+        Self {
+            text: topic.text.clone(),
+            calls: topic.calls().map(link).collect(),
+            links: topic.others().map(link).collect(),
+            first_line: topic.first_line().map(ToOwned::to_owned),
+            preview: topic.preview(&[]),
+        }
     }
 }
 
-/// The topic to save for `topic`'s text and links; links whose URL is not
-/// valid are left out.
-#[uniffi::export]
-pub fn compose_topic(topic: Topic) -> String {
-    core::Topic {
-        text: topic.text,
-        links: topic
-            .links
-            .into_iter()
-            .filter_map(|link| {
-                Some(core::RoomLink {
-                    kind: if link.call {
-                        core::LinkKind::Call {
-                            passcode: link.passcode.filter(|p| !p.trim().is_empty()),
-                        }
-                    } else {
-                        core::LinkKind::Link
+impl TryFrom<&Topic> for core::Topic {
+    type Error = MtrxError;
+
+    /// Back from the record (the apps' tests).
+    fn try_from(topic: &Topic) -> Result<Self, MtrxError> {
+        let link = |link: &RoomLink, call: bool| {
+            Ok(core::RoomLink {
+                kind: match call {
+                    true => core::LinkKind::Call {
+                        passcode: link.passcode.clone(),
                     },
-                    title: link.title.filter(|t| !t.trim().is_empty()),
-                    url: core::Url::parse(link.url.trim()).ok()?,
-                })
+                    false => core::LinkKind::Link,
+                },
+                title: link.title.clone(),
+                url: core::Url::parse(&link.url).map_err(MtrxError::invalid)?,
             })
-            .collect(),
+        };
+        let calls = topic.calls.iter().map(|l| link(l, true));
+        Ok(Self {
+            text: topic.text.clone(),
+            links: calls
+                .chain(topic.links.iter().map(|l| link(l, false)))
+                .collect::<Result<_, MtrxError>>()?,
+        })
     }
-    .to_topic()
+}
+
+/// A call or link as typed in the topic editor.
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct LinkDraft {
+    pub call: bool,
+    pub title: String,
+    pub url: String,
+    /// A call's; ignored for a link.
+    pub passcode: String,
+}
+
+impl From<LinkDraft> for core::LinkDraft {
+    fn from(draft: LinkDraft) -> Self {
+        Self {
+            call: draft.call,
+            title: draft.title,
+            url: draft.url,
+            passcode: draft.passcode,
+        }
+    }
+}
+
+/// The address a typed URL is saved as ("example.org/x" →
+/// "https://example.org/x"), or none if it isn't a web address: the editor
+/// marks the field.
+#[uniffi::export]
+pub fn link_url(text: String) -> Option<String> {
+    core::typed_link_url(&text).map(String::from)
+}
+
+/// The topic to save, for `Room.setTopic`, from typed text and links: the
+/// calls first, each kind in its order; blank links and those without a web
+/// address left out.
+#[uniffi::export]
+pub fn compose_topic(text: String, links: Vec<LinkDraft>) -> String {
+    let links: Vec<core::LinkDraft> = links.into_iter().map(Into::into).collect();
+    core::Topic::from_drafts(&text, &links).0.to_topic()
 }
 
 /// The room an address or link names (`#alias:server`, `!id:server`, a
@@ -380,19 +427,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn topic_links_round_trip() {
-        let topic = parse_topic(
-            "Ice group\n[call Weekly passcode 42] https://meet.example.org/ice\n\
-             [link] https://example.org/drive"
-                .into(),
+    fn topics_split_calls_and_links() {
+        let parsed = core::Topic::parse(
+            "[link] https://example.org/drive\n\
+             [call Weekly passcode 42] https://meet.example.org/ice\n\
+             [call] https://meet.google.com/abc-defg-hij",
         );
-        assert_eq!(topic.text, "Ice group");
-        assert_eq!(topic.links.len(), 2);
-        assert!(topic.links[0].call);
-        assert_eq!(topic.links[0].name, "Weekly");
-        assert_eq!(topic.links[0].passcode.as_deref(), Some("42"));
-        assert_eq!(topic.links[1].name, "example.org");
-        assert_eq!(parse_topic(compose_topic(topic.clone())), topic);
+        let topic = Topic::from(&parsed);
+        assert_eq!(topic.text, "");
+        let names = |links: &[RoomLink]| links.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&topic.calls), ["Weekly", "Google Meet"]);
+        assert_eq!(names(&topic.links), ["example.org"]);
+        assert_eq!(topic.calls[0].passcode.as_deref(), Some("42"));
+        assert_eq!(topic.first_line, None);
+        assert_eq!(
+            topic.preview.as_deref(),
+            Some("Weekly · Google Meet · example.org")
+        );
+        assert_eq!(
+            core::Topic::try_from(&topic).unwrap(),
+            parsed.clone().moved(true, 0, 0),
+            "back, the calls first"
+        );
+        let text = Topic::from(&core::Topic::parse("\nIce group\nMore"));
+        assert_eq!(
+            (text.first_line.as_deref(), text.preview.as_deref()),
+            (Some("Ice group"), Some("Ice group"))
+        );
+    }
+
+    #[test]
+    fn composes_typed_topics() {
+        let draft = |call, title: &str, url: &str, passcode: &str| LinkDraft {
+            call,
+            title: title.into(),
+            url: url.into(),
+            passcode: passcode.into(),
+        };
+        let composed = compose_topic(
+            " Ice group ".into(),
+            vec![
+                draft(false, "Drive", "example.org/drive", "stale"),
+                // Dragged above the other: the room's call now.
+                draft(true, "Weekly", "meet.example.org/ice", "42"),
+                draft(false, "", "mailto:x", ""),
+                draft(false, "", "", "stale"),
+                draft(true, "", "https://meet.google.com/abc-defg-hij", ""),
+            ],
+        );
+        assert_eq!(
+            composed,
+            "Ice group\n\
+             [call Weekly passcode 42] https://meet.example.org/ice\n\
+             [call] https://meet.google.com/abc-defg-hij\n\
+             [link Drive] https://example.org/drive",
+            "the calls first, in order; the mail and the blank link left out"
+        );
+        assert_eq!(
+            link_url("example.org/x".into()).as_deref(),
+            Some("https://example.org/x")
+        );
+        assert_eq!(link_url("mailto:x".into()), None);
     }
 
     #[test]

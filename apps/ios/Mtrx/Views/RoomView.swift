@@ -4,7 +4,8 @@ import SwiftUI
 
 /// A room: its header (name and topic line), its timeline, newest at the
 /// bottom, who types, and the composer. The name opens the room's info,
-/// the topic line its topic panel; its space's picture, at the right, the
+/// the topic line its topic panel; at the right, Join for the room's call
+/// (or a menu of its links), and its space's picture, which shows the
 /// space. A direct chat's `#` shows the rooms shared with the person over
 /// the timeline.
 struct RoomView: View {
@@ -60,11 +61,14 @@ struct RoomView: View {
                     PersonHeader(room: room, presence: presence.presence(of: person.userId), open: model.showPersonInfo)
                 } else {
                     RoomHeader(
-                        room: room, topic: topic, canEdit: room.rights.changeTopic,
+                        room: room, canEdit: room.rights.changeTopic,
                         openInfo: { showsInfo = true }, openTopic: { sheet = .topic })
                 }
             }
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                if let links = HeaderLinks(room.topic, canEdit: room.rights.changeTopic) {
+                    RoomLinksMenu(links: links) { sheet = .editTopic }
+                }
                 if model.person != nil {
                     SharedRoomsButton(showing: showsShared) {
                         if !showsShared {
@@ -96,7 +100,7 @@ struct RoomView: View {
             }
         }
         .sheet(item: $sheet, onDismiss: performChosen) { sheet in
-            RoomSheetView(sheet: sheet, room: room, model: model, info: info, topic: topic) { action, id in
+            RoomSheetView(sheet: sheet, room: room, model: model, info: info) { action, id in
                 chosen = (action, id)
                 self.sheet = nil
             } share: { id in
@@ -136,11 +140,7 @@ struct RoomView: View {
         } message: {
             Text(model.error ?? "")
         }
-    }
-
-    /// The topic as the room list has it, one just saved too.
-    private var topic: Topic {
-        parseTopic(topic: room.topic ?? "")
+        .opensRoomLinks()
     }
 
     private var actions: RowActions {
@@ -222,14 +222,18 @@ struct RoomView: View {
 }
 
 /// A room's title: its name, which opens its info, over its topic line, a
-/// caret and the topic's first line (else its links' names, else "Add a
-/// topic" where we may edit it), which opens the topic panel.
+/// caret and the topic's preview (its first line, else its links' names,
+/// else "Add a topic" where we may edit it), which opens the topic panel.
 struct RoomHeader: View {
     let room: RoomSummary
-    let topic: Topic
     let canEdit: Bool
     let openInfo: () -> Void
     let openTopic: () -> Void
+
+    /// The line under the name, if any.
+    static func line(_ topic: Topic, canEdit: Bool) -> String? {
+        topic.preview ?? (canEdit ? "Add a topic" : nil)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -241,7 +245,7 @@ struct RoomHeader: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Shows the room's info and settings")
-            if let line = Topics.preview(topic, canEdit: canEdit) {
+            if let line = Self.line(room.topic, canEdit: canEdit) {
                 Button(action: openTopic) {
                     HStack(spacing: 3) {
                         Image(systemName: "chevron.down")
@@ -387,6 +391,8 @@ enum RoomSheet: Identifiable {
     case text(String)
     /// The topic in full, its links and the pinned messages.
     case topic
+    /// The topic's editor, from the header's Edit links….
+    case editTopic
 
     var id: String {
         switch self {
@@ -396,6 +402,7 @@ enum RoomSheet: Identifiable {
         case .emoji(let itemId): return "emoji \(itemId)"
         case .text(let text): return "text \(text)"
         case .topic: return "topic"
+        case .editTopic: return "edit topic"
         }
     }
 }
@@ -406,7 +413,6 @@ private struct RoomSheetView: View {
     let room: RoomSummary
     @ObservedObject var model: TimelineModel
     @ObservedObject var info: RoomInfoModel
-    let topic: Topic
     /// An entry of a message's menu was chosen (item ID).
     let choose: (MessageAction, String) -> Void
     /// Share… was chosen in a message's menu (item ID).
@@ -437,11 +443,13 @@ private struct RoomSheetView: View {
             SelectTextSheet(text: text)
         case .topic:
             TopicPanel(
-                topic: topic, canEdit: room.rights.changeTopic, info: info,
+                topic: room.topic, canEdit: room.rights.changeTopic, info: info,
                 pinned: PinnedModel(session: session.session, roomId: room.id)
             ) { eventId in
                 model.goTo(eventId: eventId)
             }
+        case .editTopic:
+            TopicEditorSheet(topic: room.topic, info: info)
         }
     }
 }

@@ -176,6 +176,17 @@ IDs are strings, times `Date`/`Instant`; no Ruma types.
   (inviting to a space: the space's `invite`; New room in a space:
   `addRooms`). `level` is ours (nil for a creator), `defaultLevel` a plain
   member's.
+- Topics (docs/phone-room-links.md): `RoomSummary.topic` and
+  `DirectoryRoom.topic` come parsed, `Topic {text, calls, links,
+  firstLine, preview}` (empty: no topic). `calls` and `links` are
+  `RoomLink {title, url, passcode, name}` in order; the first call is the
+  room's, which the header's Join opens. `firstLine` is for list rows and
+  directory entries, `preview` (else "Add a topic" where we may edit) for
+  the line under the room's name. The apps don't parse. The editor types
+  `LinkDraft {call, title, url, passcode}`s: `linkUrl(text)` is the
+  address saved (none: not a web address, the field turns red), and
+  `composeTopic(text, links)` the topic to pass to `Room.setTopic`. The
+  `[call] …`/`[link] …` line format is the desktop's and stays stable.
 - `oauthRedirectUri()`, `initLogging(filter)` (stderr: Xcode's console),
   `presenceLine(presence, now)`, `presenceDotLabel(dot)`.
 

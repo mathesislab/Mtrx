@@ -146,9 +146,7 @@ fn details(room: &DirectoryRoom) -> String {
             n => format!("Space · {n} rooms"),
         });
     }
-    if let Some(line) =
-        (room.topic.as_deref()).and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
-    {
+    if let Some(line) = room.topic.first_line() {
         parts.push(line.to_owned());
     }
     parts.push(match room.members {
@@ -414,7 +412,7 @@ mod tests {
             id: format!("!{id}:x").try_into().unwrap(),
             alias: None,
             name: name.into(),
-            topic: None,
+            topic: Default::default(),
             avatar: None,
             members: 3,
             is_space: false,
@@ -432,7 +430,7 @@ mod tests {
             id: format!("!{id}:x").try_into().unwrap(),
             name: name.into(),
             avatar: None,
-            topic: None,
+            topic: Default::default(),
             kind: RoomKind::Room,
             membership: Membership::Joined,
             encrypted: false,

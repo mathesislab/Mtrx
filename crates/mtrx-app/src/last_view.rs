@@ -71,7 +71,7 @@ mod tests {
             id: id.clone(),
             name: String::new(),
             avatar: None,
-            topic: None,
+            topic: Default::default(),
             kind: mtrx_core::RoomKind::Room,
             membership: mtrx_core::Membership::Joined,
             encrypted: false,

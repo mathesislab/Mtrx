@@ -21,7 +21,7 @@ import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.RoomSettingsListener
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
-import uniffi.mtrx.Topic
+import uniffi.mtrx.LinkDraft
 
 /**
  * Room info of [roomId] (a room or a space): its settings and members, and
@@ -31,13 +31,13 @@ import uniffi.mtrx.Topic
  * library's); the members are read at each [load] and again after each
  * change to them. Changes run in a scope of their own, so leaving the
  * screen (which clears this model) does not cancel them; the room is closed
- * once they end. [composeTopic] makes the topic to save from its text and
+ * once they end. [composeTopic] makes the topic to save from its typed text and
  * links (the library's). Methods are called on the main thread.
  */
 class RoomInfoModel(
     val roomId: String,
     private val session: Session,
-    private val composeTopic: (Topic) -> String,
+    private val composeTopic: (String, List<LinkDraft>) -> String,
 ) : ViewModel(), RoomInfoActions {
     /** The room, or why it is not known; closed with the model. */
     private val room: Result<Room> = runCatching { session.room(roomId) }
@@ -91,7 +91,7 @@ class RoomInfoModel(
         change { it.setName(name.trim()) }
     }
 
-    override fun setTopic(topic: Topic) = change { it.setTopic(composeTopic(topic)) }
+    override fun setTopic(draft: TopicDraft) = change { it.setTopic(draft.compose(composeTopic)) }
 
     override fun setNotify(mode: NotifyMode) = change { it.setNotify(mode) }
 
