@@ -20,6 +20,7 @@ use iced::{
 use mtrx_core::{
     Attachment, Media, MediaKind, MediaRef, OwnedEventId, OwnedRoomId, Session, human_size,
 };
+use mtrx_format::Document;
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -60,6 +61,10 @@ pub enum Message {
     MathRendered(math::Key, math::Rendered),
     /// Put a message's image on the clipboard.
     CopyImage(Media, Origin),
+    /// Put a message with math on the clipboard as a picture.
+    CopyMath(Document, Origin),
+    /// Save a message with math as a picture.
+    SaveMath(Document, Origin),
     /// Copying an image finished, or failed: shown where it was asked
     /// from.
     Done(Origin, Result<(), String>),

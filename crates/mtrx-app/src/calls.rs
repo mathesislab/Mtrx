@@ -4,14 +4,16 @@
 //! dragged to other places, of calls with other services, and to edit
 //! them.
 
+use iced::Task;
 use iced::{
     Alignment, Element, Length, Theme,
     widget::{button, column, container, row, text},
 };
-use mtrx_core::{CallService, OwnedRoomId, RoomLink, Topic, recognize_call_link};
+use mtrx_core::{CallService, OwnedRoomId, RoomLink, ServiceKind, Topic, Url, recognize_call_link};
+use mtrx_google::Google;
 
 use crate::{
-    app,
+    app::{self, Cx, Popup},
     ellipsis::ellipsis,
     fonts,
     hint::{Position, hint, hint_with},
@@ -19,7 +21,8 @@ use crate::{
     menu::{self, Entry, Item, Width},
     popover::{Edge, Side, popover},
     reorder::{self, Reorder},
-    room, style, topic,
+    room::{self, Room},
+    style, topic,
 };
 
 const MENU_WIDTH: f32 = 300.0;
@@ -372,4 +375,83 @@ fn card<'a>(link: &'a str, service: String) -> Element<'a, app::Message> {
 
 fn on_primary(theme: &Theme) -> iced::Color {
     theme.extended_palette().primary.base.text
+}
+
+/// A message to the room's calls and links.
+pub fn update(room: &mut Room, message: Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+    let id = room.id.clone();
+    let google = cx.google.clone();
+    let state = &mut room.calls;
+    let menu = |popup: &mut Popup| matches!(popup, Popup::Calls(_));
+    let moved = match message {
+        Message::SpaceService(service) => {
+            state.space_service = service;
+            return Task::none();
+        }
+        Message::OpenMenu => {
+            *cx.popup = Some(Popup::Calls(Menu::default()));
+            return Task::none();
+        }
+        Message::Open(url) => {
+            cx.popup.take_if(menu);
+            return Task::done(app::Message::LinkClicked(url));
+        }
+        Message::Start(service) => {
+            state.busy = true;
+            cx.popup.take_if(menu);
+            let room = room.handle.clone();
+            return Task::perform(
+                async move {
+                    let link = new_call_link(&service, &google).await?;
+                    (room.post_call(&service.name, &link).await).map_err(|e| e.to_string())
+                },
+                move |result| room::Message::Calls(Message::Started(result)).to(&id),
+            );
+        }
+        Message::Started(result) => {
+            state.busy = false;
+            // Shown below the composer, like other sending errors.
+            if let Err(e) = result {
+                room.error = Some(e);
+            }
+            return Task::none();
+        }
+        Message::Calls(order) => match cx.popup {
+            Some(Popup::Calls(menu)) => menu.calls.update(order).map(|moved| (true, moved)),
+            _ => None,
+        },
+        Message::Links(order) => match cx.popup {
+            Some(Popup::Calls(menu)) => menu.links.update(order).map(|moved| (false, moved)),
+            _ => None,
+        },
+    };
+    let Some((calls, moved)) = moved else {
+        return Task::none();
+    };
+    // A call moved to the top becomes the room's: the topic changes.
+    let listed = (cx.lists.room(&id)).and_then(|r| r.topic.as_deref());
+    let shown = Topic::parse(listed.unwrap_or_default());
+    let topic = topic::moved(shown, calls, moved).to_topic();
+    topic::save(
+        cx.session,
+        &mut room.topic,
+        id.clone(),
+        topic,
+        move |message| room::Message::Topic(message).to(&id),
+    )
+}
+
+/// A link for a new call with `service`.
+async fn new_call_link(service: &CallService, google: &Google) -> Result<Url, String> {
+    match service.kind {
+        ServiceKind::GoogleMeet => google.create_meeting().await.map_err(|e| match e {
+            mtrx_google::Error::NotSignedIn => {
+                "Connect your Google account in Settings to create Meet links.".to_owned()
+            }
+            e => e.to_string(),
+        }),
+        _ => service
+            .new_link()
+            .ok_or_else(|| format!("{} cannot make call links", service.name)),
+    }
 }

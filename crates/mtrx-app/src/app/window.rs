@@ -8,11 +8,12 @@ use iced::{
     window::{self, Id},
 };
 
-use super::{App, Screen, as_key, keep_now};
+use super::{App, Screen, as_key};
 use crate::{
     app, math,
     placement::{self, Frame, Placement},
     presence,
+    room::keep_now,
     settings::Settings,
     style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
     text_size::Zoom,

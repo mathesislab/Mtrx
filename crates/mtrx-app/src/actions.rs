@@ -3,7 +3,7 @@
 //! place.
 
 use iced::{
-    Alignment, Color, Element, Length, Padding, Theme,
+    Alignment, Color, Element, Length, Padding, Task, Theme,
     advanced::widget::Id,
     mouse,
     widget::{
@@ -15,10 +15,9 @@ use mtrx_core::{
     Draft, Event, EventKey, MessageAction, MessageRow, OwnedEventId, OwnedRoomId, Reaction, Reply,
     SendState, User,
 };
-use mtrx_format::Document;
 
 use crate::{
-    app,
+    app::{self, Cx, Popup, people},
     avatar::{Avatars, Shape},
     clipboard::Copied,
     ellipsis::ellipsis,
@@ -30,10 +29,10 @@ use crate::{
     message_field::{self, Field, MessageField},
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
-    room,
+    room::{self, Room},
     selectable::text::selectable,
-    selection::Unit,
-    style,
+    selection::{self, Unit},
+    style, task,
 };
 
 /// Read markers shown per message before "+N".
@@ -98,10 +97,6 @@ pub enum Message {
     CopyLink(String),
     /// Put the text selected in the timeline on the clipboard.
     CopySelection,
-    /// Put a message with math on the clipboard as a picture.
-    CopyImage(Document),
-    /// Save a message with math as a picture.
-    SaveImage(Document),
     /// Show a timeline row's text in place of it, to select from.
     /// Stop replying.
     CancelCompose,
@@ -838,6 +833,188 @@ pub fn typing<'a>(names: &[String]) -> Element<'a, app::Message> {
 /// `message` for `room`, as the app gets it.
 pub fn act(room: &OwnedRoomId, message: Message) -> app::Message {
     room::Message::Act(message).to(room)
+}
+
+/// A message about the room's messages: their menus, reactions and edits.
+pub fn update(room: &mut Room, message: Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+    let id = room.id.clone();
+    let timeline = room.timeline.clone();
+    let done = {
+        let id = id.clone();
+        move |result| act(&id, Message::Done(result))
+    };
+    let menu = |popup: &mut Popup| matches!(popup, Popup::MessageMenu { .. });
+    let unsent = |popup: &mut Popup| matches!(popup, Popup::Unsent(_));
+    let confirm_delete = |popup: &mut Popup| matches!(popup, Popup::ConfirmDelete(_));
+    match message {
+        Message::Pin(event, pin) => {
+            let room = room.handle.clone();
+            task::request(async move { room.set_pinned(&event, pin).await }, done)
+        }
+        Message::React(key, emoji) => {
+            cx.popup
+                .take_if(|popup| matches!(popup, Popup::Reactions { .. }));
+            let react = task::request(
+                {
+                    let emoji = emoji.clone();
+                    async move { timeline.toggle_reaction(&key, &emoji).await }
+                },
+                done,
+            );
+            Task::batch([react, people::used(vec![emoji])])
+        }
+        Message::OpenMenu(row, at) => {
+            *cx.popup = Some(Popup::MessageMenu { row, at });
+            Task::none()
+        }
+        Message::OpenReaders(row) => {
+            *cx.popup = Some(Popup::Readers(row));
+            Task::none()
+        }
+        Message::OpenReactors(row, key) => {
+            *cx.popup = Some(Popup::Reactors { row, key });
+            Task::none()
+        }
+        Message::OpenUnsent(row) => {
+            *cx.popup = Some(Popup::Unsent(row));
+            Task::none()
+        }
+        Message::Retry(key) => {
+            cx.popup.take_if(unsent);
+            task::request(async move { timeline.retry(&key).await }, done)
+        }
+        Message::Unsend(key) => {
+            cx.popup.take_if(unsent);
+            task::request(async move { timeline.unsend(&key).await }, move |result| {
+                act(&id, Message::Unsent(result))
+            })
+        }
+        Message::Unsent(Ok(draft)) => match draft {
+            Some(draft) => room.put_back(draft),
+            None => Task::none(),
+        },
+        Message::Unsent(Err(e)) => {
+            room.error = Some(e);
+            Task::none()
+        }
+        Message::OpenLink(url) => {
+            cx.popup.take_if(menu);
+            Task::done(app::Message::LinkClicked(url))
+        }
+        Message::Copy(copied) => {
+            cx.popup.take_if(menu);
+            room::copy(&id, copied)
+        }
+        Message::CopyLink(url) => {
+            cx.popup.take_if(menu);
+            iced::clipboard::write(url)
+        }
+        Message::CopySelection => {
+            cx.popup.take_if(menu);
+            Task::done(room::Message::Select(selection::Message::Copy).to(&id))
+        }
+        Message::TogglePicker(row, at) => {
+            let open = matches!(&*cx.popup,
+                Some(Popup::Reactions { row: open, at: open_at, .. })
+                    if *open == row && *open_at == at);
+            if open {
+                *cx.popup = None;
+                return Task::none();
+            }
+            *cx.popup = Some(Popup::Reactions { row, at, all: None });
+            people::load_frequent_emoji(cx.session)
+        }
+        Message::Emoji(message) => {
+            let Some(Popup::Reactions { all, .. }) = cx.popup else {
+                return Task::none();
+            };
+            match message {
+                emoji::Message::Open => {
+                    *all = Some(emoji::Panel::default());
+                    iced::widget::operation::focus(emoji::SEARCH)
+                }
+                emoji::Message::Close => {
+                    *all = None;
+                    Task::none()
+                }
+                message => {
+                    if let Some(panel) = all {
+                        panel.update(message);
+                    }
+                    Task::none()
+                }
+            }
+        }
+        Message::Reply(target) => {
+            room.compose = Compose::Reply(target);
+            cx.popup
+                .take_if(|popup| matches!(popup, Popup::SendLater(_)));
+            Task::none()
+        }
+        Message::Edit(key, text) => room
+            .editing
+            .insert(InlineEdit::new(Editing::Sent(key), &text))
+            .focus(),
+        Message::EditLast => {
+            let Some((row, key, text)) = room.newest_editable() else {
+                return Task::none();
+            };
+            let edit = room
+                .editing
+                .insert(InlineEdit::new(Editing::Sent(key), &text));
+            Task::batch([edit.focus(), room::scroll_to_row(&row)])
+        }
+        Message::SaveEdit => {
+            let Some(edit) = &room.editing else {
+                return Task::none();
+            };
+            let text = edit.text();
+            if text.trim().is_empty() {
+                return Task::none();
+            }
+            let session = cx.session.clone();
+            let target = edit.target.clone();
+            let added = edit.added_emoji();
+            let save = task::request(
+                async move {
+                    match target {
+                        Editing::Sent(key) => timeline.edit_markdown(&key, &text).await,
+                        Editing::Scheduled(id) => session.edit_scheduled(&id, &text).await,
+                    }
+                },
+                move |result| act(&id, Message::EditSaved(result)),
+            );
+            Task::batch([save, people::used(added)])
+        }
+        Message::EditSaved(Ok(())) | Message::CancelEdit => {
+            room.editing = None;
+            Task::none()
+        }
+        Message::EditSaved(Err(e)) => {
+            room.error = Some(e);
+            Task::none()
+        }
+        Message::AskDelete(row) => {
+            *cx.popup = Some(Popup::ConfirmDelete(row));
+            Task::none()
+        }
+        Message::Delete(key) => {
+            cx.popup.take_if(confirm_delete);
+            task::request(async move { timeline.redact(&key).await }, done)
+        }
+        Message::CancelCompose => {
+            // The reply's text stays as a draft.
+            room.compose = Compose::New;
+            room.error = None;
+            Task::none()
+        }
+        Message::Done(result) => {
+            if let Err(e) = result {
+                room.error = Some(e);
+            }
+            Task::none()
+        }
+    }
 }
 
 #[cfg(test)]

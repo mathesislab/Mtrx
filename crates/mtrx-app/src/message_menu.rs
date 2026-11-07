@@ -88,12 +88,18 @@ pub fn entries(
         entries.extend([
             Item::new(
                 "Copy image",
-                act(room, actions::Message::CopyImage(document.clone())),
+                app::Message::Media(media::Message::CopyMath(
+                    document.clone(),
+                    Origin::Room(room.clone()),
+                )),
             )
             .into(),
             Item::new(
                 "Save image…",
-                act(room, actions::Message::SaveImage(document.clone())),
+                app::Message::Media(media::Message::SaveMath(
+                    document.clone(),
+                    Origin::Room(room.clone()),
+                )),
             )
             .into(),
         ]);

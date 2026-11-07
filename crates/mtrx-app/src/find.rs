@@ -7,7 +7,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use iced::{
-    Alignment, Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector,
+    Alignment, Element, Event, Length, Rectangle, Renderer, Size, Task, Theme, Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget,
         layout::{Limits, Node},
@@ -21,8 +21,11 @@ use mtrx_core::{Event as TimelineEvent, EventContent, MessageKind, Row};
 use unicode_normalization::char::{decompose_canonical, is_combining_mark};
 
 use crate::{
+    app,
     hint::{Position, hint, shortcut},
-    icons, message, style,
+    icons, message,
+    room::{self, Room},
+    selection, style,
 };
 
 /// The find field.
@@ -466,6 +469,66 @@ impl<M: Clone> Widget<M, Theme, Renderer> for ShiftEnter<'_, M> {
             translation,
         )
     }
+}
+
+/// A message to the room's find bar.
+pub fn update(room: &mut Room, message: Message) -> Task<app::Message> {
+    let id = room.id.clone();
+    let mut focus = Task::none();
+    match message {
+        // With a selection, what reply previews show first, as it may
+        // be in one.
+        Message::Open if room.selection.is_some() => {
+            return room
+                .read_shown()
+                .map(move |shown| room::Message::Find(Message::Opened(shown)).to(&id));
+        }
+        Message::Open | Message::Opened(_) => {
+            let shown = match message {
+                Message::Opened(shown) => shown,
+                _ => selection::Shown::new(),
+            };
+            // Text selected on one line is looked for, as in Safari;
+            // else what was last.
+            let selected = room
+                .selected(&shown)
+                .map(|copied| copied.text)
+                .filter(|text| !text.contains('\n'));
+            match (&mut room.find, selected) {
+                (Some(find), Some(text)) => {
+                    find.query = text;
+                    find.search(&room.rows);
+                }
+                (Some(_), None) => {}
+                (None, selected) => {
+                    room.find = Some(Find::new(selected.unwrap_or_default(), &room.rows));
+                }
+            }
+            focus = Task::batch([
+                iced::widget::operation::focus(FIELD),
+                iced::widget::operation::select_all(FIELD),
+            ]);
+        }
+        Message::Query(query) => {
+            if let Some(find) = &mut room.find {
+                find.query = query;
+                find.search(&room.rows);
+            }
+        }
+        Message::Next | Message::Previous => {
+            let next = matches!(message, Message::Next);
+            if let Some(find) = &mut room.find {
+                find.step(next);
+            }
+        }
+        Message::Close => {
+            room.find = None;
+            return Task::none();
+        }
+    }
+    let scroll = room.show_found();
+    // The match may be in a message not rendered before.
+    Task::batch([focus, scroll])
 }
 
 #[cfg(test)]

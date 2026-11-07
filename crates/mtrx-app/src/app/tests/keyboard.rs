@@ -1013,6 +1013,6 @@ async fn one_popup_in_the_window() {
 
     ui.update(room::Message::Calls(calls::Message::OpenMenu).to(&room));
     assert!(matches!(ui.main().popup, Some(Popup::Calls(_))));
-    ui.main().set_pane(Pane::Empty);
+    let _ = ui.main().set_pane(Pane::Empty);
     assert!(ui.main().popup.is_none());
 }

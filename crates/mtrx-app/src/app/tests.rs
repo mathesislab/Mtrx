@@ -9,19 +9,21 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use iced::{Rectangle, Size, theme::Mode};
+use iced::{Rectangle, Size, theme::Mode, widget::text_editor};
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    Attachment, Connection, EventContent, Media, NewRoom, OwnedEventId, Profile, RoomKind,
-    RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile, SecretStore, Section,
-    SendState, Session, TimelineEntry,
+    Attachment, CallService, Connection, EventContent, Media, NewRoom, OwnedEventId, Profile,
+    RoomKind, RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile, SecretStore,
+    Section, SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
 
 use super::*;
 use crate::{
-    fonts, mention,
+    actions::{self, Compose, Editing},
+    find::Find,
+    fonts, mention, message_field,
     message_menu::MenuAt,
     placement::{self, Frame},
     selection::{Point, Pos, Selection},
@@ -3110,14 +3112,16 @@ async fn drafts_stay_in_their_room() {
             Arc::new(" there".into()),
         ))),
     )));
-    let before = app.room_draft();
     let other_timeline = Arc::new(alice.timeline(&b).await.unwrap());
-    *open_room(&mut app) = Room::new(
+    let other = Room::new(
         alice.room(&b).unwrap(),
         other_timeline,
         alice.draft_keeper(&b),
     );
-    let _ = messages_of(app.keep_draft(before)).await;
+    let Screen::Main(main) = &mut app.screen else {
+        unreachable!()
+    };
+    let _ = messages_of(main.set_pane(Pane::Open(other))).await;
     let kept = mtrx_core::Draft {
         text: "Yes, see you there".into(),
         ..kept
@@ -3416,7 +3420,7 @@ async fn a_cancelled_request_still_takes_effect() {
         }
     }
     let lab: OwnedRoomId = "!lab:localhost".try_into().unwrap();
-    main(&mut app).set_pane(Pane::Opening(lab.clone()));
+    let _ = main(&mut app).set_pane(Pane::Opening(lab.clone()));
     main(&mut app).space = Some(lab.clone());
 
     // Not run: the results are given below.
@@ -3576,7 +3580,7 @@ async fn loads_end_with_their_room_and_requests_run_on() {
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
-    let members = load_members(open_room(&mut app));
+    let members = open_room(&mut app).load_members();
     assert!(open_room(&mut app).tasks.running(&Load::Members));
     let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
     let later = send_later::Message::At(in_an_hour);

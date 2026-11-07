@@ -1,9 +1,12 @@
 //! People: their presence, those we know, the emoji we use, and direct
 //! chats with them.
 
-use mtrx_core::{Contact, OwnedRoomId, OwnedUserId};
+use std::sync::Arc;
 
-use crate::presence;
+use iced::Task;
+use mtrx_core::{Contact, OwnedRoomId, OwnedUserId, Session};
+
+use crate::{app, presence};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -21,4 +24,22 @@ pub enum Message {
     StartNotes,
     /// Star the direct chat with someone, starting it if there is none.
     FavouritePerson(OwnedUserId),
+    /// The emoji just used (reacted with, sent): first among the most used.
+    Used(Vec<String>),
+}
+
+/// The user's most used emoji, from account data.
+pub fn load_frequent_emoji(session: &Arc<Session>) -> Task<app::Message> {
+    let session = session.clone();
+    Task::perform(async move { session.frequent_emoji().await }, |emoji| {
+        app::Message::People(Message::FrequentEmoji(emoji))
+    })
+}
+
+/// Count the uses of `used` (reacted with, sent), if any.
+pub fn used(used: Vec<String>) -> Task<app::Message> {
+    if used.is_empty() {
+        return Task::none();
+    }
+    Task::done(app::Message::People(Message::Used(used)))
 }
