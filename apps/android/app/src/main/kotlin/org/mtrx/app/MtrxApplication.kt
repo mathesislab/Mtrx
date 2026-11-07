@@ -12,14 +12,14 @@ import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
 import org.mtrx.app.model.AesGcmSealer
 import org.mtrx.app.model.DataStorePush
-import org.mtrx.app.model.DataStoreSections
-import org.mtrx.app.model.DataStoreRoomSort
-import org.mtrx.app.model.DataStoreSelectedSpace
-import org.mtrx.app.model.DataStoreSharePresence
 import org.mtrx.app.model.FileSecretBackend
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PusherDevice
 import org.mtrx.app.model.pushPreferences
+import org.mtrx.app.model.roomSortStore
+import org.mtrx.app.model.sectionStore
+import org.mtrx.app.model.selectedSpaceStore
+import org.mtrx.app.model.sharePresenceStore
 import org.mtrx.app.model.viewPreferences
 import org.mtrx.app.push.HttpGatewayDiscovery
 import org.mtrx.app.push.MessageNotifications
@@ -66,12 +66,12 @@ class MtrxApplication : Application() {
         account = Account(
             mtrx,
             scope,
-            DataStoreSelectedSpace(viewPreferences),
-            DataStoreRoomSort(viewPreferences),
+            selectedSpaceStore(viewPreferences),
+            roomSortStore(viewPreferences),
             push,
             notifications,
-            DataStoreSharePresence(viewPreferences),
-            DataStoreSections(viewPreferences),
+            sharePresenceStore(viewPreferences),
+            sectionStore(viewPreferences),
         )
         pushHandler = PushHandler(
             mtrx,

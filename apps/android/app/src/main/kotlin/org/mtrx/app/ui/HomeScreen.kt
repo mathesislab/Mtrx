@@ -110,7 +110,7 @@ fun HomeScreen(
     val connection by session.connection.collectAsStateWithLifecycle()
     val encryption by session.encryption.collectAsStateWithLifecycle()
     val selected by session.spaceSelection.selected.collectAsStateWithLifecycle()
-    val sort by account.roomSort.sort.collectAsStateWithLifecycle()
+    val sort by account.roomSort.value.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(session) { session.messages.collect { snackbar.showSnackbar(it) } }
     val today = remember(list) { LocalDate.now() }
@@ -225,7 +225,7 @@ fun HomeScreen(
                     IconButton(onClick = { showing = true }) {
                         Icon(MtrxIcons.Checklist, contentDescription = "Show…")
                     }
-                    SortMenu(sort, onSort = account.roomSort::choose)
+                    SortMenu(sort, onSort = account.roomSort::set)
                 }
                 // New room in it, if we may add rooms to it.
                 val space = (selected as? SpaceKey.Space)?.id
