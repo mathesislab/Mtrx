@@ -205,13 +205,14 @@ impl Renderer {
     pub fn formula(&self, formula: &Formula, em_pixels: f32) -> Result<FormulaImage, RenderError> {
         let mut equation = String::new();
         math(&formula.tex, formula.display, &mut equation)?;
-        // Inline: a marker before the formula is placed on the line's
-        // baseline. The line has no leading and its edges at the ink, so it
-        // holds all of the formula; the margin keeps antialiasing and ink
-        // beyond the glyphs' advances.
+        // Inline: an empty box before the formula is placed on the line's
+        // baseline, its marker with it (a bare marker at a paragraph's
+        // start is put before the paragraph). The line has no leading and
+        // its edges at the ink, so it holds all of the formula; the margin
+        // keeps antialiasing and ink beyond the glyphs' advances.
         let marked = match formula.display {
             true => equation,
-            false => format!("metadata(none); {equation}"),
+            false => format!("box(metadata(none)); {equation}"),
         };
         let compiled = self.compile(format!(
             r#"#import "/mitex/mod.typ": mitex-scope

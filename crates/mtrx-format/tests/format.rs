@@ -627,7 +627,7 @@ mod formula {
             matches!(bad, Err(RenderError::Latex { .. } | RenderError::Typst(_))),
             "{bad:?}"
         );
-        let huge = RENDERER.formula(&inline("x"), 5000.0);
+        let huge = RENDERER.formula(&inline("x"), 20_000.0);
         assert!(
             matches!(huge, Err(RenderError::TooLarge { .. })),
             "{huge:?}"
