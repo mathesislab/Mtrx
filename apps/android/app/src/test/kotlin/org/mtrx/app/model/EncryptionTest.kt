@@ -15,6 +15,7 @@ import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeSortStore
 import org.mtrx.app.FakeSpaceStore
 import org.mtrx.app.FakeVerification
+import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.MtrxException
@@ -40,6 +41,8 @@ class EncryptionTest {
     private fun TestScope.signedIn(session: FakeSession): Account =
         testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
             .also { it.start() }
+
+    private val Account.encryption get() = signedIn.encryption
 
     @Test
     fun followsTheLibraryOnceSyncStarts() = runTest {
@@ -79,12 +82,12 @@ class EncryptionTest {
         )
         val seen = mutableListOf<Recovery>()
         session.recoverySteps = steps
-        session.onRecoveryStep = { seen += account.recovery.value }
+        session.onRecoveryStep = { seen += account.signedIn.recovery.value }
 
-        account.recover("EsTc 1234")
+        account.signedIn.recover("EsTc 1234")
         assertEquals(listOf("EsTc 1234"), session.recoveryKeys)
         assertEquals(steps.map { Recovery.Running(it) }, seen)
-        assertEquals(Recovery.Done, account.recovery.value)
+        assertEquals(Recovery.Done, account.signedIn.recovery.value)
         // The state is the library's to report, not asked for.
         assertTrue(showsEncryptionBanner(account.encryption.value))
 
@@ -94,8 +97,8 @@ class EncryptionTest {
         session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED, keysArriving = false))
         assertFalse(account.encryption.value!!.keysArriving)
 
-        account.resetRecovery()
-        assertEquals(Recovery.Idle, account.recovery.value)
+        account.signedIn.resetRecovery()
+        assertEquals(Recovery.Idle, account.signedIn.recovery.value)
     }
 
     @Test
@@ -106,8 +109,8 @@ class EncryptionTest {
         }
         val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
-        account.recover("wrong")
-        assertEquals(Recovery.Failed("The Base58 decoded key has an invalid length"), account.recovery.value)
+        account.signedIn.recover("wrong")
+        assertEquals(Recovery.Failed("The Base58 decoded key has an invalid length"), account.signedIn.recovery.value)
     }
 
     @Test
@@ -118,8 +121,8 @@ class EncryptionTest {
         }
         val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
-        account.recover("EsTc not a key")
-        assertEquals(Recovery.InvalidKey, account.recovery.value)
+        account.signedIn.recover("EsTc not a key")
+        assertEquals(Recovery.InvalidKey, account.signedIn.recovery.value)
         assertEquals("The recovery key is not valid.", INVALID_RECOVERY_KEY)
     }
 
@@ -132,7 +135,7 @@ class EncryptionTest {
         session.verificationRequests!!.onRequest(request)
         assertTrue(request.cancelled)
         assertTrue(request.uniffiIsDestroyed)
-        assertNull(account.verificationRequest.value)
+        assertNull(account.signedIn.verificationRequest.value)
     }
 
     @Test
@@ -140,19 +143,20 @@ class EncryptionTest {
         val session = FakeSession()
         val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
+        val signedIn = account.signedIn
 
         val declined = FakeVerification(FakeSession.USER_ID)
         session.verificationRequests!!.onRequest(declined)
-        assertEquals(declined, account.verificationRequest.value)
-        account.declineVerificationRequest()
+        assertEquals(declined, signedIn.verificationRequest.value)
+        signedIn.declineVerificationRequest()
         assertTrue(declined.cancelled)
-        assertNull(account.verificationRequest.value)
+        assertNull(signedIn.verificationRequest.value)
 
         val accepted = FakeVerification(FakeSession.USER_ID)
         session.verificationRequests!!.onRequest(accepted)
-        account.acceptVerificationRequest()
+        signedIn.acceptVerificationRequest()
         assertTrue(accepted.accepted)
-        val model = account.verification.value!!
+        val model = signedIn.verification.value!!
         assertFalse(model.outgoing)
         assertEquals(VerificationState.Waiting, model.state.value)
 
@@ -160,7 +164,7 @@ class EncryptionTest {
         val second = FakeVerification(FakeSession.USER_ID)
         session.verificationRequests!!.onRequest(second)
         assertTrue(second.cancelled)
-        assertNull(account.verificationRequest.value)
+        assertNull(signedIn.verificationRequest.value)
     }
 
     @Test
@@ -168,8 +172,9 @@ class EncryptionTest {
         val session = FakeSession()
         val account = signedIn(session)
         account.setForeground(true)
-        account.verifyWithAnotherDevice()
-        val model = account.verification.value!!
+        val signedIn = account.signedIn
+        signedIn.verifyWithAnotherDevice()
+        val model = signedIn.verification.value!!
         assertTrue(model.outgoing)
         val first = session.selfVerification
         first.update(VerificationState.Done)
@@ -180,20 +185,28 @@ class EncryptionTest {
         // A new one, still waiting at sign-out: cancelled and closed.
         val second = FakeVerification(FakeSession.USER_ID)
         session.selfVerification = second
-        account.verifyWithAnotherDevice()
+        signedIn.verifyWithAnotherDevice()
         // The ended one is closed without cancelling.
         assertTrue(first.uniffiIsDestroyed)
         assertFalse(first.cancelled)
         account.signOut()
-        assertNull(account.verification.value)
-        assertNull(account.encryption.value)
+        assertEquals(AccountState.SignedOut(), account.state.value)
         assertTrue(second.cancelled)
         assertTrue(second.uniffiIsDestroyed)
         val subscription = session.encryptionSubscription!!
         assertTrue(subscription.cancelled)
         assertTrue(subscription.uniffiIsDestroyed)
-        // A state on its way at sign-out is dropped.
-        session.pushEncryption(EncryptionState(true, RecoveryStatus.ENABLED))
-        assertNull(account.encryption.value)
+    }
+
+    @Test
+    fun aRequestArrivingAsTheSessionClosesIsDeclined() = runTest {
+        val session = FakeSession()
+        val account = signedIn(session)
+        val listener = session.verificationRequests!!
+        account.signOut()
+        val late = FakeVerification(FakeSession.USER_ID)
+        listener.onRequest(late)
+        assertTrue(late.cancelled)
+        assertTrue(late.uniffiIsDestroyed)
     }
 }

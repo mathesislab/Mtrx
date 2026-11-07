@@ -19,6 +19,7 @@ import org.mtrx.app.SpacesFixture
 import org.mtrx.app.makePresence
 import org.mtrx.app.settings.sharePresenceFootnote
 import org.mtrx.app.summary
+import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.PresenceState
@@ -45,7 +46,7 @@ class PresenceTest {
         return account
     }
 
-    private val Account.sessionPresence: PresenceModel get() = (state.value as AccountState.SignedIn).presence
+    private val Account.sessionPresence: PresenceModel get() = signedIn.presence
 
     private fun TestScope.settle() = advanceTimeBy(PresenceModel.FOLLOW_DEBOUNCE_MS + 1)
 

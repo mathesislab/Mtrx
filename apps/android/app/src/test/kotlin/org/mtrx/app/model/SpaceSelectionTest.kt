@@ -13,6 +13,7 @@ import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeSortStore
 import org.mtrx.app.FakeSpaceStore
+import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
 import org.mtrx.app.SpacesFixture
 import org.mtrx.app.SpacesFixture.TEAM
@@ -88,10 +89,11 @@ class SpaceSelectionTest {
         val account = testAccount(FakeMtrx(restored = session), scope(), store, FakeSortStore())
         account.start()
         session.roomListListener!!.onUpdate(SpacesFixture.lists())
-        assertEquals("restored", SpaceKey.Space(TEAM), account.spaceSelection.selected.value)
+        val selection = account.signedIn.spaceSelection
+        assertEquals("restored", SpaceKey.Space(TEAM), selection.selected.value)
 
         account.signOut()
-        assertNull(account.spaceSelection.selected.value)
+        assertNull(selection.selected.value)
         assertNull(store.saved)
     }
 }
