@@ -872,6 +872,10 @@ impl MediaState {
                 cx.notices.report(problem, None);
                 Task::none()
             }
+            downloads::Message::Finished(news) => {
+                cx.notices.done(news, None);
+                Task::none()
+            }
             downloads::Message::OpenList => {
                 *cx.popup = Some(Popup::Downloads { menu: None });
                 Task::none()
@@ -895,7 +899,10 @@ impl MediaState {
                 {
                     *menu = None;
                 }
-                let updated = matches!(message, downloads::Message::Updated(_));
+                let updated = matches!(
+                    message,
+                    downloads::Message::Updated(_) | downloads::Message::Exports(_)
+                );
                 let task = self.downloads.update(cx.session, message);
                 if updated && let Some(Popup::Downloads { menu }) = cx.popup {
                     *cx.popup = (self.downloads.kept(*menu)).map(|menu| Popup::Downloads { menu });
