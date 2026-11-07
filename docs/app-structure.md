@@ -829,6 +829,13 @@ impl Session {
 **FFI**
 - No change but the doc comment.
 
+**As built (Q)**
+- Core decides by sync's own state: `reconnect` restarts sync only while it is offline or failed (`State::Offline | State::Error`), and not once signed out. Stopped by the app (the phones in the background), it stays stopped.
+- Tests: `reconnect_leaves_working_sync_alone` (online: sync running, no connection change; stopped: stays stopped) and, in `signed_out_elsewhere`, signed out stays stopped. They read sync's state through `test_support::syncing`.
+- Desktop: the wake observer is `app/wake.rs`, a `define_class!` observer of `NSWorkspace`'s notification centre (no `block2`), as `menu_bar.rs` does it; a subscription while signed in. Wake reconnects whatever the connection shows: a request hanging since the sleep still shows online, and core decides. `app/tests.rs` checks focus while offline and online.
+- iOS: `NetworkMonitor` reports every usable path, the first (the network at the start) too: core ignores it while sync runs. The reconnect is chained after the last start or stop of sync (`syncChange`), so a stop never races it. The monitor also stops at sign-out.
+- Android: the `Account` follows the network, not `SignedInSession`: it knows the foreground and holds the lock that starts and stops sync, and the session needs no `Context`. `NetworkMonitor` is an interface (`ConnectivityMonitor` on the device, `FakeNetwork` in tests); `SignedInSession.reconnect` acts only while syncing. The manifest gains `ACCESS_NETWORK_STATE`.
+
 ---
 
 ## PR split

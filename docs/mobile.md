@@ -210,7 +210,9 @@ store).
   `org.mtrx.Mtrx`, account = key, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`).
   Then `restore()`; if nil, show sign-in.
 - Sync: `startSync()` when the scene becomes active, `stopSync()` when it
-  goes to the background (iOS suspends the process).
+  goes to the background (iOS suspends the process); `reconnect()` when
+  the network comes back (the library ignores it unless the server was
+  unreachable).
 - Browser login: `ASWebAuthenticationSession(url: login.url(),
   callbackURLScheme: "io.github.alex-robinson")`; pass the callback URL to
   `finish`. No URL type in Info.plist is needed for this session.
@@ -386,7 +388,8 @@ apps/ios/
   `startSync()`; to the background, a `beginBackgroundTask`, then
   `.background`, then `stopSync()`. `logout` tells `.signOut` first;
   `forget` tells nothing. These calls are chained, so they reach the
-  library in order. Input: `InputWatcher`, behind the tabs, puts a
+  library in order. In the foreground `NetworkMonitor` (`NWPathMonitor`)
+  calls `reconnect()` for each usable path, chained after them too. Input: `InputWatcher`, behind the tabs, puts a
   recognizer on the window that reports each touch or press and fails at
   once (it cancels and delays nothing; sheets are in the same window), and
   counts text changing (`UITextField`/`UITextView` notifications) as
@@ -457,8 +460,7 @@ tried against a server (only the models' unit tests and the sign-in screen
 are checked so far; the CI start does not check which screen shows; the
 stage 3 room was seen in the simulator with made-up items only);
 opening images full size and
-files (`mediaFile`); answering invites; reconnecting when the network
-returns (`reconnect`); a build for devices (signing).
+files (`mediaFile`); answering invites; a build for devices (signing).
 
 ## 4. Android app
 
@@ -483,7 +485,9 @@ and tested by CI only; no Android SDK is used locally.
     `Mtrx(filesDir, cacheDir, secrets)`, push registration, the message
     notifications (channel `messages` created), the `Account` and the push
     handler; sync follows `ProcessLifecycleOwner` (start in the foreground,
-    stop in the background). It runs in every start of the process, the
+    stop in the background), and in the foreground the `Account` follows
+    the default network (`ConnectivityMonitor`): one available calls
+    `reconnect()`, under the sync mutex. It runs in every start of the process, the
     push service's too (no `android:process`).
   - Push notifications (section 10), through UnifiedPush
     (`org.unifiedpush.android:connector` 3.3.5: `PushService`,

@@ -10,6 +10,7 @@ import org.mtrx.app.model.SignedInSession
 import org.mtrx.app.model.Distributors
 import org.mtrx.app.model.GatewayDiscovery
 import org.mtrx.app.model.Logger
+import org.mtrx.app.model.NetworkMonitor
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PushStore
 import org.mtrx.app.rooms.SectionPrefs
@@ -113,6 +114,7 @@ class FakeHandle : TaskHandle(NoHandle) {
 class FakeSession : Session(NoHandle) {
     var syncStarts = 0
     var syncStops = 0
+    var reconnects = 0
     var loggedOut = false
     var logoutError: MtrxException? = null
     val handles = mutableListOf<FakeHandle>()
@@ -191,6 +193,10 @@ class FakeSession : Session(NoHandle) {
     override suspend fun stopSync() {
         syncStops++
         calls += "stopSync"
+    }
+
+    override suspend fun reconnect() {
+        reconnects++
     }
 
     /**
@@ -1288,7 +1294,20 @@ class FakeNotifier : MessageNotifier {
     }
 }
 
-/** An account on fakes, with push registration and notifications that tests may look at. */
+/** The device's network, changed by the test: [back] is set while started. */
+class FakeNetwork : NetworkMonitor {
+    var back: (() -> Unit)? = null
+
+    override fun start(back: () -> Unit) {
+        this.back = back
+    }
+
+    override fun stop() {
+        back = null
+    }
+}
+
+/** An account on fakes, with push registration, notifications and the network that tests may look at. */
 fun testAccount(
     mtrx: MtrxInterface,
     scope: CoroutineScope,
@@ -1298,8 +1317,9 @@ fun testAccount(
     notifications: RoomNotifications = FakeNotifier(),
     sharePresence: PreferenceStore<Boolean> = MemoryStore(),
     sections: PreferenceStore<Map<String, SectionPrefs>> = MemoryStore(),
+    network: NetworkMonitor = FakeNetwork(),
     log: FakeLog = FakeLog(),
-): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, log)
+): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, network, log)
 
 /** The account's open session; signed in. */
 val Account.signedIn: SignedInSession get() = (state.value as AccountState.SignedIn).session
