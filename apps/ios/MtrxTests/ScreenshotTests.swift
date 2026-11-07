@@ -416,16 +416,16 @@ private enum Screens {
                     Make.text(
                         "Thanks, the plots at https://example.org/runs look right.",
                         edited: true,
+                        replyTo: ReplyQuote(
+                            eventId: "$2", state: .loaded, sender: Make.user("ann"), kind: .text,
+                            body: "Plots at https://example.org/runs"),
                         text: [
                             Make.paragraph([
                                 Make.plain("Thanks, the plots at "),
                                 Make.plain("https://example.org/runs", link: "https://example.org/runs"),
                                 Make.plain(" look right."),
                             ])
-                        ],
-                        replyTo: ReplyQuote(
-                            eventId: "$2", state: .loaded, sender: Make.user("ann"), kind: .text,
-                            body: "Plots at https://example.org/runs")),
+                        ]),
                     at: at(8), own: true, eventId: "$q"),
                 firstInGroup: false),
             Make.row(
