@@ -468,8 +468,10 @@ mod tests {
     /// download is listed.
     #[test]
     fn what_stays_open_as_the_list_changes() {
-        let mut downloads = Downloads::default();
-        downloads.list = vec![running(1, 0, None), running(2, 0, None)];
+        let mut downloads = Downloads {
+            list: vec![running(1, 0, None), running(2, 0, None)],
+            ..Downloads::default()
+        };
         assert_eq!(downloads.kept(Some(2)), Some(Some(2)));
         assert_eq!(downloads.kept(Some(3)), Some(None));
         assert_eq!(downloads.kept(None), Some(None));
