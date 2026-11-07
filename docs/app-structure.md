@@ -128,6 +128,19 @@ The cross-cutting rules in `App::update` become explicit:
 
 **Room for downloads.** `MediaState` holds the downloads list. `Message::Media` carries its messages. Item 2's "Save…" items send `Message::Media(media::Message::Save(..))`.
 
+**As built (W)**
+- Commit 1 nested `Message` only. `Cx` came with its first user, `Room::update`, and grew with the components.
+- `Main`'s own messages: `Rooms`, `Left(room)` (a dialog's request left it: the pane, card and space showing it close) and `ShowJoined(space)` (from the join dialog: selected, its overview once listed). `start::Message::SignedOut`. `window::Message::Focused`, with `Window.focused`.
+- `Cx` also has `window` (viewport, pixel scale, focus), `close_card()` (what is chosen for the main view closes the card: `Main` drops it after the update) and `save_settings()` (`App` saves after the update, so the resize and the colour migration now show a failure in the open panel). `Notices` has `report`, `done`, `solved` and `close`.
+- `Modal::update` takes `&Sidebar` (the selected space, the categories) besides the updater. `Account::update` takes the open room, for notifications.
+- Reached by message besides: a card or dialog opening stops the room list's drag (`arrange::Message::Stop`), the card's overview lists spaces (`sidebar::Message::ListSpaces`), a person's presence is looked up (`people::Message::LookUp`), a dialog's contacts (`people::Message::LoadContacts`, then those loaded), emoji used (`people::Message::Used`), the room shown hears of scheduled messages and the server back (`room::Message::{Scheduled, Online}`), downloads go to a message (`pane::Message::GoTo`), the pane's member changes reach the card (`info::Message::MembersChanged`). A room opened this way opens a message later; the tests feed such messages back (`settle`).
+- `Main` handles `sidebar::Message::GoTo`, which needs the room list as shown, and Esc and ⌘↩. The out-of-view message list gained `GoTo`, `Answered` and `ShowJoined`.
+- `Room::update` compares the edit and the draft before and after each room message: the edit field's popups close and the keeper hears of every change, with no `set_editing`. `Pane::set` takes only the popup.
+- `Main::after` also remembers the view whenever the space or room shown changes, and a view chosen ends waiting for last time's. `Sidebar::select` resets the topic.
+- Math pictures are copied and saved by `MediaState` (`media::Message::{CopyMath, SaveMath}`, were `actions::Message::{CopyImage, SaveImage}`). Their failures, and image copies', go where they were asked: the room's status pill, or the viewer (`modal::Message::Failed`). One after leaving the room is dropped, as other requests' (was a notice).
+- The features' updates are functions on the room: `actions::update`, `send_later::update`, `calls::update`, `find::update`, `topic::{update, save}`. `room::left` takes a closed room's messages. `directory::join` was `join_listed`.
+- `app.rs` is 1577 lines (from 5095): `App`, `Screen`, `Message`, `Popup`, `Notices`, `Cx`, `Main`'s routing, subscription, views and shortcuts.
+
 **Deleted**
 - `App::handle`'s single match, `App::room`, `room_left`, `act`, `find`, `later`, `calls`, `room_topic`, `space_topic` (moved, not rewritten).
 - The 120 `Screen::Main` unwraps (one in `App::update`) and the 33 `open_mut(&id)` lookups (one in `Main::update`).

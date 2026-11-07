@@ -19,7 +19,7 @@ use mtrx_core::{
 };
 
 use crate::{
-    app::{Message, Popup},
+    app::{self, Popup},
     arrange::{self, Arrange, NAME_INPUT},
     avatar::{Avatars, Shape},
     context_menu::context_menu,
@@ -38,6 +38,10 @@ use crate::{
     tint::Tint,
     topic,
 };
+
+mod state;
+
+pub use state::{Message, Sidebar};
 
 /// The space's topic panel at most; longer, it scrolls.
 const TOPIC_HEIGHT: f32 = 420.0;
@@ -209,42 +213,43 @@ pub fn space_bar<'a>(
     avatars: &Avatars,
     menu: Option<&SpaceMenu>,
     update: bool,
-    downloads: Option<Element<'a, Message>>,
-) -> Element<'a, Message> {
-    let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
-        let is_selected = selected == target.as_ref();
-        let mut icon = stack![icon];
-        if unread {
-            let dot = container(space())
-                .width(10)
-                .height(10)
-                .style(style::unread_dot);
-            icon = icon.push(container(dot).align_right(SPACE_AVATAR));
-        }
-        let entry_button = button(icon)
-            .padding(4)
-            .style(style::list_item(is_selected))
-            .on_press(Message::SelectSpace(target.clone()));
-        let entry_button = with_tooltip(entry_button, title.clone());
-        // A space's own menu, on right-click.
-        let entry_button: Element<'a, Message> = match target {
-            Some(space) => {
-                let open = menu == Some(&SpaceMenu::Of(space.clone()));
-                let invite = lists.room(&space).is_some_and(|r| r.rights.invite);
-                context_menu(
-                    entry_button,
-                    open.then(|| {
-                        menu::view(space_entries(space.clone(), title, invite), Width::Menu)
-                    }),
-                    Message::SpaceMenu(SpaceMenu::Of(space)),
-                )
-                .on_dismiss(Message::ClosePopup)
-                .into()
+    downloads: Option<Element<'a, app::Message>>,
+) -> Element<'a, app::Message> {
+    let entry =
+        |icon: Element<'a, app::Message>, title: String, target: Option<OwnedRoomId>, unread| {
+            let is_selected = selected == target.as_ref();
+            let mut icon = stack![icon];
+            if unread {
+                let dot = container(space())
+                    .width(10)
+                    .height(10)
+                    .style(style::unread_dot);
+                icon = icon.push(container(dot).align_right(SPACE_AVATAR));
             }
-            None => entry_button,
+            let entry_button = button(icon)
+                .padding(4)
+                .style(style::list_item(is_selected))
+                .on_press(app::Message::Sidebar(Message::SelectSpace(target.clone())));
+            let entry_button = with_tooltip(entry_button, title.clone());
+            // A space's own menu, on right-click.
+            let entry_button: Element<'a, app::Message> = match target {
+                Some(space) => {
+                    let open = menu == Some(&SpaceMenu::Of(space.clone()));
+                    let invite = lists.room(&space).is_some_and(|r| r.rights.invite);
+                    context_menu(
+                        entry_button,
+                        open.then(|| {
+                            menu::view(space_entries(space.clone(), title, invite), Width::Menu)
+                        }),
+                        app::Message::Sidebar(Message::SpaceMenu(SpaceMenu::Of(space))),
+                    )
+                    .on_dismiss(app::Message::ClosePopup)
+                    .into()
+                }
+                None => entry_button,
+            };
+            container(entry_button).center_x(Length::Fill)
         };
-        container(entry_button).center_x(Length::Fill)
-    };
 
     let mut bar = column![entry(
         home_icon(),
@@ -276,9 +281,9 @@ pub fn space_bar<'a>(
     .padding(4)
     .style(style::list_item(adding))
     .on_press(if adding {
-        Message::ClosePopup
+        app::Message::ClosePopup
     } else {
-        Message::SpaceMenu(SpaceMenu::Add)
+        app::Message::Sidebar(Message::SpaceMenu(SpaceMenu::Add))
     });
     let add_menu = adding.then(|| menu::view(new_space_entries(), Width::Menu));
     let add = popover(
@@ -287,7 +292,7 @@ pub fn space_bar<'a>(
         Side::Below,
         Edge::Left,
     )
-    .on_dismiss(Message::ClosePopup);
+    .on_dismiss(app::Message::ClosePopup);
     bar = bar.push(container(add).center_x(Length::Fill));
     let mut gear = stack![icons::gear(20.0, |theme| {
         theme
@@ -307,7 +312,7 @@ pub fn space_bar<'a>(
     let settings = button(gear)
         .padding(8)
         .style(style::list_item(false))
-        .on_press(Message::ShowSettings(true));
+        .on_press(app::Message::Modal(app::modal::Message::ShowSettings(true)));
     let tip = if update {
         "Settings: a new version of Mtrx is available"
     } else {
@@ -329,7 +334,7 @@ pub fn space_bar<'a>(
 }
 
 /// Home in the space bar: a tile like a space avatar.
-fn home_icon<'a>() -> Element<'a, Message> {
+fn home_icon<'a>() -> Element<'a, app::Message> {
     container(text("⌂").size(20).font(fonts::SEMIBOLD))
         .center(SPACE_AVATAR)
         .style(style::home_tile)
@@ -380,8 +385,8 @@ pub struct RoomListView<'a> {
 fn space_topic<'a>(
     view: &RoomListView<'a>,
     space: &OwnedRoomId,
-    top: Element<'a, Message>,
-) -> Element<'a, Message> {
+    top: Element<'a, app::Message>,
+) -> Element<'a, app::Message> {
     let panel = view.space_topic;
     let listed = (view.rooms().iter()).find(|r| &r.id == space);
     let parsed = Topic::parse(listed.and_then(|r| r.topic.as_deref()).unwrap_or_default());
@@ -391,7 +396,7 @@ fn space_topic<'a>(
     };
     let message = {
         let space = space.clone();
-        move |message| Message::SpaceTopic(space.clone(), message)
+        move |message| app::Message::Sidebar(Message::SpaceTopic(space.clone(), message))
     };
     let open = panel.open;
     let mut line = row![icons::chevron(11.0, open, |theme| {
@@ -446,7 +451,7 @@ pub enum Notes<'a> {
     Room(&'a RoomSummary),
 }
 
-pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
+pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, app::Message> {
     let RoomListView {
         selected_space,
         filter,
@@ -467,17 +472,17 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
         .padding([0, 8])
         .style(style::list_item(add_menu))
         .on_press(if add_menu {
-            Message::ClosePopup
+            app::Message::ClosePopup
         } else {
-            Message::AddMenu
+            app::Message::Sidebar(Message::AddMenu)
         });
     // A space's name opens its settings, with its address and link.
-    let heading: Element<'a, Message> = match selected_space {
+    let heading: Element<'a, app::Message> = match selected_space {
         Some(space) => hint(
             button(ellipsis(title).size(16).font(fonts::SEMIBOLD))
                 .padding([4, 8])
                 .style(style::list_item(false))
-                .on_press(Message::ShowSpace(space.clone(), overview::Tab::Rooms)),
+                .on_press(info::show_space(space.clone(), overview::Tab::Rooms)),
             "Rooms, members and settings of the space",
             Position::Bottom,
         ),
@@ -509,8 +514,8 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
                 filter,
             )
             .id(SEARCH)
-            .on_input(Message::RoomFilter)
-            .on_submit(Message::OpenFirstMatch)
+            .on_input(|m| app::Message::Sidebar(Message::Filter(m)))
+            .on_submit(app::Message::Sidebar(Message::OpenFirstMatch))
             .style(style::input)
             .padding([5, 8])
             .size(13),
@@ -573,8 +578,8 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
                     avatars: view.avatars,
                     pictures: view.room_pictures,
                 },
-                Message::JoinFound(room.id.clone(), room.via.clone(), false),
-                Message::JoinFound(room.id.clone(), room.via.clone(), true),
+                app::Message::Sidebar(Message::JoinFound(room.id.clone(), room.via.clone(), false)),
+                app::Message::Sidebar(Message::JoinFound(room.id.clone(), room.via.clone(), true)),
             ));
         }
     }
@@ -584,7 +589,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     }
     let list = scrollable(list)
         .id(ROOM_LIST)
-        .on_scroll(|_| Message::RoomListScrolled)
+        .on_scroll(|_| app::Message::Sidebar(Message::Scrolled))
         .height(Length::Fill);
     container(out_of_view_arrows(list.into(), view.out_of_view))
         .width(view.width)
@@ -595,7 +600,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
 
 /// The sections of the room list, with menus, the category being renamed,
 /// and drop targets while dragging.
-fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
+fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, app::Message>> {
     let arrange = view.arrange;
     let layout = arrange
         .categories
@@ -675,7 +680,7 @@ fn arranged<'a>(view: &RoomListView<'a>) -> Vec<Element<'a, Message>> {
 /// "Show 4 of 6": the button across two thirds of the room list, opening
 /// the menu of which of a space's sections are expanded, the others shown
 /// collapsed.
-fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Message> {
+fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, app::Message> {
     let arrange = view.arrange;
     let layout = arrange.categories.layout(Some(space));
     let sections: Vec<Section> = (shown_sections(view).into_iter())
@@ -712,7 +717,7 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
     let margin = || iced::widget::space().width(Length::FillPortion(1));
     container(row![
         margin(),
-        popover(toggle, menu, Side::Below, Edge::Left).on_dismiss(Message::ClosePopup),
+        popover(toggle, menu, Side::Below, Edge::Left).on_dismiss(app::Message::ClosePopup),
         margin(),
     ])
     .padding(Padding::new(0.0).top(2).bottom(4))
@@ -727,7 +732,7 @@ fn show_menu_panel<'a>(
     layout: &Layout,
     sections: Vec<Section>,
     notes: bool,
-) -> Element<'a, Message> {
+) -> Element<'a, app::Message> {
     let arrange = view.arrange;
     let collapse = |collapsed: &dyn Fn(&Section) -> bool| {
         arrange_message(collapse_sections(&sections, collapsed))
@@ -804,7 +809,7 @@ fn show_menu_panel<'a>(
 
 /// The grip dragging `section`, showing while its heading or row in the
 /// Show menu is under the cursor, or it is dragged.
-fn grip<'a>(arrange: &Arrange, section: &Section) -> Element<'a, Message> {
+fn grip<'a>(arrange: &Arrange, section: &Section) -> Element<'a, app::Message> {
     let shown = arrange.section_hovered.as_ref() == Some(section)
         || arrange.dragged_section() == Some(section);
     let color: fn(&Theme) -> Color = if shown {
@@ -842,7 +847,7 @@ fn landing(arrange: &Arrange, order: &[Section]) -> Option<usize> {
 }
 
 /// The gap between two sections, a line where a dragged one would land.
-fn drop_line<'a>(active: bool) -> Element<'a, Message> {
+fn drop_line<'a>(active: bool) -> Element<'a, app::Message> {
     container(space())
         .width(Length::Fill)
         .height(2)
@@ -867,14 +872,14 @@ const NOTES_PINNED: &str = "Notes at the top: in Settings";
 /// The width of the menu of which sections are expanded.
 const SHOW_MENU_WIDTH: f32 = 280.0;
 
-fn arrange_message(message: arrange::Message) -> Message {
-    Message::Arrange(message)
+fn arrange_message(message: arrange::Message) -> app::Message {
+    app::Message::Sidebar(Message::Arrange(message))
 }
 
 /// What a menu's button sends: `open` it, or close it if `opened`.
-fn open_or_close(opened: bool, open: impl FnOnce() -> arrange::Message) -> Message {
+fn open_or_close(opened: bool, open: impl FnOnce() -> arrange::Message) -> app::Message {
     if opened {
-        Message::ClosePopup
+        app::Message::ClosePopup
     } else {
         arrange_message(open())
     }
@@ -889,7 +894,7 @@ fn section_header<'a>(
     collapsed: bool,
     arrange: &Arrange,
     menu: Option<&String>,
-) -> Element<'a, Message> {
+) -> Element<'a, app::Message> {
     // The grey of the section's name.
     let chevron = icons::chevron(12.0, !collapsed, |theme| {
         text::secondary(theme).color.unwrap_or(theme.palette().text)
@@ -931,7 +936,7 @@ fn section_header<'a>(
 }
 
 /// Small upper-case label above a group of rooms.
-fn section_title<'a>(title: &str) -> Element<'a, Message> {
+fn section_title<'a>(title: &str) -> Element<'a, app::Message> {
     text(title.to_uppercase())
         .size(11)
         .font(fonts::SEMIBOLD)
@@ -940,7 +945,7 @@ fn section_title<'a>(title: &str) -> Element<'a, Message> {
 }
 
 /// The field renaming a category: Enter saves, Esc cancels.
-fn name_input<'a>(name: &str) -> Element<'a, Message> {
+fn name_input<'a>(name: &str) -> Element<'a, app::Message> {
     container(
         spelling::checked(text_input("Category name", name), name)
             .id(NAME_INPUT)
@@ -961,15 +966,15 @@ fn room_entries(
     space: Option<&OwnedRoomId>,
     layout: &Layout,
     grouping: &Grouping,
-) -> Vec<Entry<'static, Message>> {
+) -> Vec<Entry<'static, app::Message>> {
     let move_to = |section| arrange_message(arrange::Message::MoveTo(room.id.clone(), section));
     let mut items = Vec::new();
     if room.kind == RoomKind::Direct {
-        items.push(Item::new("Info", Message::ShowInfo(info::target_of(room))));
+        items.push(Item::new("Info", info::show(info::target_of(room))));
     }
     items.push(Item::new(
         "Settings",
-        Message::ShowInfo(info::Target::Room(room.id.clone())),
+        info::show(info::Target::Room(room.id.clone())),
     ));
     if grouping.low_priority {
         items.push(match room.tag {
@@ -993,11 +998,11 @@ fn room_entries(
     }
     items.push(Item::new(
         "New category…",
-        Message::OpenDialog(Kind::Category {
+        app::Message::Modal(app::modal::Message::OpenDialog(Kind::Category {
             space: space.cloned(),
             category: None,
             room: Some(room.id.clone()),
-        }),
+        })),
     ));
     items.into_iter().map(Entry::Item).collect()
 }
@@ -1009,7 +1014,7 @@ fn category_entries(
     in_space: Option<&OwnedRoomId>,
     id: &str,
     order: &[Section],
-) -> Vec<Entry<'static, Message>> {
+) -> Vec<Entry<'static, app::Message>> {
     let Some(category) = layout.category(id) else {
         return Vec::new();
     };
@@ -1020,11 +1025,11 @@ fn category_entries(
         item("Rename…", arrange::Message::Rename(id.clone())),
         Item::new(
             "Choose rooms…",
-            Message::OpenDialog(Kind::Category {
+            app::Message::Modal(app::modal::Message::OpenDialog(Kind::Category {
                 space: in_space.cloned(),
                 category: Some(id.clone()),
                 room: None,
-            }),
+            })),
         ),
     ];
     items.push(match category.sort {
@@ -1058,10 +1063,10 @@ pub fn drag_preview<'a>(
     space: Option<&OwnedRoomId>,
     arrange: &Arrange,
     avatars: &Avatars,
-) -> Option<Element<'a, Message>> {
+) -> Option<Element<'a, app::Message>> {
     let drag = arrange.dragging()?;
     let at = drag.at?;
-    let content: Element<'a, Message> = match &drag.item {
+    let content: Element<'a, app::Message> = match &drag.item {
         arrange::Dragged::Room(id) => {
             let room = lists.room(id)?;
             row![
@@ -1094,46 +1099,65 @@ pub fn drag_preview<'a>(
 }
 
 /// A space's menu in the space bar; Invite only if we may (`invite`).
-fn space_entries(space: OwnedRoomId, name: String, invite: bool) -> Vec<Entry<'static, Message>> {
+fn space_entries(
+    space: OwnedRoomId,
+    name: String,
+    invite: bool,
+) -> Vec<Entry<'static, app::Message>> {
     let mut items = vec![Item::new(
         "Overview",
-        Message::ShowSpace(space.clone(), overview::Tab::Rooms),
+        info::show_space(space.clone(), overview::Tab::Rooms),
     )];
     if invite {
         items.push(Item::new(
             "Invite people…",
-            Message::OpenDialog(Kind::Invite {
+            app::Message::Modal(app::modal::Message::OpenDialog(Kind::Invite {
                 room: space.clone(),
                 name: name.clone(),
-            }),
+            })),
         ));
     }
     items.extend([
         Item::new(
             "Space settings…",
-            Message::ShowSpace(space.clone(), overview::Tab::Settings),
+            info::show_space(space.clone(), overview::Tab::Settings),
         ),
         Item::new(
             "Leave the space…",
-            Message::OpenDialog(Kind::Leave { room: space, name }),
+            app::Message::Modal(app::modal::Message::OpenDialog(Kind::Leave {
+                room: space,
+                name,
+            })),
         ),
     ]);
     items.into_iter().map(Entry::Item).collect()
 }
 
 /// The space bar's "+": a new space, or joining one.
-fn new_space_entries() -> Vec<Entry<'static, Message>> {
+fn new_space_entries() -> Vec<Entry<'static, app::Message>> {
     vec![
-        Item::new("New space…", Message::OpenDialog(Kind::NewSpace)).into(),
-        Item::new("Join a space or room…", Message::OpenJoin).into(),
+        Item::new(
+            "New space…",
+            app::Message::Modal(app::modal::Message::OpenDialog(Kind::NewSpace)),
+        )
+        .into(),
+        Item::new(
+            "Join a space or room…",
+            app::Message::Modal(app::modal::Message::OpenJoin),
+        )
+        .into(),
     ]
 }
 
 /// What the room list's "+" offers; more inside a space, as our `Rights`
 /// there allow.
-fn add_entries(space: Option<(OwnedRoomId, String, Rights)>) -> Vec<Entry<'static, Message>> {
-    let dialog =
-        |label: String, kind: Kind| Entry::from(Item::new(label, Message::OpenDialog(kind)));
+fn add_entries(space: Option<(OwnedRoomId, String, Rights)>) -> Vec<Entry<'static, app::Message>> {
+    let dialog = |label: String, kind: Kind| {
+        Entry::from(Item::new(
+            label,
+            app::Message::Modal(app::modal::Message::OpenDialog(kind)),
+        ))
+    };
     // In the space only if we may add rooms to it.
     let parent = (space.as_ref())
         .filter(|(_, _, rights)| rights.add_rooms)
@@ -1150,7 +1174,7 @@ fn add_entries(space: Option<(OwnedRoomId, String, Rights)>) -> Vec<Entry<'stati
         entries.push(
             Item::new(
                 format!("Browse rooms in {name}…"),
-                Message::ShowSpace(id.clone(), overview::Tab::Rooms),
+                info::show_space(id.clone(), overview::Tab::Rooms),
             )
             .into(),
         );
@@ -1165,7 +1189,13 @@ fn add_entries(space: Option<(OwnedRoomId, String, Rights)>) -> Vec<Entry<'stati
         },
     ));
     match space {
-        None => entries.push(Item::new("Join a space or room…", Message::OpenJoin).into()),
+        None => entries.push(
+            Item::new(
+                "Join a space or room…",
+                app::Message::Modal(app::modal::Message::OpenJoin),
+            )
+            .into(),
+        ),
         Some((id, name, rights)) => {
             entries.push(Entry::Separator);
             if rights.invite {
@@ -1180,7 +1210,7 @@ fn add_entries(space: Option<(OwnedRoomId, String, Rights)>) -> Vec<Entry<'stati
             entries.push(
                 Item::new(
                     "Space settings…",
-                    Message::ShowSpace(id.clone(), overview::Tab::Settings),
+                    info::show_space(id.clone(), overview::Tab::Settings),
                 )
                 .into(),
             );
@@ -1213,7 +1243,7 @@ impl Later {
     }
 
     /// A clock; warning-coloured if any message is overdue.
-    fn view<'a>(&self) -> Element<'a, Message> {
+    fn view<'a>(&self) -> Element<'a, app::Message> {
         let (color, tip): (fn(&Theme) -> Color, _) = if self.overdue > 0 {
             (
                 |theme| theme.extended_palette().warning.strong.color,
@@ -1265,7 +1295,7 @@ impl<'a> RoomListView<'a> {
 
     /// What a row ends with: a pencil for a draft (in a room not open, where
     /// it shows), a clock for scheduled messages.
-    fn marks(&self, room: &RoomSummary) -> Vec<Element<'a, Message>> {
+    fn marks(&self, room: &RoomSummary) -> Vec<Element<'a, app::Message>> {
         let mut marks = Vec::new();
         if self.lists.drafts.contains(&room.id) && self.open != Some(&room.id) {
             marks.push(with_tooltip(
@@ -1287,7 +1317,7 @@ impl<'a> RoomListView<'a> {
 
     /// The pinned Notes row: like a room's, but not dragged or tagged, and
     /// greyed until the notes are started, which pressing it does.
-    fn notes_entry(&self, notes: Notes<'a>) -> Element<'a, Message> {
+    fn notes_entry(&self, notes: Notes<'a>) -> Element<'a, app::Message> {
         let room = match notes {
             Notes::Room(room) => room,
             Notes::Missing => {
@@ -1305,7 +1335,7 @@ impl<'a> RoomListView<'a> {
                         .height(ROOM_ROW)
                         .padding([0, 8])
                         .style(style::list_item(false))
-                        .on_press(Message::StartNotes),
+                        .on_press(app::Message::People(app::people::Message::StartNotes)),
                     "Start your notes to self",
                     Position::Bottom,
                 );
@@ -1354,14 +1384,16 @@ impl<'a> RoomListView<'a> {
             .height(ROOM_ROW)
             .padding([0, 8])
             .style(style::list_item(selected))
-            .on_press(Message::OpenRoom(room.id.clone()));
+            .on_press(app::Message::Pane(app::pane::Message::Open(
+                room.id.clone(),
+            )));
         let area = mouse_area(entry)
             .on_enter(arrange_message(arrange::Message::NotesRow(true)))
             .on_exit(arrange_message(arrange::Message::NotesRow(false)))
             .on_right_press(toggle_menu);
         let mut block = column![area];
         if menu_open {
-            let settings = Message::ShowInfo(info::Target::Room(room.id.clone()));
+            let settings = info::show(info::Target::Room(room.id.clone()));
             block = block.push(menu::view(
                 vec![Item::new("Settings", settings).into()],
                 Width::Fill,
@@ -1377,7 +1409,7 @@ impl<'a> RoomListView<'a> {
 
     /// A room's row: opens the room on click, can be dragged to another
     /// section, and has a menu on right click or its "⋯".
-    fn room_entry(&self, room: &'a RoomSummary) -> Element<'a, Message> {
+    fn room_entry(&self, room: &'a RoomSummary) -> Element<'a, app::Message> {
         let selected = self.open == Some(&room.id);
         let menu_open = self.room_menu() == Some(&room.id);
         let hovered =
@@ -1440,7 +1472,9 @@ impl<'a> RoomListView<'a> {
             .height(ROOM_ROW)
             .padding([0, 8])
             .style(style::list_item(selected))
-            .on_press(Message::OpenRoom(room.id.clone()));
+            .on_press(app::Message::Pane(app::pane::Message::Open(
+                room.id.clone(),
+            )));
         let row = |enter| arrange_message(arrange::Message::Row(room.id.clone(), enter));
         let mut area = mouse_area(entry).on_enter(row(true)).on_exit(row(false));
         if !invite {
@@ -1473,7 +1507,7 @@ fn is_unread(room: &RoomSummary) -> bool {
 
 /// Its notifications (the dock's count adds these up), in red when they
 /// mention the user.
-fn unread_count<'a>(room: &RoomSummary) -> Option<Element<'a, Message>> {
+fn unread_count<'a>(room: &RoomSummary) -> Option<Element<'a, app::Message>> {
     let highlight = room.unread_mentions > 0;
     let count = if highlight {
         room.unread_mentions
@@ -1489,7 +1523,7 @@ fn unread_count<'a>(room: &RoomSummary) -> Option<Element<'a, Message>> {
 }
 
 /// A gold star on favourites; an outline making a room one.
-pub fn star_button<'a>(room: &OwnedRoomId, favourite: bool) -> Element<'a, Message> {
+pub fn star_button<'a>(room: &OwnedRoomId, favourite: bool) -> Element<'a, app::Message> {
     let tag = if favourite {
         RoomTag::None
     } else {
@@ -1502,7 +1536,7 @@ pub fn star_button<'a>(room: &OwnedRoomId, favourite: bool) -> Element<'a, Messa
 }
 
 /// A star sending `message` when clicked.
-pub fn star_for<'a>(message: Message, favourite: bool) -> Element<'a, Message> {
+pub fn star_for<'a>(message: app::Message, favourite: bool) -> Element<'a, app::Message> {
     let tip = if favourite {
         "Remove from favourites"
     } else {
@@ -1524,7 +1558,10 @@ pub fn star_for<'a>(message: Message, favourite: bool) -> Element<'a, Message> {
     )
 }
 
-fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, tip: String) -> Element<'a, Message> {
+fn with_tooltip<'a>(
+    content: impl Into<Element<'a, app::Message>>,
+    tip: String,
+) -> Element<'a, app::Message> {
     hint(content, tip, Position::Right)
 }
 
@@ -1561,7 +1598,7 @@ pub fn find_out_of_view(rooms: &[RoomSummary]) -> Task<OutOfView> {
 }
 
 /// Scroll the room list to `offset`.
-pub fn scroll_to(offset: f32) -> Task<Message> {
+pub fn scroll_to(offset: f32) -> Task<app::Message> {
     iced::widget::operation::scroll_to(
         ROOM_LIST,
         iced::widget::operation::AbsoluteOffset {
@@ -1638,9 +1675,9 @@ fn out_of_view(list: Rectangle, scrolled: f32, rows: &[Rectangle]) -> OutOfView 
 
 /// Arrows over the list's edges pointing at unread rooms out of view.
 fn out_of_view_arrows<'a>(
-    list: Element<'a, Message>,
+    list: Element<'a, app::Message>,
     out_of_view: OutOfView,
-) -> Element<'a, Message> {
+) -> Element<'a, app::Message> {
     let arrow = |up: bool, (count, offset): (usize, f32)| {
         let label = match count {
             1 => "1 unread".to_owned(),
@@ -1673,7 +1710,7 @@ fn out_of_view_arrows<'a>(
                     ..style
                 }
             })
-            .on_press(Message::ScrollRoomList(offset)),
+            .on_press(app::Message::Sidebar(Message::ScrollTo(offset))),
             tip,
             Position::Right,
         )
@@ -1773,7 +1810,7 @@ mod tests {
     /// and, after a separator, what our rights there allow.
     #[test]
     fn the_add_menu_offers_what_the_space_allows() {
-        let shown = |entries: Vec<Entry<'_, Message>>| -> Vec<String> {
+        let shown = |entries: Vec<Entry<'_, app::Message>>| -> Vec<String> {
             entries
                 .iter()
                 .map(|entry| match entry {

@@ -15,10 +15,12 @@ use iced::{
 use mtrx_core::{OwnedRoomId, ScheduledMessage, describe_send_time, parse_send_time};
 
 use crate::{
-    actions::{Editing, InlineEdit},
-    app, fonts, message_field,
+    actions::{Compose, Editing, InlineEdit},
+    app::{self, Cx, Popup},
+    fonts, message_field,
     popover::{Edge, Side, popover},
-    room, style,
+    room::{self, Room},
+    style, task,
 };
 
 /// The wheels' scrollables, to bring the picked hour and minute into view.
@@ -551,6 +553,112 @@ fn item_style(theme: &Theme, kind: Kind) -> container::Style {
 /// `message` for `room`, as the app gets it.
 fn later(room: &OwnedRoomId, message: Message) -> app::Message {
     room::Message::Later(message).to(room)
+}
+
+/// A message to the send-later picker, or about scheduled messages.
+pub fn update(room: &mut Room, message: Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+    let id = room.id.clone();
+    let session = cx.session.clone();
+    // How a request went, for this room.
+    let reply = |message: fn(Result<(), String>) -> Message| {
+        let id = id.clone();
+        move |result| room::Message::Later(message(result)).to(&id)
+    };
+    let picking = |popup: &mut Popup| matches!(popup, Popup::SendLater(_));
+    let later = match cx.popup {
+        Some(Popup::SendLater(later)) => Some(later),
+        _ => None,
+    };
+    match message {
+        Message::Open => {
+            let picker = Picker::new(SystemTime::now(), None);
+            let scroll = picker.scroll();
+            *cx.popup = Some(Popup::SendLater(SendLater {
+                picker,
+                rescheduling: None,
+            }));
+            scroll
+        }
+        Message::ChangeTime(message) => {
+            // From its time, unless that has passed.
+            let picker = Picker::new(SystemTime::now(), Some(message.send_at));
+            let scroll = picker.scroll();
+            *cx.popup = Some(Popup::SendLater(SendLater {
+                picker,
+                rescheduling: Some(message),
+            }));
+            scroll
+        }
+        Message::Month(_) | Message::Day(_) | Message::Hour(_) | Message::Minute(_) => {
+            if let Some(later) = later {
+                later.picker.update(&message, SystemTime::now());
+            }
+            Task::none()
+        }
+        Message::Schedule => match later.map(|later| later.picker.time(SystemTime::now())) {
+            Some(Ok(at)) => update(room, Message::At(at), cx),
+            _ => Task::none(),
+        },
+        Message::At(send_at) => {
+            room.error = None;
+            if let Some(message) = later.and_then(|later| later.rescheduling.as_ref()) {
+                let id = message.id.clone();
+                return task::request(
+                    async move { session.reschedule(&id, send_at).await },
+                    reply(Message::Saved),
+                );
+            }
+            let text = room.composer.text().trim_end().to_owned();
+            if text.trim().is_empty() && room.attachments.is_empty() {
+                return Task::none();
+            }
+            let handle = room.handle.clone();
+            let reply_to = room.compose.reply_to().cloned();
+            let files = room.attachments.iter().map(|a| a.file.clone()).collect();
+            // The composer is cleared once saved, so nothing is lost on errors.
+            task::request(
+                async move {
+                    (handle
+                        .schedule(&text, files, send_at, reply_to.as_deref())
+                        .await)
+                        .map(|_| ())
+                },
+                reply(Message::Scheduled),
+            )
+        }
+        Message::Edit(message) => room
+            .editing
+            .insert(InlineEdit::new(
+                Editing::Scheduled(message.id.clone()),
+                &message.text,
+            ))
+            .focus(),
+        Message::SendNow(id) => task::request(
+            async move { session.send_scheduled_now(&id).await.map(|_| ()) },
+            reply(Message::Done),
+        ),
+        Message::Cancel(id) => task::request(
+            async move { session.unschedule(&id).await.map(|_| ()) },
+            reply(Message::Done),
+        ),
+        // Scheduling took the composer's text; a new time leaves it alone.
+        Message::Scheduled(Ok(())) => {
+            room.compose = Compose::New;
+            room.composer.set_text("");
+            room.attachments.clear();
+            cx.popup.take_if(picking);
+            Task::none()
+        }
+        Message::Saved(Ok(())) => {
+            cx.popup.take_if(picking);
+            Task::none()
+        }
+        Message::Scheduled(Err(e)) | Message::Saved(Err(e)) | Message::Done(Err(e)) => {
+            room.error = Some(e);
+            Task::none()
+        }
+        Message::Done(Ok(())) => Task::none(),
+    }
 }
 
 #[cfg(test)]

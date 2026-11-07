@@ -268,18 +268,22 @@ impl Overview {
                 button(text("New room…").size(13))
                     .padding([5, 10])
                     .style(style::secondary_button)
-                    .on_press(app::Message::OpenDialog(Kind::NewRoom {
-                        space: Some((space.id.clone(), space.name.clone())),
-                    })),
+                    .on_press(app::Message::Modal(app::modal::Message::OpenDialog(
+                        Kind::NewRoom {
+                            space: Some((space.id.clone(), space.name.clone())),
+                        },
+                    ))),
             );
             tools = tools.push(hint(
                 button(text("Add yours…").size(13))
                     .padding([5, 10])
                     .style(style::secondary_button)
-                    .on_press(app::Message::OpenDialog(Kind::AddExisting {
-                        space: space.id.clone(),
-                        name: space.name.clone(),
-                    })),
+                    .on_press(app::Message::Modal(app::modal::Message::OpenDialog(
+                        Kind::AddExisting {
+                            space: space.id.clone(),
+                            name: space.name.clone(),
+                        },
+                    ))),
                 "Add rooms you're in to this space",
                 Position::Bottom,
             ));
@@ -451,10 +455,12 @@ impl Overview {
                 button(text("Invite…").size(13))
                     .padding([5, 10])
                     .style(style::soft_button)
-                    .on_press(app::Message::OpenDialog(Kind::Invite {
-                        room: space.id.clone(),
-                        name: space.name.clone(),
-                    })),
+                    .on_press(app::Message::Modal(app::modal::Message::OpenDialog(
+                        Kind::Invite {
+                            room: space.id.clone(),
+                            name: space.name.clone(),
+                        },
+                    ))),
             );
         }
         let members: Element<'a, app::Message> = match &self.members {
@@ -477,7 +483,7 @@ impl Overview {
 }
 
 fn message(message: Message) -> app::Message {
-    app::Message::Info(info::Message::Overview(message))
+    app::Message::Card(info::Message::Overview(message))
 }
 
 fn indent(depth: usize) -> f32 {

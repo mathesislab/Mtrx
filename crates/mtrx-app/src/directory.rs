@@ -2,15 +2,18 @@
 //! them: a picture, the name, what it is about, who can join, and Join, Ask
 //! to join or Open.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use iced::{
     Alignment, Color, Element, Length, Task, Theme,
     widget::{button, column, container, hover, row, space, text},
 };
 use mtrx_core::{
-    DirectoryRoom, JoinAction, JoinRule, Membership, OwnedRoomId, Role, RoomKind, RoomLists,
-    RoomSummary,
+    DirectoryRoom, JoinAction, JoinRule, Membership, OwnedRoomId, OwnedRoomOrAliasId,
+    OwnedServerName, Role, RoomKind, RoomLists, RoomSummary, Session,
 };
 
 use crate::{
@@ -95,9 +98,9 @@ pub fn entry<'a>(
         .push(container(action(room, membership, busy, on_join, on_knock)).width(ACTION_WIDTH))
         .align_y(Alignment::Center);
     let open = if room.is_space {
-        app::Message::SelectSpace(Some(room.id.clone()))
+        app::Message::Sidebar(crate::sidebar::Message::SelectSpace(Some(room.id.clone())))
     } else {
-        app::Message::OpenRoom(room.id.clone())
+        app::Message::Pane(app::pane::Message::Open(room.id.clone()))
     };
     let base = match membership {
         // Opens the room, or shows the invite.
@@ -115,10 +118,12 @@ pub fn entry<'a>(
         .width(Length::Fill)
         .padding([4, 8])
         .style(style::secondary_button)
-        .on_press(app::Message::OpenDialog(Kind::Leave {
-            room: room.id.clone(),
-            name: room.name.clone(),
-        }));
+        .on_press(app::Message::Modal(app::modal::Message::OpenDialog(
+            Kind::Leave {
+                room: room.id.clone(),
+                name: room.name.clone(),
+            },
+        )));
     let top = row![
         space::horizontal(),
         container(leave).width(LEAVE_WIDTH),
@@ -175,9 +180,9 @@ fn action<'a>(
         });
     }
     let open = if room.is_space {
-        app::Message::SelectSpace(Some(room.id.clone()))
+        app::Message::Sidebar(crate::sidebar::Message::SelectSpace(Some(room.id.clone())))
     } else {
-        app::Message::OpenRoom(room.id.clone())
+        app::Message::Pane(app::pane::Message::Open(room.id.clone()))
     };
     let action = room.action(membership);
     match action {
@@ -381,6 +386,22 @@ pub fn searched_spaces(lists: &RoomLists, selected: Option<&OwnedRoomId>) -> Vec
             .filter(is_space)
             .map(|r| r.id.clone())
             .collect(),
+    }
+}
+
+/// Join a room or space that a space, a directory or a link lists, or ask
+/// to join it (`knock`): its ID. The room lists show it as joined, or asked,
+/// at once.
+pub async fn join(
+    session: Arc<Session>,
+    room: OwnedRoomOrAliasId,
+    via: Vec<OwnedServerName>,
+    knock: bool,
+) -> mtrx_core::Result<OwnedRoomId> {
+    if knock {
+        session.knock(&room, via).await
+    } else {
+        session.join(&room, &via).await
     }
 }
 

@@ -4,13 +4,13 @@
 //! the text and a list of links, or the whole topic as text, as other apps
 //! show it.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use iced::{
     Alignment, Color, Element, Font, Length, Task, Theme,
     widget::{button, column, container, row, space, text, text_editor, text_input, toggler},
 };
-use mtrx_core::{CallService, LinkKind, RoomLink, Topic, Url};
+use mtrx_core::{CallService, LinkKind, OwnedRoomId, RoomLink, Session, Topic, Url};
 
 use crate::{
     app,
@@ -21,7 +21,7 @@ use crate::{
     icons,
     reorder::{self, Reorder},
     selectable::text::selectable_text,
-    selection, spelling, style,
+    selection, spelling, style, task,
 };
 
 /// How long Cancel and Save stand out after a click outside the editor.
@@ -657,6 +657,43 @@ fn secondary(theme: &Theme) -> Color {
         .base
         .text
         .scale_alpha(0.6)
+}
+
+/// A message to `panel`, the topic panel of room or space `room` with
+/// topic `listed` in the room list, answered with `reply`.
+pub fn update(
+    session: &Arc<Session>,
+    panel: &mut Panel,
+    room: OwnedRoomId,
+    listed: Option<&str>,
+    message: Message,
+    reply: impl Fn(Message) -> app::Message + Clone + Send + 'static,
+) -> Task<app::Message> {
+    if let Message::Save = message {
+        let Some(editor) = &panel.editor else {
+            return Task::none();
+        };
+        let topic = editor.topic();
+        return save(session, panel, room, topic, reply);
+    }
+    (panel.update(message, listed.unwrap_or_default())).map(reply)
+}
+
+/// Save `topic` as `room`'s, which the room list shows at once; its topic
+/// `panel` says it is saving, and `reply` how it went.
+pub fn save(
+    session: &Arc<Session>,
+    panel: &mut Panel,
+    room: OwnedRoomId,
+    topic: String,
+    reply: impl FnOnce(Message) -> app::Message + Send + 'static,
+) -> Task<app::Message> {
+    panel.save();
+    let session = session.clone();
+    task::request(
+        async move { session.room(&room)?.set_topic(&topic).await },
+        move |result| reply(Message::Saved(result)),
+    )
 }
 
 #[cfg(test)]

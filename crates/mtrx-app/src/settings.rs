@@ -600,7 +600,9 @@ impl Panel {
                     button(text("Sign out…").size(13))
                         .padding([4, 10])
                         .style(style::secondary_button)
-                        .on_press(app::Message::OpenDialog(Kind::SignOut)),
+                        .on_press(app::Message::Modal(app::modal::Message::OpenDialog(
+                            Kind::SignOut
+                        ))),
                 ]
                 .align_y(Alignment::Center),
             );
@@ -615,7 +617,7 @@ impl Panel {
         frame::frame(
             frame::title("Settings"),
             [],
-            app::Message::ShowSettings(false),
+            app::Message::Modal(app::modal::Message::ShowSettings(false)),
             panel,
             560.0,
         )
@@ -1143,7 +1145,7 @@ fn small_button<'a>(label: &'a str, on_press: app::Message) -> Element<'a, app::
 }
 
 fn message(message: Message) -> app::Message {
-    app::Message::Settings(message)
+    app::Message::Modal(app::modal::Message::Settings(message))
 }
 
 pub fn preference(preference: Preference) -> app::Message {

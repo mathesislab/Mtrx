@@ -5,25 +5,35 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures_util::StreamExt;
-use iced::Size;
+use iced::{Rectangle, Size, theme::Mode, widget::text_editor};
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    Attachment, Connection, EventContent, NewRoom, OwnedEventId, Profile, RoomKind, RoomOrAliasId,
-    RoomTag, Row, RowContext, ScheduledFile, SecretStore, Section, SendState, Session,
-    TimelineEntry,
+    Attachment, CallService, Connection, EventContent, Media, NewRoom, OwnedEventId, Profile,
+    RoomKind, RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile,
+    ScheduledMessage, SecretStore, Section, SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
 
 use super::*;
 use crate::{
-    fonts, mention,
+    actions::{self, Compose, Editing},
+    dialog::Dialog,
+    find::Find,
+    fonts,
+    media::Viewer,
+    mention, message_field,
     message_menu::MenuAt,
+    pdf_viewer,
+    placement::{self, Frame},
+    room::{Load, Room},
     selection::{Point, Pos, Selection},
+    text_size::Zoom,
+    topic,
 };
 
 mod editing;
@@ -99,7 +109,7 @@ impl Main {
     fn show_rooms(&mut self, state: RoomListState) {
         self.lists = Arc::new(RoomLists::new(
             state,
-            self.arrange.categories.clone(),
+            self.sidebar.arrange.categories.clone(),
             HashMap::new(),
             &self.own_user,
             BTreeSet::new(),
@@ -158,7 +168,7 @@ async fn load_wanted(app: &mut App, session: &Session) {
             let _rendering = rendering();
             let mut ui =
                 Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
-            let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
+            let _ = ui.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(
                 std::time::Instant::now(),
             ))]);
             (ui.into_messages())
@@ -176,11 +186,13 @@ async fn load_wanted(app: &mut App, session: &Session) {
         };
         for want in wanted {
             match want {
-                media::Message::AvatarWanted(key) => main.avatars.load_now(session, key).await,
-                media::Message::PreviewWanted(media) => {
-                    main.previews.load_now(session, &media).await
+                media::Message::AvatarWanted(key) => {
+                    main.media.avatars.load_now(session, key).await
                 }
-                media::Message::MathWanted(request) => app.math.render_now(request),
+                media::Message::PreviewWanted(media) => {
+                    main.media.previews.load_now(session, &media).await
+                }
+                media::Message::MathWanted(request) => main.media.math.render_now(request),
                 loaded => unreachable!("views only ask: {loaded:?}"),
             }
         }
@@ -195,19 +207,17 @@ fn app(screen: Screen, mode: Mode) -> App {
             SecretStore::File,
         )
         .unwrap(),
-        focused: true,
         google: Arc::new(Google::new(&snapshot_dir(), SecretStore::File)),
         settings: Settings::default(),
         settings_file: None,
         view_file: None,
-        placement: Placement::default(),
-        placement_file: None,
-        resizing: false,
+        window: Window {
+            size: Size::new(1200.0, 800.0),
+            scale: 2.0,
+            system_mode: mode,
+            ..Window::new(Placement::default(), None)
+        },
         screen,
-        system_mode: mode,
-        window: Size::new(1200.0, 800.0),
-        scale: 2.0,
-        math: Math::new(),
         badge: Badge::default(),
         updater: Updater::default(),
     }
@@ -223,7 +233,9 @@ fn login_screen() {
 fn login_without_keyring() {
     let mut app = app(Screen::Starting, Mode::Light);
     let error = mtrx_core::Error::NoSecretStore("no secrets service".into());
-    let _ = app.update(Message::Restored(Err(Shared(Arc::new(error)))));
+    let _ = app.update(Message::Start(start::Message::Restored(Err(Shared(
+        Arc::new(error),
+    )))));
     let Screen::Login(login) = &app.screen else {
         panic!("not the sign-in screen");
     };
@@ -292,7 +304,7 @@ fn clicking_a_mention_shows_the_persons_card() {
     assert!(
         matches!(
             &sent[..],
-            [Message::ShowInfo(info::Target::User(user))] if user.id == "@nils:server.org"
+            [Message::Card(info::Message::Show(info::Target::User(user), _))] if user.id == "@nils:server.org"
         ),
         "{sent:?}"
     );
@@ -306,21 +318,23 @@ fn zoom_steps_the_text_size() {
     use crate::text_size::TextSize;
 
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
-    let _ = app.update(Message::Zoom(Zoom::In));
+    let _ = app.update(Message::Window(window::Message::Zoom(Zoom::In)));
     assert_eq!(app.settings.text_size, TextSize::Larger);
     assert_eq!(app.scale_factor(), 1.25);
     for _ in 0..5 {
-        let _ = app.update(Message::Zoom(Zoom::In));
+        let _ = app.update(Message::Window(window::Message::Zoom(Zoom::In)));
     }
     assert_eq!(app.settings.text_size, TextSize::Largest);
     assert_eq!(app.viewport(), Size::new(800.0, 800.0 / 1.5));
     assert_eq!(app.pixel_scale(), 3.0);
     // Resizes come in layout units.
-    let _ = app.update(Message::WindowResized(Size::new(600.0, 400.0)));
-    assert_eq!(app.window, Size::new(900.0, 600.0));
-    let _ = app.update(Message::Zoom(Zoom::Out));
+    let _ = app.update(Message::Window(window::Message::Resized(Size::new(
+        600.0, 400.0,
+    ))));
+    assert_eq!(app.window.size, Size::new(900.0, 600.0));
+    let _ = app.update(Message::Window(window::Message::Zoom(Zoom::Out)));
     assert_eq!(app.settings.text_size, TextSize::Larger);
-    let _ = app.update(Message::Zoom(Zoom::Reset));
+    let _ = app.update(Message::Window(window::Message::Zoom(Zoom::Reset)));
     assert_eq!(app.settings.text_size, TextSize::Default);
     assert_eq!(app.viewport(), Size::new(900.0, 600.0) / 1.1);
     assert_eq!(app.pixel_scale(), 2.0 * 1.1);
@@ -344,7 +358,7 @@ fn find_keys() {
             text: None,
             repeat: false,
         });
-        shortcuts(event, Status::Captured, window::Id::unique())
+        shortcuts(event, Status::Captured, iced::window::Id::unique())
     };
     let command = keyboard::Modifiers::COMMAND;
     assert!(matches!(
@@ -405,19 +419,21 @@ fn window_placement_is_saved() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("window.json");
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
-    app.placement_file = Some(file.clone());
-    app.scale = 2.0;
+    app.window.placement_file = Some(file.clone());
+    app.window.scale = 2.0;
     app.settings.text_size = crate::text_size::TextSize::Default;
-    let placed = |maximized| Message::WindowPlaced {
-        position: Some(iced::Point::new(1800.0, 200.0)),
-        maximized,
-        fullscreen: false,
+    let placed = |maximized| {
+        Message::Window(window::Message::Placed {
+            position: Some(iced::Point::new(1800.0, 200.0)),
+            maximized,
+            fullscreen: false,
+        })
     };
 
     // Reported in layout units.
-    let _ = app.update(Message::WindowResized(
+    let _ = app.update(Message::Window(window::Message::Resized(
         Size::new(1000.0, 700.0) / app.scale_factor(),
-    ));
+    )));
     let _ = app.update(placed(false));
     let left = Frame::new(iced::Point::new(1800.0, 200.0), Size::new(1000.0, 700.0));
     let saved = Placement::load(&file);
@@ -426,9 +442,9 @@ fn window_placement_is_saved() {
     assert_eq!(frame.position(), left.position());
     assert!((frame.width - left.width).abs() < 1e-3 && (frame.height - left.height).abs() < 1e-3);
 
-    let _ = app.update(Message::WindowResized(
+    let _ = app.update(Message::Window(window::Message::Resized(
         Size::new(1512.0, 920.0) / app.scale_factor(),
-    ));
+    )));
     let _ = app.update(placed(true));
     let saved = Placement::load(&file);
     assert!(saved.maximized);
@@ -455,9 +471,11 @@ fn quitting_ends_the_session() {
         // As iced runs the app.
         let _runtime = runtime.enter();
         let mut app = app(Screen::Main(Box::new(Main::new(open.0))), Mode::Light);
-        let close = app.update(Message::CloseWindow(window::Id::unique()));
+        let close = app.update(Message::Window(window::Message::Close(
+            iced::window::Id::unique(),
+        )));
         assert!(matches!(app.screen, Screen::Closing));
-        let restored = app.update(Message::Restored(Ok(restored)));
+        let restored = app.update(Message::Start(start::Message::Restored(Ok(restored))));
         drop((close, restored));
         app
     };
@@ -473,12 +491,14 @@ async fn closing_the_window_cancels_a_browser_sign_in() {
     let Screen::Login(login) = &mut app.screen else {
         unreachable!()
     };
-    let signed_in = Message::LoggedIn(Err("signed in".into()));
+    let signed_in = Message::Start(start::Message::LoggedIn(Err("signed in".into())));
     let sign_in = login.browser_sign_in(Task::perform(
         tokio::time::sleep(Duration::from_millis(10)),
         move |()| signed_in,
     ));
-    let _ = app.update(Message::CloseWindow(window::Id::unique()));
+    let _ = app.update(Message::Window(window::Message::Close(
+        iced::window::Id::unique(),
+    )));
     assert!(messages_of(sign_in).await.is_empty());
 }
 
@@ -504,18 +524,26 @@ fn window_left_off_screen_opens_on_the_main_display() {
     let monitor = Rectangle::new(iced::Point::new(1512.0, 0.0), Size::new(2560.0, 1415.0));
     let left = iced::Point::new(1800.0, 200.0);
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
-    app.placement.frame = Some(Frame::new(left, Size::new(1000.0, 700.0)));
-    let id = window::Id::unique();
+    app.window.placement.frame = Some(Frame::new(left, Size::new(1000.0, 700.0)));
+    let id = iced::window::Id::unique();
 
-    let both = app.update(Message::WindowOpened(
+    let both = app.update(Message::Window(window::Message::Opened(
         id,
         Some(vec![laptop, monitor]),
         Some(left),
-    ));
+    )));
     assert_eq!(moves(both), []);
-    let unknown = app.update(Message::WindowOpened(id, None, Some(left)));
+    let unknown = app.update(Message::Window(window::Message::Opened(
+        id,
+        None,
+        Some(left),
+    )));
     assert_eq!(moves(unknown), []);
-    let unplugged = app.update(Message::WindowOpened(id, Some(vec![laptop]), Some(left)));
+    let unplugged = app.update(Message::Window(window::Message::Opened(
+        id,
+        Some(vec![laptop]),
+        Some(left),
+    )));
     assert_eq!(moves(unplugged), [iced::Point::new(156.0, 85.0)]);
 }
 
@@ -523,7 +551,7 @@ fn window_left_off_screen_opens_on_the_main_display() {
 /// the app gets the close request, and quits through `CloseWindow`.
 #[test]
 fn closing_the_window_hides_it_on_macos_and_quits_elsewhere() {
-    let settings = closing(window::Settings::default());
+    let settings = closing(iced::window::Settings::default());
     assert!(!settings.exit_on_close_request);
     #[cfg(target_os = "macos")]
     assert!(settings.platform_specific.hides_on_close);
@@ -536,7 +564,7 @@ fn closing_the_window_hides_it_on_macos_and_quits_elsewhere() {
 fn command_w_closes_the_window() {
     use iced::{event::Status, keyboard};
 
-    let id = window::Id::unique();
+    let id = iced::window::Id::unique();
     let press = |with: keyboard::Modifiers| {
         let mut event =
             iced_test::simulator::press_key(keyboard::Key::Character("w".into()), Some("w".into()));
@@ -545,13 +573,13 @@ fn command_w_closes_the_window() {
         }
         event
     };
-    assert!(window_keys(press(keyboard::Modifiers::empty()), Status::Ignored, id).is_none());
-    let close = window_keys(press(keyboard::Modifiers::COMMAND), Status::Captured, id);
+    assert!(window::keys(press(keyboard::Modifiers::empty()), Status::Ignored, id).is_none());
+    let close = window::keys(press(keyboard::Modifiers::COMMAND), Status::Captured, id);
     if cfg!(target_os = "macos") {
         assert!(close.is_none());
         return;
     }
-    assert!(matches!(close, Some(Message::CloseWindow(closed)) if closed == id));
+    assert!(matches!(close, Some(Message::Window(window::Message::Close(closed))) if closed == id));
 
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
     let _ = app.update(close.unwrap());
@@ -865,7 +893,7 @@ async fn main_screen_with_math() {
             notes.unread_messages = 2;
             state.rooms.push(notes);
         }
-        main.verified = Some(true);
+        main.account.verified = Some(true);
         let mut open = Room::new(
             alice.room(&room).unwrap(),
             timeline.clone(),
@@ -980,7 +1008,7 @@ async fn main_screen_with_math() {
                 .unwrap(),
             );
         }
-        main.pane = Pane::Open(open);
+        main.pane.shown = Shown::Open(open);
 
         let mut app = app(Screen::Main(Box::new(main)), mode);
         // Both name styles: plain (the default) in light, coloured in dark.
@@ -1205,27 +1233,31 @@ fn composer_keeps_focus(app: &mut App) {
             room(app).error = Some("Not sent".into())
         }),
         ("it goes", |app| room(app).error = None),
-        ("members open", |app| main(app).show_members = true),
-        ("members close", |app| main(app).show_members = false),
+        ("members open", |app| main(app).pane.show_members = true),
+        ("members close", |app| main(app).pane.show_members = false),
         ("mentions offered", |app| {
             let member = person("@ana:example.org", "Ana", mtrx_core::Role::Member);
             room(app).members_loaded(Ok(vec![member]));
             room(app).composer.set_text("Thanks @an");
         }),
         ("one picked", |app| room(app).composer.complete("@Ana")),
-        ("offline", |app| main(app).connection = Connection::Offline),
-        ("online", |app| main(app).connection = Connection::Online),
+        ("offline", |app| {
+            main(app).account.connection = Connection::Offline
+        }),
+        ("online", |app| {
+            main(app).account.connection = Connection::Online
+        }),
         ("a banner", |app| {
-            main(app).report("Something failed".into(), None)
+            main(app).notices.report("Something failed".into(), None)
         }),
-        ("it goes", |app| main(app).notice = None),
+        ("it goes", |app| main(app).notices.close()),
         ("settings open", |app| {
-            main(app).modal = Some(Modal::Settings(settings::Panel::default()));
+            main(app).modal.shown = Some(modal::Shown::Settings(settings::Panel::default()));
         }),
-        ("settings close", |app| main(app).modal = None),
+        ("settings close", |app| main(app).modal.shown = None),
         ("a message is queued", |app| {
             let room_id = room(app).id.clone();
-            main(app).scheduled = vec![ScheduledMessage {
+            main(app).account.scheduled = vec![ScheduledMessage {
                 id: "q".into(),
                 room_id,
                 text: "Later".into(),
@@ -1235,7 +1267,7 @@ fn composer_keeps_focus(app: &mut App) {
                 files: Vec::new(),
             }];
         }),
-        ("and sent", |app| main(app).scheduled.clear()),
+        ("and sent", |app| main(app).account.scheduled.clear()),
     ];
     for (what, change) in changes {
         change(app);
@@ -1337,9 +1369,9 @@ async fn send_later_bar() {
     };
     let mut main = Main::new(Arc::new(alice));
     main.show_rooms(rooms);
-    main.verified = Some(true);
-    main.now = now;
-    main.scheduled = vec![
+    main.account.verified = Some(true);
+    main.account.now = now;
+    main.account.scheduled = vec![
         scheduled(
             "a",
             "Reminder: send me your figures before the meeting.",
@@ -1380,7 +1412,7 @@ async fn send_later_bar() {
         picker: send_later::Picker::new(now, mtrx_core::parse_send_time("tomorrow 8:00", now)),
         rescheduling: None,
     }));
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "send-later");
 
@@ -1422,7 +1454,7 @@ async fn send_later_bar() {
             at: actions::PickerAt::Toolbar,
             all: Some(emoji::Panel::default()),
         });
-        main.frequent_emoji = vec!["🦀".into(), "🧊".into()];
+        main.people.frequent_emoji = vec!["🦀".into(), "🧊".into()];
     }
     snapshot(&app, "emoji");
     if let Screen::Main(main) = &mut app.screen {
@@ -1511,7 +1543,7 @@ async fn send_later_bar() {
         open.composer.set_text("Who can take the Monday slot? ❤");
     }
     if let Screen::Main(main) = &mut app.screen {
-        main.modal = Some(Modal::Settings(settings::Panel::default()));
+        main.modal.shown = Some(modal::Shown::Settings(settings::Panel::default()));
     }
     // A newer version, also the dot on the gear behind the panel.
     app.updater.available = Some(update::Update {
@@ -1633,7 +1665,7 @@ async fn big_room_benchmark() {
         main.session.draft_keeper(&room),
     );
     show(&mut open, timeline.current());
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     let start = std::time::Instant::now();
     for _ in 0..5 {
@@ -1707,15 +1739,15 @@ async fn room_management_screens() {
     let main_with = |configure: &dyn Fn(&mut Main)| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
-        main.space = Some(space.clone());
-        main.verified = Some(true);
+        main.sidebar.space = Some(space.clone());
+        main.account.verified = Some(true);
         let mut open = Room::new(
             main.session.room(&room).unwrap(),
             timeline.clone(),
             main.session.draft_keeper(&room),
         );
         show(&mut open, timeline.current());
-        main.pane = Pane::Open(open);
+        main.pane.shown = Shown::Open(open);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
     };
@@ -1744,16 +1776,16 @@ async fn room_management_screens() {
         "status-problem",
     );
     snapshot(
-        &main_with(&|main| main.connection = Connection::Offline),
+        &main_with(&|main| main.account.connection = Connection::Offline),
         "offline",
     );
     snapshot(
-        &main_with(&|main| main.connection = Connection::SignedOut),
+        &main_with(&|main| main.account.connection = Connection::SignedOut),
         "signed-out",
     );
     snapshot(
         &main_with(&|main| {
-            main.out_of_view = sidebar::OutOfView {
+            main.sidebar.out_of_view = sidebar::OutOfView {
                 above: Some((1, 0.0)),
                 below: Some((3, 400.0)),
             }
@@ -1772,7 +1804,7 @@ async fn room_management_screens() {
                 avatar: None,
             }));
             dialog.update(dialog::Message::CoOwner(nils, true));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "new-room-owners",
     );
@@ -1784,17 +1816,17 @@ async fn room_management_screens() {
             dialog.update(dialog::Message::Name("model runs".into()));
             dialog.update(dialog::Message::Submit);
             dialog.tick(Instant::now() + Duration::from_secs(20));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "dialog-slow",
     );
     snapshot(
         &main_with(&|main| {
-            main.pane = Pane::Invite {
+            main.pane.shown = Shown::Invite {
                 id: room.clone(),
                 answering: false,
             };
-            main.notice = Some(Notice {
+            main.notices.shown = Some(Notice {
                 text: "The room “model runs” is ready.".into(),
                 room: Some(room.clone()),
                 error: false,
@@ -1804,8 +1836,8 @@ async fn room_management_screens() {
     );
     snapshot(
         &main_with(&|main| {
-            main.filter = "ice".into();
-            main.show_members = true;
+            main.sidebar.filter = "ice".into();
+            main.pane.show_members = true;
             let room = main.pane.room_mut().unwrap();
             room.members_loaded(Ok(members.clone()));
         }),
@@ -1814,20 +1846,23 @@ async fn room_management_screens() {
     // The member list stays open, at its width, while another room opens
     // and its members load.
     let mut app = main_with(&|main| {
-        main.show_members = true;
+        main.pane.show_members = true;
         let room = main.pane.room_mut().unwrap();
         room.members_loaded(Ok(members.clone()));
     });
-    let _ = app.update(Message::OpenRoom(other.clone()));
+    let _ = app.update(Message::Pane(pane::Message::Open(other.clone())));
     snapshot(&app, "members-opening");
     let opened = Shared(Arc::new(session.timeline(&other).await.unwrap()));
-    let _ = app.update(Message::RoomOpened(other.clone(), Ok(opened)));
+    let _ = app.update(Message::Pane(pane::Message::Opened(
+        other.clone(),
+        Ok(opened),
+    )));
     let Screen::Main(main) = &app.screen else {
         unreachable!()
     };
     let open = main.pane.room().unwrap();
     assert_eq!(open.id, other);
-    assert!(main.show_members);
+    assert!(main.pane.show_members);
     assert!(open.tasks.running(&Load::Members) && open.member_list.is_none());
     snapshot(&app, "members-switched");
 
@@ -1840,11 +1875,11 @@ async fn room_management_screens() {
                 &[],
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::UserLoaded(
+            card.apply(info::Message::UserLoaded(
                 bob.user_id(),
                 Ok(bob_info.clone()),
             ));
-            card.update(info::Message::Copy(bob.user_id().to_string()));
+            card.apply(info::Message::Copy(bob.user_id().to_string()));
             main.card = Some(card);
         }),
         "info-user",
@@ -1857,9 +1892,9 @@ async fn room_management_screens() {
                 &main.lists.rooms,
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::Settings(room.clone(), Ok(settings.clone())));
+            card.apply(info::Message::Settings(room.clone(), Ok(settings.clone())));
             // A link being added.
-            card.update(info::Message::Topic(topic::Edit::Add(false)));
+            card.apply(info::Message::Topic(topic::Edit::Add(false)));
             main.card = Some(card);
         }),
         "room-settings",
@@ -1871,7 +1906,7 @@ async fn room_management_screens() {
             });
             dialog.prefer_spaces(vec![space.clone()]);
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "new-room-people",
     );
@@ -1880,7 +1915,7 @@ async fn room_management_screens() {
             let mut dialog = Dialog::new(dialog::Kind::DirectChat);
             dialog.offer_self(main.own_user.clone());
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "direct-chat-people",
     );
@@ -1917,11 +1952,13 @@ async fn room_management_screens() {
                 &main.lists.rooms,
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::Settings(
+            card.apply(info::Message::Settings(
                 space.clone(),
                 Ok(space_settings.clone()),
             ));
-            main.space_rooms.loaded(space.clone(), Ok(children.clone()));
+            main.sidebar
+                .space_rooms
+                .loaded(space.clone(), Ok(children.clone()));
             main.card = Some(card);
         }),
         "space-overview",
@@ -1941,7 +1978,7 @@ async fn room_management_screens() {
                     summary.rights.change_topic = true;
                 }
                 main.show_rooms(state);
-                main.space_topic.open = open;
+                main.sidebar.space_topic.open = open;
             }),
             name,
         );
@@ -1954,8 +1991,10 @@ async fn room_management_screens() {
                 &main.lists.rooms,
                 overview::Tab::Rooms,
             );
-            main.space_rooms.loaded(space.clone(), Ok(children.clone()));
-            let _ = (main.space_rooms)
+            main.sidebar
+                .space_rooms
+                .loaded(space.clone(), Ok(children.clone()));
+            let _ = (main.sidebar.space_rooms)
                 .list(&space, |_| Task::<Message>::future(std::future::pending()));
             main.card = Some(card);
         }),
@@ -1977,7 +2016,7 @@ async fn room_management_screens() {
                     next: None,
                 }),
             ));
-            main.modal = Some(Modal::Join(join));
+            main.modal.shown = Some(modal::Shown::Join(join));
         }),
         "join",
     );
@@ -2062,14 +2101,14 @@ async fn mention_colours() {
 
     let mut main = Main::new(Arc::new(alice));
     main.show_rooms(rooms);
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         main.session.room(&room).unwrap(),
         timeline.clone(),
         main.session.draft_keeper(&room),
     );
     show(&mut open, entries);
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let app = app(Screen::Main(Box::new(main)), Mode::Light);
     snapshot(&app, "mention-colours");
 }
@@ -2188,18 +2227,18 @@ async fn media_messages() {
     let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
-    let app_with = async |modal: Option<Modal>, mode: Mode| {
+    let app_with = async |modal: Option<modal::Shown>, mode: Mode| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
-        main.verified = Some(true);
+        main.account.verified = Some(true);
         let mut open = Room::new(
             main.session.room(&room).unwrap(),
             timeline.clone(),
             main.session.draft_keeper(&room),
         );
         show(&mut open, entries.clone());
-        main.pane = Pane::Open(open);
-        main.modal = modal;
+        main.pane.shown = Shown::Open(open);
+        main.modal.shown = modal;
         let mut app = app(Screen::Main(Box::new(main)), mode);
         load_wanted(&mut app, &session).await;
         app
@@ -2237,20 +2276,20 @@ async fn media_messages() {
     let mut viewer = Viewer::new(in_room(image));
     viewer.load_now(&session).await;
     snapshot(
-        &app_with(Some(Modal::Image(viewer)), Mode::Light).await,
+        &app_with(Some(modal::Shown::Image(viewer)), Mode::Light).await,
         "image-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf.clone()), Size::new(1200.0, 800.0), 2.0);
     viewer.open_now(&session).await;
     snapshot(
-        &app_with(Some(Modal::Pdf(viewer)), Mode::Light).await,
+        &app_with(Some(modal::Shown::Pdf(viewer)), Mode::Light).await,
         "pdf-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf), Size::new(1200.0, 800.0), 2.0);
     viewer.set_zoom(0.5);
     viewer.open_now(&session).await;
     snapshot(
-        &app_with(Some(Modal::Pdf(viewer)), Mode::Dark).await,
+        &app_with(Some(modal::Shown::Pdf(viewer)), Mode::Dark).await,
         "pdf-viewer-zoomed-out",
     );
 }
@@ -2322,12 +2361,12 @@ async fn room_categories() {
     let main_with = |configure: &dyn Fn(&mut Main)| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
-        main.verified = Some(true);
+        main.account.verified = Some(true);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
     };
     let send = |main: &mut Main, message| {
-        let _ = main.arrange.update(
+        let _ = main.sidebar.arrange.update(
             message,
             arrange::Context {
                 session: &session,
@@ -2393,7 +2432,7 @@ async fn room_categories() {
     for message in drag_heading.into_iter().chain([arrange::Message::Released]) {
         send(&mut main, message);
     }
-    let order = main.arrange.categories.layout(None).order();
+    let order = main.sidebar.arrange.categories.layout(None).order();
     assert_eq!(order[..2], [Section::People, teaching]);
 
     // Dropping moves the room into the category; the menu favourites one.
@@ -2410,11 +2449,11 @@ async fn room_categories() {
     ] {
         send(&mut main, message);
     }
-    let home = main.arrange.categories.layout(None);
+    let home = main.sidebar.arrange.categories.layout(None);
     let in_projects = |name| home.category_of(&ids[name]).map(|c| c.id.clone());
     assert_eq!(in_projects("admin"), Some(projects.clone()));
     assert_eq!(in_projects("seminar"), None);
-    assert!(main.arrange.drag.is_none());
+    assert!(main.sidebar.arrange.drag.is_none());
 }
 
 /// A space's menu of which sections are expanded: open, and after hiding
@@ -2500,15 +2539,15 @@ async fn show_menu() {
     let members = HashMap::from([(space.clone(), HashSet::from([bob.user_id()]))]);
     main.lists = Arc::new(RoomLists::new(
         rooms,
-        main.arrange.categories.clone(),
+        main.sidebar.arrange.categories.clone(),
         members,
         &main.own_user,
         BTreeSet::new(),
     ));
-    main.verified = Some(true);
-    main.space = Some(space.clone());
+    main.account.verified = Some(true);
+    main.sidebar.space = Some(space.clone());
     let send = |main: &mut Main, message| {
-        let _ = main.arrange.update(
+        let _ = main.sidebar.arrange.update(
             message,
             arrange::Context {
                 session: &session,
@@ -2521,7 +2560,12 @@ async fn show_menu() {
     };
     send(&mut main, arrange::Message::ShowMenu);
     // Rooms dragged by its grip to the place of Papers, above it.
-    let papers = main.arrange.categories.layout(Some(&space)).categories[1]
+    let papers = main
+        .sidebar
+        .arrange
+        .categories
+        .layout(Some(&space))
+        .categories[1]
         .id
         .clone();
     for message in [
@@ -2541,21 +2585,21 @@ async fn show_menu() {
     };
     send(main, arrange::Message::Released);
     assert!(matches!(main.popup, Some(Popup::ShowMenu)));
-    let order = main.arrange.categories.layout(Some(&space)).order();
+    let order = main.sidebar.arrange.categories.layout(Some(&space)).order();
     assert_eq!(order[3..5], [Section::Rooms, Section::Category(papers)]);
     snapshot(&app, "show-menu");
 
     let Screen::Main(main) = &mut app.screen else {
         unreachable!()
     };
-    let sections = main.arrange.categories.layout(Some(&space)).order();
+    let sections = main.sidebar.arrange.categories.layout(Some(&space)).order();
     send(
         main,
         arrange::Message::Collapse(sections.iter().map(|s| (s.clone(), true)).collect()),
     );
     // Closed by a click outside.
     main.popup = None;
-    let layout = main.arrange.categories.layout(Some(&space));
+    let layout = main.sidebar.arrange.categories.layout(Some(&space));
     assert!(sections.iter().all(|s| layout.is_collapsed(s)));
     snapshot(&app, "show-menu-hidden");
 }
@@ -2771,10 +2815,10 @@ async fn website_screenshots() {
     let screen = |mode: Mode| {
         let mut main = Main::new(ana.clone());
         main.show_rooms(rooms.clone());
-        main.space = Some(space.clone());
-        main.verified = Some(true);
-        main.now = now;
-        main.scheduled = vec![ScheduledMessage {
+        main.sidebar.space = Some(space.clone());
+        main.account.verified = Some(true);
+        main.account.now = now;
+        main.account.scheduled = vec![ScheduledMessage {
             id: "a".into(),
             room_id: room.clone(),
             text: "Reminder: figures for Thursday's meeting, please!".into(),
@@ -2789,7 +2833,7 @@ async fn website_screenshots() {
             main.session.draft_keeper(&room),
         );
         show(&mut open, entries.clone());
-        main.pane = Pane::Open(open);
+        main.pane.shown = Shown::Open(open);
         let mut app = app(Screen::Main(Box::new(main)), mode);
         app.settings.colored_names = mode == Mode::Dark;
         app
@@ -2875,7 +2919,7 @@ async fn composer_scrolls_alone() {
     }
     while !timeline.paginate_back(50).await.unwrap() {}
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         main.session.room(&room).unwrap(),
         timeline.clone(),
@@ -2893,7 +2937,7 @@ async fn composer_scrolls_alone() {
         })
         .collect();
     open.composer.set_text(&draft.join("\n"));
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
@@ -3013,14 +3057,34 @@ fn open_room(app: &mut App) -> &mut Room {
     }
 }
 
-fn pane(app: &App) -> &Pane {
+fn pane(app: &App) -> &Shown {
     match &app.screen {
-        Screen::Main(main) => &main.pane,
+        Screen::Main(main) => &main.pane.shown,
         _ => unreachable!(),
     }
 }
 
 /// Run `task` to its end, as iced would, for its messages.
+/// Give the app the messages `task` sends at once, as components send
+/// each other (`Task::done`), and theirs, as the runtime would; what waits
+/// (a request to the server) is not run.
+fn settle(app: &mut App, task: Task<Message>) {
+    use futures_util::FutureExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return;
+    };
+    let mut ready = Vec::new();
+    while let Some(Some(action)) = stream.next().now_or_never() {
+        if let iced_runtime::Action::Output(message) = action {
+            ready.push(message);
+        }
+    }
+    for message in ready {
+        let task = app.update(message);
+        settle(app, task);
+    }
+}
+
 async fn messages_of(task: Task<Message>) -> Vec<Message> {
     let Some(stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
@@ -3053,13 +3117,13 @@ async fn drafts_stay_in_their_room() {
     key_of(&timeline, "Coffee at three?").await;
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let open = Room::new(
         alice.room(&a).unwrap(),
         timeline.clone(),
         alice.draft_keeper(&a),
     );
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     // Writing an answer, kept after a pause.
@@ -3088,14 +3152,16 @@ async fn drafts_stay_in_their_room() {
             Arc::new(" there".into()),
         ))),
     )));
-    let before = app.room_draft();
     let other_timeline = Arc::new(alice.timeline(&b).await.unwrap());
-    *open_room(&mut app) = Room::new(
+    let other = Room::new(
         alice.room(&b).unwrap(),
         other_timeline,
         alice.draft_keeper(&b),
     );
-    let _ = messages_of(app.keep_draft(before)).await;
+    let Screen::Main(main) = &mut app.screen else {
+        unreachable!()
+    };
+    let _ = messages_of(main.pane.set(Shown::Open(other), &mut main.popup)).await;
     let kept = mtrx_core::Draft {
         text: "Yes, see you there".into(),
         ..kept
@@ -3153,18 +3219,18 @@ async fn typing_while_a_room_opens_goes_nowhere() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         alice.room(&a).unwrap(),
         timeline.clone(),
         alice.draft_keeper(&a),
     );
     open.composer.set_text("Hello");
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
-    let opened = messages_of(app.update(Message::OpenRoom(b.clone()))).await;
-    assert!(matches!(pane(&app), Pane::Opening(id) if *id == b));
+    let opened = messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await;
+    assert!(matches!(pane(&app), Shown::Opening(id) if *id == b));
     let _ =
         messages_of(app.update(Message::Shown(room::Message::TypeInComposer("x".into())))).await;
     for message in opened {
@@ -3195,7 +3261,7 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
         .unwrap();
     let invite: OwnedRoomId = "!invite:localhost".try_into().unwrap();
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     main.show_rooms(RoomListState {
         rooms: vec![
             summary(&a, "a"),
@@ -3209,14 +3275,14 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
     });
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
-    let opened = messages_of(app.update(Message::OpenRoom(a.clone()))).await;
-    let _ = app.update(Message::OpenRoom(invite.clone()));
+    let opened = messages_of(app.update(Message::Pane(pane::Message::Open(a.clone())))).await;
+    let _ = app.update(Message::Pane(pane::Message::Open(invite.clone())));
     for message in opened {
         let _ = app.update(message);
     }
     assert!(matches!(
         pane(&app),
-        Pane::Invite { id, answering: false } if *id == invite
+        Shown::Invite { id, answering: false } if *id == invite
     ));
 }
 
@@ -3236,20 +3302,20 @@ async fn results_stay_with_their_room() {
     let b = alice.create_room(new_room("b")).await.unwrap();
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         main.session.room(&a).unwrap(),
         timeline,
         main.session.draft_keeper(&a),
     );
     open.composer.set_text("Later, in a");
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
     let later = send_later::Message::At(in_an_hour);
     let scheduled = app.update(room::Message::Later(later).to(&a));
-    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+    for message in messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await {
         let _ = app.update(message);
     }
     open_room(&mut app).composer.set_text("Draft in b");
@@ -3281,7 +3347,7 @@ async fn a_room_that_failed_to_open_opens_again() {
         .unwrap();
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     main.show_rooms(RoomListState {
         rooms: vec![summary(&a, "a")],
         loaded: false,
@@ -3289,22 +3355,28 @@ async fn a_room_that_failed_to_open_opens_again() {
     });
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     let problem = |app: &App| match &app.screen {
-        Screen::Main(main) => main.notice.as_ref().filter(|n| n.error).map(|n| {
+        Screen::Main(main) => main.notices.shown.as_ref().filter(|n| n.error).map(|n| {
             assert_eq!(n.room.as_ref(), Some(&a));
             n.text.clone()
         }),
         _ => None,
     };
 
-    let _ = app.update(Message::OpenRoom(a.clone()));
-    let _ = app.update(Message::RoomOpened(a.clone(), Err("timed out".into())));
-    assert!(matches!(pane(&app), Pane::Empty));
+    let _ = app.update(Message::Pane(pane::Message::Open(a.clone())));
+    let _ = app.update(Message::Pane(pane::Message::Opened(
+        a.clone(),
+        Err("timed out".into()),
+    )));
+    assert!(matches!(pane(&app), Shown::Empty));
     assert_eq!(
         problem(&app).as_deref(),
         Some("Could not open the room: timed out")
     );
-    let _ = app.update(Message::OpenRoom(a.clone()));
-    let _ = app.update(Message::RoomOpened(a.clone(), Ok(Shared(timeline))));
+    let _ = app.update(Message::Pane(pane::Message::Open(a.clone())));
+    let _ = app.update(Message::Pane(pane::Message::Opened(
+        a.clone(),
+        Ok(Shared(timeline)),
+    )));
     assert_eq!(open_room(&mut app).id, a);
     assert_eq!(problem(&app), None);
 }
@@ -3317,7 +3389,7 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("cancelled", &dir).await;
     let mut shown = Main::new(Arc::new(alice));
-    shown.verified = Some(true);
+    shown.account.verified = Some(true);
     let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
     fn main(app: &mut App) -> &mut Main {
         match &mut app.screen {
@@ -3331,34 +3403,44 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     };
 
     // Not run: the result is given below.
-    let _ = app.update(Message::OpenDialog(leave("first")));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
-    let first = main(&mut app).last_request;
-    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
-    assert!(main(&mut app).modal.is_none());
-    let _ = app.update(Message::OpenDialog(leave("second")));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
-    let second = main(&mut app).last_request;
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(leave("first"))));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
+    let first = main(&mut app).modal.last_request;
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Cancel,
+    )));
+    assert!(main(&mut app).modal.shown.is_none());
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(leave("second"))));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
+    let second = main(&mut app).modal.last_request;
     assert_ne!(first, second);
 
     let failed = Err("no such room".into());
-    let _ = app.update(Message::Dialog(dialog::Message::Done(first, failed)));
-    let notice = main(&mut app).notice.take().expect("a notice");
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(first, failed),
+    )));
+    let notice = main(&mut app).notices.shown.take().expect("a notice");
     assert!(notice.error);
     assert_eq!(notice.text, "Could not leave first: no such room");
-    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+    let Some(modal::Shown::Dialog(open)) = &main(&mut app).modal.shown else {
         panic!("the second dialog closed");
     };
     assert!(open.busy(), "still waiting for its own request");
 
     // Its own result, which only it takes.
     let failed = Err("not a member".into());
-    let _ = app.update(Message::Dialog(dialog::Message::Done(second, failed)));
-    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(second, failed),
+    )));
+    let Some(modal::Shown::Dialog(open)) = &main(&mut app).modal.shown else {
         panic!("the second dialog closed");
     };
     assert!(!open.busy());
-    assert!(main(&mut app).notice.is_none());
+    assert!(main(&mut app).notices.shown.is_none());
 }
 
 /// A request finishing after its dialog was closed still does what it
@@ -3369,7 +3451,7 @@ async fn a_cancelled_request_still_takes_effect() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("cancelleffect", &dir).await;
     let mut shown = Main::new(Arc::new(alice));
-    shown.verified = Some(true);
+    shown.account.verified = Some(true);
     let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
     fn main(app: &mut App) -> &mut Main {
         match &mut app.screen {
@@ -3378,33 +3460,55 @@ async fn a_cancelled_request_still_takes_effect() {
         }
     }
     let lab: OwnedRoomId = "!lab:localhost".try_into().unwrap();
-    main(&mut app).set_pane(Pane::Opening(lab.clone()));
-    main(&mut app).space = Some(lab.clone());
+    let shown = main(&mut app);
+    let _ = shown
+        .pane
+        .set(Shown::Opening(lab.clone()), &mut shown.popup);
+    main(&mut app).sidebar.space = Some(lab.clone());
 
     // Not run: the results are given below.
     let leave = dialog::Kind::Leave {
         room: lab.clone(),
         name: "Lab".into(),
     };
-    let _ = app.update(Message::OpenDialog(leave));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
-    let left = main(&mut app).last_request;
-    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(leave)));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
+    let left = main(&mut app).modal.last_request;
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Cancel,
+    )));
     let done = Ok(dialog::Opened::Left(lab.clone()));
-    let _ = app.update(Message::Dialog(dialog::Message::Done(left, done)));
-    assert!(main(&mut app).notice.is_some());
+    let task = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(left, done),
+    )));
+    settle(&mut app, task);
+    assert!(main(&mut app).notices.shown.is_some());
     assert!(
         main(&mut app).pane.id().is_none(),
         "the room left still shows"
     );
-    assert!(main(&mut app).space.is_none(), "the space left still shows");
+    assert!(
+        main(&mut app).sidebar.space.is_none(),
+        "the space left still shows"
+    );
 
-    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
-    let _ = app.update(Message::Dialog(dialog::Message::Submit));
-    let out = main(&mut app).last_request;
-    let _ = app.update(Message::Dialog(dialog::Message::Cancel));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(
+        dialog::Kind::SignOut,
+    )));
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Submit,
+    )));
+    let out = main(&mut app).modal.last_request;
+    let _ = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Cancel,
+    )));
     let done = Ok(dialog::Opened::SignedOut);
-    let _ = app.update(Message::Dialog(dialog::Message::Done(out, done)));
+    let task = app.update(Message::Modal(modal::Message::Dialog(
+        dialog::Message::Done(out, done),
+    )));
+    settle(&mut app, task);
     assert!(matches!(app.screen, Screen::Login(_)), "still signed in");
 }
 
@@ -3419,14 +3523,19 @@ async fn a_chat_that_cannot_start_reports_in_the_notice_bar() {
     let alice = Arc::new(alice);
     alice.logout().await.unwrap();
     let mut main = Main::new(alice);
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
-    let _ = app.update(Message::OpenDialog(dialog::Kind::SignOut));
+    let _ = app.update(Message::Modal(modal::Message::OpenDialog(
+        dialog::Kind::SignOut,
+    )));
 
     let ghost: OwnedUserId = "@ghost:localhost".try_into().unwrap();
-    let started = messages_of(app.update(Message::ChatWith(ghost))).await;
+    let started = messages_of(app.update(Message::People(people::Message::ChatWith(ghost)))).await;
     assert!(
-        matches!(&started[..], [Message::ChatStarted(Err(_))]),
+        matches!(
+            &started[..],
+            [Message::People(people::Message::ChatStarted(Err(_)))]
+        ),
         "{started:?}"
     );
     for message in started {
@@ -3435,18 +3544,18 @@ async fn a_chat_that_cannot_start_reports_in_the_notice_bar() {
     let Screen::Main(main) = &app.screen else {
         unreachable!()
     };
-    let notice = main.notice.as_ref().expect("a notice");
+    let notice = main.notices.shown.as_ref().expect("a notice");
     assert!(notice.error);
     assert!(
         notice.text.starts_with("Could not open the direct chat: "),
         "{}",
         notice.text
     );
-    let Some(Modal::Dialog(open)) = &main.modal else {
+    let Some(modal::Shown::Dialog(open)) = &main.modal.shown else {
         panic!("the dialog closed");
     };
     assert!(!open.busy());
-    assert!(matches!(pane(&app), Pane::Empty));
+    assert!(matches!(pane(&app), Shown::Empty));
 }
 
 /// A message scheduled in a room left before the server confirmed it is
@@ -3465,16 +3574,16 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(alice.room(&a).unwrap(), timeline, alice.draft_keeper(&a));
     open.composer.set_text("Later, in a");
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
     let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
     let later = send_later::Message::At(in_an_hour);
     let scheduled = app.update(room::Message::Later(later).to(&a));
-    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+    for message in messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await {
         let _ = app.update(message);
     }
     let kept = mtrx_core::Draft {
@@ -3513,18 +3622,18 @@ async fn loads_end_with_their_room_and_requests_run_on() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(alice.room(&a).unwrap(), timeline, alice.draft_keeper(&a));
     open.composer.set_text("Later, in a");
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
-    let members = load_members(open_room(&mut app));
+    let members = open_room(&mut app).load_members();
     assert!(open_room(&mut app).tasks.running(&Load::Members));
     let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
     let later = send_later::Message::At(in_an_hour);
     let scheduled = app.update(room::Message::Later(later).to(&a));
-    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+    for message in messages_of(app.update(Message::Pane(pane::Message::Open(b.clone())))).await {
         let _ = app.update(message);
     }
     assert_eq!(open_room(&mut app).id, b);

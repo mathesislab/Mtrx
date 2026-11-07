@@ -357,8 +357,9 @@ impl Updater {
             },
             Message::Installed(Ok(())) => {
                 // Quit as the window's close button does: the session ends.
-                return iced::window::oldest()
-                    .and_then(|id| Task::done(app::Message::CloseWindow(id)));
+                return iced::window::oldest().and_then(|id| {
+                    Task::done(app::Message::Window(app::window::Message::Close(id)))
+                });
             }
             Message::Step(step) => {
                 if self.installing.is_some() {

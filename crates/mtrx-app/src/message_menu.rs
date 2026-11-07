@@ -8,7 +8,7 @@ use crate::{
     actions::{self, act},
     app,
     downloads::{self, File},
-    media::Origin,
+    media::{self, Origin},
     menu::{Entry, Item},
     message, pins,
     selection::Pos,
@@ -88,12 +88,18 @@ pub fn entries(
         entries.extend([
             Item::new(
                 "Copy image",
-                act(room, actions::Message::CopyImage(document.clone())),
+                app::Message::Media(media::Message::CopyMath(
+                    document.clone(),
+                    Origin::Room(room.clone()),
+                )),
             )
             .into(),
             Item::new(
                 "Save image…",
-                act(room, actions::Message::SaveImage(document.clone())),
+                app::Message::Media(media::Message::SaveMath(
+                    document.clone(),
+                    Origin::Room(room.clone()),
+                )),
             )
             .into(),
         ]);
@@ -109,7 +115,7 @@ pub fn media_entries(file: &File, from: Origin) -> Vec<Entry<'static, app::Messa
         entries.push(
             Item::new(
                 "Copy image",
-                app::Message::CopyImage(file.media.clone(), from),
+                app::Message::Media(media::Message::CopyImage(file.media.clone(), from)),
             )
             .into(),
         );
@@ -117,7 +123,9 @@ pub fn media_entries(file: &File, from: Origin) -> Vec<Entry<'static, app::Messa
     entries.push(
         Item::new(
             "Save as…",
-            app::Message::Downloads(downloads::Message::SaveAs(file.clone())),
+            app::Message::Media(media::Message::Downloads(downloads::Message::SaveAs(
+                file.clone(),
+            ))),
         )
         .into(),
     );
@@ -253,7 +261,7 @@ mod tests {
         assert_eq!(labels(&items), ["Copy", "Pin", "Save as…"]);
         assert!(matches!(
             chosen(&items[2]),
-            app::Message::Downloads(downloads::Message::SaveAs(saved))
+            app::Message::Media(media::Message::Downloads(downloads::Message::SaveAs(saved)))
                 if saved.media.filename == "report.pdf" && saved.room == room()
         ));
         file.media = Some(media("ice.png", MediaKind::Image));
