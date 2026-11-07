@@ -9,12 +9,12 @@ use mtrx_core::{Member, Membership, OwnedRoomId, OwnedUserId};
 use crate::{
     app::Message,
     avatar::{Avatars, Shape},
-    context_menu,
     dialog::{Kind, LevelChange},
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint},
     icons,
+    menu::{self, Entry, Item, Width},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
     style,
@@ -196,7 +196,13 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
         return base.into();
     }
     let manage = &member.manage;
-    let toggle = |menu| Message::MemberMenu((!opened(menu)).then(|| menu_of(menu)));
+    let toggle = |menu| {
+        if opened(menu) {
+            Message::ClosePopup
+        } else {
+            Message::MemberMenu(menu_of(menu))
+        }
+    };
     let chip: Element<'a, Message> = match manage.up_to {
         Some(_) => {
             let open = opened(Menu::Role);
@@ -213,11 +219,11 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
                 .padding([1, 6])
                 .style(style::secondary_button)
                 .on_press(toggle(Menu::Role)),
-                open.then(|| role_menu(member, shown.room)),
+                open.then(|| menu::view(role_entries(member, shown.room), Width::At(MENU_WIDTH))),
                 Side::Below,
                 Edge::Right,
             )
-            .on_dismiss(Message::MemberMenu(None))
+            .on_dismiss(Message::ClosePopup)
             .into()
         }
         None => space().into(),
@@ -229,11 +235,11 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
                 .padding([0, 6])
                 .style(style::list_item(open))
                 .on_press(toggle(Menu::More)),
-            open.then(|| more_menu(member, &name, shown.room)),
+            open.then(|| menu::view(more_entries(member, &name, shown.room), Width::Menu)),
             Side::Below,
             Edge::Right,
         )
-        .on_dismiss(Message::MemberMenu(None))
+        .on_dismiss(Message::ClosePopup)
         .into()
     } else {
         space().into()
@@ -263,69 +269,45 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
 /// The levels we may give a member, theirs ticked, and a level of our
 /// choosing. Asks first where it can't be undone: our own, or theirs as
 /// high as ours.
-fn role_menu<'a>(member: &Member, room: &OwnedRoomId) -> Element<'a, Message> {
+fn role_entries(member: &Member, room: &OwnedRoomId) -> Vec<Entry<'static, Message>> {
     let change = |asked| LevelChange {
         room: room.clone(),
         member: member.clone(),
         asked,
     };
-    let mut items = column![].spacing(1);
-    for choice in member.level_choices() {
-        let on_press = (!choice.current).then(|| match choice.confirmation {
-            Some(asked) => Message::OpenDialog(Kind::Level(change(Some((choice.level, asked))))),
-            None => Message::SetLevel(room.clone(), member.user.id.clone(), choice.level),
-        });
-        items = items.push(role_item(
-            choice.title,
-            choice.level,
-            choice.current,
-            on_press,
-        ));
-    }
-    items = items.push(
-        button(text("Custom level…").size(13))
-            .width(Length::Fill)
-            .padding([4, 10])
-            .style(style::list_item(false))
-            .on_press(Message::OpenDialog(Kind::Level(change(None)))),
+    let mut entries: Vec<Entry<'static, Message>> = member
+        .level_choices()
+        .into_iter()
+        .map(|choice| {
+            // Theirs, ticked, is not chosen again.
+            let item = match (choice.current, choice.confirmation) {
+                (true, _) => Item::disabled(choice.title),
+                (false, Some(asked)) => Item::new(
+                    choice.title,
+                    Message::OpenDialog(Kind::Level(change(Some((choice.level, asked))))),
+                ),
+                (false, None) => Item::new(
+                    choice.title,
+                    Message::SetLevel(room.clone(), member.user.id.clone(), choice.level),
+                ),
+            };
+            item.checked(choice.current)
+                .detail(choice.level.to_string())
+                .into()
+        })
+        .collect();
+    entries.push(
+        Item::new(
+            "Custom level…",
+            Message::OpenDialog(Kind::Level(change(None))),
+        )
+        .into(),
     );
-    container(items)
-        .width(MENU_WIDTH)
-        .padding(4)
-        .style(style::toolbar)
-        .into()
-}
-
-/// A role in [`role_menu`]: ticked if theirs.
-fn role_item<'a>(
-    label: String,
-    level: i64,
-    current: bool,
-    on_press: Option<Message>,
-) -> Element<'a, Message> {
-    let tick: Element<'a, Message> = if current {
-        icons::check(12.0, |theme| theme.extended_palette().background.base.text)
-    } else {
-        space().width(12).into()
-    };
-    button(
-        row![
-            tick,
-            text(label).size(13).width(Length::Fill),
-            text(level.to_string()).size(12).style(text::secondary),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    )
-    .width(Length::Fill)
-    .padding([4, 10])
-    .style(style::list_item(false))
-    .on_press_maybe(on_press)
-    .into()
+    entries
 }
 
 /// Remove or ban a member, as far as we may; both ask first.
-fn more_menu<'a>(member: &Member, name: &str, room: &OwnedRoomId) -> Element<'a, Message> {
+fn more_entries(member: &Member, name: &str, room: &OwnedRoomId) -> Vec<Entry<'static, Message>> {
     let mut items = Vec::new();
     let remove = |ban| {
         Message::OpenDialog(Kind::RemoveMember {
@@ -336,10 +318,10 @@ fn more_menu<'a>(member: &Member, name: &str, room: &OwnedRoomId) -> Element<'a,
         })
     };
     if member.manage.remove {
-        items.push(("Remove…".to_owned(), remove(false)));
+        items.push(Item::new("Remove…", remove(false)).into());
     }
     if member.manage.ban {
-        items.push(("Ban…".to_owned(), remove(true)));
+        items.push(Item::new("Ban…", remove(true)).into());
     }
-    context_menu::menu(items)
+    items
 }

@@ -11,14 +11,14 @@ use iced::{
 };
 
 use crate::{
-    context_menu::{self, context_menu},
+    context_menu::context_menu,
+    menu::{self, Entry, Item, Width},
     spelling,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Message {
     Open,
-    Close,
     /// Replace the misspelled word by its spelling at this index.
     Correct(usize),
     LearnSpelling,
@@ -95,54 +95,52 @@ impl Misspelled {
 
 /// What `menu` offers: the spellings of its misspelled word, then Cut and
 /// Copy with text `selected`.
-pub fn items(menu: &Menu, selected: bool) -> Vec<(String, Message)> {
+pub fn entries(menu: &Menu, selected: bool) -> Vec<Entry<'static, Message>> {
     let mut items = Vec::new();
     if let Some(misspelled) = &menu.misspelled {
         items.extend(
             (misspelled.suggestions.iter().enumerate())
-                .map(|(i, suggestion)| (suggestion.clone(), Message::Correct(i))),
+                .map(|(i, suggestion)| Item::new(suggestion.clone(), Message::Correct(i))),
         );
         items.extend([
-            ("Learn Spelling".to_owned(), Message::LearnSpelling),
-            ("Ignore Spelling".to_owned(), Message::IgnoreSpelling),
+            Item::new("Learn Spelling", Message::LearnSpelling),
+            Item::new("Ignore Spelling", Message::IgnoreSpelling),
         ]);
     }
     if selected {
-        items.extend([("Cut", Message::Cut), ("Copy", Message::Copy)].map(owned));
+        items.extend([
+            Item::new("Cut", Message::Cut),
+            Item::new("Copy", Message::Copy),
+        ]);
     }
-    items.extend(
-        [
-            ("Paste", Message::Paste),
-            ("Select All", Message::SelectAll),
-        ]
-        .map(owned),
-    );
+    items.extend([
+        Item::new("Paste", Message::Paste),
+        Item::new("Select All", Message::SelectAll),
+    ]);
     #[cfg(target_os = "macos")]
-    items.push(owned(("Emoji & Symbols", Message::EmojiAndSymbols)));
-    items
-}
-
-fn owned((label, message): (&str, Message)) -> (String, Message) {
-    (label.to_owned(), message)
+    items.push(Item::new("Emoji & Symbols", Message::EmojiAndSymbols));
+    items.into_iter().map(Entry::Item).collect()
 }
 
 /// `editor` with its menu on right-click: shown while open (`menu`), Cut
-/// and Copy with text `selected`; `to` makes the message of a choice.
+/// and Copy with text `selected`; `to` makes the message of a choice, and
+/// a click outside sends `close`.
 pub fn with_menu<'a, M: Clone + 'a>(
     editor: impl Into<Element<'a, M>>,
     menu: Option<&Menu>,
     selected: bool,
-    to: impl Fn(Message) -> M,
+    to: impl Fn(Message) -> M + Clone + 'a,
+    close: M,
 ) -> Element<'a, M> {
     let menu = menu.map(|menu| {
-        context_menu::menu(
-            items(menu, selected)
-                .into_iter()
-                .map(|(label, message)| (label, to(message))),
-        )
+        let entries = entries(menu, selected)
+            .into_iter()
+            .map(|entry| entry.map(to.clone()))
+            .collect();
+        menu::view(entries, Width::Menu)
     });
     context_menu(editor, menu, to(Message::Open))
-        .on_dismiss(to(Message::Close))
+        .on_dismiss(close)
         .into()
 }
 
@@ -175,12 +173,14 @@ mod tests {
     enum Sent {
         Action(text_editor::Action),
         Menu(Message),
+        Close,
     }
 
     fn labels(menu: &Menu, selected: bool) -> Vec<String> {
-        items(menu, selected)
-            .into_iter()
-            .map(|(label, _)| label)
+        entries(menu, selected)
+            .iter()
+            .filter_map(Entry::label)
+            .map(str::to_owned)
             .collect()
     }
 
@@ -215,7 +215,10 @@ mod tests {
                 "Paste"
             ]
         );
-        assert_eq!(items(&menu, false)[1].1, Message::Correct(1));
+        assert_eq!(
+            entries(&menu, false)[1].on_choose(),
+            Some(&Message::Correct(1))
+        );
     }
 
     #[test]
@@ -240,7 +243,7 @@ mod tests {
             .on_action(Sent::Action)
             .key_binding(text_editor::Binding::from_key_press);
         let menu = open.then(Menu::default);
-        let field = with_menu(editor, menu.as_ref(), true, Sent::Menu);
+        let field = with_menu(editor, menu.as_ref(), true, Sent::Menu, Sent::Close);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
@@ -260,7 +263,7 @@ mod tests {
     fn a_right_click_puts_the_caret_there_then_opens_it() {
         let content = Content::<iced::Renderer>::with_text("Melt");
         let editor = iced::widget::text_editor(&content).on_action(Sent::Action);
-        let field = with_menu(editor, None, false, Sent::Menu);
+        let field = with_menu(editor, None, false, Sent::Menu, Sent::Close);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
@@ -293,7 +296,7 @@ mod tests {
         assert!(matches!(sent[..], [Sent::Menu(Message::Paste)]), "{sent:?}");
         // A click beside it closes it.
         let sent = sends(true, Left, (380.0, 280.0));
-        assert!(matches!(sent[..], [Sent::Menu(Message::Close)]), "{sent:?}");
+        assert!(matches!(sent[..], [Sent::Close]), "{sent:?}");
     }
 
     /// Emoji & Symbols takes the key window while open and types the pick

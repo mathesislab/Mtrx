@@ -34,7 +34,6 @@ const DAY_CELL: f32 = 32.0;
 pub enum Message {
     /// Pick a time for the composer's text.
     Open,
-    Close,
     /// Show the month this many months away.
     Month(i32),
     Day(NaiveDate),
@@ -281,7 +280,7 @@ pub fn queue<'a>(
             })
             .map(|later| picker(room, later, true, now));
         popover(item, picker, Side::Above, Edge::Right)
-            .on_dismiss(self::later(room, Message::Close))
+            .on_dismiss(app::Message::ClosePopup)
             .into()
     }))
     .spacing(4)
@@ -481,7 +480,7 @@ pub fn picker<'a>(
             button(text("Close").size(13))
                 .padding([5, 12])
                 .style(style::text_button)
-                .on_press(later(room, Message::Close)),
+                .on_press(app::Message::ClosePopup),
         ]
         .spacing(8)
         .align_y(Alignment::Center),

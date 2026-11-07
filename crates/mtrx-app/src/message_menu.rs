@@ -2,14 +2,14 @@
 //! selection or the message, pinning it, math as a picture, and a file or
 //! image; or, right-clicking a link in it, the link's.
 
-use iced::Element;
 use mtrx_core::{EventContent, MediaKind, MessageAction, MessageRow, OwnedRoomId};
 
 use crate::{
     actions::{self, act},
-    app, context_menu,
+    app,
     downloads::{self, File},
     media::Origin,
+    menu::{Entry, Item},
     message, pins,
     selection::Pos,
 };
@@ -25,37 +25,52 @@ pub enum MenuAt {
     Link(String),
 }
 
-/// What the menu offers for the message of `row` in `room`: label and
-/// action, in order. First its actions not in the toolbar (Copy, Pin or
-/// Unpin; its text is selected in place), then its file's and its math's.
-/// `in_selection`: the message is (partly) in the timeline's selection,
-/// which Copy then copies; else Copy copies the message, as a selection of
-/// all of it would.
-pub fn items(
+/// Whether the menu of `row` offers anything ([`entries`] is not empty),
+/// without making its entries.
+pub fn offers(row: &MessageRow, math_shown: bool) -> bool {
+    let EventContent::Message(message) = &row.event.content else {
+        return false;
+    };
+    math_shown
+        || message.media.is_some()
+        || row.actions.iter().any(|action| match action {
+            MessageAction::Copy => true,
+            MessageAction::Pin | MessageAction::Unpin => row.event.event_id.is_some(),
+            _ => false,
+        })
+}
+
+/// What the menu offers for the message of `row` in `room`, in order.
+/// First its actions not in the toolbar (Copy, Pin or Unpin; its text is
+/// selected in place), then its file's and its math's. `in_selection`: the
+/// message is (partly) in the timeline's selection, which Copy then
+/// copies; else Copy copies the message, as a selection of all of it
+/// would.
+pub fn entries(
     room: &OwnedRoomId,
     row: &MessageRow,
     math_shown: bool,
     in_selection: bool,
-) -> Vec<(String, app::Message)> {
+) -> Vec<Entry<'static, app::Message>> {
     let EventContent::Message(message) = &row.event.content else {
         return Vec::new();
     };
     let document = &message.document;
-    let mut items = Vec::new();
+    let mut entries = Vec::new();
     for action in &row.actions {
         match action {
-            MessageAction::Copy if in_selection => items.push((
-                "Copy".to_owned(),
-                act(room, actions::Message::CopySelection),
-            )),
+            MessageAction::Copy if in_selection => {
+                entries.push(Item::new("Copy", act(room, actions::Message::CopySelection)).into())
+            }
             MessageAction::Copy => {
                 let all = message::copied(document, Pos::default(), Pos::END);
-                items.push(("Copy".to_owned(), act(room, actions::Message::Copy(all))));
+                entries.push(Item::new("Copy", act(room, actions::Message::Copy(all))).into());
             }
             MessageAction::Pin | MessageAction::Unpin => {
                 let pinned = *action == MessageAction::Unpin;
-                items.extend(
-                    (row.event.event_id.as_ref()).map(|id| pins::menu_item(room, id, pinned)),
+                entries.extend(
+                    (row.event.event_id.as_ref())
+                        .map(|id| pins::menu_item(room, id, pinned).into()),
                 );
             }
             _ => {}
@@ -67,60 +82,63 @@ pub fn items(
             room: room.clone(),
             event: row.event.event_id.clone(),
         };
-        items.extend(media_items(&file, Origin::Room(room.clone())));
+        entries.extend(media_entries(&file, Origin::Room(room.clone())));
     }
     if math_shown {
-        items.push((
-            "Copy image".to_owned(),
-            act(room, actions::Message::CopyImage(document.clone())),
-        ));
-        items.push((
-            "Save image…".to_owned(),
-            act(room, actions::Message::SaveImage(document.clone())),
-        ));
+        entries.extend([
+            Item::new(
+                "Copy image",
+                act(room, actions::Message::CopyImage(document.clone())),
+            )
+            .into(),
+            Item::new(
+                "Save image…",
+                act(room, actions::Message::SaveImage(document.clone())),
+            )
+            .into(),
+        ]);
     }
-    items
+    entries
 }
 
 /// What the menu offers for a message's file, also where an image is shown
 /// large (`from`): copying an image, and saving the file somewhere asked.
-pub fn media_items(file: &File, from: Origin) -> Vec<(String, app::Message)> {
-    let mut items = Vec::new();
+pub fn media_entries(file: &File, from: Origin) -> Vec<Entry<'static, app::Message>> {
+    let mut entries = Vec::new();
     if file.media.kind == MediaKind::Image {
-        items.push((
-            "Copy image".to_owned(),
-            app::Message::CopyImage(file.media.clone(), from),
-        ));
+        entries.push(
+            Item::new(
+                "Copy image",
+                app::Message::CopyImage(file.media.clone(), from),
+            )
+            .into(),
+        );
     }
-    items.push((
-        "Save as…".to_owned(),
-        app::Message::Downloads(downloads::Message::SaveAs(file.clone())),
-    ));
-    items
+    entries.push(
+        Item::new(
+            "Save as…",
+            app::Message::Downloads(downloads::Message::SaveAs(file.clone())),
+        )
+        .into(),
+    );
+    entries
 }
 
 /// What the menu offers for a link in `room`: a mention's opens the
 /// person's card.
-pub fn link_items(room: &OwnedRoomId, url: &str) -> Vec<(String, app::Message)> {
+pub fn link_entries(room: &OwnedRoomId, url: &str) -> Vec<Entry<'static, app::Message>> {
     let open = match message::mentioned_user(url) {
         Some(_) => "Info",
         None => "Open",
     };
     vec![
-        (
-            open.to_owned(),
-            act(room, actions::Message::OpenLink(url.to_owned())),
-        ),
-        (
-            "Copy link".to_owned(),
+        Item::new(open, act(room, actions::Message::OpenLink(url.to_owned()))).into(),
+        Item::new(
+            "Copy link",
             act(room, actions::Message::CopyLink(url.to_owned())),
-        ),
+        )
+        .into(),
     ]
-}
-
-/// The menu showing `items`.
-pub fn view<'a>(items: Vec<(String, app::Message)>) -> Element<'a, app::Message> {
-    context_menu::menu(items)
 }
 
 #[cfg(test)]
@@ -171,16 +189,32 @@ mod tests {
         }
     }
 
-    fn labels(items: &[(String, app::Message)]) -> Vec<&str> {
-        items.iter().map(|(label, _)| label.as_str()).collect()
+    fn labels<'e>(entries: &'e [Entry<'_, app::Message>]) -> Vec<&'e str> {
+        entries.iter().filter_map(Entry::label).collect()
     }
 
-    /// The action an item takes in the room.
-    fn act_of(message: &app::Message) -> Option<&actions::Message> {
-        match message {
+    /// What choosing an entry sends.
+    fn chosen<'e>(entry: &'e Entry<'_, app::Message>) -> &'e app::Message {
+        entry.on_choose().expect("an item to choose")
+    }
+
+    /// The action an entry takes in the room.
+    fn act_of<'e>(entry: &'e Entry<'_, app::Message>) -> Option<&'e actions::Message> {
+        match chosen(entry) {
             app::Message::Room(_, crate::room::Message::Act(act)) => Some(act),
             _ => None,
         }
+    }
+
+    /// The entries of `row`'s menu, which [`offers`] tells there are.
+    fn checked_entries(
+        row: &MessageRow,
+        math_shown: bool,
+        in_selection: bool,
+    ) -> Vec<Entry<'static, app::Message>> {
+        let entries = entries(&room(), row, math_shown, in_selection);
+        assert_eq!(offers(row, math_shown), !entries.is_empty());
+        entries
     }
 
     fn room() -> OwnedRoomId {
@@ -191,40 +225,40 @@ mod tests {
     fn offers_copy_and_the_picture() {
         let html = r#"Flux <span data-mx-maths="q=-k\nabla T"><code>q</code></span>, see <a href="https://example.org/a">data</a>"#;
         let text = row(message(MessageKind::Text, html));
-        let items = items(&room(), &text, true, false);
+        let items = checked_entries(&text, true, false);
         assert_eq!(labels(&items), ["Copy", "Pin", "Copy image", "Save image…"]);
         assert!(
-            matches!(act_of(&items[0].1), Some(actions::Message::Copy(all)) if all.text == r"Flux $q=-k\nabla T$, see data"),
+            matches!(act_of(&items[0]), Some(actions::Message::Copy(all)) if all.text == r"Flux $q=-k\nabla T$, see data"),
             "as shown, math as LaTeX"
         );
         assert!(
-            matches!(act_of(&items[0].1), Some(actions::Message::Copy(all)) if all.html == r#"<p>Flux $q=-k\nabla T$, see <a href="https://example.org/a">data</a></p>"#),
+            matches!(act_of(&items[0]), Some(actions::Message::Copy(all)) if all.html == r#"<p>Flux $q=-k\nabla T$, see <a href="https://example.org/a">data</a></p>"#),
             "and as HTML, with the link"
         );
         // Until the math is typeset, there is no picture.
         assert_eq!(
-            labels(&super::items(&room(), &text, false, false)),
+            labels(&checked_entries(&text, false, false)),
             ["Copy", "Pin"]
         );
         // In the selection, Copy copies the selection.
         assert!(matches!(
-            act_of(&super::items(&room(), &text, false, true)[0].1),
+            act_of(&checked_entries(&text, false, true)[0]),
             Some(actions::Message::CopySelection)
         ));
         // A file can be saved somewhere asked; an image also copied. Their
         // names are their text.
         let mut file = message(MessageKind::File, "report.pdf");
         file.media = Some(media("report.pdf", MediaKind::File));
-        let items = super::items(&room(), &row(file.clone()), false, false);
+        let items = checked_entries(&row(file.clone()), false, false);
         assert_eq!(labels(&items), ["Copy", "Pin", "Save as…"]);
         assert!(matches!(
-            &items[2].1,
+            chosen(&items[2]),
             app::Message::Downloads(downloads::Message::SaveAs(saved))
                 if saved.media.filename == "report.pdf" && saved.room == room()
         ));
         file.media = Some(media("ice.png", MediaKind::Image));
         assert_eq!(
-            labels(&super::items(&room(), &row(file), false, false)),
+            labels(&checked_entries(&row(file), false, false)),
             ["Copy", "Pin", "Copy image", "Save as…"]
         );
     }
@@ -232,16 +266,17 @@ mod tests {
     #[test]
     fn a_link_is_opened_or_copied() {
         let url = "https://example.org/a";
-        let items = link_items(&room(), url);
+        let items = link_entries(&room(), url);
         assert_eq!(labels(&items), ["Open", "Copy link"]);
+        assert!(matches!(act_of(&items[0]), Some(actions::Message::OpenLink(open)) if open == url));
         assert!(
-            matches!(act_of(&items[0].1), Some(actions::Message::OpenLink(open)) if open == url)
-        );
-        assert!(
-            matches!(act_of(&items[1].1), Some(actions::Message::CopyLink(copied)) if copied == url)
+            matches!(act_of(&items[1]), Some(actions::Message::CopyLink(copied)) if copied == url)
         );
         // A mention's shows the person's card.
         let mention = "https://matrix.to/#/@nils:server.org";
-        assert_eq!(labels(&link_items(&room(), mention)), ["Info", "Copy link"]);
+        assert_eq!(
+            labels(&link_entries(&room(), mention)),
+            ["Info", "Copy link"]
+        );
     }
 }

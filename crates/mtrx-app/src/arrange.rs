@@ -38,10 +38,10 @@ pub enum Message {
     ToggleCollapsed(Section),
     /// Collapse (`true`) or expand these sections at once.
     Collapse(Vec<(Section, bool)>),
-    /// Open or close the menu of which sections a space shows expanded.
-    ShowMenu(bool),
-    RoomMenu(Option<OwnedRoomId>),
-    CategoryMenu(Option<String>),
+    /// Open the menu of which sections a space shows expanded.
+    ShowMenu,
+    RoomMenu(OwnedRoomId),
+    CategoryMenu(String),
     MoveTo(OwnedRoomId, Section),
     /// Favourite (the star), low priority or neither, keeping the room's
     /// category.
@@ -257,20 +257,9 @@ impl Arrange {
                     }
                 });
             }
-            Message::ShowMenu(true) => *context.popup = Some(Popup::ShowMenu),
-            Message::ShowMenu(false) => {
-                context
-                    .popup
-                    .take_if(|popup| matches!(popup, Popup::ShowMenu));
-            }
-            Message::RoomMenu(Some(room)) => *context.popup = Some(Popup::RoomMenu(room)),
-            Message::RoomMenu(None) => {
-                context.popup.take_if(room_menu);
-            }
-            Message::CategoryMenu(Some(id)) => *context.popup = Some(Popup::CategoryMenu(id)),
-            Message::CategoryMenu(None) => {
-                context.popup.take_if(category_menu);
-            }
+            Message::ShowMenu => *context.popup = Some(Popup::ShowMenu),
+            Message::RoomMenu(room) => *context.popup = Some(Popup::RoomMenu(room)),
+            Message::CategoryMenu(id) => *context.popup = Some(Popup::CategoryMenu(id)),
             Message::MoveTo(room, section) => {
                 context.popup.take_if(room_menu);
                 return self.move_to(room, section, context);

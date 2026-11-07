@@ -24,7 +24,9 @@ use crate::{
     ellipsis::ellipsis,
     emoji, fonts,
     hint::{Position, hint, hint_with},
-    icons, info, message,
+    icons, info,
+    menu::{self, Entry, Item, Width},
+    message,
     message_field::{self, Field, MessageField},
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
@@ -60,7 +62,6 @@ pub enum Message {
     Pin(OwnedEventId, bool),
     /// Open or close the reaction window of a timeline row, there.
     TogglePicker(String, PickerAt),
-    ClosePicker,
     Reply(Target),
     /// Edit one of our sent messages where it is shown, starting from its text.
     Edit(EventKey, String),
@@ -74,20 +75,15 @@ pub enum Message {
     /// Ask before deleting a timeline row's message.
     AskDelete(String),
     Delete(EventKey),
-    CancelDelete,
     /// Open a timeline row's menu, there.
     OpenMenu(String, MenuAt),
-    CloseMenu,
     /// List everyone who read up to a timeline row's message.
     OpenReaders(String),
-    CloseReaders,
     /// List everyone who reacted to a timeline row's message with a key.
     OpenReactors(String, String),
-    CloseReactors,
     /// Offer to retry a timeline row's message that was not sent, or to
     /// take it back.
     OpenUnsent(String),
-    CloseUnsent,
     /// Send again a message that was not sent.
     Retry(EventKey),
     /// Take a message out of the send queue, its text back in the composer.
@@ -347,8 +343,7 @@ pub fn toolbar<'a>(
                 .then(|| Message::TogglePicker(event.id.clone(), PickerAt::Toolbar)),
         );
         bar = bar.push(
-            popover(react, picker, Side::Below, Edge::Right)
-                .on_dismiss(act(room, Message::ClosePicker)),
+            popover(react, picker, Side::Below, Edge::Right).on_dismiss(app::Message::ClosePopup),
         );
     }
     if offers(MessageAction::Reply) {
@@ -387,7 +382,7 @@ pub fn toolbar<'a>(
                 .then(|| Message::OpenMenu(event.id.clone(), MenuAt::Toolbar)),
         );
         bar = bar.push(
-            popover(more, open, Side::Below, Edge::Right).on_dismiss(act(room, Message::CloseMenu)),
+            popover(more, open, Side::Below, Edge::Right).on_dismiss(app::Message::ClosePopup),
         );
     }
     container(bar)
@@ -488,7 +483,7 @@ pub fn reactions<'a>(
         Position::Top,
     );
     let react =
-        popover(react, picker, Side::Below, Edge::Left).on_dismiss(act(room, Message::ClosePicker));
+        popover(react, picker, Side::Below, Edge::Left).on_dismiss(app::Message::ClosePopup);
     row(pills)
         .push(react)
         .spacing(4)
@@ -540,7 +535,7 @@ fn pill<'a>(
             Side::Below,
             Edge::Left,
         )
-        .on_dismiss(act(room, Message::CloseReactors))
+        .on_dismiss(app::Message::ClosePopup)
         .into();
     }
     let names: Vec<_> = reaction.by.iter().map(User::display_name).collect();
@@ -612,7 +607,7 @@ pub fn confirm_delete<'a>(room: &OwnedRoomId, event: &Event) -> Element<'a, app:
         button(text("Cancel").size(12))
             .padding([2, 8])
             .style(style::text_button)
-            .on_press(act(room, Message::CancelDelete)),
+            .on_press(app::Message::ClosePopup),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
@@ -656,7 +651,7 @@ pub fn read_markers<'a>(
         let list = people(&event.read_by, avatars);
         return Some(
             popover(markers, Some(list), Side::Above, Edge::Right)
-                .on_dismiss(act(room, Message::CloseReaders))
+                .on_dismiss(app::Message::ClosePopup)
                 .into(),
         );
     }
@@ -728,11 +723,11 @@ pub fn send_status<'a>(
         return Some(
             popover(
                 cross,
-                Some(unsent_menu(room, event, failed)),
+                Some(menu::view(unsent_entries(room, event, failed), Width::Menu)),
                 Side::Above,
                 Edge::Right,
             )
-            .on_dismiss(act(room, Message::CloseUnsent))
+            .on_dismiss(app::Message::ClosePopup)
             .into(),
         );
     }
@@ -747,23 +742,23 @@ pub fn send_status<'a>(
 
 /// Retry a message that could not be sent (`failed`), or take back one not
 /// sent: its text goes back to the composer.
-fn unsent_menu<'a>(room: &OwnedRoomId, event: &Event, failed: bool) -> Element<'a, app::Message> {
-    let retry = button(text("Retry").size(12))
-        .padding([2, 8])
-        .style(style::text_button)
-        .on_press(act(room, Message::Retry(event.key.clone())));
-    let unsend = button(text("Cancel and put back").size(12))
-        .padding([2, 8])
-        .style(style::text_button)
-        .on_press(act(room, Message::Unsend(event.key.clone())));
-    let mut choices = row![].spacing(4).align_y(Alignment::Center);
+fn unsent_entries(
+    room: &OwnedRoomId,
+    event: &Event,
+    failed: bool,
+) -> Vec<Entry<'static, app::Message>> {
+    let mut entries = Vec::new();
     if failed {
-        choices = choices.push(retry);
+        entries.push(Item::new("Retry", act(room, Message::Retry(event.key.clone()))).into());
     }
-    container(choices.push(unsend))
-        .padding(4)
-        .style(style::toolbar)
-        .into()
+    entries.push(
+        Item::new(
+            "Cancel and put back",
+            act(room, Message::Unsend(event.key.clone())),
+        )
+        .into(),
+    );
+    entries
 }
 
 /// People who read up to a message or reacted to it; a click on one opens

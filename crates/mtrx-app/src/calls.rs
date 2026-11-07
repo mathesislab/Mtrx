@@ -6,7 +6,7 @@
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{button, column, container, row, rule, text},
+    widget::{button, column, container, row, text},
 };
 use mtrx_core::{CallService, OwnedRoomId, RoomLink, Topic, recognize_call_link};
 
@@ -16,6 +16,7 @@ use crate::{
     fonts,
     hint::{Position, hint, hint_with},
     icons,
+    menu::{self, Entry, Item, Width},
     popover::{Edge, Side, popover},
     reorder::{self, Reorder},
     room, style, topic,
@@ -30,7 +31,6 @@ pub enum Message {
     /// The call service of the room's nearest space with one.
     SpaceService(Option<CallService>),
     OpenMenu,
-    Close,
     /// Open a call or link from the menu.
     Open(String),
     /// Post a new call link of this service in the room.
@@ -189,35 +189,33 @@ impl RoomCalls {
                 .size(12)
                 .into(),
         );
-        let menu = menu.map(|menu| self.menu_view(menu, topic, own, can_edit));
+        let menu = menu.map(|menu| {
+            menu::view(
+                self.entries(menu, topic, own, can_edit),
+                Width::At(MENU_WIDTH),
+            )
+        });
         popover(
             row![main, toggle].spacing(1).height(SPLIT_HEIGHT),
             menu,
             Side::Below,
             Edge::Right,
         )
-        .on_dismiss(self.message(Message::Close))
+        .on_dismiss(app::Message::ClosePopup)
         .into()
     }
 
-    fn menu_view<'a>(
+    /// The menu: the room's calls and links, which those who may edit
+    /// them reorder, then the services to start a call with; nothing to
+    /// choose while a call is being started (`busy`).
+    fn entries<'a>(
         &'a self,
         state: &'a Menu,
         topic: &Topic,
         own: &'a [CallService],
         can_edit: bool,
-    ) -> Element<'a, app::Message> {
-        let item = |label: String, message: Option<Message>| {
-            button(ellipsis(label).size(13))
-                .width(Length::Fill)
-                .padding([4, 10])
-                .style(style::list_item(false))
-                .on_press_maybe(message.filter(|_| !self.busy).map(|m| self.message(m)))
-        };
-        let heading =
-            |label| container(text(label).size(12).style(text::secondary)).padding([4, 10]);
-        let separator = || container(rule::horizontal(1).style(style::separator)).padding([4, 0]);
-        let mut menu = column![].spacing(1);
+    ) -> Vec<Entry<'a, app::Message>> {
+        let mut entries = Vec::new();
         let (calls, links): (Vec<&RoomLink>, Vec<&RoomLink>) =
             topic.links.iter().partition(|l| l.is_call());
         for (group, order, message) in [
@@ -228,23 +226,30 @@ impl RoomCalls {
                 continue;
             };
             let call = first.is_call();
-            menu = menu.push(heading(if call { "Calls" } else { "Links" }));
+            entries.push(Entry::Heading(
+                if call { "Calls" } else { "Links" }.to_owned(),
+            ));
             let many = group.len() > 1;
             let rows = (group.iter().enumerate())
                 .map(|(at, link)| self.link_item(link, own, call && many && at == 0))
                 .collect();
             let room = self.room.clone();
-            menu = menu.push(reorder::list(order, rows, can_edit && many, move |m| {
-                room::Message::Calls(message(m)).to(&room)
-            }));
+            entries.push(Entry::Custom(reorder::list(
+                order,
+                rows,
+                can_edit && many,
+                move |m| room::Message::Calls(message(m)).to(&room),
+            )));
         }
         if !topic.links.is_empty() {
-            menu = menu.push(separator());
+            entries.push(Entry::Separator);
         }
-        menu = menu.push(heading("Start a new call with"));
+        entries.push(Entry::Heading("Start a new call with".to_owned()));
         let services = self.services(own);
         if services.is_empty() {
-            menu = menu.push(heading("No call services yet: add one in Settings"));
+            entries.push(Entry::Heading(
+                "No call services yet: add one in Settings".to_owned(),
+            ));
         }
         for service in services {
             let label = if Some(service) == self.space_service.as_ref() {
@@ -252,29 +257,31 @@ impl RoomCalls {
             } else {
                 service.name.clone()
             };
-            menu = menu.push(hint(
-                item(label, Some(Message::Start(service.clone()))),
-                start_hint(service),
-                Position::Left,
-            ));
+            let item = if self.busy {
+                Item::disabled(label)
+            } else {
+                Item::new(label, self.message(Message::Start(service.clone())))
+            };
+            entries.push(item.hint(start_hint(service)).into());
         }
         if can_edit {
-            menu = menu.push(separator()).push(
-                button(ellipsis("Edit room links…").size(13))
-                    .width(Length::Fill)
-                    .padding([4, 10])
-                    .style(style::list_item(false))
-                    .on_press(room::Message::Topic(topic::Message::Edit).to(&self.room)),
+            entries.push(Entry::Separator);
+            entries.push(
+                Item::new(
+                    "Edit room links…",
+                    room::Message::Topic(topic::Message::Edit).to(&self.room),
+                )
+                .into(),
             );
         }
         if let Some(error) = &state.error {
-            menu = menu.push(container(text(error).size(12).style(text::danger)).padding([4, 10]));
+            entries.push(Entry::Custom(
+                container(text(error).size(12).style(text::danger))
+                    .padding([4, 10])
+                    .into(),
+            ));
         }
-        container(menu)
-            .width(MENU_WIDTH)
-            .padding(4)
-            .style(style::toolbar)
-            .into()
+        entries
     }
 
     /// A call or link in the menu, opening it; marked as the room's call

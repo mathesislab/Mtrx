@@ -13,12 +13,13 @@ use mtrx_core::{
 };
 
 use crate::{
-    app::Shared,
-    context_menu::{self, context_menu},
+    app::{self, Shared},
+    context_menu::context_menu,
     ellipsis::ellipsis,
     files, fonts,
     hint::{Position, hint},
     icons,
+    menu::{self, Entry, Item, Width},
     popover::{Edge, Side, popover},
     style,
 };
@@ -39,14 +40,13 @@ pub struct File {
     pub event: Option<OwnedEventId>,
 }
 
-/// The list as the core last sent it, and what is open in it.
+/// The list as the core last sent it. Whether it is open, and a
+/// download's menu in it, is the window's popup
+/// ([`app::Popup::Downloads`]).
 #[derive(Default)]
 pub struct Downloads {
     /// Newest first.
     list: Vec<Download>,
-    open: bool,
-    /// The download whose menu is open.
-    menu: Option<DownloadId>,
     /// Why opening or showing a download's file failed.
     errors: HashMap<DownloadId, String>,
 }
@@ -54,9 +54,10 @@ pub struct Downloads {
 #[derive(Debug, Clone)]
 pub enum Message {
     Updated(Vec<Download>),
-    /// Open or close the list.
-    Toggle,
-    Close,
+    /// For the app: open the list.
+    OpenList,
+    /// For the app: open a download's menu in the list, or close it
+    /// (`None`), the list staying open.
     Menu(Option<DownloadId>),
     /// Open a finished download's file in its app.
     Open(DownloadId),
@@ -92,32 +93,20 @@ pub fn subscription(session: &Arc<Session>) -> Subscription<Message> {
 }
 
 impl Downloads {
-    /// Handles all but [`Message::GoTo`] and [`Message::Report`], which are
-    /// the app's.
+    /// Handles all but [`Message::OpenList`], [`Message::Menu`],
+    /// [`Message::GoTo`] and [`Message::Report`], which are the app's.
     pub fn update(&mut self, session: &Arc<Session>, message: Message) -> Task<Message> {
         match message {
             Message::Updated(list) => {
                 self.errors.retain(|id, _| list.iter().any(|d| d.id == *id));
-                if self.menu.is_some_and(|id| list.iter().all(|d| d.id != id)) {
-                    self.menu = None;
-                }
-                self.open &= !list.is_empty();
                 self.list = list;
             }
-            Message::Toggle => {
-                self.open = !self.open;
-                self.menu = None;
-            }
-            Message::Close => self.close(),
-            Message::Menu(menu) => self.menu = menu,
             Message::Open(id) => {
-                self.menu = None;
                 if let Some(path) = self.done(id) {
                     return open_file(id, path);
                 }
             }
             Message::Show(id) => {
-                self.menu = None;
                 if let Some(path) = self.done(id) {
                     return Task::perform(
                         async move {
@@ -135,10 +124,7 @@ impl Downloads {
                 self.errors.remove(&id);
                 session.retry_download(id);
             }
-            Message::Remove(id) => {
-                self.menu = None;
-                session.remove_download(id);
-            }
+            Message::Remove(id) => session.remove_download(id),
             Message::Clear => session.clear_downloads(),
             Message::Failed(id, error) => {
                 self.errors.insert(id, error);
@@ -183,15 +169,27 @@ impl Downloads {
                 return Task::future(async move { session.finished(id).await.ok() })
                     .and_then(move |path| open_file(id, path));
             }
-            Message::GoTo(..) | Message::Report(_) => {}
+            Message::OpenList | Message::Menu(_) | Message::GoTo(..) | Message::Report(_) => {}
         }
         Task::none()
     }
 
-    /// Close the list.
-    pub fn close(&mut self) {
-        self.open = false;
-        self.menu = None;
+    /// What stays open of the list, `menu` open in it before, as the list
+    /// changed: nothing once it is empty, and no menu of a download gone.
+    pub fn kept(&self, menu: Option<DownloadId>) -> Option<Option<DownloadId>> {
+        if self.list.is_empty() {
+            return None;
+        }
+        Some(menu.filter(|id| self.list.iter().any(|d| d.id == *id)))
+    }
+
+    /// Whether `message` is a choice in a download's row, which closes its
+    /// menu.
+    pub fn chosen(message: &Message) -> bool {
+        matches!(
+            message,
+            Message::Open(_) | Message::Show(_) | Message::Remove(_)
+        )
     }
 
     /// The path of download `id`, if done.
@@ -202,9 +200,9 @@ impl Downloads {
         })
     }
 
-    /// The icon, with the list above it while open; nothing while there are
-    /// no downloads.
-    pub fn view(&self) -> Option<Element<'_, Message>> {
+    /// The icon, with the list above it while `open` and `menu`'s menu in
+    /// it; nothing while there are no downloads.
+    pub fn view(&self, open: bool, menu: Option<DownloadId>) -> Option<Element<'_, app::Message>> {
         if self.list.is_empty() {
             return None;
         }
@@ -223,31 +221,33 @@ impl Downloads {
         if running > 0 {
             icon = icon.push(icons::ring(RING, overall(&self.list)));
         }
+        // While open, a click on it closes the list as any outside click.
         let anchor = button(icon)
             .padding(3)
-            .style(style::list_item(self.open))
-            .on_press(Message::Toggle);
+            .style(style::list_item(open))
+            .on_press_maybe((!open).then_some(Message::OpenList));
         let tip = match running {
             0 => "Downloads".to_owned(),
             1 => "Downloading 1 file…".to_owned(),
             n => format!("Downloading {n} files…"),
         };
-        let panel = self.open.then(|| self.panel());
+        let anchor: Element<'_, Message> = hint(anchor, tip, Position::Right);
+        let panel = open.then(|| self.panel(menu).map(app::Message::Downloads));
         Some(
             popover(
-                hint(anchor, tip, Position::Right),
+                anchor.map(app::Message::Downloads),
                 panel,
                 Side::Above,
                 Edge::Left,
             )
             .width(PANEL_WIDTH)
-            .on_dismiss(Message::Close)
+            .on_dismiss(app::Message::ClosePopup)
             .into(),
         )
     }
 
-    fn panel(&self) -> Element<'_, Message> {
-        let rows = column(self.list.iter().map(|d| self.row(d))).spacing(2);
+    fn panel(&self, menu: Option<DownloadId>) -> Element<'_, Message> {
+        let rows = column(self.list.iter().map(|d| self.row(d, menu == Some(d.id)))).spacing(2);
         let clear = button(text("Clear").size(13))
             .padding([4, 10])
             .style(style::secondary_button)
@@ -270,7 +270,8 @@ impl Downloads {
         .into()
     }
 
-    fn row<'a>(&'a self, download: &'a Download) -> Element<'a, Message> {
+    /// A download, with its `menu` open or not.
+    fn row<'a>(&'a self, download: &'a Download, menu: bool) -> Element<'a, Message> {
         let id = download.id;
         let status = text(download.status()).size(12);
         let status = match download.state {
@@ -322,7 +323,7 @@ impl Downloads {
             .width(Length::Fill)
             .style(style::list_item(false))
             .on_press_maybe(done.then_some(Message::Open(id)));
-        let menu = (self.menu == Some(id)).then(|| context_menu::menu(menu_items(download)));
+        let menu = menu.then(|| menu::view(entries(download), Width::Menu));
         context_menu(entry, menu, Message::Menu(Some(id)))
             .on_dismiss(Message::Menu(None))
             .into()
@@ -330,20 +331,20 @@ impl Downloads {
 }
 
 /// A download's menu: what can be done with it.
-fn menu_items(download: &Download) -> Vec<(String, Message)> {
+fn entries(download: &Download) -> Vec<Entry<'static, Message>> {
     let mut items = Vec::new();
     if matches!(download.state, DownloadState::Done { .. }) {
-        items.push(("Open".to_owned(), Message::Open(download.id)));
-        items.push(("Show in folder".to_owned(), Message::Show(download.id)));
+        items.push(Item::new("Open", Message::Open(download.id)));
+        items.push(Item::new("Show in folder", Message::Show(download.id)));
     }
     if let Some(event) = &download.event_id {
-        items.push((
-            "Go to message".to_owned(),
+        items.push(Item::new(
+            "Go to message",
             Message::GoTo(download.room_id.clone(), event.clone()),
         ));
     }
-    items.push(("Remove from list".to_owned(), Message::Remove(download.id)));
-    items
+    items.push(Item::new("Remove from list", Message::Remove(download.id)));
+    items.into_iter().map(Entry::Item).collect()
 }
 
 /// A small borderless button with a hint.
@@ -432,7 +433,11 @@ mod tests {
     #[test]
     fn menus_offer_what_fits_the_state() {
         let labels = |download: &Download| -> Vec<String> {
-            menu_items(download).into_iter().map(|(l, _)| l).collect()
+            entries(download)
+                .iter()
+                .filter_map(Entry::label)
+                .map(str::to_owned)
+                .collect()
         };
         let mut done = test_download(1);
         done.state = DownloadState::Done {
@@ -454,8 +459,23 @@ mod tests {
     #[test]
     fn the_icon_shows_while_there_are_downloads() {
         let mut downloads = Downloads::default();
-        assert!(downloads.view().is_none());
+        assert!(downloads.view(false, None).is_none());
         downloads.list = vec![running(1, 0, None)];
-        assert!(downloads.view().is_some());
+        assert!(downloads.view(false, None).is_some());
+    }
+
+    /// The list stays open while there are downloads, a menu while its
+    /// download is listed.
+    #[test]
+    fn what_stays_open_as_the_list_changes() {
+        let mut downloads = Downloads {
+            list: vec![running(1, 0, None), running(2, 0, None)],
+            ..Downloads::default()
+        };
+        assert_eq!(downloads.kept(Some(2)), Some(Some(2)));
+        assert_eq!(downloads.kept(Some(3)), Some(None));
+        assert_eq!(downloads.kept(None), Some(None));
+        downloads.list.clear();
+        assert_eq!(downloads.kept(None), None);
     }
 }
