@@ -329,7 +329,7 @@ mod tests {
              <a href=\"https://x.org/?a=1&amp;b=&quot;\">web</a> \
              <a href=\"mailto:a@b.org\">mail</a> \
              <span data-mx-maths=\"x&lt;1\"><code>x&lt;1</code></span> \
-             <span data-mx-spoiler>secret</span> &lt;script&gt;</p>",
+             &lt;script&gt;</p>",
         );
         let html = document.to_page_html();
         assert!(
@@ -349,13 +349,26 @@ mod tests {
             html.contains("<span class=\"math\">$x&lt;1$</span>"),
             "{html}"
         );
-        assert!(
-            html.contains("<span class=\"spoiler\">secret</span>"),
-            "{html}"
-        );
         assert!(html.contains("&lt;script&gt;"), "{html}");
+
+        let link = |url: &str, text: &str| Inline::Link {
+            url: url.into(),
+            content: vec![Inline::Text(text.into())],
+        };
+        let document = Document {
+            blocks: vec![Block::Paragraph(vec![
+                link("javascript:alert(1)", "run"),
+                link("magnet:?xt=urn:x", "get"),
+                Inline::Styled {
+                    style: Style::Spoiler,
+                    content: vec![Inline::Text("secret".into())],
+                },
+            ])],
+        };
+        let html = document.to_page_html();
+        assert_eq!(html, "<p>runget<span class=\"spoiler\">secret</span></p>");
         // The clipboard's keeps every link.
-        assert!(document.to_html().contains("magnet:"));
+        assert!(document.to_html().contains("javascript:alert(1)"));
     }
 
     #[test]
