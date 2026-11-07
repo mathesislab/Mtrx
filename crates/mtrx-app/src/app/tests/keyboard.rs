@@ -827,15 +827,18 @@ async fn shortcuts_type_nothing_in_fields() {
     ui.run(iced::widget::operation::focus(sidebar::SEARCH));
     assert_eq!(
         typed(&mut ui, "o", Modifiers::empty()),
-        r#"[RoomFilter("o")]"#
+        r#"[Sidebar(Filter("o"))]"#
     );
     assert_eq!(
         typed(&mut ui, "1", Modifiers::COMMAND),
-        "[GoToRoom(Row(0))]"
+        "[Sidebar(GoTo(Row(0)))]"
     );
 
     ui.run(iced::widget::operation::focus(message_field::COMPOSER));
-    assert_eq!(typed(&mut ui, "k", Modifiers::COMMAND), "[FocusSearch]");
+    assert_eq!(
+        typed(&mut ui, "k", Modifiers::COMMAND),
+        "[Sidebar(FocusSearch)]"
+    );
     // Typing still types, also with ⌥.
     assert_eq!(
         typed(&mut ui, "é", Modifiers::ALT),
