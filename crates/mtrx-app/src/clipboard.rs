@@ -97,16 +97,6 @@ pub enum Pasted {
     Text(String),
 }
 
-/// A field one writes in, which pastes, and has a menu of its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Field {
-    /// The composer, which also attaches files and pictures.
-    Composer,
-    /// A message being edited in place: text only, as an edit cannot add
-    /// files.
-    Edit,
-}
-
 /// How to paste.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Paste {
@@ -130,9 +120,9 @@ pub fn paste(press: &KeyPress) -> Option<Paste> {
     .then_some(Paste::Rich)
 }
 
-/// What the clipboard holds, as pasted `how` into `field`; `None` for
-/// nothing it can take.
-pub async fn read(how: Paste, field: Field) -> Option<Pasted> {
+/// What the clipboard holds, as pasted `how` into a field that takes
+/// `files` and pictures too, or only text; `None` for nothing it can take.
+pub async fn read(how: Paste, files: bool) -> Option<Pasted> {
     tokio::task::spawn_blocking(move || {
         with(|clipboard| {
             let text = clipboard.get().text().ok();
@@ -140,7 +130,7 @@ pub async fn read(how: Paste, field: Field) -> Option<Pasted> {
                 return Ok(text.filter(|text| !text.is_empty()).map(Pasted::Text));
             }
             let html = clipboard.get().html().ok();
-            if field == Field::Edit {
+            if !files {
                 return Ok(pasted(Vec::new(), text, html, || None));
             }
             let files = clipboard.get().file_list().unwrap_or_default();

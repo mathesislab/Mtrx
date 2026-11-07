@@ -11,11 +11,10 @@ use std::{
 use iced::{
     Alignment, Element, Length, Padding, Rectangle, Task, Theme, Vector,
     advanced::widget::{Id, Operation, operation},
-    keyboard::{Key, key::Named},
     mouse, task,
     widget::{
         button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
-        space, span, stack, text, text_editor,
+        space, span, stack, text,
     },
 };
 use mtrx_core::{
@@ -29,22 +28,21 @@ use crate::{
     app::{self, Popup, Shared},
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
-    clipboard::{self, Copied, Field},
+    clipboard::Copied,
     context_menu::context_menu,
     drag_scroll::drag_scroll,
-    edit_menu,
     ellipsis::ellipsis,
     emoji,
     find::{self, Find},
     fonts,
-    highlight::{self, Marks},
     hint::{Position, hint},
     icons, info,
     math::{self, Math, Rendered},
     media::{self, Attached, Previews},
     members,
-    mention::{self, Candidate, Completion},
+    mention::{self, Mentionable},
     message,
+    message_field::{self, Field, MessageField},
     message_menu::{self, MenuAt},
     pins,
     popover::{Edge, Side, popover},
@@ -52,7 +50,7 @@ use crate::{
     rows::{self, Part, time},
     selectable::{self, image::selectable_image, text::selectable},
     selection::{self, Bounds, Point, Pos, Selection, Shown, Step},
-    send_later, sidebar,
+    send_later,
     status::{self, Status},
     style::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
@@ -77,8 +75,6 @@ const FILL: usize = 40;
 
 /// Uploads quicker than this do not show in the status pill.
 const UPLOAD_SHOWN_AFTER: Duration = Duration::from_millis(500);
-/// The message field, focused again after inserting an emoji.
-pub const COMPOSER: &str = "composer";
 /// Right padding of the composer's text, clear of its paperclip and smiley.
 const COMPOSER_INSET: f32 = emoji::FIELD_INSET + 29.0;
 /// The timeline's scrollable.
@@ -104,7 +100,8 @@ pub enum Message {
     ReplyFound(Option<Target>),
     Scrolled(Viewport),
     Paginated(Result<(), String>),
-    Composer(text_editor::Action),
+    /// The composer, or the message edited in place.
+    Field(Field, message_field::Message),
     /// Typed with nothing focused: goes on in the composer.
     TypeInComposer(String),
     Send,
@@ -123,8 +120,6 @@ pub enum Message {
     ScrollKey(Scroll),
     /// Names of others typing.
     Typing(Vec<String>),
-    /// Completing a mention in the composer.
-    Mention(mention::Message),
     MembersLoaded(Result<Vec<Member>, String>),
     Calls(calls::Message),
     /// The topic and links, in the topic panel.
@@ -153,20 +148,10 @@ pub enum Message {
     FileDropped(PathBuf),
     /// Files were read to attach to the message.
     Attached(Vec<Result<Attached, String>>),
-    /// ⌘V (or ⌥⇧⌘V) in a field: read the clipboard.
-    Paste(Field, clipboard::Paste),
-    /// What the clipboard held, to paste into a field.
-    Pasted(Field, Option<clipboard::Pasted>),
-    /// The menu of a field one writes in.
-    EditMenu(Field, edit_menu::Message),
     /// Remove an attached file, by index.
     Unattach(usize),
     /// The timeline loaded anew (⌘R).
     Reloaded(Result<Shared<RoomTimeline>, String>),
-    /// The composer's emoji panel.
-    ComposerEmoji(emoji::Message),
-    /// Put an emoji into the composer.
-    InsertEmoji(String),
 }
 
 impl Message {
@@ -183,7 +168,7 @@ pub struct Room {
     pub timeline: Arc<RoomTimeline>,
     /// The timeline's rows, oldest first.
     pub rows: Arc<Vec<Row>>,
-    pub composer: text_editor::Content,
+    pub composer: MessageField,
     /// Files sent after the composer's text.
     pub attachments: Vec<Attached>,
     pub calls: RoomCalls,
@@ -216,8 +201,6 @@ pub struct Room {
     pub loading_members: bool,
     /// What `@` may mention, see [`mention::texts`].
     pub mentions: Arc<[String]>,
-    /// Completing a mention in the composer.
-    pub completion: Option<Completion>,
     /// How many of the newest rows are rendered.
     shown: usize,
     pub paginating: bool,
@@ -263,12 +246,11 @@ impl Room {
             member_list: None,
             loading_members: false,
             mentions: Default::default(),
-            completion: None,
             id,
             handle,
             rows,
             timeline,
-            composer: text_editor::Content::new(),
+            composer: MessageField::new(Field::Composer, ""),
             drafts: Arc::new(drafts),
             pending_reply: None,
             _reply_wait: None,
@@ -320,8 +302,8 @@ impl Room {
             return;
         }
         // Keep the changes: in the composer if it is free.
-        if self.composer.text().trim().is_empty() {
-            self.set_composer(text_editor::Content::with_text(&edit.text()));
+        if self.composer.is_empty() {
+            self.composer.set_text(&edit.text());
             self.editing = None;
             self.error = Some(
                 "The scheduled message was sent before your changes were saved; \
@@ -334,30 +316,81 @@ impl Room {
         }
     }
 
-    /// Replace what the composer holds.
-    pub fn set_composer(&mut self, content: text_editor::Content) {
-        self.composer = content;
-        self.update_completion();
-    }
-
-    /// The composer's text or cursor changed: complete the mention there.
-    pub fn update_completion(&mut self) {
-        self.completion = Completion::of(&self.composer, self.completion.as_ref());
-    }
-
-    /// Who the mention being completed may be; `@room` too if
-    /// `mention_room` (our right).
-    pub fn candidates(&self, own: &UserId, mention_room: bool) -> Vec<Candidate<'_>> {
-        match (&self.completion, &self.member_list) {
-            (Some(completion), Some(Ok(members))) => mention::candidates(
-                &completion.query.text,
-                members,
-                &self.mentions,
-                own,
-                mention_room,
-            ),
-            _ => Vec::new(),
+    /// The field `field`: the composer, or the message edited in place
+    /// while one is.
+    pub fn field_mut(&mut self, field: Field) -> Option<&mut MessageField> {
+        match field {
+            Field::Composer => Some(&mut self.composer),
+            Field::Edit => self.editing.as_mut().map(|edit| &mut edit.field),
         }
+    }
+
+    /// Who may be mentioned here: `@room` too if `mention_room` (our
+    /// right).
+    pub fn mentionable<'a>(&'a self, own: &'a UserId, mention_room: bool) -> Mentionable<'a> {
+        Mentionable {
+            members: self
+                .member_list
+                .as_ref()
+                .and_then(|members| members.as_deref().ok()),
+            texts: &self.mentions,
+            own,
+            room: mention_room,
+        }
+    }
+
+    /// `message` to the mention completion of `field`.
+    pub fn mention<T>(
+        &mut self,
+        field: Field,
+        message: mention::Message,
+        own: &UserId,
+        mention_room: bool,
+    ) -> Task<T> {
+        let members = self.member_list.as_ref().and_then(|m| m.as_deref().ok());
+        let mentions = Mentionable {
+            members,
+            texts: &self.mentions,
+            own,
+            room: mention_room,
+        };
+        let target = match field {
+            Field::Composer => &mut self.composer,
+            Field::Edit => match &mut self.editing {
+                Some(edit) => &mut edit.field,
+                None => return Task::none(),
+            },
+        };
+        let candidates = target.candidates(&mentions);
+        target.mention(message, &candidates)
+    }
+
+    /// A mention is being completed, with someone to offer.
+    pub fn completing(&self, own: &UserId, mention_room: bool) -> bool {
+        let mentions = self.mentionable(own, mention_room);
+        self.fields()
+            .any(|field| !field.candidates(&mentions).is_empty())
+    }
+
+    /// Stop completing mentions.
+    pub fn close_completion(&mut self) {
+        self.composer.close_completion();
+        if let Some(edit) = &mut self.editing {
+            edit.field.close_completion();
+        }
+    }
+
+    /// A mention is being written, and the members it may be are not
+    /// loaded yet.
+    pub fn wants_members(&self) -> bool {
+        self.member_list.is_none()
+            && !self.loading_members
+            && self.fields().any(|field| field.completion().is_some())
+    }
+
+    /// The composer, and the message edited in place.
+    fn fields(&self) -> impl Iterator<Item = &MessageField> {
+        std::iter::once(&self.composer).chain(self.editing.as_ref().map(|edit| &edit.field))
     }
 
     /// The members were loaded, or not.
@@ -372,14 +405,6 @@ impl Room {
     pub fn mentioned(&self, user: OwnedUserId) -> info::Target {
         let members = self.member_list.as_ref().and_then(|m| m.as_deref().ok());
         mentioned(user, members, &self.rows)
-    }
-
-    /// Complete the mention being written with `mention`.
-    pub fn complete(&mut self, mention: &str) {
-        if let Some(completion) = self.completion.take() {
-            mention::insert(&mut self.composer, &completion.query, mention);
-        }
-        self.update_completion();
     }
 
     /// What is written and not sent: the composer's text and the message it
@@ -416,9 +441,7 @@ impl Room {
         } else {
             format!("{written}\n\n{}", draft.text)
         };
-        let mut composer = text_editor::Content::with_text(&text);
-        composer.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-        self.set_composer(composer);
+        self.composer.set_text(&text);
         let answering = self.compose.reply_to().is_some() || self.pending_reply.is_some();
         let Some(event_id) = draft.reply_to.filter(|_| empty && !answering) else {
             return Task::none();
@@ -816,6 +839,13 @@ impl Room {
             .and_then(|(selection, order)| Some((selection.ordered(order)?, order)));
         let id = &self.id;
         let popup = look.popup;
+        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
+        let fields = message_field::Context {
+            mentions: self.mentionable(look.own_user, mention_room),
+            avatars: look.avatars,
+            frequent: look.frequent_emoji,
+            popup,
+        };
         let context = Context {
             room: id,
             theme: &look.theme,
@@ -864,7 +894,7 @@ impl Room {
                 _ => None,
             },
             editing: self.editing.as_ref(),
-            popup,
+            fields,
         };
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
@@ -900,72 +930,6 @@ impl Room {
             |dy| Message::ScrollTimeline(dy).to(id),
         );
 
-        let cancellable = self.compose.cancellable();
-        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
-        let candidates = self.candidates(look.own_user, mention_room);
-        let completing = !candidates.is_empty();
-        let selected = self.composer.selection().is_some();
-        let empty = self.composer.text().is_empty();
-        let composer = text_editor(&self.composer)
-            .id(COMPOSER)
-            .highlight_with::<highlight::Highlighter>(
-                Marks::new(self.mentions.clone()),
-                highlight::format,
-            )
-            .style(style::editor)
-            .placeholder("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)")
-            .on_action(|action| Message::Composer(action).to(id))
-            .key_binding(move |press| {
-                let custom = |message: Message| Some(text_editor::Binding::Custom(message.to(id)));
-                // The window's: going to another room.
-                if sidebar::Go::from_key(&press.key, press.physical_key, press.modifiers).is_some()
-                {
-                    return None;
-                }
-                // Pictures, files and rich text too, which iced's clipboard
-                // lacks.
-                if let Some(how) = clipboard::paste(&press) {
-                    return custom(Message::Paste(Field::Composer, how));
-                }
-                match press.key {
-                    Key::Named(Named::ArrowUp) if completing => {
-                        custom(Message::Mention(mention::Message::Up))
-                    }
-                    Key::Named(Named::ArrowDown) if completing => {
-                        custom(Message::Mention(mention::Message::Down))
-                    }
-                    Key::Named(Named::Enter | Named::Tab) if completing => {
-                        custom(Message::Mention(mention::Message::Choose))
-                    }
-                    // The window's Esc closes the completion.
-                    Key::Named(Named::Escape) if completing => None,
-                    Key::Named(Named::Enter) if !press.modifiers.shift() => custom(Message::Send),
-                    Key::Named(Named::Escape) if cancellable => {
-                        custom(Message::Act(actions::Message::CancelCompose))
-                    }
-                    // Bindings are asked also while not focused.
-                    Key::Named(Named::ArrowUp)
-                        if empty
-                            && press.modifiers.is_empty()
-                            && matches!(press.status, text_editor::Status::Focused { .. }) =>
-                    {
-                        custom(Message::Act(actions::Message::EditLast))
-                    }
-                    _ => selection::editor_key(press, selected),
-                }
-            })
-            .padding(
-                Padding::new(10.0)
-                    .right(COMPOSER_INSET)
-                    .top(if self.attachments.is_empty() {
-                        10.0
-                    } else {
-                        media::CHIP_HEIGHT + 18.0
-                    }),
-            )
-            .max_height(200);
-        let (field_menu, field_emoji) = in_field(popup, Field::Composer);
-        let composer = edit_menu::with_menu(id, Field::Composer, composer, field_menu, selected);
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme
@@ -981,19 +945,28 @@ impl Room {
             "Attach files (or drop them on the window)",
             Position::Top,
         );
-        let toggle = emoji::toggle(
-            field_emoji.is_some(),
-            false,
-            Message::ComposerEmoji(emoji::Message::Open).to(id),
+        let composer = self.composer.view(
+            message_field::Look {
+                placeholder: Some("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)"),
+                cancellable: self.compose.cancellable(),
+                edit_last: true,
+                side: Side::Above,
+                compact: false,
+                padding: Padding::new(10.0).right(COMPOSER_INSET).top(
+                    if self.attachments.is_empty() {
+                        10.0
+                    } else {
+                        media::CHIP_HEIGHT + 18.0
+                    },
+                ),
+                max_height: 200.0,
+                tools: Some(attach),
+            },
+            fields,
+            move |message| Message::Field(Field::Composer, message).to(id),
         );
         // The attached files sit inside the field, above the text.
-        let mut composer = stack![
-            composer,
-            container(row![attach, toggle].spacing(2))
-                .align_right(Length::Fill)
-                .align_bottom(Length::Fill)
-                .padding(Padding::new(6.0).top(0)),
-        ];
+        let mut composer = stack![composer];
         if !self.attachments.is_empty() {
             composer = composer.push(
                 container(media::attached_view(&self.attachments, |index| {
@@ -1002,22 +975,7 @@ impl Room {
                 .padding(Padding::new(8.0).right(COMPOSER_INSET)),
             );
         }
-        let panel = field_emoji.map(|panel| {
-            panel.view(
-                look.frequent_emoji,
-                |emoji| Message::InsertEmoji(emoji).to(id),
-                |message| Message::ComposerEmoji(message).to(id),
-            )
-        });
-        let composer = popover(composer, panel, Side::Above, Edge::Right)
-            .on_dismiss(Message::ComposerEmoji(emoji::Message::Close).to(id))
-            .click_through();
-        let selected = self.completion.as_ref().map_or(0, |c| c.selected);
-        let completion = completing.then(|| mention::view(id, &candidates, selected, look.avatars));
-        let composer = popover(composer, completion, Side::Above, Edge::Left)
-            .on_dismiss(Message::Mention(mention::Message::Close).to(id))
-            .click_through();
-        let composer_empty = self.composer.text().trim().is_empty() && self.attachments.is_empty();
+        let composer_empty = self.composer.is_empty() && self.attachments.is_empty();
         let send = hint(
             button(icons::send(18.0, |theme| {
                 theme.extended_palette().primary.base.text
@@ -1074,8 +1032,7 @@ impl Room {
                 scheduled,
                 rescheduling,
                 self.editing.as_ref(),
-                look.frequent_emoji,
-                popup,
+                fields,
             ));
         }
         above = above.push(actions::typing(&self.typing));
@@ -1370,8 +1327,8 @@ struct Context<'a, 'b> {
     confirm_delete: Option<&'b str>,
     /// The message being edited in place, if any.
     editing: Option<&'a InlineEdit>,
-    /// The menu or picker open in the window, for the message edited.
-    popup: Option<&'a Popup>,
+    /// What the message edited shows of the room and the window.
+    fields: message_field::Context<'a, 'b>,
 }
 
 impl<'a> Context<'a, '_> {
@@ -1582,7 +1539,7 @@ fn event_view<'a>(
         .editing
         .filter(|e| e.target == Editing::Sent(event.key.clone()));
     item = item.push(match edit {
-        Some(edit) => edit.view(context.room, context.frequent_emoji, context.popup),
+        Some(edit) => edit.view(context.room, context.fields),
         None => body,
     });
     let message = match &event.content {
@@ -1744,18 +1701,6 @@ fn event_view<'a>(
         column![space().height(6), row].into()
     } else {
         row.into()
-    }
-}
-
-/// The menu and emoji panel open in `field`, if either is.
-pub fn in_field(
-    popup: Option<&Popup>,
-    field: Field,
-) -> (Option<&edit_menu::Menu>, Option<&emoji::Panel>) {
-    match popup {
-        Some(Popup::FieldMenu(f, menu)) if *f == field => (Some(menu), None),
-        Some(Popup::FieldEmoji(f, panel)) if *f == field => (None, Some(panel)),
-        _ => (None, None),
     }
 }
 

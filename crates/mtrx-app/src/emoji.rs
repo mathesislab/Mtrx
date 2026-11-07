@@ -74,28 +74,9 @@ pub fn insert(content: &mut iced::widget::text_editor::Content, emoji: &str) {
     ))));
 }
 
-/// A text field with a smiley at its right edge, showing or hiding its
-/// emoji panel: a helper for typing, inside the field. The field needs
-/// [`FIELD_INSET`] (or [`FIELD_INSET_COMPACT`]) of right padding so text
-/// stays clear of it.
-pub fn in_field<'a>(
-    field: impl Into<Element<'a, app::Message>>,
-    open: bool,
-    compact: bool,
-    message: app::Message,
-) -> Element<'a, app::Message> {
-    let edge = if compact { 4.0 } else { 6.0 };
-    iced::widget::stack![
-        field.into(),
-        container(toggle(open, compact, message))
-            .align_right(Length::Fill)
-            .align_bottom(Length::Fill)
-            .padding(iced::Padding::new(edge).top(0)),
-    ]
-    .into()
-}
-
-/// The smiley of [`in_field`], showing or hiding the emoji panel.
+/// The smiley at a message field's right edge, showing or hiding its emoji
+/// panel. The field needs [`FIELD_INSET`] (or [`FIELD_INSET_COMPACT`]) of
+/// right padding so text stays clear of it.
 pub fn toggle<'a>(open: bool, compact: bool, message: app::Message) -> Element<'a, app::Message> {
     let size = if compact { 15.0 } else { 19.0 };
     hint(
@@ -116,7 +97,7 @@ pub fn toggle<'a>(open: bool, compact: bool, message: app::Message) -> Element<'
     )
 }
 
-/// Right padding of a text field with [`in_field`]'s smiley.
+/// Right padding of a text field with the smiley ([`toggle`]).
 pub const FIELD_INSET: f32 = 38.0;
 pub const FIELD_INSET_COMPACT: f32 = 30.0;
 
