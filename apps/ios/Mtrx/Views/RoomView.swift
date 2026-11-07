@@ -11,7 +11,6 @@ struct RoomView: View {
     let room: RoomSummary
     @StateObject private var model: TimelineModel
     @StateObject private var info: RoomInfoModel
-    @EnvironmentObject private var images: ImageCache
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
     @EnvironmentObject private var downloads: DownloadsModel
@@ -74,8 +73,8 @@ struct RoomView: View {
                         }
                         withAnimation(.easeOut(duration: 0.2)) { showsShared.toggle() }
                     }
-                } else if let space = session.lists.firstSpaceOf(roomId: room.id) {
-                    SpaceButton(space: space) { session.open(space.id) }
+                } else {
+                    SpaceButton(roomId: room.id)
                 }
             }
         }
@@ -104,19 +103,15 @@ struct RoomView: View {
                 sharing = id
                 self.sheet = nil
             }
-                .environmentObject(images)
-                .environmentObject(session)
+                .account(session)
         }
         .sheet(item: $model.personInfo) { info in
             PersonInfoView(model: info)
-                .environmentObject(images)
-                .environmentObject(session)
-                .environmentObject(presence)
+                .account(session)
         }
         .fullScreenCover(isPresented: $showsInfo) {
             RoomInfoView(room: room, model: info)
-                .environmentObject(images)
-                .environmentObject(session)
+                .account(session)
         }
         .confirmationDialog("Delete this message for everyone?", isPresented: isDeleting, titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -315,17 +310,23 @@ private struct SharedRoomsButton: View {
 }
 
 /// A room's space (the first in the Spaces tab's order) at the right of its
-/// header: its small picture, which shows the space.
+/// header, if any: its small picture, which shows the space. It follows the
+/// room lists itself, so that their updates don't draw the room again.
 private struct SpaceButton: View {
-    let space: RoomSummary
-    let open: () -> Void
+    let roomId: String
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
 
     var body: some View {
-        Button(action: open) {
-            AvatarView(name: space.name, uri: space.avatarUrl, size: 28, shape: .square)
+        if let space = rooms.lists.firstSpaceOf(roomId: roomId) {
+            Button {
+                home.open(space.id)
+            } label: {
+                AvatarView(name: space.name, uri: space.avatarUrl, size: 28, shape: .square)
+            }
+            .accessibilityLabel(space.name)
+            .accessibilityHint("Shows the space")
         }
-        .accessibilityLabel(space.name)
-        .accessibilityHint("Shows the space")
     }
 }
 
@@ -335,6 +336,8 @@ private struct SpaceButton: View {
 /// shows the space.
 struct SharedRoomsPanel: View {
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
     let userId: String
     /// The person's.
     let name: String
@@ -346,8 +349,8 @@ struct SharedRoomsPanel: View {
         Group {
             if let shared {
                 RoomList(
-                    sections: session.lists.roomGroups(among: shared.sorted(), folded: []), searching: false, banner: false,
-                    openSettings: {}, opensInRooms: true, openSpace: { session.open($0) }
+                    sections: rooms.lists.roomGroups(among: shared.sorted(), folded: []), searching: false, banner: false,
+                    openSettings: {}, opensInRooms: true, openSpace: { home.open($0) }
                 ) {
                     Text("No rooms shared with \(name)")
                         .foregroundStyle(.secondary)

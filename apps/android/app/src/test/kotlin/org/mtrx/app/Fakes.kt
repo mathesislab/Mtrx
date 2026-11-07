@@ -13,13 +13,11 @@ import org.mtrx.app.model.Logger
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PushStore
 import org.mtrx.app.rooms.SectionPrefs
-import org.mtrx.app.rooms.SectionStore
 import org.mtrx.app.model.PusherDevice
 import org.mtrx.app.model.RoomNotifications
 import org.mtrx.app.model.RoomSort
-import org.mtrx.app.model.RoomSortStore
-import org.mtrx.app.model.SelectedSpaceStore
-import org.mtrx.app.model.SharePresenceStore
+import org.mtrx.app.model.MemoryStore
+import org.mtrx.app.model.PreferenceStore
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
 import uniffi.mtrx.Address
@@ -751,40 +749,6 @@ class FakeVerification(private val otherUser: String) : Verification(NoHandle) {
     }
 }
 
-/** The app's preferences, in memory: one instance across "launches". */
-class FakeSpaceStore(var saved: SpaceKey? = null) : SelectedSpaceStore {
-    override suspend fun load(): SpaceKey? = saved
-
-    override suspend fun save(entry: SpaceKey?) {
-        saved = entry
-    }
-}
-
-/** The sections' arrangement, in memory: one instance across "launches". */
-class FakeSectionStore(var saved: Map<String, SectionPrefs>? = null) : SectionStore {
-    override suspend fun load(): Map<String, SectionPrefs>? = saved
-
-    override suspend fun save(prefs: Map<String, SectionPrefs>) {
-        saved = prefs
-    }
-}
-
-/** The order of the spaces' rooms, in memory: one instance across "launches". */
-class FakeSortStore(var saved: RoomSort? = null) : RoomSortStore {
-    /** When set, [load] reads the saved order, then waits for it to return. */
-    var loading: CompletableDeferred<Unit>? = null
-
-    override suspend fun load(): RoomSort? {
-        val read = saved
-        loading?.await()
-        return read
-    }
-
-    override suspend fun save(sort: RoomSort) {
-        saved = sort
-    }
-}
-
 /** With its dot, as the library sends it (the line needs the library). */
 fun makePresence(
     state: PresenceState,
@@ -1324,25 +1288,16 @@ class FakeNotifier : MessageNotifier {
     }
 }
 
-/** "Share my presence", in memory: one instance across "launches". */
-class FakeSharePresenceStore(var saved: Boolean? = null) : SharePresenceStore {
-    override suspend fun load(): Boolean? = saved
-
-    override suspend fun save(on: Boolean) {
-        saved = on
-    }
-}
-
 /** An account on fakes, with push registration and notifications that tests may look at. */
 fun testAccount(
     mtrx: MtrxInterface,
     scope: CoroutineScope,
-    spaces: SelectedSpaceStore = FakeSpaceStore(),
-    sort: RoomSortStore = FakeSortStore(),
+    spaces: PreferenceStore<SpaceKey?> = MemoryStore(),
+    sort: PreferenceStore<RoomSort> = MemoryStore(),
     push: PushRegistration = pushRegistration(scope),
     notifications: RoomNotifications = FakeNotifier(),
-    sharePresence: SharePresenceStore = FakeSharePresenceStore(),
-    sections: SectionStore = FakeSectionStore(),
+    sharePresence: PreferenceStore<Boolean> = MemoryStore(),
+    sections: PreferenceStore<Map<String, SectionPrefs>> = MemoryStore(),
     log: FakeLog = FakeLog(),
 ): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, log)
 

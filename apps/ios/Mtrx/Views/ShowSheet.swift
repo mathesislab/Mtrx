@@ -6,13 +6,14 @@ import SwiftUI
 /// changed.
 struct ShowSheet: View {
     let item: SpaceEntry
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
     @Environment(\.dismiss) private var dismiss
 
-    private var layout: SectionLayout { session.sectionLayouts[item.key] }
+    private var layout: SectionLayout { home.sectionLayouts[item.key] }
 
     var body: some View {
-        let choices = session.lists.sectionChoices(key: item.key, layout: layout.library)
+        let choices = rooms.lists.sectionChoices(key: item.key, layout: layout.library)
         let keys = choices.map(\.key)
         NavigationStack {
             List {
@@ -69,6 +70,6 @@ struct ShowSheet: View {
     }
 
     private func change(_ change: (inout SectionLayout) -> Void) {
-        session.sectionLayouts.change(item.key, change)
+        home.sectionLayouts.change(item.key, change)
     }
 }

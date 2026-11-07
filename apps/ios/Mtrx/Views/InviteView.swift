@@ -5,6 +5,7 @@ import SwiftUI
 /// Decline leaves it.
 struct InviteView: View {
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var home: HomeNavigation
     let room: RoomSummary
     @State private var answering: Answer?
     @State private var error: String?
@@ -98,7 +99,7 @@ struct InviteView: View {
                 case .decline: try await session.decline(room)
                 }
                 // A sheet closes; pushed, a declined room leaves its path.
-                session.invite = nil
+                home.invite = nil
             } catch {
                 self.error = errorMessage(error)
             }

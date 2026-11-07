@@ -7,7 +7,6 @@ import SwiftUI
 struct RoomInfoView: View {
     let room: RoomSummary
     @ObservedObject var model: RoomInfoModel
-    @EnvironmentObject private var session: SessionModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -126,7 +125,7 @@ struct InviteLeaveButtons: View {
     let room: RoomSummary
     @ObservedObject var model: RoomInfoModel
     let left: () -> Void
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var home: HomeNavigation
     @State private var inviting = false
     @State private var leaving = false
 
@@ -158,7 +157,7 @@ struct InviteLeaveButtons: View {
             Button("Leave", role: .destructive) {
                 Task {
                     if await model.leave() {
-                        session.left(room.id)
+                        home.left(room.id)
                         left()
                     }
                 }
@@ -203,6 +202,7 @@ struct RoomSettingsSections: View {
     let room: RoomSummary
     @ObservedObject var model: RoomInfoModel
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
     @State private var address = ""
     @State private var encrypting = false
 
@@ -250,7 +250,7 @@ struct RoomSettingsSections: View {
             }
             ForEach(settings.spaces.filter(\.canChange), id: \.spaceId) { link in
                 Toggle(
-                    "Suggested in \(session.room(link.spaceId)?.name ?? "the space")",
+                    "Suggested in \(rooms.room(link.spaceId)?.name ?? "the space")",
                     isOn: Binding(get: { link.suggested }, set: { model.setSuggested(in: link.spaceId, $0) }))
             }
             if room.rights.changeHistory && !direct {
@@ -347,7 +347,7 @@ struct RoomSettingsSections: View {
                 } else {
                     FlowLayout(spacing: 6) {
                         ForEach(settings.spaces, id: \.spaceId) { link in
-                            SpaceChip(name: session.room(link.spaceId)?.name ?? link.spaceId, removable: link.canChange) {
+                            SpaceChip(name: rooms.room(link.spaceId)?.name ?? link.spaceId, removable: link.canChange) {
                                 model.removeFromSpace(link.spaceId)
                             }
                         }
@@ -357,7 +357,7 @@ struct RoomSettingsSections: View {
                 if !settings.canAddTo.isEmpty {
                     Menu {
                         ForEach(settings.canAddTo, id: \.self) { space in
-                            Button(session.room(space)?.name ?? space) {
+                            Button(rooms.room(space)?.name ?? space) {
                                 model.addToSpace(space)
                             }
                         }

@@ -1,11 +1,9 @@
 package org.mtrx.app.model
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,8 +13,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Presence
 import uniffi.mtrx.PresenceActivity
@@ -35,46 +31,6 @@ fun directPerson(room: RoomSummary, ownUserId: String): String? =
 fun directPeople(lists: RoomListsInterface, ownUserId: String): Set<String> =
     lists.rooms().mapNotNullTo(mutableSetOf()) { directPerson(it, ownUserId) }
 
-/** Where "Share my presence" is kept across launches. */
-interface SharePresenceStore {
-    /** The saved value; null if none, or it cannot be read. */
-    suspend fun load(): Boolean?
-
-    suspend fun save(on: Boolean)
-}
-
-/**
- * "Share my presence": a device preference, on by default, kept at
- * sign-out, saved in [store]. Used on [scope]'s (main) thread.
- */
-class SharePresence(private val store: SharePresenceStore, private val scope: CoroutineScope) {
-    private val _on = MutableStateFlow(true)
-    val on: StateFlow<Boolean> = _on.asStateFlow()
-
-    /** Set before the saved value was read: that one is stale. */
-    private var changed = false
-
-    // Saves run in order and each saves the latest value.
-    private val saving = Mutex()
-
-    private val loading: Deferred<Unit> = scope.async {
-        val saved = store.load()
-        if (!changed && saved != null) _on.value = saved
-    }
-
-    /** The value, once the saved one is read. */
-    suspend fun current(): Boolean {
-        loading.await()
-        return _on.value
-    }
-
-    fun set(on: Boolean) {
-        changed = true
-        _on.value = on
-        scope.launch { saving.withLock { store.save(_on.value) } }
-    }
-}
-
 /**
  * A session's presence: the people of the direct chats in [rooms] (their
  * presences in [presences], read while the app is in the foreground), and
@@ -92,7 +48,7 @@ class PresenceModel(
     private val session: Session,
     private val ownUserId: String,
     rooms: StateFlow<RoomListsInterface>,
-    private val sharing: SharePresence,
+    private val sharing: Preference<Boolean>,
     parent: CoroutineScope,
     private val log: Logger,
 ) {

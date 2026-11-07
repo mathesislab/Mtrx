@@ -13,7 +13,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
-import org.mtrx.app.FakeSharePresenceStore
 import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.SpacesFixture
 import org.mtrx.app.makePresence
@@ -37,7 +36,7 @@ class PresenceTest {
     // An account restored on [session], in the foreground.
     private fun TestScope.signedIn(
         session: FakeSession,
-        store: FakeSharePresenceStore = FakeSharePresenceStore(),
+        store: MemoryStore<Boolean> = MemoryStore(),
         foreground: Boolean = true,
     ): Account {
         val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), sharePresence = store)
@@ -188,7 +187,7 @@ class PresenceTest {
     @Test
     fun notSharingSyncWaitsUntilWeAreOffline() = runTest {
         val session = FakeSession().apply { ownPresenceGate = CompletableDeferred() }
-        signedIn(session, FakeSharePresenceStore(saved = false))
+        signedIn(session, MemoryStore(saved = false))
         assertEquals(listOf("sharing false"), session.calls)
         session.ownPresenceGate!!.complete(Unit)
         assertEquals(listOf("sharing false", "presence foreground", "startSync"), session.calls)
@@ -197,8 +196,8 @@ class PresenceTest {
     @Test
     fun notSharingIsPassedBeforeTheFirstSync() = runTest {
         val session = FakeSession()
-        val account = signedIn(session, FakeSharePresenceStore(saved = false))
-        assertFalse(account.sharePresence.on.value)
+        val account = signedIn(session, MemoryStore(saved = false))
+        assertFalse(account.sharePresence.value.value)
         assertEquals(listOf("sharing false", "presence foreground", "startSync"), session.calls)
         // Others' presence is still read.
         session.rooms(SpacesFixture.lists())
@@ -248,9 +247,9 @@ class PresenceTest {
     @Test
     fun theSwitchIsPassedOnAndKept() = runTest {
         val session = FakeSession()
-        val store = FakeSharePresenceStore()
+        val store = MemoryStore<Boolean>()
         val account = signedIn(session, store)
-        assertTrue(account.sharePresence.on.value)
+        assertTrue(account.sharePresence.value.value)
 
         account.setSharePresence(false)
         assertEquals(false, store.saved)
@@ -266,7 +265,7 @@ class PresenceTest {
         // A device preference: kept at sign-out.
         account.signOut()
         assertEquals(true, store.saved)
-        assertTrue(account.sharePresence.on.value)
+        assertTrue(account.sharePresence.value.value)
     }
 
     @Test

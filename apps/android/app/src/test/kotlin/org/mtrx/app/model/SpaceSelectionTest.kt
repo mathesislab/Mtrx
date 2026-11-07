@@ -11,8 +11,6 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
-import org.mtrx.app.FakeSortStore
-import org.mtrx.app.FakeSpaceStore
 import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
 import org.mtrx.app.SpacesFixture
@@ -26,23 +24,26 @@ import uniffi.mtrx.SpaceKey
 class SpaceSelectionTest {
     private fun TestScope.scope() = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
 
+    private fun TestScope.spaceSelection(store: MemoryStore<SpaceKey?>, rooms: MutableStateFlow<RoomListsInterface>) =
+        SpaceSelection(Preference(store, null, scope()), rooms, scope())
+
     @Test
     fun withoutASavedEntryNothingIsSelected() = runTest {
-        val selection = SpaceSelection(FakeSpaceStore(), MutableStateFlow<RoomListsInterface>(SpacesFixture.lists()), scope())
+        val selection = spaceSelection(MemoryStore(), MutableStateFlow<RoomListsInterface>(SpacesFixture.lists()))
         assertNull(selection.selected.value)
     }
 
     @Test
     fun theSelectedSpaceIsSavedAndRestoredAtTheNextLaunch() = runTest {
-        val store = FakeSpaceStore()
-        val first = SpaceSelection(store, MutableStateFlow<RoomListsInterface>(SpacesFixture.lists()), scope())
+        val store = MemoryStore<SpaceKey?>()
+        val first = spaceSelection(store, MutableStateFlow<RoomListsInterface>(SpacesFixture.lists()))
         first.select(SpaceKey.Space(TEAM))
         assertEquals(SpaceKey.Space(TEAM), first.selected.value)
         assertEquals(SpaceKey.Space(TEAM), store.saved)
 
         // The next launch starts without a list, then gets the cached one.
         val rooms = MutableStateFlow<RoomListsInterface>(NoRooms)
-        val next = SpaceSelection(store, rooms, scope())
+        val next = spaceSelection(store, rooms)
         assertNull(next.selected.value)
         rooms.value = SpacesFixture.lists(loaded = false)
         assertEquals(SpaceKey.Space(TEAM), next.selected.value)
@@ -53,9 +54,9 @@ class SpaceSelectionTest {
     @Test
     fun aSavedSpaceThatIsGoneIsForgottenOnceTheListIsLoaded() = runTest {
         val left = SpaceKey.Space("!left:x")
-        val store = FakeSpaceStore(left)
+        val store = MemoryStore<SpaceKey?>(left)
         val rooms = MutableStateFlow<RoomListsInterface>(SpacesFixture.lists(loaded = false))
-        val selection = SpaceSelection(store, rooms, scope())
+        val selection = spaceSelection(store, rooms)
         assertNull(selection.selected.value)
         assertEquals("kept while the list may be a cache", left, store.saved)
 
@@ -66,9 +67,9 @@ class SpaceSelectionTest {
 
     @Test
     fun aSelectedEntryThatDisappearsIsDeselectedAndForgotten() = runTest {
-        val store = FakeSpaceStore()
+        val store = MemoryStore<SpaceKey?>()
         val rooms = MutableStateFlow<RoomListsInterface>(SpacesFixture.lists())
-        val selection = SpaceSelection(store, rooms, scope())
+        val selection = spaceSelection(store, rooms)
         selection.select(SpaceKey.Outside)
         assertEquals(SpaceKey.Outside, selection.selected.value)
         assertEquals(SpaceKey.Outside, store.saved)
@@ -84,16 +85,21 @@ class SpaceSelectionTest {
 
     @Test
     fun signingOutForgetsTheSelectedSpace() = runTest {
-        val store = FakeSpaceStore(SpaceKey.Space(TEAM))
+        val store = MemoryStore<SpaceKey?>(SpaceKey.Space(TEAM))
         val session = FakeSession()
-        val account = testAccount(FakeMtrx(restored = session), scope(), store, FakeSortStore())
+        val mtrx = FakeMtrx(restored = session)
+        val account = testAccount(mtrx, scope(), spaces = store)
         account.start()
         session.roomListListener!!.onUpdate(SpacesFixture.lists())
-        val selection = account.signedIn.spaceSelection
-        assertEquals("restored", SpaceKey.Space(TEAM), selection.selected.value)
+        assertEquals("restored", SpaceKey.Space(TEAM), account.signedIn.spaceSelection.selected.value)
 
         account.signOut()
-        assertNull(selection.selected.value)
         assertNull(store.saved)
+        // The next sign-in starts without it.
+        val next = FakeSession()
+        mtrx.loginSession = next
+        account.login("example.org", "me", "secret")
+        next.roomListListener!!.onUpdate(SpacesFixture.lists())
+        assertNull(account.signedIn.spaceSelection.selected.value)
     }
 }
