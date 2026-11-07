@@ -342,5 +342,6 @@ Differences from the design above:
 
 **Tests**
 - No 1200-event integration test: sending that many is slow on CI. Paging is covered by unit tests (the spool's pages come back oldest first; HTML splits at 2000).
+- The undecryptable message is an `m.room.encrypted` event of a session no device has, posted through the API: matrix-sdk shares a room's history keys with those invited, and keys reach a new device too, so neither gives a dependable one.
 - The cancel test cancels at once, so it always lands while running: the folder renamed, valid JSON files, the index "cancelled", the list entry removed while the folder stays.
 - Desktop: the dialog's request (pure), the space and room menus' items, the popover's export entries, notices and progress, and opening the dialog, ⌘↩ starting an export and Esc (UI test).
