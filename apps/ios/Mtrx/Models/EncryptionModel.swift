@@ -1,3 +1,4 @@
+import Combine
 import MtrxFFI
 
 /// Whether this device can read encrypted messages, and the ways to make it

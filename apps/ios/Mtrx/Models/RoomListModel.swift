@@ -1,3 +1,4 @@
+import Combine
 import MtrxFFI
 
 /// The account's rooms as the library lists them: the chats, the rooms by
@@ -77,7 +78,9 @@ final class RoomListModel: ObservableObject {
             do {
                 try await session.setNotesAtTop(on: on)
             } catch {
-                failed(errorMessage(error))
+                if let message = errorMessage(error) {
+                    failed(message)
+                }
             }
         }
     }
