@@ -9,7 +9,10 @@ use mtrx_core::{
     AtHome, Grouping, OwnedRoomId, RoomCategories, RoomSummary, RoomTag, Section, Session, Sort,
 };
 
-use crate::app::{self, Popup};
+use crate::{
+    app::{self, Popup},
+    task,
+};
 
 /// The field naming a category.
 pub const NAME_INPUT: &str = "category-name";
@@ -401,13 +404,8 @@ impl Arrange {
     ) -> Task<app::Message> {
         change.clone()(&mut self.categories);
         let session = session.clone();
-        Task::perform(
-            async move {
-                session
-                    .change_room_categories(change)
-                    .await
-                    .map_err(|e| e.to_string())
-            },
+        task::request(
+            async move { session.change_room_categories(change).await },
             |result| app::Message::Arrange(Message::Saved(result)),
         )
     }
@@ -432,11 +430,8 @@ fn set_tag(summary: &RoomSummary, tag: RoomTag, session: &Arc<Session>) -> Task<
         return Task::none();
     }
     let (session, room) = (session.clone(), summary.id.clone());
-    Task::perform(
-        async move {
-            let saved = async { session.room(&room)?.set_tag(tag).await };
-            saved.await.map_err(|e| e.to_string())
-        },
+    task::request(
+        async move { session.room(&room)?.set_tag(tag).await },
         |result| app::Message::Arrange(Message::Saved(result)),
     )
 }

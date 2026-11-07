@@ -451,6 +451,18 @@ final class Work {
 - Model methods called from buttons become synchronous and start their own work. Views lose their `Task {}`. Tests can still await the returned `Task`.
 - `.task {}` modifiers stay: they end with the view.
 
+**As built (V)**
+- Desktop:
+  - A load is done once its result comes: `Owned::running` turns false before the app sees the result, so no handler resets a flag. `Owned::load` is `run` with `request`'s text error.
+  - A room and a card key their loads by an enum (`room::Load`, `info::Load`). Components with one or two loads keep their string keys private, behind a method naming the load: `Login::{password_sign_in, browser_sign_in}`, `Dialog::{search_users, offer_owners}`, `Join::browse`, `settings::Panel::{google_sign_in, load_space}`.
+  - The room also owns its draft's restore and ⌘R's timeline (`Room.reloading` goes). `Room::reload` cancels the old timeline's pagination and seek.
+  - The space's room listing is owned by `SpaceRooms`, by space, not by the card: the room search shares it. `Listed.loading` goes.
+  - The image and PDF viewers own their download, so closing one stops it. Login owns both sign-ins; its `State` goes.
+  - Downloads stay in core, which cancels them (#84): no `MediaState.downloads`.
+  - Not owned: opening a room (its result is still checked against `Pane::Opening`), timers (the sending clock, the mark on a message gone to), and the session-wide caches (avatars, previews, math, contacts, frequent emoji).
+  - Errors that are not core's keep their own text: Google, call links, the dialog's requests, recovery's progress. `background` takes core results; work that cannot fail stays `Task::future(..).discard()`.
+  - `room_left` stays, for requests' results (7a).
+
 **Deleted**
 - Desktop: `Room.seek`, `Room._reply_wait`, `Room.loading_members`, `Room.paginating` (→ `tasks.running`), the handle fields in `login`, `dialog`, `join` and `settings`, the 39 error mappings, `room_left`'s drop path for loads.
 - iOS: `Subscriptions`, the 18 view `Task {}`s, `TimelineModel.act`, `RoomInfoModel.call`/`change`, the per-model error `Task {}`s.

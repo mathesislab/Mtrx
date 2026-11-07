@@ -2,12 +2,11 @@
 //! needed and so tucked away behind a link, a password.
 
 use iced::{
-    Alignment, Element, Length,
-    task::Handle,
+    Alignment, Element, Length, Task,
     widget::{button, column, container, rule, text, text_input},
 };
 
-use crate::{fonts, logo, style};
+use crate::{fonts, logo, style, task::Owned};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -28,14 +27,9 @@ pub enum Action {
     Password,
 }
 
-#[derive(Default)]
-enum State {
-    #[default]
-    Idle,
-    /// Browser sign-in running; aborting or dropping the handle cancels it.
-    Browser(Handle),
-    Password,
-}
+/// The sign-ins, as keys of `Login::tasks`.
+const PASSWORD: &str = "password";
+const BROWSER: &str = "browser";
 
 pub struct Login {
     pub homeserver: String,
@@ -43,7 +37,8 @@ pub struct Login {
     pub password: String,
     /// The password fields are shown.
     with_password: bool,
-    state: State,
+    /// The sign-in running: [`PASSWORD`] or [`BROWSER`].
+    tasks: Owned,
     pub error: Option<String>,
 }
 
@@ -54,7 +49,7 @@ impl Default for Login {
             user: String::new(),
             password: String::new(),
             with_password: false,
-            state: State::Idle,
+            tasks: Owned::default(),
             error: None,
         }
     }
@@ -73,30 +68,30 @@ impl Login {
             }
             Message::SubmitPassword if self.can_submit_password() => {
                 self.error = None;
-                self.state = State::Password;
                 return Action::Password;
             }
-            Message::Cancel => {
-                if let State::Browser(handle) = std::mem::take(&mut self.state) {
-                    handle.abort();
-                }
-            }
+            Message::Cancel => self.tasks.cancel(&BROWSER),
             Message::Browser | Message::SubmitPassword => {}
         }
         Action::None
     }
 
-    pub fn browser_started(&mut self, handle: Handle) {
-        self.state = State::Browser(handle.abort_on_drop());
+    /// Sign in with the password, by `sign_in`.
+    pub fn password_sign_in<M: Send + 'static>(&mut self, sign_in: Task<M>) -> Task<M> {
+        self.tasks.run(PASSWORD, sign_in)
+    }
+
+    /// Sign in in the browser, by `sign_in`; Cancel stops it.
+    pub fn browser_sign_in<M: Send + 'static>(&mut self, sign_in: Task<M>) -> Task<M> {
+        self.tasks.run(BROWSER, sign_in)
     }
 
     pub fn failed(&mut self, error: String) {
-        self.state = State::Idle;
         self.error = Some(error);
     }
 
     fn idle(&self) -> bool {
-        matches!(self.state, State::Idle)
+        !self.tasks.running(&PASSWORD) && !self.tasks.running(&BROWSER)
     }
 
     fn can_submit_password(&self) -> bool {
@@ -138,7 +133,7 @@ impl Login {
                 Message::SubmitPassword,
             )
             .secure(true),
-            button(text(if matches!(self.state, State::Password) {
+            button(text(if self.tasks.running(&PASSWORD) {
                 "Signing in…"
             } else {
                 "Sign in with password"
@@ -178,34 +173,34 @@ impl Login {
         .align_x(Alignment::Center)
         .width(360);
 
-        form = match &self.state {
-            State::Browser(_) => form.push(text("Continue in your browser…")).push(
+        form = if self.tasks.running(&BROWSER) {
+            form.push(text("Continue in your browser…")).push(
                 button(text("Cancel"))
                     .style(style::secondary_button)
                     .on_press(Message::Cancel),
-            ),
-            State::Idle | State::Password => form
-                .push(
-                    button(text("Sign in with browser").width(Length::Fill).center())
-                        .style(style::primary_button)
-                        .width(Length::Fill)
-                        .padding(10)
-                        .on_press_maybe(self.idle().then_some(Message::Browser)),
-                )
-                .push(
-                    text("Recommended for matrix.org and most servers")
-                        .size(12)
-                        .style(text::secondary),
-                )
-                .push(rule::horizontal(1))
-                .push(if self.with_password {
-                    self.password_form()
-                } else {
-                    button(text("Sign in with a password instead").size(12))
-                        .style(style::text_button)
-                        .on_press(Message::ShowPassword)
-                        .into()
-                }),
+            )
+        } else {
+            form.push(
+                button(text("Sign in with browser").width(Length::Fill).center())
+                    .style(style::primary_button)
+                    .width(Length::Fill)
+                    .padding(10)
+                    .on_press_maybe(self.idle().then_some(Message::Browser)),
+            )
+            .push(
+                text("Recommended for matrix.org and most servers")
+                    .size(12)
+                    .style(text::secondary),
+            )
+            .push(rule::horizontal(1))
+            .push(if self.with_password {
+                self.password_form()
+            } else {
+                button(text("Sign in with a password instead").size(12))
+                    .style(style::text_button)
+                    .on_press(Message::ShowPassword)
+                    .into()
+            })
         };
         if let Some(error) = &self.error {
             form = form.push(text(error).style(text::danger));

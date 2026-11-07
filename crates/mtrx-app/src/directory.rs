@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::{
-    Alignment, Color, Element, Length, Theme,
+    Alignment, Color, Element, Length, Task, Theme,
     widget::{button, column, container, hover, row, space, text},
 };
 use mtrx_core::{
@@ -21,6 +21,7 @@ use crate::{
     fonts,
     hint::{Position, hint},
     icons, style,
+    task::Owned,
 };
 
 pub const AVATAR: f32 = 28.0;
@@ -268,6 +269,8 @@ pub fn secondary(theme: &Theme) -> Color {
 #[derive(Default)]
 pub struct SpaceRooms {
     by_space: HashMap<OwnedRoomId, Listed>,
+    /// The listings under way, by space.
+    listing: Owned<OwnedRoomId>,
     /// Joining or asking to join, from the search.
     pub busy: HashSet<OwnedRoomId>,
 }
@@ -276,27 +279,26 @@ pub struct SpaceRooms {
 struct Listed {
     /// As last listed.
     rooms: Option<Vec<DirectoryRoom>>,
-    loading: bool,
     /// Why the last attempt failed.
     failed: Option<String>,
 }
 
 impl SpaceRooms {
-    /// Start listing `space`'s rooms, unless being listed: whether to ask
-    /// for them.
-    pub fn start(&mut self, space: &OwnedRoomId) -> bool {
-        let listed = self.by_space.entry(space.clone()).or_default();
-        if listed.loading {
-            return false;
+    /// List `space`'s rooms with what `list` makes, unless being listed.
+    pub fn list<M: Send + 'static>(
+        &mut self,
+        space: &OwnedRoomId,
+        list: impl FnOnce(OwnedRoomId) -> Task<M>,
+    ) -> Task<M> {
+        if self.loading(space) {
+            return Task::none();
         }
-        listed.loading = true;
-        true
+        self.listing.run(space.clone(), list(space.clone()))
     }
 
     /// The answer; on failure, the last list stays.
     pub fn loaded(&mut self, space: OwnedRoomId, result: Result<Vec<DirectoryRoom>, String>) {
         let listed = self.by_space.entry(space).or_default();
-        listed.loading = false;
         match result {
             Ok(rooms) => {
                 listed.rooms = Some(rooms);
@@ -307,7 +309,7 @@ impl SpaceRooms {
     }
 
     pub fn loading(&self, space: &OwnedRoomId) -> bool {
-        self.by_space.get(space).is_some_and(|l| l.loading)
+        self.listing.running(space)
     }
 
     /// Whether any of `spaces` is being listed.
@@ -427,8 +429,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_last_list_outlasts_failures() {
+    #[tokio::test]
+    async fn the_last_list_outlasts_failures() {
         let space: OwnedRoomId = "!space:x".try_into().unwrap();
         let mut rooms = SpaceRooms::default();
         let names = |rooms: &SpaceRooms| -> Vec<String> {
@@ -436,13 +438,24 @@ mod tests {
                 .map(|r| r.name.clone())
                 .collect()
         };
-        assert!(rooms.start(&space));
-        assert!(!rooms.start(&space), "already listing");
+        let answer = |result: Result<Vec<DirectoryRoom>, String>| {
+            move |space: OwnedRoomId| Task::done((space, result))
+        };
+        let first = rooms.list(&space, answer(Ok(vec![listed("a", "Ice sheets")])));
+        assert!(rooms.loading(&space));
+        let again = rooms.list(&space, answer(Ok(Vec::new())));
+        assert_eq!(again.units(), 0, "already listing");
         assert!(names(&rooms).is_empty() && !rooms.listed(&space));
-        rooms.loaded(space.clone(), Ok(vec![listed("a", "Ice sheets")]));
+        for (space, result) in crate::task::outputs(first).await {
+            rooms.loaded(space, result);
+        }
         assert_eq!(names(&rooms), ["Ice sheets"]);
-        assert!(rooms.start(&space), "listed again");
-        rooms.loaded(space.clone(), Err("timed out".into()));
+        assert!(!rooms.loading(&space));
+        let second = rooms.list(&space, answer(Err("timed out".into())));
+        assert!(rooms.loading(&space), "listed again");
+        for (space, result) in crate::task::outputs(second).await {
+            rooms.loaded(space, result);
+        }
         assert_eq!(names(&rooms), ["Ice sheets"]);
         assert_eq!(rooms.failed(&space), Some("timed out"));
     }

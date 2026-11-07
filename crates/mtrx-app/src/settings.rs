@@ -8,8 +8,7 @@ use std::{
 };
 
 use iced::{
-    Alignment, Element, Length, Theme,
-    task::Handle,
+    Alignment, Element, Length, Task, Theme,
     widget::{
         button, column, container, pick_list, progress_bar, row, space, text, text_input, toggler,
     },
@@ -28,6 +27,7 @@ use crate::{
     feedback, fonts, frame,
     hint::{Position, hint, shortcut},
     spelling, style,
+    task::Owned,
     text_size::TextSize,
     tint::Tint,
     update::{self, Updater},
@@ -222,6 +222,8 @@ pub struct Panel {
     pub google: GoogleState,
     /// The signed-in Matrix account.
     pub account: Option<String>,
+    /// The selected space's call service, loading.
+    loads: Owned,
 }
 
 /// The Google connection, for Meet links.
@@ -231,8 +233,8 @@ pub struct GoogleState {
     pub account: Option<String>,
     client_id: String,
     client_secret: String,
-    /// Browser sign-in running; aborting the handle cancels it.
-    pub signing_in: Option<Handle>,
+    /// The browser sign-in, while it runs; Cancel stops it.
+    signing_in: Owned,
     pub error: Option<String>,
 }
 
@@ -368,6 +370,16 @@ pub fn change(settings: &mut Settings, preference: Preference) -> Action {
 }
 
 impl Panel {
+    /// Load the selected space's call service with `load`.
+    pub fn load_space<M: Send + 'static>(&mut self, load: Task<M>) -> Task<M> {
+        self.loads.run("space", load)
+    }
+
+    /// Sign in to Google with `sign_in`, which the panel shows.
+    pub fn google_sign_in<M: Send + 'static>(&mut self, sign_in: Task<M>) -> Task<M> {
+        self.google.signing_in.run(SIGN_IN, sign_in)
+    }
+
     pub fn update(&mut self, settings: &mut Settings, message: Message) -> Action {
         match message {
             Message::Preference(preference) => return change(settings, preference),
@@ -420,30 +432,23 @@ impl Panel {
                 });
             }
             Message::GoogleSignIn => {}
-            Message::GoogleCancel => {
-                if let Some(handle) = self.google.signing_in.take() {
-                    handle.abort();
-                }
-            }
-            Message::GoogleSignedIn(result) => {
-                self.google.signing_in = None;
-                match result {
-                    Ok(account) => {
-                        self.google.account = Some(account);
-                        self.google.client_secret.clear();
-                        // Offer Meet links right away.
-                        if !settings
-                            .call_services
-                            .iter()
-                            .any(|s| s.kind == ServiceKind::GoogleMeet)
-                        {
-                            settings.call_services.push(CallService::google_meet());
-                            return Action::Save;
-                        }
+            Message::GoogleCancel => self.google.signing_in.cancel(&SIGN_IN),
+            Message::GoogleSignedIn(result) => match result {
+                Ok(account) => {
+                    self.google.account = Some(account);
+                    self.google.client_secret.clear();
+                    // Offer Meet links right away.
+                    if !settings
+                        .call_services
+                        .iter()
+                        .any(|s| s.kind == ServiceKind::GoogleMeet)
+                    {
+                        settings.call_services.push(CallService::google_meet());
+                        return Action::Save;
                     }
-                    Err(e) => self.google.error = Some(e),
                 }
-            }
+                Err(e) => self.google.error = Some(e),
+            },
             Message::GoogleSignOut => {
                 self.google.error = None;
                 return Action::GoogleSignOut;
@@ -657,9 +662,12 @@ impl Panel {
     }
 }
 
+/// The Google sign-in, as [`GoogleState::signing_in`]'s key.
+const SIGN_IN: &str = "sign in";
+
 impl GoogleState {
     fn can_sign_in(&self) -> bool {
-        self.signing_in.is_none()
+        !self.signing_in.running(&SIGN_IN)
             && !self.client_id.trim().is_empty()
             && !self.client_secret.trim().is_empty()
     }
@@ -674,7 +682,7 @@ impl GoogleState {
                 ]
                 .align_y(Alignment::Center),
             );
-        } else if self.signing_in.is_some() {
+        } else if self.signing_in.running(&SIGN_IN) {
             section = section.push(
                 row![
                     text("Continue in your browser…").width(Length::Fill),
