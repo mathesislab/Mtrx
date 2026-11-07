@@ -2758,13 +2758,12 @@ async fn export_a_space() -> Result<()> {
     Ok(())
 }
 
-/// Messages from before we were in an encrypted room can't be decrypted:
-/// marked and counted. The limits keep the newest.
+/// Messages from before a device existed can't be decrypted on it without
+/// a key backup: marked and counted. The limits keep the newest.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn export_limits_and_undecryptable_messages() -> Result<()> {
-    let (_, alice) = new_user("exportutd").await?;
-    let (_, bob) = new_user("exportutd").await?;
+    let (name, alice) = new_user("exportutd").await?;
     let room = alice
         .session
         .create_room(NewRoom {
@@ -2774,26 +2773,18 @@ async fn export_limits_and_undecryptable_messages() -> Result<()> {
         })
         .await?;
     let timeline = alice.session.timeline(&room).await?;
-    send_text(&timeline, "Before bob").await?;
-    alice
-        .session
-        .room(&room)?
-        .invite(&bob.session.user_id())
-        .await?;
-    join_synced(&bob, &room, "vault").await?;
-    wait_for("bob joined", timeline.updates(), |entries| {
-        entries
-            .iter()
-            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
+    send_text(&timeline, "Before the new device").await?;
+    // A new device, unverified and without a backup: it can't read what
+    // was sent before it, but what it sends.
+    let bob = login(&name).await?;
+    let list = bob.session.room_list().await?;
+    wait_for("room synced", list.updates(), |s| {
+        s.rooms.iter().any(|r| r.id == room && r.name == "vault")
     })
     .await?;
     let since = SystemTime::now();
-    send_text(&timeline, "After bob").await?;
-    let bob_timeline = bob.session.timeline(&room).await?;
-    wait_for("bob decrypts", bob_timeline.updates(), |e| {
-        has_message(e, "After bob")
-    })
-    .await?;
+    let new_timeline = bob.session.timeline(&room).await?;
+    send_text(&new_timeline, "After the new device").await?;
 
     let dir = TempDir::new()?;
     let export = |range| {
@@ -2817,17 +2808,17 @@ async fn export_limits_and_undecryptable_messages() -> Result<()> {
     };
     assert_eq!(summary.undecryptable, 1, "{text}");
     assert!(text.contains("[Unable to decrypt this message"), "{text}");
-    assert!(text.contains(": After bob"), "{text}");
+    assert!(text.contains(": After the new device"), "{text}");
     assert!(read(&all.index)?.contains("vault (vault/messages.txt): 2 messages"));
 
     let (_, text) = export(ExportRange::Last(1)).await?;
     assert!(
-        text.contains(": After bob") && !text.contains("Unable to decrypt"),
+        text.contains(": After the new device") && !text.contains("Unable to decrypt"),
         "{text}"
     );
     let (_, text) = export(ExportRange::Since(since)).await?;
     assert!(
-        text.contains(": After bob") && !text.contains("Unable to decrypt"),
+        text.contains(": After the new device") && !text.contains("Unable to decrypt"),
         "{text}"
     );
     Ok(())
