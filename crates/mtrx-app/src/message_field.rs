@@ -298,10 +298,6 @@ impl MessageField {
     ) -> (Task<Message>, Option<Event>) {
         let field = self.field;
         match message {
-            emoji::Message::Close => {
-                popup.take_if(|popup| matches!(popup, Popup::FieldEmoji(f, _) if *f == field));
-                (Task::none(), None)
-            }
             emoji::Message::Open => {
                 *popup = Some(Popup::FieldEmoji(field, emoji::Panel::default()));
                 (
@@ -342,7 +338,6 @@ impl MessageField {
                 *popup = Some(Popup::FieldMenu(field, edit_menu::Menu::at(&self.content)));
                 return (Task::none(), None);
             }
-            Menu::Close => return (Task::none(), None),
             // The spelling replaces the word as typed over it.
             Menu::Correct(i) => match misspelled.and_then(|m| {
                 m.select(&mut self.content);
@@ -470,10 +465,16 @@ impl MessageField {
         if let Some(placeholder) = look.placeholder {
             editor = editor.placeholder(placeholder);
         }
-        let editor = edit_menu::with_menu(editor, menu, selected, {
-            let to = to.clone();
-            move |message| to(Message::Menu(message))
-        });
+        let editor = edit_menu::with_menu(
+            editor,
+            menu,
+            selected,
+            {
+                let to = to.clone();
+                move |message| to(Message::Menu(message))
+            },
+            app::Message::ClosePopup,
+        );
         let toggle = emoji::toggle(
             emoji.is_some(),
             look.compact,
@@ -501,7 +502,7 @@ impl MessageField {
             )
         });
         let field = popover(field, panel, look.side, Edge::Right)
-            .on_dismiss(to(Message::Emoji(emoji::Message::Close)))
+            .on_dismiss(app::Message::ClosePopup)
             .click_through();
         let highlighted = self.completion.as_ref().map_or(0, |c| c.selected);
         let completion = completing.then(|| {
@@ -592,20 +593,23 @@ mod tests {
         );
     }
 
-    /// Each field opens and closes its own emoji panel in the window's
-    /// popup.
+    /// A field's emoji panel is the window's popup: another field's
+    /// searches leave it alone, and its panel replaces it.
     #[test]
-    fn a_field_closes_only_its_own_panel() {
+    fn each_field_has_its_own_panel() {
         let mut popup = None;
         let mut composer = MessageField::new(Field::Composer, "");
         let mut edit = MessageField::new(Field::Edit, "Melt rates");
         let (_, event) = edit.update(Message::Emoji(emoji::Message::Open), &mut popup);
         assert!(matches!(event, Some(Event::EmojiShown)), "{event:?}");
-        assert!(matches!(popup, Some(Popup::FieldEmoji(Field::Edit, _))));
-        let _ = composer.update(Message::Emoji(emoji::Message::Close), &mut popup);
-        assert!(matches!(popup, Some(Popup::FieldEmoji(Field::Edit, _))));
-        let _ = edit.update(Message::Emoji(emoji::Message::Close), &mut popup);
-        assert!(popup.is_none());
+        let search = Message::Emoji(emoji::Message::Search("ice".into()));
+        let _ = composer.update(search, &mut popup);
+        assert!(matches!(
+            &popup,
+            Some(Popup::FieldEmoji(Field::Edit, panel)) if panel.query.is_empty()
+        ));
+        let _ = composer.update(Message::Emoji(emoji::Message::Open), &mut popup);
+        assert!(matches!(popup, Some(Popup::FieldEmoji(Field::Composer, _))));
     }
 
     #[test]

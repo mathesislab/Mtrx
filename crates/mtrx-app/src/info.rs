@@ -58,8 +58,8 @@ pub struct Shown<'a> {
     pub call_services: &'a [CallService],
     /// Rooms show their pictures, as the room list does.
     pub room_pictures: bool,
-    /// The member whose menu is open, and in which room.
-    pub member_menu: Option<&'a crate::members::MenuKey>,
+    /// The window's, which may be a menu of the card or of a member.
+    pub popup: Option<&'a app::Popup>,
     /// The rooms of spaces as their servers listed them.
     pub space_rooms: &'a directory::SpaceRooms,
 }
@@ -90,15 +90,16 @@ pub enum Message {
     RemovePicture,
     /// A change was saved on the server, or not.
     Saved(Result<(), String>),
-    PictureMenu(bool),
+    /// Open the picture's menu.
+    OpenPictureMenu,
     EditTopic,
     /// Stop editing the topic, back to this one.
     CancelTopic(String),
     /// The address's name, as edited.
     AddressName(String),
     Change(Change),
-    /// The menu of spaces to add the room to.
-    SpacesMenu(bool),
+    /// Open the menu of spaces to add the room to.
+    OpenSpacesMenu,
     /// Let every member invite and edit the space and the rooms in it.
     LetEveryoneEdit,
     /// What that changed, or why it failed.
@@ -178,12 +179,9 @@ pub struct Card {
     copied: Option<String>,
     /// For a space: its rooms and members too.
     pub overview: Option<Overview>,
-    /// The picture's menu is open.
-    picture_menu: bool,
     editing_topic: bool,
     /// The address's name, as edited.
     address: String,
-    spaces_menu: bool,
 }
 
 impl Card {
@@ -194,10 +192,8 @@ impl Card {
             Target::User(_) => None,
         };
         Self {
-            picture_menu: false,
             editing_topic: false,
             address: String::new(),
-            spaces_menu: false,
             overview: room
                 .filter(|r| r.kind == RoomKind::Space)
                 .map(|r| Overview::new(r.id.clone(), tab)),
@@ -266,23 +262,17 @@ impl Card {
             Message::Name(name) => self.name = name,
             Message::Topic(edit) => self.topic.update(edit),
             Message::Notify(_) | Message::JoinRule(_) | Message::SaveDetails => self.error = None,
-            Message::ChangePicture | Message::RemovePicture => {
-                self.picture_menu = false;
-                self.error = None;
-            }
+            Message::ChangePicture | Message::RemovePicture => self.error = None,
             Message::Saved(result) => {
                 if result.is_ok() {
                     self.editing_topic = false;
                 }
                 self.error = result.err();
             }
-            Message::PictureMenu(open) => self.picture_menu = open,
-            Message::SpacesMenu(open) => self.spaces_menu = open,
+            // The app's popup.
+            Message::OpenPictureMenu | Message::OpenSpacesMenu => {}
             Message::AddressName(name) => self.address = name,
-            Message::Change(_) => {
-                self.spaces_menu = false;
-                self.error = None;
-            }
+            Message::Change(_) => self.error = None,
             Message::LetEveryoneEdit => {
                 self.opened = None;
                 self.error = None;
@@ -469,7 +459,8 @@ impl Card {
             Shape::Circle,
         );
         let picture = if allowed(rights.change_picture) {
-            self.picture_button(picture, room.avatar.is_some())
+            let open = matches!(shown.popup, Some(app::Popup::CardPicture));
+            self.picture_button(picture, room.avatar.is_some(), open)
         } else {
             picture
         };
@@ -725,7 +716,8 @@ impl Card {
             ));
         }
         card = card.push(self.address_view(room, settings, shown));
-        card = card.push(self.spaces_view(room, settings, rooms));
+        let adding = matches!(shown.popup, Some(app::Popup::CardAddToSpace));
+        card = card.push(self.spaces_view(room, settings, rooms, adding));
         card = card.push(
             selectable_text(facts(room, settings))
                 .size(13)
@@ -819,12 +811,13 @@ impl Card {
     }
 
     /// The spaces the room is in, as chips taken out with ×, and a menu
-    /// adding it to others: moving it is both.
+    /// adding it to others, open while `adding`: moving it is both.
     fn spaces_view<'a>(
         &'a self,
         room: &RoomSummary,
         settings: &'a RoomSettings,
         rooms: &'a [RoomSummary],
+        adding: bool,
     ) -> Element<'a, app::Message> {
         let name_of = |id: &OwnedRoomId| {
             rooms
@@ -860,18 +853,20 @@ impl Card {
         }
         let others = add_to_space_entries(settings, &room.id, name_of);
         if !others.is_empty() {
-            let open = self.spaces_menu;
+            // While open, a click on it closes the menu as any outside click.
             chips = chips.push(
                 popover(
                     button(text("Add to space…").size(13))
                         .padding([4, 10])
                         .style(style::text_button)
-                        .on_press(app::Message::Info(Message::SpacesMenu(!open))),
-                    open.then(|| menu::view(others, Width::Menu)),
+                        .on_press_maybe(
+                            (!adding).then_some(app::Message::Info(Message::OpenSpacesMenu)),
+                        ),
+                    adding.then(|| menu::view(others, Width::Menu)),
                     Side::Below,
                     Edge::Left,
                 )
-                .on_dismiss(app::Message::Info(Message::SpacesMenu(false))),
+                .on_dismiss(app::Message::ClosePopup),
             );
         }
         if settings.spaces.is_empty() && settings.can_add_to.is_empty() {
@@ -885,11 +880,13 @@ impl Card {
         labelled(label, chips.wrap())
     }
 
-    /// The picture, which changes or removes it from a menu.
+    /// The picture, which changes or removes it from a menu, `open` or
+    /// not.
     fn picture_button<'a>(
         &self,
         picture: Element<'a, app::Message>,
         has_picture: bool,
+        open: bool,
     ) -> Element<'a, app::Message> {
         let badge = container(icons::pencil(10.0, |theme: &Theme| {
             theme.extended_palette().background.base.text
@@ -900,15 +897,14 @@ impl Card {
             picture,
             container(badge).align_right(AVATAR).align_bottom(AVATAR)
         ];
-        let open = self.picture_menu;
+        // While open, a click on it closes the menu as any outside click.
         let button = button(shown)
             .padding(0)
             .style(style::list_item(open))
-            .on_press(app::Message::Info(Message::PictureMenu(!open)));
+            .on_press_maybe((!open).then_some(app::Message::Info(Message::OpenPictureMenu)));
         let menu = open.then(|| menu::view(picture_entries(has_picture), Width::Menu));
         hint(
-            popover(button, menu, Side::Below, Edge::Left)
-                .on_dismiss(app::Message::Info(Message::PictureMenu(false))),
+            popover(button, menu, Side::Below, Edge::Left).on_dismiss(app::Message::ClosePopup),
             "Change picture",
             Position::Bottom,
         )

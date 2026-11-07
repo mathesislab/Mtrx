@@ -127,8 +127,11 @@ pub enum Message {
     /// app menu, which only macOS has.
     #[cfg(target_os = "macos")]
     CheckForUpdates,
-    AddMenu(bool),
-    SpaceMenu(Option<sidebar::SpaceMenu>),
+    /// Open the room list's "+".
+    AddMenu,
+    SpaceMenu(sidebar::SpaceMenu),
+    /// Close the popup: a click outside it, or its Cancel.
+    ClosePopup,
     OpenDialog(dialog::Kind),
     /// Join a space or room from elsewhere.
     OpenJoin,
@@ -159,7 +162,7 @@ pub enum Message {
     ToggleMembers,
     /// Open the room with its members shown (where Invite is).
     ShowMembers(OwnedRoomId),
-    MemberMenu(Option<members::MenuKey>),
+    MemberMenu(members::MenuKey),
     /// Give a member a power level, without asking.
     SetLevel(OwnedRoomId, OwnedUserId, i64),
     /// A room's members were changed by us, or not.
@@ -209,8 +212,8 @@ pub enum Message {
     /// Show an image large.
     OpenImage(downloads::File),
     CloseImage,
-    /// Open or close the menu of the image in the viewer.
-    ViewerMenu(bool),
+    /// Open the menu of the image in the viewer.
+    OpenViewerMenu,
     /// The whole image for the viewer.
     ImageLoaded(MediaRef, Result<media::Picture, String>),
     /// Show a PDF large.
@@ -464,6 +467,12 @@ pub enum Popup {
     CategoryMenu(String),
     /// Which of a space's sections are expanded.
     ShowMenu,
+    /// The card's picture.
+    CardPicture,
+    /// The card's spaces to add its room to.
+    CardAddToSpace,
+    /// The image's in the viewer.
+    Viewer,
 }
 
 impl Popup {
@@ -476,9 +485,20 @@ impl Popup {
             | Popup::SpaceMenu(_)
             | Popup::RoomMenu(_)
             | Popup::CategoryMenu(_)
-            | Popup::ShowMenu => false,
+            | Popup::ShowMenu
+            | Popup::CardPicture
+            | Popup::CardAddToSpace
+            | Popup::Viewer => false,
             _ => true,
         }
+    }
+
+    /// It goes with the card: a member's menu, or the card's own.
+    fn of_card(&self) -> bool {
+        matches!(
+            self,
+            Popup::MemberMenu(_) | Popup::CardPicture | Popup::CardAddToSpace
+        )
     }
 
     /// It belongs to `field`.
@@ -855,16 +875,21 @@ impl App {
                 | Message::SelectSpace(_)
                 | Message::RoomFilter(_)
                 | Message::Arrange(_)
-                | Message::AddMenu(_)
+                | Message::AddMenu
+                | Message::ClosePopup
                 | Message::OpenRoom(_)
                 | Message::WindowResized(_)
         );
-        // A menu's choice closes it, as does what opens over it.
+        // A menu's choice closes it, as does what opens over it: so an
+        // open popup is always on top.
         if let Screen::Main(main) = &mut self.screen
             && matches!(
                 message,
                 Message::OpenDialog(_)
                     | Message::OpenJoin
+                    | Message::ShowSettings(true)
+                    | Message::OpenImage(_)
+                    | Message::OpenPdf(_)
                     | Message::ShowSpace(..)
                     | Message::ShowInfo(_)
                     | Message::SelectSpace(_)
@@ -880,13 +905,12 @@ impl App {
         let draft = self.room_draft();
         let task = self.handle(message);
         let keep_draft = self.keep_draft(draft);
-        // A member's menu goes with the card it was opened on, a field's
-        // menu and emoji with the message edited.
+        // A member's menu and the card's go with the card they were opened
+        // on, a field's menu and emoji with the message edited.
         let (card_changed, edit_changed) = (self.card_shown() != card, self.edit_shown() != edit);
         if let Screen::Main(main) = &mut self.screen {
             if card_changed {
-                main.popup
-                    .take_if(|popup| matches!(popup, Popup::MemberMenu(_)));
+                main.popup.take_if(|popup| popup.of_card());
             }
             if edit_changed {
                 main.popup.take_if(|popup| popup.in_field(Field::Edit));
@@ -1257,21 +1281,21 @@ impl App {
                 }
             }
             Message::SpaceTopic(space, message) => self.space_topic(space, message),
-            Message::AddMenu(open) => {
+            Message::AddMenu => {
                 if let Screen::Main(main) = &mut self.screen {
-                    match open {
-                        true => main.popup = Some(Popup::AddMenu),
-                        false => _ = main.popup.take_if(|p| matches!(p, Popup::AddMenu)),
-                    }
+                    main.popup = Some(Popup::AddMenu);
                 }
                 Task::none()
             }
             Message::SpaceMenu(menu) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    match menu {
-                        Some(menu) => main.popup = Some(Popup::SpaceMenu(menu)),
-                        None => _ = main.popup.take_if(|p| matches!(p, Popup::SpaceMenu(_))),
-                    }
+                    main.popup = Some(Popup::SpaceMenu(menu));
+                }
+                Task::none()
+            }
+            Message::ClosePopup => {
+                if let Screen::Main(main) = &mut self.screen {
+                    main.popup = None;
                 }
                 Task::none()
             }
@@ -1382,6 +1406,26 @@ impl App {
                 let saved = |result: mtrx_core::Result<()>| {
                     Message::Info(info::Message::Saved(result.map_err(|e| e.to_string())))
                 };
+                // A menu's choice closes it.
+                match &message {
+                    info::Message::OpenPictureMenu => {
+                        main.popup = Some(Popup::CardPicture);
+                        return Task::none();
+                    }
+                    info::Message::OpenSpacesMenu => {
+                        main.popup = Some(Popup::CardAddToSpace);
+                        return Task::none();
+                    }
+                    info::Message::ChangePicture | info::Message::RemovePicture => {
+                        main.popup
+                            .take_if(|popup| matches!(popup, Popup::CardPicture));
+                    }
+                    info::Message::Change(_) => {
+                        main.popup
+                            .take_if(|popup| matches!(popup, Popup::CardAddToSpace));
+                    }
+                    _ => {}
+                }
                 let task = match (&message, room) {
                     (info::Message::Close, _) => {
                         main.card = None;
@@ -1687,23 +1731,24 @@ impl App {
                 }
             }
             Message::FocusSearch => iced::widget::operation::focus(sidebar::SEARCH),
-            // Closes the topmost thing: the modal (the image viewer's menu
-            // first), the popup, the card, then in the open room the
-            // mention offered, the find bar, the selection, the reply and
-            // the message edited in place; then a drag or category name,
-            // else the search.
+            // Closes the topmost thing: the popup (on top, as what opens
+            // over it closes it), the modal, the card, then in the open room
+            // the mention offered, the find bar, the selection, the reply
+            // and the message edited in place; then a drag or category
+            // name, else the search.
             Message::Escape => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
+                if main.popup.take().is_some() {
+                    return Task::none();
+                }
                 match &mut main.modal {
                     Some(Modal::Dialog(_)) => {
                         return Task::done(Message::Dialog(dialog::Message::Cancel));
                     }
                     Some(Modal::Join(_)) => return Task::done(Message::Join(join::Message::Close)),
-                    Some(Modal::Image(viewer)) if viewer.menu => viewer.menu = false,
                     Some(_) => main.modal = None,
-                    None if main.popup.is_some() => main.popup = None,
                     None if main.card.is_some() => main.card = None,
                     None => match main.pane.room_mut() {
                         Some(room)
@@ -1747,10 +1792,7 @@ impl App {
             }
             Message::MemberMenu(menu) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    match menu {
-                        Some(menu) => main.popup = Some(Popup::MemberMenu(menu)),
-                        None => _ = main.popup.take_if(|p| matches!(p, Popup::MemberMenu(_))),
-                    }
+                    main.popup = Some(Popup::MemberMenu(menu));
                 }
                 Task::none()
             }
@@ -2093,11 +2135,11 @@ impl App {
                 main.modal = Some(Modal::Image(viewer));
                 load
             }
-            Message::ViewerMenu(open) => {
+            Message::OpenViewerMenu => {
                 if let Screen::Main(main) = &mut self.screen
-                    && let Some(Modal::Image(viewer)) = &mut main.modal
+                    && let Some(Modal::Image(_)) = &main.modal
                 {
-                    viewer.menu = open;
+                    main.popup = Some(Popup::Viewer);
                 }
                 Task::none()
             }
@@ -2105,6 +2147,7 @@ impl App {
                 if let Screen::Main(main) = &mut self.screen {
                     main.modal
                         .take_if(|modal| matches!(modal, Modal::Image(_) | Modal::Pdf(_)));
+                    main.popup.take_if(|popup| matches!(popup, Popup::Viewer));
                 }
                 Task::none()
             }
@@ -2147,11 +2190,9 @@ impl App {
                     message => {
                         // Chosen in a message's menu, or the viewer's.
                         if let downloads::Message::SaveAs(_) = &message {
-                            main.popup
-                                .take_if(|popup| matches!(popup, Popup::MessageMenu { .. }));
-                            if let Some(Modal::Image(viewer)) = &mut main.modal {
-                                viewer.menu = false;
-                            }
+                            main.popup.take_if(|popup| {
+                                matches!(popup, Popup::MessageMenu { .. } | Popup::Viewer)
+                            });
                         }
                         main.downloads
                             .update(&main.session, message)
@@ -2970,10 +3011,6 @@ impl App {
                 main.popup = Some(Popup::Calls(calls::Menu::default()));
                 return Task::none();
             }
-            Calls::Close => {
-                main.popup.take_if(menu);
-                return Task::none();
-            }
             Calls::Open(url) => {
                 main.popup.take_if(menu);
                 return Task::done(Message::LinkClicked(url));
@@ -3235,34 +3272,16 @@ impl App {
                 main.popup = Some(Popup::MessageMenu { row, at });
                 Task::none()
             }
-            Act::CloseMenu => {
-                main.popup.take_if(menu);
-                Task::none()
-            }
             Act::OpenReaders(row) => {
                 main.popup = Some(Popup::Readers(row));
-                Task::none()
-            }
-            Act::CloseReaders => {
-                main.popup
-                    .take_if(|popup| matches!(popup, Popup::Readers(_)));
                 Task::none()
             }
             Act::OpenReactors(row, key) => {
                 main.popup = Some(Popup::Reactors { row, key });
                 Task::none()
             }
-            Act::CloseReactors => {
-                main.popup
-                    .take_if(|popup| matches!(popup, Popup::Reactors { .. }));
-                Task::none()
-            }
             Act::OpenUnsent(row) => {
                 main.popup = Some(Popup::Unsent(row));
-                Task::none()
-            }
-            Act::CloseUnsent => {
-                main.popup.take_if(unsent);
                 Task::none()
             }
             Act::Retry(key) => {
@@ -3336,11 +3355,6 @@ impl App {
                 }
                 main.popup = Some(Popup::Reactions { row, at, all: None });
                 load_frequent_emoji(&main.session)
-            }
-            Act::ClosePicker => {
-                main.popup
-                    .take_if(|popup| matches!(popup, Popup::Reactions { .. }));
-                Task::none()
             }
             Act::Emoji(message) => {
                 let Some(Popup::Reactions { all, .. }) = &mut main.popup else {
@@ -3416,10 +3430,6 @@ impl App {
             }
             Act::AskDelete(row) => {
                 main.popup = Some(Popup::ConfirmDelete(row));
-                Task::none()
-            }
-            Act::CancelDelete => {
-                main.popup.take_if(confirm_delete);
                 Task::none()
             }
             Act::Delete(key) => {
@@ -3528,10 +3538,6 @@ impl App {
             _ => None,
         };
         match message {
-            Later::Close => {
-                main.popup.take_if(picking);
-                Task::none()
-            }
             Later::Open => {
                 let picker = send_later::Picker::new(SystemTime::now(), None);
                 let scroll = picker.scroll();
@@ -4120,7 +4126,7 @@ impl App {
                         pinned_notes: main.arrange.categories.notes_at_top(),
                         call_services: &self.settings.call_services,
                         room_pictures: self.settings.room_pictures,
-                        member_menu: Popup::member_menu(main.popup.as_ref()),
+                        popup: main.popup.as_ref(),
                         space_rooms: &main.space_rooms,
                     });
                     layers = layers.push(panel(card, Message::Info(info::Message::Close), true));
@@ -4152,7 +4158,9 @@ impl App {
                         true,
                     ),
                     // Fill the window, with their own backdrop.
-                    Some(Modal::Image(viewer)) => opaque(viewer.view(&main.previews)),
+                    Some(Modal::Image(viewer)) => opaque(
+                        viewer.view(&main.previews, matches!(main.popup, Some(Popup::Viewer))),
+                    ),
                     Some(Modal::Pdf(pdf)) => opaque(pdf.view()),
                 };
                 layers.push(modal).into()
@@ -4768,9 +4776,7 @@ fn copy(room: &OwnedRoomId, copied: Copied) -> Task<Message> {
 fn close_menu(main: &mut Main, from: &media::Origin) {
     match from {
         media::Origin::Viewer => {
-            if let Some(Modal::Image(viewer)) = &mut main.modal {
-                viewer.menu = false;
-            }
+            main.popup.take_if(|popup| matches!(popup, Popup::Viewer));
         }
         media::Origin::Room(id) => {
             if main.pane.open(id).is_some() {

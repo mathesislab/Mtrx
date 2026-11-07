@@ -62,7 +62,6 @@ pub enum Message {
     Pin(OwnedEventId, bool),
     /// Open or close the reaction window of a timeline row, there.
     TogglePicker(String, PickerAt),
-    ClosePicker,
     Reply(Target),
     /// Edit one of our sent messages where it is shown, starting from its text.
     Edit(EventKey, String),
@@ -76,20 +75,15 @@ pub enum Message {
     /// Ask before deleting a timeline row's message.
     AskDelete(String),
     Delete(EventKey),
-    CancelDelete,
     /// Open a timeline row's menu, there.
     OpenMenu(String, MenuAt),
-    CloseMenu,
     /// List everyone who read up to a timeline row's message.
     OpenReaders(String),
-    CloseReaders,
     /// List everyone who reacted to a timeline row's message with a key.
     OpenReactors(String, String),
-    CloseReactors,
     /// Offer to retry a timeline row's message that was not sent, or to
     /// take it back.
     OpenUnsent(String),
-    CloseUnsent,
     /// Send again a message that was not sent.
     Retry(EventKey),
     /// Take a message out of the send queue, its text back in the composer.
@@ -349,8 +343,7 @@ pub fn toolbar<'a>(
                 .then(|| Message::TogglePicker(event.id.clone(), PickerAt::Toolbar)),
         );
         bar = bar.push(
-            popover(react, picker, Side::Below, Edge::Right)
-                .on_dismiss(act(room, Message::ClosePicker)),
+            popover(react, picker, Side::Below, Edge::Right).on_dismiss(app::Message::ClosePopup),
         );
     }
     if offers(MessageAction::Reply) {
@@ -389,7 +382,7 @@ pub fn toolbar<'a>(
                 .then(|| Message::OpenMenu(event.id.clone(), MenuAt::Toolbar)),
         );
         bar = bar.push(
-            popover(more, open, Side::Below, Edge::Right).on_dismiss(act(room, Message::CloseMenu)),
+            popover(more, open, Side::Below, Edge::Right).on_dismiss(app::Message::ClosePopup),
         );
     }
     container(bar)
@@ -490,7 +483,7 @@ pub fn reactions<'a>(
         Position::Top,
     );
     let react =
-        popover(react, picker, Side::Below, Edge::Left).on_dismiss(act(room, Message::ClosePicker));
+        popover(react, picker, Side::Below, Edge::Left).on_dismiss(app::Message::ClosePopup);
     row(pills)
         .push(react)
         .spacing(4)
@@ -542,7 +535,7 @@ fn pill<'a>(
             Side::Below,
             Edge::Left,
         )
-        .on_dismiss(act(room, Message::CloseReactors))
+        .on_dismiss(app::Message::ClosePopup)
         .into();
     }
     let names: Vec<_> = reaction.by.iter().map(User::display_name).collect();
@@ -614,7 +607,7 @@ pub fn confirm_delete<'a>(room: &OwnedRoomId, event: &Event) -> Element<'a, app:
         button(text("Cancel").size(12))
             .padding([2, 8])
             .style(style::text_button)
-            .on_press(act(room, Message::CancelDelete)),
+            .on_press(app::Message::ClosePopup),
     ]
     .spacing(6)
     .align_y(Alignment::Center)
@@ -658,7 +651,7 @@ pub fn read_markers<'a>(
         let list = people(&event.read_by, avatars);
         return Some(
             popover(markers, Some(list), Side::Above, Edge::Right)
-                .on_dismiss(act(room, Message::CloseReaders))
+                .on_dismiss(app::Message::ClosePopup)
                 .into(),
         );
     }
@@ -734,7 +727,7 @@ pub fn send_status<'a>(
                 Side::Above,
                 Edge::Right,
             )
-            .on_dismiss(act(room, Message::CloseUnsent))
+            .on_dismiss(app::Message::ClosePopup)
             .into(),
         );
     }

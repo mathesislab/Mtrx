@@ -31,7 +31,6 @@ pub enum Message {
     /// The call service of the room's nearest space with one.
     SpaceService(Option<CallService>),
     OpenMenu,
-    Close,
     /// Open a call or link from the menu.
     Open(String),
     /// Post a new call link of this service in the room.
@@ -202,7 +201,7 @@ impl RoomCalls {
             Side::Below,
             Edge::Right,
         )
-        .on_dismiss(self.message(Message::Close))
+        .on_dismiss(app::Message::ClosePopup)
         .into()
     }
 

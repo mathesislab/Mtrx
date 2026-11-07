@@ -196,7 +196,13 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
         return base.into();
     }
     let manage = &member.manage;
-    let toggle = |menu| Message::MemberMenu((!opened(menu)).then(|| menu_of(menu)));
+    let toggle = |menu| {
+        if opened(menu) {
+            Message::ClosePopup
+        } else {
+            Message::MemberMenu(menu_of(menu))
+        }
+    };
     let chip: Element<'a, Message> = match manage.up_to {
         Some(_) => {
             let open = opened(Menu::Role);
@@ -217,7 +223,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
                 Side::Below,
                 Edge::Right,
             )
-            .on_dismiss(Message::MemberMenu(None))
+            .on_dismiss(Message::ClosePopup)
             .into()
         }
         None => space().into(),
@@ -233,7 +239,7 @@ fn entry<'a>(member: &'a Member, shown: Shown<'_>, common: Common) -> Element<'a
             Side::Below,
             Edge::Right,
         )
-        .on_dismiss(Message::MemberMenu(None))
+        .on_dismiss(Message::ClosePopup)
         .into()
     } else {
         space().into()

@@ -465,7 +465,7 @@ impl Overview {
                     room: &space.id,
                     avatars: shown.avatars,
                     presences: shown.presences,
-                    menu: shown.member_menu,
+                    menu: app::Popup::member_menu(shown.popup),
                 },
             ),
         };

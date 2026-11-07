@@ -19,7 +19,6 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Message {
     Open,
-    Close,
     /// Replace the misspelled word by its spelling at this index.
     Correct(usize),
     LearnSpelling,
@@ -124,12 +123,14 @@ pub fn entries(menu: &Menu, selected: bool) -> Vec<Entry<'static, Message>> {
 }
 
 /// `editor` with its menu on right-click: shown while open (`menu`), Cut
-/// and Copy with text `selected`; `to` makes the message of a choice.
+/// and Copy with text `selected`; `to` makes the message of a choice, and
+/// a click outside sends `close`.
 pub fn with_menu<'a, M: Clone + 'a>(
     editor: impl Into<Element<'a, M>>,
     menu: Option<&Menu>,
     selected: bool,
     to: impl Fn(Message) -> M + Clone + 'a,
+    close: M,
 ) -> Element<'a, M> {
     let menu = menu.map(|menu| {
         let entries = entries(menu, selected)
@@ -139,7 +140,7 @@ pub fn with_menu<'a, M: Clone + 'a>(
         menu::view(entries, Width::Menu)
     });
     context_menu(editor, menu, to(Message::Open))
-        .on_dismiss(to(Message::Close))
+        .on_dismiss(close)
         .into()
 }
 
@@ -172,6 +173,7 @@ mod tests {
     enum Sent {
         Action(text_editor::Action),
         Menu(Message),
+        Close,
     }
 
     fn labels(menu: &Menu, selected: bool) -> Vec<String> {
@@ -241,7 +243,7 @@ mod tests {
             .on_action(Sent::Action)
             .key_binding(text_editor::Binding::from_key_press);
         let menu = open.then(Menu::default);
-        let field = with_menu(editor, menu.as_ref(), true, Sent::Menu);
+        let field = with_menu(editor, menu.as_ref(), true, Sent::Menu, Sent::Close);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
@@ -261,7 +263,7 @@ mod tests {
     fn a_right_click_puts_the_caret_there_then_opens_it() {
         let content = Content::<iced::Renderer>::with_text("Melt");
         let editor = iced::widget::text_editor(&content).on_action(Sent::Action);
-        let field = with_menu(editor, None, false, Sent::Menu);
+        let field = with_menu(editor, None, false, Sent::Menu, Sent::Close);
         let mut ui = Simulator::with_size(
             crate::fonts::settings(),
             Size::new(400.0, 300.0),
@@ -294,7 +296,7 @@ mod tests {
         assert!(matches!(sent[..], [Sent::Menu(Message::Paste)]), "{sent:?}");
         // A click beside it closes it.
         let sent = sends(true, Left, (380.0, 280.0));
-        assert!(matches!(sent[..], [Sent::Menu(Message::Close)]), "{sent:?}");
+        assert!(matches!(sent[..], [Sent::Close]), "{sent:?}");
     }
 
     /// Emoji & Symbols takes the key window while open and types the pick

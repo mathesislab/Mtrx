@@ -236,9 +236,9 @@ pub fn space_bar<'a>(
                     open.then(|| {
                         menu::view(space_entries(space.clone(), title, invite), Width::Menu)
                     }),
-                    Message::SpaceMenu(Some(SpaceMenu::Of(space))),
+                    Message::SpaceMenu(SpaceMenu::Of(space)),
                 )
-                .on_dismiss(Message::SpaceMenu(None))
+                .on_dismiss(Message::ClosePopup)
                 .into()
             }
             None => entry_button,
@@ -275,7 +275,11 @@ pub fn space_bar<'a>(
     )
     .padding(4)
     .style(style::list_item(adding))
-    .on_press(Message::SpaceMenu((!adding).then_some(SpaceMenu::Add)));
+    .on_press(if adding {
+        Message::ClosePopup
+    } else {
+        Message::SpaceMenu(SpaceMenu::Add)
+    });
     let add_menu = adding.then(|| menu::view(new_space_entries(), Width::Menu));
     let add = popover(
         with_tooltip(add, "New space, or join one".into()),
@@ -283,7 +287,7 @@ pub fn space_bar<'a>(
         Side::Below,
         Edge::Left,
     )
-    .on_dismiss(Message::SpaceMenu(None));
+    .on_dismiss(Message::ClosePopup);
     bar = bar.push(container(add).center_x(Length::Fill));
     let mut gear = stack![icons::gear(20.0, |theme| {
         theme
@@ -462,7 +466,11 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, Message> {
     let add = button(text("+").size(18).font(fonts::SEMIBOLD))
         .padding([0, 8])
         .style(style::list_item(add_menu))
-        .on_press(Message::AddMenu(!add_menu));
+        .on_press(if add_menu {
+            Message::ClosePopup
+        } else {
+            Message::AddMenu
+        });
     // A space's name opens its settings, with its address and link.
     let heading: Element<'a, Message> = match selected_space {
         Some(space) => hint(
@@ -698,14 +706,13 @@ fn show_menu<'a>(view: &RoomListView<'a>, space: &OwnedRoomId) -> Element<'a, Me
     .width(Length::FillPortion(4))
     .padding([2, 8])
     .style(style::secondary_button)
-    .on_press_maybe((!open).then(|| arrange_message(arrange::Message::ShowMenu(true))));
+    .on_press_maybe((!open).then(|| arrange_message(arrange::Message::ShowMenu)));
     let notes = view.notes.is_some();
     let menu = open.then(|| show_menu_panel(view, layout, sections, notes));
     let margin = || iced::widget::space().width(Length::FillPortion(1));
     container(row![
         margin(),
-        popover(toggle, menu, Side::Below, Edge::Left)
-            .on_dismiss(arrange_message(arrange::Message::ShowMenu(false))),
+        popover(toggle, menu, Side::Below, Edge::Left).on_dismiss(Message::ClosePopup),
         margin(),
     ])
     .padding(Padding::new(0.0).top(2).bottom(4))
@@ -864,6 +871,15 @@ fn arrange_message(message: arrange::Message) -> Message {
     Message::Arrange(message)
 }
 
+/// What a menu's button sends: `open` it, or close it if `opened`.
+fn open_or_close(opened: bool, open: impl FnOnce() -> arrange::Message) -> Message {
+    if opened {
+        Message::ClosePopup
+    } else {
+        arrange_message(open())
+    }
+}
+
 /// A section's name (`title`), which collapses and expands it, and its
 /// grip; a category's also has its menu.
 /// `menu`: the category whose menu is open.
@@ -896,9 +912,9 @@ fn section_header<'a>(
             button(text("⋯").size(13).style(text::secondary))
                 .padding([0, 6])
                 .style(style::list_item(open))
-                .on_press(arrange_message(arrange::Message::CategoryMenu(
-                    (!open).then(|| id.clone()),
-                ))),
+                .on_press(open_or_close(open, || {
+                    arrange::Message::CategoryMenu(id.clone())
+                })),
             "Rename, sort, move or delete the category".into(),
         ));
     }
@@ -1321,9 +1337,7 @@ impl<'a> RoomListView<'a> {
         ]
         .spacing(8)
         .align_y(Alignment::Center);
-        let toggle_menu = arrange_message(arrange::Message::RoomMenu(
-            (!menu_open).then(|| room.id.clone()),
-        ));
+        let toggle_menu = open_or_close(menu_open, || arrange::Message::RoomMenu(room.id.clone()));
         if self.arrange.notes_hovered || menu_open {
             line = line.push(with_tooltip(
                 button(text("⋯").size(13))
@@ -1403,9 +1417,7 @@ impl<'a> RoomListView<'a> {
             None => name.width(Length::Fill).into(),
         };
         let mut line = row![avatar, name].spacing(8).align_y(Alignment::Center);
-        let menu = arrange_message(arrange::Message::RoomMenu(
-            (!menu_open).then(|| room.id.clone()),
-        ));
+        let menu = open_or_close(menu_open, || arrange::Message::RoomMenu(room.id.clone()));
         let dragging = self.arrange.dragging().is_some();
         let invite = room.membership == Membership::Invited;
         let actions = (hovered || menu_open) && !invite && !dragging;

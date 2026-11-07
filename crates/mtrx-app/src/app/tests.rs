@@ -1087,37 +1087,18 @@ async fn main_screen_with_math() {
         ui.simulate(iced_test::simulator::click());
         let messages: Vec<_> = ui.into_messages().collect();
         assert!(
-            mode == Mode::Light
-                || messages.iter().any(|m| matches!(
-                    m,
-                    Message::Room(_, room::Message::Calls(calls::Message::Close))
-                )),
+            messages.iter().any(|m| matches!(m, Message::ClosePopup)),
             "{messages:?}"
         );
         assert!(
             messages.iter().all(|m| matches!(
                 m,
-                Message::Room(
-                    _,
-                    room::Message::Calls(calls::Message::Close)
-                        | room::Message::Topic(topic::Message::Dismiss)
-                        | room::Message::Act(
-                            actions::Message::CloseReaders | actions::Message::ClosePicker
-                        )
-                )
+                Message::ClosePopup
+                    | Message::Room(_, room::Message::Topic(topic::Message::Dismiss))
             )),
             "{messages:?}"
         );
         if mode == Mode::Light {
-            assert!(
-                messages.iter().any(|m| {
-                    matches!(
-                        m,
-                        Message::Room(_, room::Message::Act(actions::Message::CloseReaders))
-                    )
-                }),
-                "{messages:?}"
-            );
             if let Screen::Main(main) = &mut app.screen {
                 main.popup = None;
             }
@@ -2366,10 +2347,7 @@ async fn room_categories() {
     snapshot(
         &main_with(&|main| {
             send(main, arrange::Message::Row(ids["ice-sheets"].clone(), true));
-            send(
-                main,
-                arrange::Message::RoomMenu(Some(ids["ice-sheets"].clone())),
-            );
+            send(main, arrange::Message::RoomMenu(ids["ice-sheets"].clone()));
         }),
         "categories",
     );
@@ -2546,7 +2524,7 @@ async fn show_menu() {
             },
         );
     };
-    send(&mut main, arrange::Message::ShowMenu(true));
+    send(&mut main, arrange::Message::ShowMenu);
     // Rooms dragged by its grip to the place of Papers, above it.
     let papers = main.arrange.categories.layout(Some(&space)).categories[1]
         .id
@@ -2580,7 +2558,8 @@ async fn show_menu() {
         main,
         arrange::Message::Collapse(sections.iter().map(|s| (s.clone(), true)).collect()),
     );
-    send(main, arrange::Message::ShowMenu(false));
+    // Closed by a click outside.
+    main.popup = None;
     let layout = main.arrange.categories.layout(Some(&space));
     assert!(sections.iter().all(|s| layout.is_collapsed(s)));
     snapshot(&app, "show-menu-hidden");

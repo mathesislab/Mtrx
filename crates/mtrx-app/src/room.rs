@@ -1021,7 +1021,7 @@ impl Room {
             Side::Above,
             Edge::Right,
         )
-        .on_dismiss(Message::Later(send_later::Message::Close).to(id));
+        .on_dismiss(app::Message::ClosePopup);
 
         // Bars above and below the composer come and go inside columns that
         // are always there: widgets keep their state by position, so the
@@ -1685,7 +1685,7 @@ fn event_view<'a>(
                 actions::Message::OpenMenu(event.id.clone(), MenuAt::Cursor),
             ),
         )
-        .on_dismiss(act(context.room, actions::Message::CloseMenu))
+        .on_dismiss(app::Message::ClosePopup)
         .into()
     } else {
         row

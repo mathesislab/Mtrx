@@ -200,6 +200,14 @@ pub fn view<'a, M: Clone + 'a>(entries: Vec<Entry<'a, M>>, width: Width) -> Elem
 - Downloads: a downloads list fits as another `Popup` variant using `menu::view`, or a panel (`docs/downloads.md` decides).
 - The menu bar keeps its own table (Q3).
 
+**As built (T)**
+- `Entry::map` and `Item::map` turn a builder's messages into the caller's, as the field's menu does (`edit_menu::entries` sends `edit_menu::Message`).
+- The space bar's "+" has its own builder, `sidebar::new_space_entries`. The Show menu stays a panel of its own in `Popup::ShowMenu`.
+- A message's entries are made only while its menu is open. `message_menu::offers` tells whether there is one, without making them.
+- The new popups open with `info::Message::{OpenPictureMenu, OpenSpacesMenu}` and `Message::OpenViewerMenu`. `info::Shown` carries the window's `popup`.
+- Esc closes the popup first, then the modal, the card and so on. Opening a modal (settings, image, PDF) now closes the popup, as a dialog already did, so an open popup is always on top. This is how Esc reaches the viewer's menu before the viewer.
+- Downloads keep their own `open` and `menu` state (`downloads.rs`). Only their menu moved to `menu::view`.
+
 **Deleted**
 - `context_menu::menu`, `sidebar::menu`, `add_menu_view`'s column, `role_item`, `unsent_menu`'s row, `calls::menu_view`'s frame.
 - The 17 close messages and their handlers.

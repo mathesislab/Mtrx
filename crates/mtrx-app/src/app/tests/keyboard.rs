@@ -861,6 +861,59 @@ async fn escape_closes_the_modal_then_the_card() {
     assert!(ui.main().card.is_none());
 }
 
+/// Esc closes the card's menus before the card, and the viewer's menu
+/// before the viewer: the popup is on top.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn esc_closes_a_cards_menu_not_the_card() {
+    let (mut ui, _dir) = room_with("cardmenu", &[]).await;
+    let room = ui.room().id.clone();
+    let esc = |ui: &mut Ui| ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    ui.main().card = Some(info::Card::new(
+        info::Target::Room(room.clone()),
+        &[],
+        overview::Tab::Rooms,
+    ));
+    ui.update(Message::Info(info::Message::OpenPictureMenu));
+    assert!(matches!(ui.main().popup, Some(Popup::CardPicture)));
+    esc(&mut ui);
+    assert!(ui.main().popup.is_none());
+    assert!(ui.main().card.is_some(), "the card stays");
+    ui.update(Message::Info(info::Message::OpenSpacesMenu));
+    assert!(matches!(ui.main().popup, Some(Popup::CardAddToSpace)));
+    esc(&mut ui);
+    assert!(ui.main().popup.is_none());
+    assert!(ui.main().card.is_some(), "the card stays");
+    esc(&mut ui);
+    assert!(ui.main().card.is_none());
+
+    let media = mtrx_core::Media {
+        kind: mtrx_core::MediaKind::Image,
+        filename: "ice.png".into(),
+        size: None,
+        mimetype: None,
+        width: None,
+        height: None,
+        source: mtrx_core::MediaRef::plain("mxc://example.org/a"),
+    };
+    let file = downloads::File {
+        media,
+        room,
+        event: None,
+    };
+    ui.main().modal = Some(Modal::Image(Viewer::new(file)));
+    ui.update(Message::OpenViewerMenu);
+    assert!(matches!(ui.main().popup, Some(Popup::Viewer)));
+    esc(&mut ui);
+    assert!(ui.main().popup.is_none());
+    assert!(
+        matches!(ui.main().modal, Some(Modal::Image(_))),
+        "the viewer stays"
+    );
+    esc(&mut ui);
+    assert!(ui.main().modal.is_none());
+}
+
 /// One popup at a time in the whole window: one opened replaces another,
 /// Esc closes it before the card; the open room's closes as its timeline
 /// is reloaded or another pane shows, the room list's stays.
@@ -873,7 +926,7 @@ async fn one_popup_in_the_window() {
     let menu = actions::Message::OpenMenu(row.clone(), MenuAt::Toolbar);
     ui.update(actions::act(&room, menu));
     assert!(matches!(ui.main().popup, Some(Popup::MessageMenu { .. })));
-    ui.update(Message::AddMenu(true));
+    ui.update(Message::AddMenu);
     assert!(matches!(ui.main().popup, Some(Popup::AddMenu)));
 
     ui.main().card = Some(info::Card::new(

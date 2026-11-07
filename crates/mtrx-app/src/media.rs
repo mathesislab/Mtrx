@@ -465,8 +465,6 @@ pub struct Viewer {
     /// The whole image, once loaded; until then the preview shows.
     full: Option<Picture>,
     pub error: Option<String>,
-    /// The image's menu is open (right-click).
-    pub menu: bool,
 }
 
 impl Viewer {
@@ -475,7 +473,6 @@ impl Viewer {
             file,
             full: None,
             error: None,
-            menu: false,
         }
     }
 
@@ -513,8 +510,9 @@ impl Viewer {
     }
 
     /// The image as large as fits (at most its own size), with its name,
-    /// Save and Close below. Clicking around it closes it.
-    pub fn view<'a>(&'a self, previews: &'a Previews) -> Element<'a, app::Message> {
+    /// Save and Close below, and its menu while `menu` (right-click).
+    /// Clicking around it closes it.
+    pub fn view<'a>(&'a self, previews: &'a Previews, menu: bool) -> Element<'a, app::Message> {
         let picture = self
             .full
             .as_ref()
@@ -534,14 +532,14 @@ impl Viewer {
                     .into(),
                 None => placeholder(size),
             };
-            let menu = self.menu.then(|| {
+            let menu = menu.then(|| {
                 menu::view(
                     message_menu::media_entries(&self.file, Origin::Viewer),
                     Width::Menu,
                 )
             });
-            let shown = context_menu(shown, menu, app::Message::ViewerMenu(true))
-                .on_dismiss(app::Message::ViewerMenu(false));
+            let shown = context_menu(shown, menu, app::Message::OpenViewerMenu)
+                .on_dismiss(app::Message::ClosePopup);
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);
             container(
                 column![opaque(shown), opaque(self.bar(bar_width))]
@@ -787,12 +785,12 @@ mod tests {
             [app::Message::CloseImage]
         ));
         // Shown large, it has a menu of its own, not around it.
-        let mut viewer = Viewer::new(File {
+        let viewer = Viewer::new(File {
             media: media.clone(),
             room,
             event: None,
         });
-        assert!(right_click(viewer.view(&previews), (100.0, 100.0)).is_empty());
+        assert!(right_click(viewer.view(&previews, false), (100.0, 100.0)).is_empty());
         let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
             fonts::INTER,
             iced::Pixels(style::TEXT_SIZE),
@@ -801,7 +799,7 @@ mod tests {
         .unwrap();
         let window = Size::new(800.0, 600.0);
         let mut ui = UserInterface::build(
-            viewer.view(&previews),
+            viewer.view(&previews, false),
             window,
             Cache::default(),
             &mut renderer,
@@ -810,11 +808,11 @@ mod tests {
             mouse::Button::Right,
         ))];
         let sent = send(&mut ui, &mut renderer, &right, (400.0, 270.0));
-        assert!(matches!(sent[..], [app::Message::ViewerMenu(true)]));
+        assert!(matches!(sent[..], [app::Message::OpenViewerMenu]));
         // Its first item, just below where it was right-clicked.
         let cache = ui.into_cache();
-        viewer.menu = true;
-        let mut ui = UserInterface::build(viewer.view(&previews), window, cache, &mut renderer);
+        let mut ui =
+            UserInterface::build(viewer.view(&previews, true), window, cache, &mut renderer);
         let sent = send(
             &mut ui,
             &mut renderer,
