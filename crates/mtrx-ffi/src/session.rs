@@ -63,8 +63,9 @@ impl Session {
         run(async move { session.stop_sync().await }).await
     }
 
-    /// Try the server now instead of waiting for the next retry, e.g. when
-    /// the device's network comes back.
+    /// Try the server now if it was unreachable: the device's network came
+    /// back, or the app came to the front. Nothing while online, stopped or
+    /// signed out.
     pub async fn reconnect(&self) {
         let session = self.core();
         run(async move { session.reconnect().await }).await

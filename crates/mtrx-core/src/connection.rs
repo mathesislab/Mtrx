@@ -135,8 +135,13 @@ impl Session {
         Live::from_watch(self.connection.clone())
     }
 
-    /// Try the server now instead of waiting for the next check.
+    /// Try the server now if it was unreachable: the network came back, or
+    /// the app came to the front. Nothing while online, stopped or signed out.
     pub async fn reconnect(&self) {
-        self.sync.start().await;
+        let unreachable = matches!(self.sync.state().get(), State::Offline | State::Error(_));
+        if unreachable && self.connection() != Connection::SignedOut {
+            // Sync leaves offline mode and tries the server at once.
+            self.sync.start().await;
+        }
     }
 }
