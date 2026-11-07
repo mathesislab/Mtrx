@@ -100,11 +100,15 @@ final class RoomUITests: XCTestCase {
         app.launchArguments = ["-ui-testing", "-ui-testing-arrivals"]
         app.launch()
         openLab()
-        XCTAssertTrue(arrived(2).waitForExistence(timeout: 8), "Arrived 2 did not arrive")
+        XCTAssertTrue(twoArrive(after: 0), "Two messages did not arrive")
         XCTAssertTrue(newestInView(), "The newest not in view")
         let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
         field.tap()
-        XCTAssertTrue(arrived(4).waitForExistence(timeout: 8), "Arrived 4 did not arrive")
+        guard let before = settled(newestArrived) else {
+            XCTFail("No arrived message in the timeline")
+            return
+        }
+        XCTAssertTrue(twoArrive(after: before), "No more arrived with the keyboard up")
         let up = newestInView()
         snap("ui-arrived-keyboard")
         XCTAssertTrue(up, "The newest not in view with the keyboard up")
@@ -215,13 +219,32 @@ final class RoomUITests: XCTestCase {
     @MainActor
     private func newestInView() -> Bool {
         settles { texts in
-            let arrived: [(number: Int, inView: Bool)] = texts.compactMap { text in
-                guard text.label.hasPrefix("Arrived "),
-                    let number = Int(text.label.dropFirst("Arrived ".count).prefix { $0.isNumber })
-                else { return nil }
-                return (number, text.inView)
-            }
-            return arrived.max { $0.number < $1.number }?.inView ?? false
+            arrivals(texts).max { $0.number < $1.number }?.inView ?? false
+        }
+    }
+
+    /// Two of Ann's messages arrived after the one numbered `n`: told by
+    /// the newest's number, not by looking for a given one. They go on
+    /// arriving while the test looks, and a look can take half a minute
+    /// on CI: by then a given one has scrolled out of the lazy timeline,
+    /// which no longer draws it.
+    @MainActor
+    private func twoArrive(after n: Int) -> Bool {
+        settles(within: 8) { texts in (newestArrived(texts) ?? 0) >= n + 2 }
+    }
+
+    /// The number of the newest arrived message among `texts`.
+    private func newestArrived(_ texts: [(label: String, inView: Bool)]) -> Int? {
+        arrivals(texts).map { $0.number }.max()
+    }
+
+    /// The arrived messages among `texts`, each with its number.
+    private func arrivals(_ texts: [(label: String, inView: Bool)]) -> [(number: Int, inView: Bool)] {
+        texts.compactMap { text in
+            guard text.label.hasPrefix("Arrived "),
+                let number = Int(text.label.dropFirst("Arrived ".count).prefix { $0.isNumber })
+            else { return nil }
+            return (number, text.inView)
         }
     }
 
@@ -240,14 +263,24 @@ final class RoomUITests: XCTestCase {
     private func settles(
         within settle: TimeInterval = 5, _ shown: ([(label: String, inView: Bool)]) -> Bool
     ) -> Bool {
+        settled(within: settle) { shown($0) ? true : nil } ?? false
+    }
+
+    /// What `read` finds in a look at the timeline, looked at again until
+    /// it finds something or until a look taken `settle` seconds on does
+    /// not.
+    @MainActor
+    private func settled<Found>(
+        within settle: TimeInterval = 5, _ read: ([(label: String, inView: Bool)]) -> Found?
+    ) -> Found? {
         let end = Date().addingTimeInterval(settle)
         while true {
             let last = Date() >= end
-            if shown(timelineTexts()) {
-                return true
+            if let found = read(timelineTexts()) {
+                return found
             }
             if last {
-                return false
+                return nil
             }
             usleep(200_000)
         }
