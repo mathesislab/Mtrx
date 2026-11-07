@@ -31,16 +31,15 @@ import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineRow as LibraryRow
 import uniffi.mtrx.TimelineRowsListener
-import uniffi.mtrx.Topic
 import uniffi.mtrx.TypingListener
-import uniffi.mtrx.composeTopic as libraryComposeTopic
 
 /**
  * A room's timeline screen: its rows, older events on demand, the composer
  * (a new message, a reply or an edit), who is typing, the actions on a
- * message, going to the original of a reply, a direct chat's person
- * ([personInfo]) and the rooms shared with them ([sharedRooms]). Methods
- * are called on the main thread.
+ * message, going to the original of a reply and a direct chat's person
+ * ([personInfo]). The pinned messages are [PinnedModel]'s, the topic is
+ * saved by the room's `RoomInfoModel`, and the rooms shared with the person
+ * are loaded by their panel. Methods are called on the main thread.
  *
  * Actions on a message take its row's id from the latest [rows]. Sends and
  * the other actions (invites too) run in a scope of their own, so leaving
@@ -54,16 +53,13 @@ import uniffi.mtrx.composeTopic as libraryComposeTopic
  * meanwhile (as a reply once the message it answers is in the rows), told
  * every change (saved once typing stops), saved at once when the room is
  * left or the app stops ([keepDraft]), cleared on send; during an edit,
- * the text from before it. The topic is saved as [composeTopic] makes it
- * (the library's); the pinned messages load while the topic panel shows
- * them.
+ * the text from before it.
  */
 class TimelineViewModel(
     private val roomId: String,
     private val session: Session,
     private val onRead: () -> Unit,
     private val onInput: () -> Unit = {},
-    private val composeTopic: (Topic) -> String = ::libraryComposeTopic,
 ) : ViewModel(), TimelineActions {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
@@ -98,15 +94,6 @@ class TimelineViewModel(
     private val _personInfo = MutableStateFlow<PersonInfoModel?>(null)
     val personInfo: StateFlow<PersonInfoModel?> = _personInfo.asStateFlow()
 
-    /** IDs of the rooms shared with a direct chat's person, once their panel opened; null until loaded. */
-    private val _sharedRooms = MutableStateFlow<List<String>?>(null)
-    val sharedRooms: StateFlow<List<String>?> = _sharedRooms.asStateFlow()
-    private var sharedJob: Job? = null
-
-    /** The pinned messages, while the topic panel shows them; null while loading. */
-    private val _pinned = MutableStateFlow<List<EventRow>?>(null)
-    val pinned: StateFlow<List<EventRow>?> = _pinned.asStateFlow()
-
     /** Each message's file's newest download, by its source. */
     private val _downloads = MutableStateFlow<Map<String, Download>>(emptyMap())
     val downloads: StateFlow<Map<String, Download>> = _downloads.asStateFlow()
@@ -121,10 +108,6 @@ class TimelineViewModel(
             _downloads.value = downloadsBySource(downloads)
         }
     })
-
-    private var pinnedTimeline: Timeline? = null
-    private var pinnedSubscription: TaskHandle? = null
-    private var pinnedJob: Job? = null
 
     private var timeline: Timeline? = null
     private var subscription: TaskHandle? = null
@@ -179,17 +162,6 @@ class TimelineViewModel(
         }
     }
 
-    /** Save the room's topic, its text and links. */
-    override fun saveTopic(topic: Topic) {
-        actions.launch {
-            try {
-                session.room(roomId).use { it.setTopic(composeTopic(topic)) }
-            } catch (e: MtrxException) {
-                _error.value = describe(e)
-            }
-        }
-    }
-
     /** Pin or unpin the message with [eventId]. */
     override fun setPinned(eventId: String, pin: Boolean) {
         actions.launch {
@@ -199,40 +171,6 @@ class TimelineViewModel(
                 _error.value = describe(e)
             }
         }
-    }
-
-    /** The topic panel opened: load the pinned messages into [pinned]. */
-    override fun showPinned() {
-        if (pinnedJob != null) return
-        pinnedJob = viewModelScope.launch {
-            try {
-                val opened = session.pinnedTimeline(roomId)
-                pinnedTimeline = opened
-                pinnedSubscription = opened.subscribeRows(object : TimelineRowsListener {
-                    // On a library thread.
-                    override fun onUpdate(rows: List<LibraryRow>) {
-                        // None yet: still loading (the panel asks only where some are pinned).
-                        _pinned.value = shownRows(rows).filterIsInstance<EventRow>().ifEmpty { null }
-                    }
-                })
-            } catch (e: MtrxException) {
-                _pinned.value = emptyList()
-            }
-        }
-    }
-
-    /** The topic panel closed: the pinned messages are no longer followed. */
-    override fun hidePinned() {
-        pinnedJob?.cancel()
-        pinnedJob = null
-        pinnedSubscription?.let {
-            it.cancel()
-            it.close()
-        }
-        pinnedSubscription = null
-        pinnedTimeline?.close()
-        pinnedTimeline = null
-        _pinned.value = null
     }
 
     override fun file(media: Media, eventId: String?, use: FileUse) {
@@ -483,19 +421,6 @@ class TimelineViewModel(
         _personInfo.value = PersonInfoModel(userId, session, viewModelScope, actions)
     }
 
-    /** The panel of the rooms shared with [userId] opened: (re)load them, the last ones showing meanwhile. */
-    override fun showSharedRooms(userId: String) {
-        sharedJob?.cancel()
-        sharedJob = viewModelScope.launch {
-            _sharedRooms.value = try {
-                session.sharedRooms(userId)
-            } catch (e: MtrxException) {
-                _error.value = describe(e)
-                emptyList()
-            }
-        }
-    }
-
     fun closePersonInfo() {
         _personInfo.value?.close()
         _personInfo.value = null
@@ -566,13 +491,12 @@ class TimelineViewModel(
     private fun describeAction(e: MtrxException): String? =
         if (e is MtrxException.InvalidInput) GONE else describe(e)
 
-    override fun clearError() {
+    fun clearError() {
         _error.value = null
     }
 
     override fun onCleared() {
         keepDraft()
-        hidePinned()
         for (handle in listOfNotNull(subscription, typingSubscription, downloadsSubscription)) {
             handle.cancel()
             handle.close()

@@ -137,8 +137,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Images
-import org.mtrx.app.rooms.RoomGroup
-import org.mtrx.app.rooms.roomGroups
+import org.mtrx.app.rooms.RoomInfoModel
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.BAR_TEXT_SCALE
 import org.mtrx.app.ui.TextScaleAtMost
@@ -163,7 +162,9 @@ import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.SendState
+import uniffi.mtrx.Session
 import uniffi.mtrx.TimelineEvent
+import uniffi.mtrx.Topic
 
 /** Rows from the top this close load older events. */
 private const val LOAD_MARGIN = 5
@@ -207,27 +208,29 @@ data class TimelineState(
     val canEditTopic: Boolean = false,
     /** The pinned messages while the topic panel shows; null while loading. */
     val pinned: List<EventRow>? = null,
-    /** A direct chat's rooms shared with the person, by space, while their panel shows; null while loading. */
-    val shared: List<RoomGroup>? = null,
     /** Each message's file's newest download, by its source. */
     val downloads: Map<String, Download> = emptyMap(),
 )
 
 /**
- * A room's timeline. [spaces], the top-level ones we may invite to, to
- * invite a direct chat's person to; [presences], for the header
- * and the person sheet, and [refreshPresence] when the sheet opens.
- * [backCount] on the back button: unread messages in the other rooms and
- * direct chats.
+ * A room's timeline ([viewModel]), its pinned messages ([pinned], while the
+ * topic panel shows) and its topic, saved by [info]. [spaces], the
+ * top-level ones we may invite to, to invite a direct chat's person to;
+ * [presences], for the header and the person sheet, and [refreshPresence]
+ * when the sheet opens. [backCount] on the back button: unread messages in
+ * the other rooms and direct chats.
  * The room's name opens [onRoomInfo] (a direct chat's, its person); links of
  * the topic open with [onOpenLink]. A direct chat's rooms shared with the
- * person are grouped as [rooms] lists them; one opens with [onOpenRoom], a
- * space with [onOpenSpace] (on the Spaces tab).
+ * person are read from [session] and grouped as [rooms] lists them; one
+ * opens with [onOpenRoom], a space with [onOpenSpace] (on the Spaces tab).
  */
 @Composable
 fun TimelineScreen(
     header: RoomHeader,
     viewModel: TimelineViewModel,
+    pinned: PinnedModel,
+    info: RoomInfoModel,
+    session: Session,
     images: Images,
     spaces: List<RoomSummary>,
     rooms: RoomListsInterface,
@@ -248,11 +251,10 @@ fun TimelineScreen(
     val seeking by viewModel.seeking.collectAsStateWithLifecycle()
     val highlighted by viewModel.highlighted.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
+    val topicError by info.error.collectAsStateWithLifecycle()
     val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
-    val pinned by viewModel.pinned.collectAsStateWithLifecycle()
-    val sharedIds by viewModel.sharedRooms.collectAsStateWithLifecycle()
+    val pinnedRows by pinned.pinned.collectAsStateWithLifecycle()
     val downloads by viewModel.downloads.collectAsStateWithLifecycle()
-    val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, among = it) } }
     // The app may be ended in the background: the draft is kept first.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(
@@ -262,10 +264,10 @@ fun TimelineScreen(
         typing = typing,
         seeking = seeking,
         highlighted = highlighted,
-        error = error,
+        // The timeline's first, then the topic's.
+        error = error ?: topicError,
         canEditTopic = header.rights.changeTopic,
-        pinned = pinned,
-        shared = shared,
+        pinned = pinnedRows,
         downloads = downloads,
     )
     TimelineContent(
@@ -282,6 +284,12 @@ fun TimelineScreen(
         onOpenLink = onOpenLink,
         onOpenRoom = onOpenRoom,
         onOpenSpace = onOpenSpace,
+        onSaveTopic = info::setTopic,
+        onShowPinned = { shown -> if (shown) pinned.show() else pinned.hide() },
+        onErrorShown = { if (error != null) viewModel.clearError() else info.clearError() },
+        sharedRooms = { person ->
+            SharedRoomsPanel(person, header.name, session, rooms, images, onOpenRoom = onOpenRoom, onOpenSpace = onOpenSpace)
+        },
     )
 
     personInfo?.let { model ->
@@ -293,10 +301,12 @@ fun TimelineScreen(
 
 /**
  * The room screen as [state] says, without a model: the header with its
- * topic line and panel ([topicOpen] or [editingTopic] at first) and its
- * space, or a direct chat's # and the panel of the rooms shared with the
- * person ([sharedOpen] at first); the timeline, the composer and the menus
- * of messages.
+ * topic line and panel ([topicOpen] or [editingTopic] at first; the topic
+ * saved with [onSaveTopic], the pinned messages shown while it is open,
+ * [onShowPinned]) and its space, or a direct chat's # and the panel of the
+ * rooms shared with the person ([sharedRooms], [sharedOpen] at first); the
+ * timeline, the composer and the menus of messages. [state]'s error shows
+ * once, then [onErrorShown].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -313,6 +323,11 @@ fun TimelineContent(
     onOpenLink: (String) -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenSpace: (String) -> Unit,
+    onSaveTopic: (Topic) -> Unit,
+    onShowPinned: (Boolean) -> Unit,
+    onErrorShown: () -> Unit,
+    /** The panel of the rooms shared with a direct chat's person (their user ID). */
+    sharedRooms: @Composable (String) -> Unit,
     /** Downloaded files to open, share or save; none in the screenshots (no activity). */
     files: Flow<FileRequest>? = null,
     topicOpen: Boolean = false,
@@ -345,7 +360,7 @@ fun TimelineContent(
     LaunchedEffect(state.error) {
         val message = state.error ?: return@LaunchedEffect
         snackbar.showSnackbar(message)
-        actions.clearError()
+        onErrorShown()
     }
 
     // Downloaded files: opened, shared or saved.
@@ -353,13 +368,11 @@ fun TimelineContent(
 
     // The pinned messages, while the panel is open.
     val panelOpen = panel != null
-    LaunchedEffect(panelOpen) {
-        if (panelOpen) actions.showPinned() else actions.hidePinned()
-    }
+    LaunchedEffect(panelOpen) { onShowPinned(panelOpen) }
     BackHandler(enabled = panelOpen) { panel = null }
 
     // A direct chat's rooms shared with the person, over the timeline and
-    // the composer (the keyboard goes); loaded as the panel opens.
+    // the composer (the keyboard goes).
     var sharing by remember { mutableStateOf(sharedOpen) }
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
@@ -368,7 +381,6 @@ fun TimelineContent(
         if (sharing && person != null) {
             focus.clearFocus()
             keyboard?.hide()
-            actions.showSharedRooms(person)
         }
     }
     BackHandler(enabled = sharing) { sharing = false }
@@ -534,7 +546,7 @@ fun TimelineContent(
                     editing = mode == TopicPanelMode.EDITING,
                     onEdit = { panel = TopicPanelMode.EDITING },
                     onSave = { topic ->
-                        actions.saveTopic(topic)
+                        onSaveTopic(topic)
                         panel = TopicPanelMode.SHOWING
                     },
                     onCancel = { panel = TopicPanelMode.SHOWING },
@@ -546,9 +558,7 @@ fun TimelineContent(
                     },
                 )
             }
-            if (sharing) {
-                SharedRoomsPanel(header.name, state.shared, images, today, onOpenRoom = onOpenRoom, onOpenSpace = onOpenSpace)
-            }
+            if (sharing && person != null) sharedRooms(person)
         }
     }
 

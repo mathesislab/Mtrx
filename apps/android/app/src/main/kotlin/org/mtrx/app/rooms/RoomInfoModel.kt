@@ -2,6 +2,9 @@ package org.mtrx.app.rooms
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,10 +25,14 @@ import uniffi.mtrx.Topic
 
 /**
  * Room info of [roomId] (a room or a space): its settings and members, and
- * the changes to them, through its [Room]. The settings follow the room, and
- * a change to them shows at once (the library's); the members are read again
- * after each change to them. [composeTopic] makes the topic to save from its
- * text and links (the library's). Methods are called on the main thread.
+ * the changes to them, through its [Room]. Nothing is read until [load]
+ * (Room info shows; the room screen only saves the topic): from then on the
+ * settings follow the room, and a change to them shows at once (the
+ * library's); the members are read at each [load] and again after each
+ * change to them. Changes run in a scope of their own, so leaving the
+ * screen (which clears this model) does not cancel them; the room is closed
+ * once they end. [composeTopic] makes the topic to save from its text and
+ * links (the library's). Methods are called on the main thread.
  */
 class RoomInfoModel(
     val roomId: String,
@@ -48,19 +55,28 @@ class RoomInfoModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    /** Follows the settings into [settings]; cancelled with the model. */
-    private val subscription: TaskHandle? = room.getOrNull()?.subscribeSettings(object : RoomSettingsListener {
-        // On a library thread: the settings once read, then after every change.
-        override fun onUpdate(settings: RoomSettings) {
-            _settings.value = settings
+    /** Follows the settings into [settings] from the first [load]; cancelled with the model. */
+    private var subscription: TaskHandle? = null
+
+    // Not cancelled with viewModelScope: completed when the model is cleared,
+    // it ends once the changes under way are done.
+    private val changesJob = SupervisorJob()
+    private val changes = CoroutineScope(changesJob + Dispatchers.Main.immediate)
+
+    /** Room info shows: follow the settings (from the first call on) and read the members. */
+    fun load() {
+        if (subscription == null) {
+            try {
+                subscription = room.getOrThrow().subscribeSettings(object : RoomSettingsListener {
+                    // On a library thread: the settings once read, then after every change.
+                    override fun onUpdate(settings: RoomSettings) {
+                        _settings.value = settings
+                    }
+                })
+            } catch (e: MtrxException) {
+                _error.value = describe(e)
+            }
         }
-    })
-
-    init {
-        loadMembers()
-    }
-
-    fun loadMembers() {
         viewModelScope.launch {
             try {
                 _members.value = room.getOrThrow().members()
@@ -114,7 +130,7 @@ class RoomInfoModel(
 
     /** Make a change, which shows at once (in [settings], or the room list's name and topic); a failure shows as [error]. */
     private fun change(call: suspend (Room) -> Unit) {
-        viewModelScope.launch {
+        changes.launch {
             try {
                 call(room.getOrThrow())
             } catch (e: MtrxException) {
@@ -125,7 +141,7 @@ class RoomInfoModel(
 
     /** Make a change to the members, shown as [doing] meanwhile, then read them again. */
     private fun changeMembers(doing: String, call: suspend (Room) -> Unit) {
-        viewModelScope.launch {
+        changes.launch {
             _busy.value = doing
             try {
                 val opened = room.getOrThrow()
@@ -148,6 +164,8 @@ class RoomInfoModel(
             it.cancel()
             it.close()
         }
-        room.getOrNull()?.close()
+        // Changes under way keep the room until they end.
+        changesJob.invokeOnCompletion { room.getOrNull()?.close() }
+        changesJob.complete()
     }
 }

@@ -1,5 +1,9 @@
 package org.mtrx.app.rooms
 
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -49,21 +53,48 @@ class RoomModelsTest {
     // Room info
 
     @Test
-    fun roomInfoFollowsTheSettingsAndReadsTheMembers() = runTest {
+    fun roomInfoFollowsTheSettingsAndReadsTheMembersOnceLoaded() = runTest {
         session.settings = roomSettings(joinRule = JoinRule.PUBLIC)
         session.memberList = listOf(member("@b:x"))
         val model = RoomInfoModel(room, session) { it.text }
+        // Nothing read until Room info shows.
+        assertNull(model.settings.value)
+        assertNull(model.members.value)
+        assertTrue(session.settingsSubscriptions.isEmpty())
+
+        model.load()
         assertEquals(JoinRule.PUBLIC, model.settings.value?.joinRule)
         assertEquals(listOf("@b:x"), model.members.value?.map { it.user.userId })
         // Changed elsewhere.
         session.pushSettings(roomSettings(joinRule = JoinRule.KNOCK))
         assertEquals(JoinRule.KNOCK, model.settings.value?.joinRule)
+        // Shown again: the members read again, the settings followed once.
+        session.memberList = listOf(member("@b:x"), member("@c:x"))
+        model.load()
+        assertEquals(listOf("@b:x", "@c:x"), model.members.value?.map { it.user.userId })
+        assertEquals(1, session.settingsSubscriptions.size)
+    }
+
+    @Test
+    fun aTopicSavedFromTheRoomScreenIsNotCancelledByLeaving() = runTest {
+        val store = ViewModelStore()
+        val factory = viewModelFactory { initializer { RoomInfoModel(room, session) { "composed ${it.text}" } } }
+        val model = ViewModelProvider(store, factory)[RoomInfoModel::class.java]
+        session.roomGate = CompletableDeferred()
+        model.setTopic(Topic("Ice", emptyList()))
+        store.clear()
+        // The call runs to its end: its answer arrives.
+        session.roomError = MtrxException.Other("not allowed")
+        session.roomGate!!.complete(Unit)
+        assertEquals(listOf("topic composed Ice"), session.roomCalls)
+        assertEquals("not allowed", model.error.value)
     }
 
     @Test
     fun aChangeShowsAtOnceAndAFailedOneGoesAgain() = runTest {
         session.settings = roomSettings(banned = listOf(Banned(user("@c:x"), reason = null)))
         val model = RoomInfoModel(room, session) { "composed ${it.text}" }
+        model.load()
         session.roomGate = CompletableDeferred()
         model.setJoinRule(JoinRule.KNOCK)
         model.setAddress(" #ice ")

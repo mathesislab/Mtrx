@@ -1,7 +1,6 @@
 package org.mtrx.app.timeline
 
 import uniffi.mtrx.Media
-import uniffi.mtrx.Topic
 
 /**
  * What the room screen asks of its model ([TimelineViewModel]); the
@@ -37,18 +36,7 @@ interface TimelineActions {
 
     fun showPersonInfo(userId: String)
 
-    /** The rooms shared with a direct chat's person [userId] are shown: load them. */
-    fun showSharedRooms(userId: String)
-
-    fun clearError()
-
-    fun saveTopic(topic: Topic)
-
     fun setPinned(eventId: String, pin: Boolean)
-
-    fun showPinned()
-
-    fun hidePinned()
 
     /** Download a message's file (once; a failed download again), then hand it on for [use] ([TimelineViewModel.files]). */
     fun file(media: Media, eventId: String?, use: FileUse)

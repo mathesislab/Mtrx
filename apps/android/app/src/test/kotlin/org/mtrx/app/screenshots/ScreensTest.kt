@@ -31,6 +31,7 @@ import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.ShowActions
 import org.mtrx.app.ui.ShowSheetContent
 import org.mtrx.app.timeline.RoomHeader
+import org.mtrx.app.timeline.SharedRoomsList
 import org.mtrx.app.timeline.TimelineContent
 import org.mtrx.app.timeline.TimelineState
 import org.mtrx.app.timeline.shownRows
@@ -339,6 +340,10 @@ private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
             onOpenLink = {},
             onOpenRoom = {},
             onOpenSpace = {},
+            onSaveTopic = {},
+            onShowPinned = {},
+            onErrorShown = {},
+            sharedRooms = {},
             topicOpen = topicOpen,
             editingTopic = editingTopic,
         )
@@ -351,7 +356,7 @@ private fun SharedRooms(shared: List<RoomGroup>) {
     HomeFrame(HomeTab.Chats, badges, onTab = {}, showTopBar = false) {
         TimelineContent(
             RoomHeader(name = "Bob Berg", avatarUrl = null, seed = bob, person = bob),
-            TimelineState(rows = shownRows(conversation), shared = shared),
+            TimelineState(rows = shownRows(conversation)),
             NoTimelineActions,
             images,
             presence = null,
@@ -363,6 +368,10 @@ private fun SharedRooms(shared: List<RoomGroup>) {
             onOpenLink = {},
             onOpenRoom = {},
             onOpenSpace = {},
+            onSaveTopic = {},
+            onShowPinned = {},
+            onErrorShown = {},
+            sharedRooms = { SharedRoomsList("Bob Berg", shared, images, today, onOpenRoom = {}, onOpenSpace = {}) },
             sharedOpen = true,
         )
     }
