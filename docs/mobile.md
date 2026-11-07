@@ -247,9 +247,13 @@ apps/ios/
                       browser sign-in, error messages, InputWatcher
                       (touches and typing, for idle)
     Models/           AppModel (phase: starting, signed out, signed in),
-                      SignInModel, SessionModel (room lists, selected space,
-                      sort, connection, sync, encryption state,
-                      verification requests), PresenceModel (others'
+                      SignInModel, SessionModel (the account: connection,
+                      sync, foreground, sign-out; owns the models below),
+                      RoomListModel (room lists, drafts, joins),
+                      HomeNavigation (tab, paths, selected space, sort,
+                      folded groups), EncryptionModel (encryption state,
+                      verification requests), DownloadsModel,
+                      PresenceModel (others'
                       presences, ours, the switch), RecoveryModel,
                       VerificationModel, TimelineModel (also composing,
                       actions, typing, going to a quote, at the bottom),
@@ -275,7 +279,7 @@ apps/ios/
   and the spaces (with their rooms and unread dots, then "Other rooms")
   from each `RoomListState`. Spaces is a paged `TabView` (spaces, the
   selected space's rooms; a "Spaces" button goes back too); the page and
-  the selected space live in `SessionModel`, the space in UserDefaults
+  the selected space live in `HomeNavigation`, the space in UserDefaults
   (`selectedSpace`: a space ID or `other-rooms`), removed at sign-out. A
   space's rooms (and Other rooms) are in two sections, Rooms and People
   (its direct chats; an empty section is left out), both in the order of
@@ -290,14 +294,14 @@ apps/ios/
   subscriptions in `SessionModel.start()`, just before the first
   `startSync()` (the library pushes the state now, `recovery` `unknown`
   before sync, and on every change, so the order does not matter), and
-  cancelled with them at sign-out. `SessionModel.encryption` is the last
-  pushed state; `encryptionState()` is not called (the first push comes at
+  cancelled with them at sign-out. `SessionModel` hands each push to
+  `EncryptionModel.apply`; `EncryptionModel.state` is the last pushed
+  state; `encryptionState()` is not called (the first push comes at
   once). Recovery and verification only end: the banner goes when the
   pushed state says so. Undecryptable rows say "Decrypting…" while
   `keysArriving`, else "Could not decrypt this message."
-  (`MessageRow.undecryptableText`); `SessionModel.keysArriving`, a
-  publisher, is handed to each `TimelineModel`, which rebuilds its rows
-  when it changes, so rows on screen follow. `utdCause` is not shown.
+  (`MessageRow.undecryptableText`); the core marks such rows
+  `decrypting` while keys arrive and sends new rows when that changes. `utdCause` is not shown.
 - Timeline: rows keyed by `TimelineRow.id`, as the library gives them:
   runs of state events in one line, messages grouped by sender.
   A flipped scroll view (the list and each row upside down) on every
@@ -874,8 +878,8 @@ subscription, section 9.) `Session.encryptionState()` returns
 (the core has no stream for it): ask (a) when the room list first reports
 `loaded == true` after `startSync()`, (b) after `recover` returns, (c) after
 a verification reaches `done`, (d) when the app returns to the foreground.
-Keep the result in the session model (iOS `SessionModel`, Android
-`Account`). Show a banner at the top of the room list when
+Keep the result in the session model (iOS `EncryptionModel`, Android
+`SignedInSession`). Show a banner at the top of the room list when
 `!deviceVerified || recovery == incomplete`; not while `recovery ==
 unknown` (no sync yet: ask again at the next moment above). Text: "Verify
 this device or enter your recovery key to read encrypted messages."; a tap
