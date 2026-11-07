@@ -329,12 +329,14 @@ impl Session {
     /// Start an export. It's in [`Session::exports`] at once, with its
     /// folder made.
     pub fn export(&self, request: ExportRequest) -> Result<ExportId> {
-        self.exports.start(
+        let plan = Plan::new(
             &self.client,
-            self.room_keys.clone(),
             &self.spaces.get(),
-            request,
-        )
+            |room| self.listings.name(room),
+            &request.of,
+        )?;
+        self.exports
+            .start(&self.client, self.room_keys.clone(), plan, request)
     }
 
     /// The exports, newest first.
@@ -386,10 +388,9 @@ impl Exports {
         &self,
         client: &Client,
         room_keys: Arc<crate::encryption::RoomKeys>,
-        graph: &SpaceGraph,
+        plan: Plan,
         request: ExportRequest,
     ) -> Result<ExportId> {
-        let plan = Plan::new(client, graph, &request.of)?;
         let destination = match &request.to {
             SaveTo::Downloads => (self.downloads.clone())
                 .ok_or_else(|| Error::Export("There is no Downloads folder".into()))?,
@@ -539,12 +540,18 @@ pub(crate) struct PlannedRoom {
 }
 
 impl Plan {
-    fn new(client: &Client, graph: &SpaceGraph, of: &ExportOf) -> Result<Self> {
+    /// `listed` names rooms we were never in.
+    fn new(
+        client: &Client,
+        graph: &SpaceGraph,
+        listed: impl Fn(&RoomId) -> Option<String>,
+        of: &ExportOf,
+    ) -> Result<Self> {
         let name = |id: &RoomId| {
-            client
-                .get_room(id)
+            (client.get_room(id))
                 .and_then(|room| room.cached_display_name())
                 .map(|name| name.to_string())
+                .or_else(|| listed(id))
                 .unwrap_or_else(|| id.to_string())
         };
         let joined = |id: &RoomId| {

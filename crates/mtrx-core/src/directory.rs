@@ -123,6 +123,16 @@ impl Listings {
         let listings = self.0.lock().unwrap_or_else(|e| e.into_inner());
         Some(listings.get(space)?.shown.clone())
     }
+
+    /// `room`'s name as a space's listing gave it, for rooms we never were
+    /// in.
+    pub(crate) fn name(&self, room: &RoomId) -> Option<String> {
+        let listings = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        (listings.values())
+            .flat_map(|listing| &listing.shown)
+            .find(|listed| listed.id == room)
+            .map(|listed| listed.name.clone())
+    }
 }
 
 impl DirectoryServers {
