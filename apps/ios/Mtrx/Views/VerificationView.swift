@@ -5,7 +5,7 @@ import SwiftUI
 /// direction: each state of the verification as it comes.
 struct VerificationView: View {
     @ObservedObject var model: VerificationModel
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var encryption: EncryptionModel
 
     var body: some View {
         NavigationStack {
@@ -82,7 +82,7 @@ struct VerificationView: View {
             case .done:
                 message("This device is verified.", systemImage: "checkmark.shield")
                     .foregroundColor(.green)
-                Button("Done") { session.closeVerification() }
+                Button("Done") { encryption.closeVerification() }
                     .buttonStyle(.borderedProminent)
             case .cancelled(let reason):
                 VStack(spacing: 8) {
@@ -92,7 +92,7 @@ struct VerificationView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-                Button("Close") { session.closeVerification() }
+                Button("Close") { encryption.closeVerification() }
                     .buttonStyle(.borderedProminent)
             }
         }
@@ -113,7 +113,7 @@ struct VerificationView: View {
     /// Stop (or decline) and close.
     private func cancel() {
         model.cancel()
-        session.closeVerification()
+        encryption.closeVerification()
     }
 }
 

@@ -17,15 +17,7 @@ struct SettingsView: View {
                     LabeledContent("Device", value: session.deviceId)
                 }
                 .textSelection(.enabled)
-                Section {
-                    Toggle(
-                        "Notes at the top",
-                        isOn: Binding(get: { session.notesAtTop }, set: { session.setNotesAtTop($0) }))
-                } header: {
-                    Text("Room list")
-                } footer: {
-                    Text("Your notes to self stay at the top of Chats and of every space.")
-                }
+                RoomListSection()
                 PrivacySection()
                 EncryptionSection()
                 Section {
@@ -64,6 +56,23 @@ struct SettingsView: View {
     }
 }
 
+/// Where the Notes to self shows, for the account.
+private struct RoomListSection: View {
+    @EnvironmentObject private var rooms: RoomListModel
+
+    var body: some View {
+        Section {
+            Toggle(
+                "Notes at the top",
+                isOn: Binding(get: { rooms.notesAtTop }, set: { rooms.setNotesAtTop($0) }))
+        } header: {
+            Text("Room list")
+        } footer: {
+            Text("Your notes to self stay at the top of Chats and of every space.")
+        }
+    }
+}
+
 /// Whether others see when we are online or idle.
 private struct PrivacySection: View {
     @EnvironmentObject private var presence: PresenceModel
@@ -83,60 +92,60 @@ private struct PrivacySection: View {
 /// Whether this device is verified and recovery unlocked; while not, the
 /// ways to fix it: the recovery key, or another device.
 struct EncryptionSection: View {
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var encryption: EncryptionModel
 
     var body: some View {
         Section {
             LabeledContent("This device", value: deviceStatus)
             LabeledContent("Recovery", value: recoveryStatus)
-            if session.needsEncryptionSetup, let encryption = session.encryption {
-                if encryption.recovery != .disabled {
+            if encryption.needsSetup, let state = encryption.state {
+                if state.recovery != .disabled {
                     NavigationLink("Enter recovery key") {
-                        RecoveryView(model: session.recovery)
+                        RecoveryView(model: encryption.recovery)
                     }
                 }
-                if !encryption.deviceVerified {
-                    if session.hasOtherDevice == false {
+                if !state.deviceVerified {
+                    if encryption.hasOtherDevice == false {
                         Text("Verifying needs another device signed in to this account, such as the desktop app.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
                         Button {
-                            session.verifyWithAnotherDevice()
+                            encryption.verifyWithAnotherDevice()
                         } label: {
                             HStack {
                                 Text("Verify with another device")
                                 Spacer()
-                                if session.requestingVerification {
+                                if encryption.requestingVerification {
                                     ProgressView()
                                 }
                             }
                         }
-                        .disabled(session.requestingVerification)
+                        .disabled(encryption.requestingVerification)
                     }
                 }
             }
         } header: {
             Text("Encryption")
         } footer: {
-            if let error = session.verificationError {
+            if let error = encryption.verificationError {
                 Text(error).foregroundColor(.red)
             }
         }
-        .task(id: session.encryption?.deviceVerified) {
-            if session.encryption?.deviceVerified == false {
-                await session.loadDevices()
+        .task(id: encryption.state?.deviceVerified) {
+            if encryption.state?.deviceVerified == false {
+                await encryption.loadDevices()
             }
         }
     }
 
     private var deviceStatus: String {
-        guard let encryption = session.encryption else { return "not known yet" }
-        return encryption.deviceVerified ? "verified" : "not verified"
+        guard let state = encryption.state else { return "not known yet" }
+        return state.deviceVerified ? "verified" : "not verified"
     }
 
     private var recoveryStatus: String {
-        switch session.encryption?.recovery {
+        switch encryption.state?.recovery {
         case nil, .unknown: return "not known yet"
         case .enabled: return "set up"
         case .disabled: return "not set up"

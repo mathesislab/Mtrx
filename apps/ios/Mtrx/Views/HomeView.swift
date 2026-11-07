@@ -8,21 +8,24 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
+    @EnvironmentObject private var encryption: EncryptionModel
     @EnvironmentObject private var presence: PresenceModel
 
     var body: some View {
-        TabView(selection: Binding(get: { session.tab }, set: session.select)) {
+        TabView(selection: Binding(get: { home.tab }, set: home.select)) {
             ChatsTab(openSettings: openSettings)
                 .tabItem { Label("Chats", systemImage: "bubble.left.and.bubble.right") }
-                .badge(session.chatsBadge)
+                .badge(rooms.chatsBadge)
                 .tag(HomeTab.chats)
             RoomsTab(openSettings: openSettings)
                 .tabItem { Label("Rooms", systemImage: "number") }
-                .badge(session.roomsBadge)
+                .badge(rooms.roomsBadge)
                 .tag(HomeTab.rooms)
             SpacesTab(openSettings: openSettings)
                 .tabItem { Label("Spaces", systemImage: "square.stack.3d.up") }
-                .badge(session.spacesBadge)
+                .badge(rooms.spacesBadge)
                 .tag(HomeTab.spaces)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
@@ -33,13 +36,12 @@ struct HomeView: View {
         // Closed by its own buttons, which end the verification.
         .sheet(item: verification) { model in
             VerificationView(model: model)
-                .environmentObject(session)
+                .account(session)
         }
-        .sheet(item: $session.invite) { invite in
-            if let room = session.room(invite.id) {
+        .sheet(item: $home.invite) { invite in
+            if let room = rooms.room(invite.id) {
                 InviteView(room: room)
-                    .environmentObject(session)
-                    .environmentObject(session.images)
+                    .account(session)
             }
         }
         .alert("Signed out", isPresented: signedOutElsewhere) {
@@ -58,11 +60,11 @@ struct HomeView: View {
 
     /// The encryption banner leads to Settings.
     private func openSettings() {
-        session.tab = .settings
+        home.tab = .settings
     }
 
     private var verification: Binding<VerificationModel?> {
-        Binding(get: { session.verification }, set: { _ in })
+        Binding(get: { encryption.verification }, set: { _ in })
     }
 
     private var signedOutElsewhere: Binding<Bool> {
@@ -77,20 +79,21 @@ struct HomeView: View {
 /// The direct chats, most recently active first, with their people's
 /// presence and the spaces we share with them.
 struct ChatsTab: View {
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
     @EnvironmentObject private var presence: PresenceModel
     let openSettings: () -> Void
     @State private var search = ""
 
     var body: some View {
-        let lists = session.lists
+        let lists = rooms.lists
         let searching = !search.isEmpty
         // The Notes to self at the top, unless searching: then among the
         // chats found.
         let chats = searching ? lists.search(key: nil, filter: search) : lists.chats()
         let chatsSection = ListSection(
             key: "chats", title: "", rooms: chats, folded: false, unread: 0, mentions: false, space: nil)
-        NavigationStack(path: $session.chatsPath) {
+        NavigationStack(path: $home.chatsPath) {
             RoomList(sections: [chatsSection],
                      notes: searching ? nil : lists.notes(), searching: searching, openSettings: openSettings,
                      presence: presence.presence(of:),
@@ -98,14 +101,14 @@ struct ChatsTab: View {
                          let spaces = lists.chatSpaces(chatId: room.id)
                          return spaces.isEmpty ? nil : spaces.joined(separator: ", ")
                      }) {
-                ListPlaceholder(loaded: session.loaded, empty: "No chats yet")
+                ListPlaceholder(loaded: rooms.loaded, empty: "No chats yet")
             }
             .navigationTitle("Chats")
             .searchable(text: $search, prompt: "Search chats")
             .navigationDestination(for: String.self) { id in
                 OpenRoom(id: id)
-                    .backWithUnread(session.backBadge(besides: id)) {
-                        session.chatsPath.removeAll { $0 == id }
+                    .backWithUnread(rooms.backBadge(besides: id)) {
+                        home.chatsPath.removeAll { $0 == id }
                     }
                     .toolbar(.hidden, for: .tabBar)
             }
@@ -134,12 +137,13 @@ enum SpacesSheet: Identifiable {
 /// the Rooms tab.
 struct SpacesTab: View {
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var home: HomeNavigation
     let openSettings: () -> Void
     @State private var search = ""
     @State private var sheet: SpacesSheet?
 
     var body: some View {
-        NavigationStack(path: $session.spacesPath) {
+        NavigationStack(path: $home.spacesPath) {
             SpacesList(search: search, openSettings: openSettings)
                 .navigationTitle("Spaces")
                 .searchable(text: $search, prompt: "Search spaces")
@@ -154,8 +158,7 @@ struct SpacesTab: View {
         }
         .sheet(item: $sheet) { sheet in
             SpacesSheetView(sheet: sheet)
-                .environmentObject(session)
-                .environmentObject(session.images)
+                .account(session)
         }
     }
 }
@@ -215,7 +218,7 @@ private struct SpacesSheetView: View {
 
 /// The top-level spaces, then Home; a tap shows the entry's rooms.
 struct SpacesList: View {
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
     let search: String
     let openSettings: () -> Void
 
@@ -224,7 +227,7 @@ struct SpacesList: View {
             if search.isEmpty {
                 EncryptionBannerRow(open: openSettings)
             }
-            ForEach(session.lists.searchSpaces(filter: search)) { item in
+            ForEach(rooms.lists.searchSpaces(filter: search)) { item in
                 NavigationLink(value: item.key) {
                     SpaceRow(item: item)
                 }
@@ -233,8 +236,8 @@ struct SpacesList: View {
         }
         .listStyle(.plain)
         .overlay {
-            if session.lists.spaces().isEmpty {
-                ListPlaceholder(loaded: session.loaded, empty: "No rooms yet")
+            if rooms.lists.spaces().isEmpty {
+                ListPlaceholder(loaded: rooms.loaded, empty: "No rooms yet")
             }
         }
         .safeAreaInset(edge: .bottom) { OfflineBanner() }
@@ -247,6 +250,8 @@ struct SpacesList: View {
 /// it shows the space's overview.
 struct SpaceRoomsPage: View {
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
     let entry: SpaceKey
     @Binding var sheet: SpacesSheet?
     let openSettings: () -> Void
@@ -254,16 +259,16 @@ struct SpaceRoomsPage: View {
     @State private var overview = false
     @State private var showing = false
 
-    private var item: SpaceEntry? { session.lists.space(key: entry) }
+    private var item: SpaceEntry? { rooms.lists.space(key: entry) }
 
     var body: some View {
         let sections = item.map { _ in
-            session.lists.spaceList(
-                key: entry, layout: session.sectionLayouts[entry].library, sort: session.roomSort, filter: search)
+            rooms.lists.spaceList(
+                key: entry, layout: home.sectionLayouts[entry].library, sort: home.roomSort, filter: search)
         } ?? []
-        RoomList(sections: sections, notes: search.isEmpty ? session.lists.notes() : nil,
+        RoomList(sections: sections, notes: search.isEmpty ? rooms.lists.notes() : nil,
                  searching: !search.isEmpty, openSettings: openSettings, opensInRooms: true,
-                 fold: { key in session.sectionLayouts.change(entry) { $0.toggleFold(key) } }) {
+                 fold: { key in home.sectionLayouts.change(entry) { $0.toggleFold(key) } }) {
             if item != nil {
                 Text("No rooms in this space").foregroundStyle(.secondary)
             } else {
@@ -303,14 +308,13 @@ struct SpaceRoomsPage: View {
         .fullScreenCover(isPresented: $overview) {
             if let space = item?.space {
                 SpaceOverviewView(space: space)
-                    .environmentObject(session)
-                    .environmentObject(session.images)
+                    .account(session)
             }
         }
         .sheet(isPresented: $showing) {
             if let item {
                 ShowSheet(item: item)
-                    .environmentObject(session)
+                    .account(session)
             }
         }
     }
@@ -352,7 +356,7 @@ private struct SpaceRow: View {
 /// How a space's list shows: Show… (its sections) and the order of the
 /// spaces' rooms, the current one checked.
 private struct ViewMenu: View {
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var home: HomeNavigation
     let show: () -> Void
 
     var body: some View {
@@ -360,7 +364,7 @@ private struct ViewMenu: View {
             Button(action: show) {
                 Label("Show…", systemImage: "checklist")
             }
-            Picker("Sort", selection: Binding(get: { session.roomSort }, set: session.setRoomSort)) {
+            Picker("Sort", selection: Binding(get: { home.roomSort }, set: home.setRoomSort)) {
                 ForEach(RoomSort.allCases) { sort in
                     Text(sort.title).tag(sort)
                 }
@@ -377,20 +381,21 @@ private struct ViewMenu: View {
 /// heading's caret folds or unfolds its group; a space's name shows the
 /// space in the Spaces tab.
 struct RoomsTab: View {
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
     let openSettings: () -> Void
 
     var body: some View {
-        NavigationStack(path: $session.roomsPath) {
-            RoomList(sections: session.roomGroups, searching: false, openSettings: openSettings,
-                     fold: session.toggleGroupFold, openSpace: { session.open($0) }) {
-                ListPlaceholder(loaded: session.loaded, empty: "No rooms yet")
+        NavigationStack(path: $home.roomsPath) {
+            RoomList(sections: home.roomGroups, searching: false, openSettings: openSettings,
+                     fold: home.toggleGroupFold, openSpace: { home.open($0) }) {
+                ListPlaceholder(loaded: rooms.loaded, empty: "No rooms yet")
             }
             .navigationTitle("Rooms")
             .navigationDestination(for: String.self) { id in
                 OpenRoom(id: id)
-                    .backWithUnread(session.backBadge(besides: id)) {
-                        session.roomsPath.removeAll { $0 == id }
+                    .backWithUnread(rooms.backBadge(besides: id)) {
+                        home.roomsPath.removeAll { $0 == id }
                     }
                     .toolbar(.hidden, for: .tabBar)
             }
@@ -406,7 +411,8 @@ struct RoomsTab: View {
 /// unfolds it; where a space's heading shows the space (`openSpace`), a tap
 /// on it does, and if it folds too, only a tap on its caret folds it.
 struct RoomList<Empty: View>: View {
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
     let sections: [ListSection]
     /// The Notes to self, at the top.
     var notes: RoomSummary?
@@ -463,14 +469,14 @@ struct RoomList<Empty: View>: View {
             Group {
                 if room.membership == .invited {
                     Button {
-                        session.invite = RoomRef(id: room.id)
+                        home.invite = RoomRef(id: room.id)
                     } label: {
                         row(room)
                     }
                     .foregroundColor(.primary)
                 } else if opensInRooms {
                     Button {
-                        session.open(room.id)
+                        home.open(room.id)
                     } label: {
                         row(room)
                     }
@@ -497,7 +503,7 @@ struct RoomList<Empty: View>: View {
 
     private func row(_ room: RoomSummary) -> RoomRow {
         RoomRow(
-            room: room, presence: presence(room), draft: session.drafts.contains(room.id),
+            room: room, presence: presence(room), draft: rooms.drafts.contains(room.id),
             subline: subline(room))
     }
 }
@@ -673,9 +679,10 @@ private struct BackWithUnread: ViewModifier {
 /// coming (just made or joined) or gone. Its state (the timeline's and the
 /// info's models) is the room's: a navigation stack keeps a page's state
 /// when its path changes to another room at the same place (a room opened
-/// from elsewhere over another, `SessionModel.open`).
+/// from elsewhere over another, `HomeNavigation.open`).
 struct OpenRoom: View {
     @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
     let id: String
 
     var body: some View {
@@ -684,11 +691,13 @@ struct OpenRoom: View {
 
     @ViewBuilder
     private var content: some View {
-        if let room = session.room(id), room.membership != .invited {
-            RoomView(room: room, model: session.timeline(for: room), info: session.info(for: room))
-        } else if let room = session.room(id) {
+        if let room = rooms.room(id), room.membership != .invited {
+            RoomView(
+                room: room, model: TimelineModel(session: session.session, room: room),
+                info: RoomInfoModel(session: session.session, roomId: room.id, userId: session.userId))
+        } else if let room = rooms.room(id) {
             InviteView(room: room)
-        } else if session.joining.contains(id) || !session.loaded {
+        } else if rooms.joining.contains(id) || !rooms.loaded {
             ProgressView("Loading…")
         } else {
             Text("This room is not in your list.")
@@ -699,11 +708,11 @@ struct OpenRoom: View {
 
 /// The encryption banner as the first row of a list, while it shows.
 private struct EncryptionBannerRow: View {
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var encryption: EncryptionModel
     let open: () -> Void
 
     var body: some View {
-        if session.needsEncryptionSetup {
+        if encryption.needsSetup {
             EncryptionBanner(open: open)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))

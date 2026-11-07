@@ -21,20 +21,20 @@ final class RememberedSortTests: XCTestCase {
     }
 
     func testDefaultUntilChosen() {
-        XCTAssertEqual(launch().roomSort, .listOrder)
+        XCTAssertEqual(launch().home.roomSort, .listOrder)
     }
 
     func testTheChoiceIsRemembered() {
         let first = launch()
-        first.setRoomSort(.mostRecent)
-        XCTAssertEqual(first.roomSort, .mostRecent)
-        XCTAssertEqual(launch().roomSort, .mostRecent)
-        first.setRoomSort(.zToA)
-        XCTAssertEqual(launch().roomSort, .zToA)
+        first.home.setRoomSort(.mostRecent)
+        XCTAssertEqual(first.home.roomSort, .mostRecent)
+        XCTAssertEqual(launch().home.roomSort, .mostRecent)
+        first.home.setRoomSort(.zToA)
+        XCTAssertEqual(launch().home.roomSort, .zToA)
     }
 
     func testAnUnknownSavedValueIsTheDefault() {
         defaults.set("by-size", forKey: "roomSort")
-        XCTAssertEqual(launch().roomSort, .listOrder)
+        XCTAssertEqual(launch().home.roomSort, .listOrder)
     }
 }

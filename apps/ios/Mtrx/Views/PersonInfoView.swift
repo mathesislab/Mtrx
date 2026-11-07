@@ -5,13 +5,13 @@ import SwiftUI
 /// user ID (to copy), and inviting them to one of our spaces.
 struct PersonInfoView: View {
     @ObservedObject var model: PersonInfoModel
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
     @EnvironmentObject private var presence: PresenceModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         // Those we may invite to.
-        let spaces = session.lists.topLevelSpaces().filter(\.rights.invite)
+        let spaces = rooms.lists.topLevelSpaces().filter(\.rights.invite)
         NavigationStack {
             List {
                 Section {

@@ -6,7 +6,7 @@ import SwiftUI
 /// it opens.
 struct NewRoomView: View {
     @StateObject private var model: NewRoomModel
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var home: HomeNavigation
     @Environment(\.dismiss) private var dismiss
 
     init(model: @autoclosure @escaping () -> NewRoomModel) {
@@ -109,7 +109,7 @@ struct NewRoomView: View {
         Task {
             guard let id = await model.create() else { return }
             dismiss()
-            session.open(id, kind: model.space ? .space : .room)
+            home.open(id, kind: model.space ? .space : .room)
         }
     }
 }

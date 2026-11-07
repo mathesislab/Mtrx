@@ -23,7 +23,7 @@ final class ScreenshotTests: XCTestCase {
         model.start()
         await eventually { self.session.roomListListener != nil }
         session.roomListListener?.onUpdate(lists: Screens.rooms)
-        await eventually { self.model.loaded }
+        await eventually { self.model.rooms.loaded }
         app = AppModel(core: FakeMtrx(noHandle: .init()), browser: FakeBrowser())
     }
 
@@ -36,30 +36,30 @@ final class ScreenshotTests: XCTestCase {
     /// With the Notes to self at the top, and under each person the spaces
     /// we share.
     func testChats() async throws {
-        model.tab = .chats
+        model.home.tab = .chats
         try await snap("01-chats", HomeView())
     }
 
     func testSpaces() async throws {
-        model.tab = .spaces
-        model.selectSpace(nil)
+        model.home.tab = .spaces
+        model.home.selectSpace(nil)
         try await snap("02-spaces", HomeView())
     }
 
     /// Invites, direct messages and rooms, Rooms folded with its unread
     /// badge, and the Notes to self at the top.
     func testASpacesRooms() async throws {
-        model.tab = .spaces
-        model.selectSpace(.space(id: "!polar"))
-        model.sectionLayouts.change(.space(id: "!polar")) { $0.toggleFold("rooms") }
+        model.home.tab = .spaces
+        model.home.selectSpace(.space(id: "!polar"))
+        model.home.sectionLayouts.change(.space(id: "!polar")) { $0.toggleFold("rooms") }
         try await snap("03-space-rooms", HomeView())
     }
 
     /// Low priority hidden, Rooms moved first.
     func testShowSheet() async throws {
-        let polar = try XCTUnwrap(model.lists.space(key: .space(id: "!polar")))
-        let keys = model.lists.sectionChoices(key: polar.key, layout: SectionLayout().library).map(\.key)
-        model.sectionLayouts.change(polar.key) {
+        let polar = try XCTUnwrap(model.rooms.lists.space(key: .space(id: "!polar")))
+        let keys = model.rooms.lists.sectionChoices(key: polar.key, layout: SectionLayout().library).map(\.key)
+        model.home.sectionLayouts.change(polar.key) {
             $0.setShown("low_priority", false)
             $0.move(keys, from: [keys.firstIndex(of: "rooms")!], to: 0)
         }
@@ -67,31 +67,31 @@ final class ScreenshotTests: XCTestCase {
     }
 
     func testSettings() async throws {
-        model.tab = .settings
+        model.home.tab = .settings
         try await snap("13-settings", HomeView())
     }
 
     /// Home, then each space, its rooms newest first; unfolded, the
     /// headings without unread counts.
     func testRooms() async throws {
-        model.tab = .rooms
-        model.roomsPath = []
+        model.home.tab = .rooms
+        model.home.roomsPath = []
         try await snap("04-rooms", HomeView())
         try await snap("04-rooms-dark", dark: true, HomeView())
     }
 
     /// Polar lab folded, with its unread count; Teaching unfolded.
     func testRoomsFolded() async throws {
-        model.tab = .rooms
-        model.roomsPath = []
-        model.toggleGroupFold("!polar")
+        model.home.tab = .rooms
+        model.home.roomsPath = []
+        model.home.toggleGroupFold("!polar")
         try await snap("04b-rooms-folded", HomeView())
     }
 
     func testARoomWithItsTopicLine() async throws {
         session.fakeTimeline.initialRows = Screens.timeline
-        model.tab = .rooms
-        model.roomsPath = ["!ice"]
+        model.home.tab = .rooms
+        model.home.roomsPath = ["!ice"]
         try await snap("05-room", wait: 2, HomeView())
         try await snap("05-room-dark", dark: true, wait: 2, HomeView())
     }
@@ -121,33 +121,33 @@ final class ScreenshotTests: XCTestCase {
         session.fakeTimeline.initialRows = Screens.timeline
         session.drafts["!ice"] = Draft(text: "I'll add them to the paper's figures", replyTo: "$2")
         session.fakeTimeline.found = ["$2": "2"]
-        model.tab = .rooms
-        model.roomsPath = ["!ice"]
+        model.home.tab = .rooms
+        model.home.roomsPath = ["!ice"]
         try await snap("05b-room-draft", wait: 2, HomeView())
     }
 
     /// The largest text size (Accessibility): the lists put a room's time
     /// and counts under its name; a room, and its info.
     func testLargeText() async throws {
-        model.tab = .chats
+        model.home.tab = .chats
         try await snap("14-large-chats", large: true, HomeView())
-        model.tab = .rooms
-        model.roomsPath = []
+        model.home.tab = .rooms
+        model.home.roomsPath = []
         try await snap("14b-large-rooms", large: true, HomeView())
         session.fakeTimeline.initialRows = Screens.timeline
-        model.roomsPath = ["!ice"]
+        model.home.roomsPath = ["!ice"]
         try await snap("14c-large-room", large: true, wait: 2, HomeView())
         session.settings = Screens.settings
         session.memberList = Screens.members
         try await snap(
-            "14d-large-room-info", large: true, RoomInfoView(room: Screens.ice, model: model.info(for: Screens.ice)))
+            "14d-large-room-info", large: true, RoomInfoView(room: Screens.ice, model: roomInfo(Screens.ice)))
     }
 
     // MARK: A room's topic and info
 
     func testTopicPanel() async throws {
         session.fakePinned.initialRows = Array(Screens.timeline.suffix(2))
-        let info = model.info(for: Screens.ice)
+        let info = roomInfo(Screens.ice)
         let pinned = PinnedModel(session: session, roomId: "!ice")
         try await snap(
             "06-topic-panel",
@@ -155,7 +155,7 @@ final class ScreenshotTests: XCTestCase {
     }
 
     func testTopicEditor() async throws {
-        let info = model.info(for: Screens.ice)
+        let info = roomInfo(Screens.ice)
         try await snap(
             "06b-topic-editor",
             NavigationStack { TopicEditor(draft: TopicDraft(parseTopic(topic: Screens.topic)), info: info) })
@@ -164,13 +164,13 @@ final class ScreenshotTests: XCTestCase {
     func testRoomInfo() async throws {
         session.settings = Screens.settings
         session.memberList = Screens.members
-        try await snap("07-room-info", RoomInfoView(room: Screens.ice, model: model.info(for: Screens.ice)))
+        try await snap("07-room-info", RoomInfoView(room: Screens.ice, model: roomInfo(Screens.ice)))
     }
 
     func testRoomSettingsAndMembers() async throws {
         session.settings = Screens.settings
         session.memberList = Screens.members
-        let info = model.info(for: Screens.ice)
+        let info = roomInfo(Screens.ice)
         await info.load()
         await eventually { info.settings != nil }
         try await snap(
@@ -195,7 +195,7 @@ final class ScreenshotTests: XCTestCase {
 
     func testMemberMenu() async throws {
         session.memberList = Screens.members
-        let info = model.info(for: Screens.ice)
+        let info = roomInfo(Screens.ice)
         await info.load()
         try await snap("08-member-menu", NavigationStack { MemberMenu(member: Screens.members[2], rights: Screens.ice.rights, model: info) })
     }
@@ -236,11 +236,16 @@ final class ScreenshotTests: XCTestCase {
     }
 
     func testInvite() async throws {
-        let party = model.room("!party")!
+        let party = model.rooms.room("!party")!
         try await snap("12-invite", NavigationStack { InviteView(room: party) })
     }
 
     // MARK: Drawing
+
+    /// A room's info, as its screen makes it.
+    private func roomInfo(_ room: RoomSummary) -> RoomInfoModel {
+        RoomInfoModel(session: session, roomId: room.id, userId: model.userId)
+    }
 
     /// Draw `view` in a window the size of the screen, after `wait` seconds
     /// for its tasks, and save it as `<name>.png`; with `large`, in the
@@ -258,10 +263,7 @@ final class ScreenshotTests: XCTestCase {
         window.rootViewController = UIHostingController(
             rootView: view
                 .environmentObject(app)
-                .environmentObject(model)
-                .environmentObject(model.images)
-                .environmentObject(model.presence)
-                .environmentObject(model.downloads))
+                .account(model))
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
         try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))

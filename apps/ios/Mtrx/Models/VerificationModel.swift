@@ -5,7 +5,7 @@ import MtrxFFI
 /// here (outgoing) or by the other device (incoming). Holds the
 /// `Verification` and its subscription while the screen shows: the
 /// protocol is followed only while the object lives. The encryption state
-/// that follows is pushed to `SessionModel`.
+/// that follows is pushed to `EncryptionModel`.
 @MainActor
 final class VerificationModel: ObservableObject, Identifiable {
     let incoming: Bool
