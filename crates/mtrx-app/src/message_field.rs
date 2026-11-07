@@ -516,3 +516,104 @@ impl MessageField {
             .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mtrx_core::{Member, OwnedUserId, Role};
+
+    use super::*;
+
+    fn member(id: &str, name: &str) -> Member {
+        Member {
+            user: mtrx_core::User {
+                id: OwnedUserId::try_from(id).unwrap(),
+                name: Some(name.into()),
+                avatar: None,
+            },
+            role: Role::Member,
+            level: Some(0),
+            membership: mtrx_core::Membership::Joined,
+            own: false,
+            manage: Default::default(),
+        }
+    }
+
+    /// Both fields complete a mention: Enter takes the one offered.
+    #[test]
+    fn both_fields_complete_mentions() {
+        let members = [member("@me:x.org", "Me"), member("@ana:x.org", "Ana")];
+        let texts = mention::texts(&members);
+        let mentions = Mentionable {
+            members: Some(&members),
+            texts: &texts,
+            own: &members[0].user.id,
+            room: false,
+        };
+        for field in [Field::Composer, Field::Edit] {
+            let mut written = MessageField::new(field, "Thanks @a");
+            let candidates = written.candidates(&mentions);
+            let offered: Vec<_> = candidates.iter().map(Candidate::mention).collect();
+            assert_eq!(offered, ["@Ana"], "{field:?}");
+            let _: Task<()> = written.mention(mention::Message::Choose, &candidates);
+            assert_eq!(written.text(), "Thanks @Ana ", "{field:?}");
+            assert!(written.completion().is_none(), "{field:?}");
+        }
+    }
+
+    /// Nothing is offered before the members are loaded.
+    #[test]
+    fn no_completion_without_members() {
+        let texts: Arc<[String]> = Default::default();
+        let own = OwnedUserId::try_from("@me:x.org").unwrap();
+        let mentions = Mentionable {
+            members: None,
+            texts: &texts,
+            own: &own,
+            room: true,
+        };
+        let written = MessageField::new(Field::Edit, "Hello @ro");
+        assert!(written.completion().is_some());
+        assert!(written.candidates(&mentions).is_empty());
+    }
+
+    #[test]
+    fn pasted_text_is_typed_and_files_are_attached() {
+        let mut popup = None;
+        let mut field = MessageField::new(Field::Composer, "See ");
+        let pasted = Message::Pasted(Some(Pasted::Text("the map".into())));
+        let (_, event) = field.update(pasted, &mut popup);
+        assert!(matches!(event, Some(Event::Edited)), "{event:?}");
+        assert_eq!(field.text(), "See the map");
+        let pasted = Message::Pasted(Some(Pasted::Files(vec!["map.png".into()])));
+        let (_, event) = field.update(pasted, &mut popup);
+        assert!(
+            matches!(&event, Some(Event::Attach(paths)) if *paths == [PathBuf::from("map.png")]),
+            "{event:?}"
+        );
+    }
+
+    /// Each field opens and closes its own emoji panel in the window's
+    /// popup.
+    #[test]
+    fn a_field_closes_only_its_own_panel() {
+        let mut popup = None;
+        let mut composer = MessageField::new(Field::Composer, "");
+        let mut edit = MessageField::new(Field::Edit, "Melt rates");
+        let (_, event) = edit.update(Message::Emoji(emoji::Message::Open), &mut popup);
+        assert!(matches!(event, Some(Event::EmojiShown)), "{event:?}");
+        assert!(matches!(popup, Some(Popup::FieldEmoji(Field::Edit, _))));
+        let _ = composer.update(Message::Emoji(emoji::Message::Close), &mut popup);
+        assert!(matches!(popup, Some(Popup::FieldEmoji(Field::Edit, _))));
+        let _ = edit.update(Message::Emoji(emoji::Message::Close), &mut popup);
+        assert!(popup.is_none());
+    }
+
+    #[test]
+    fn an_emoji_goes_where_the_cursor_is() {
+        let mut popup = None;
+        let mut field = MessageField::new(Field::Edit, "Done ");
+        let (_, event) = field.update(Message::InsertEmoji("🎉".into()), &mut popup);
+        assert!(matches!(event, Some(Event::Edited)), "{event:?}");
+        assert_eq!(field.text(), "Done 🎉");
+    }
+}

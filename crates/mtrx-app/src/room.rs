@@ -28,10 +28,9 @@ use crate::{
     app::{self, Popup, Shared},
     avatar::{self, Avatars, Shape},
     calls::{self, RoomCalls},
-    clipboard::{self, Copied},
+    clipboard::Copied,
     context_menu::context_menu,
     drag_scroll::drag_scroll,
-    edit_menu,
     ellipsis::ellipsis,
     emoji,
     find::{self, Find},
@@ -149,12 +148,6 @@ pub enum Message {
     FileDropped(PathBuf),
     /// Files were read to attach to the message.
     Attached(Vec<Result<Attached, String>>),
-    /// ⌘V (or ⌥⇧⌘V) in a field: read the clipboard.
-    Paste(Field, clipboard::Paste),
-    /// What the clipboard held, to paste into a field.
-    Pasted(Field, Option<clipboard::Pasted>),
-    /// The menu of a field one writes in.
-    EditMenu(Field, edit_menu::Message),
     /// Remove an attached file, by index.
     Unattach(usize),
     /// The timeline loaded anew (⌘R).
@@ -323,11 +316,12 @@ impl Room {
         }
     }
 
-    /// The field `field`: the composer.
+    /// The field `field`: the composer, or the message edited in place
+    /// while one is.
     pub fn field_mut(&mut self, field: Field) -> Option<&mut MessageField> {
         match field {
             Field::Composer => Some(&mut self.composer),
-            Field::Edit => None,
+            Field::Edit => self.editing.as_mut().map(|edit| &mut edit.field),
         }
     }
 
@@ -362,7 +356,10 @@ impl Room {
         };
         let target = match field {
             Field::Composer => &mut self.composer,
-            Field::Edit => return Task::none(),
+            Field::Edit => match &mut self.editing {
+                Some(edit) => &mut edit.field,
+                None => return Task::none(),
+            },
         };
         let candidates = target.candidates(&mentions);
         target.mention(message, &candidates)
@@ -378,6 +375,9 @@ impl Room {
     /// Stop completing mentions.
     pub fn close_completion(&mut self) {
         self.composer.close_completion();
+        if let Some(edit) = &mut self.editing {
+            edit.field.close_completion();
+        }
     }
 
     /// A mention is being written, and the members it may be are not
@@ -388,9 +388,9 @@ impl Room {
             && self.fields().any(|field| field.completion().is_some())
     }
 
-    /// The composer.
+    /// The composer, and the message edited in place.
     fn fields(&self) -> impl Iterator<Item = &MessageField> {
-        std::iter::once(&self.composer)
+        std::iter::once(&self.composer).chain(self.editing.as_ref().map(|edit| &edit.field))
     }
 
     /// The members were loaded, or not.
@@ -839,6 +839,13 @@ impl Room {
             .and_then(|(selection, order)| Some((selection.ordered(order)?, order)));
         let id = &self.id;
         let popup = look.popup;
+        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
+        let fields = message_field::Context {
+            mentions: self.mentionable(look.own_user, mention_room),
+            avatars: look.avatars,
+            frequent: look.frequent_emoji,
+            popup,
+        };
         let context = Context {
             room: id,
             theme: &look.theme,
@@ -887,7 +894,7 @@ impl Room {
                 _ => None,
             },
             editing: self.editing.as_ref(),
-            popup,
+            fields,
         };
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
@@ -923,13 +930,6 @@ impl Room {
             |dy| Message::ScrollTimeline(dy).to(id),
         );
 
-        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
-        let fields = message_field::Context {
-            mentions: self.mentionable(look.own_user, mention_room),
-            avatars: look.avatars,
-            frequent: look.frequent_emoji,
-            popup,
-        };
         let attach = hint(
             button(icons::paperclip(19.0, |theme| {
                 theme
@@ -1032,8 +1032,7 @@ impl Room {
                 scheduled,
                 rescheduling,
                 self.editing.as_ref(),
-                look.frequent_emoji,
-                popup,
+                fields,
             ));
         }
         above = above.push(actions::typing(&self.typing));
@@ -1328,8 +1327,8 @@ struct Context<'a, 'b> {
     confirm_delete: Option<&'b str>,
     /// The message being edited in place, if any.
     editing: Option<&'a InlineEdit>,
-    /// The menu or picker open in the window, for the message edited.
-    popup: Option<&'a Popup>,
+    /// What the message edited shows of the room and the window.
+    fields: message_field::Context<'a, 'b>,
 }
 
 impl<'a> Context<'a, '_> {
@@ -1540,7 +1539,7 @@ fn event_view<'a>(
         .editing
         .filter(|e| e.target == Editing::Sent(event.key.clone()));
     item = item.push(match edit {
-        Some(edit) => edit.view(context.room, context.frequent_emoji, context.popup),
+        Some(edit) => edit.view(context.room, context.fields),
         None => body,
     });
     let message = match &event.content {
@@ -1702,18 +1701,6 @@ fn event_view<'a>(
         column![space().height(6), row].into()
     } else {
         row.into()
-    }
-}
-
-/// The menu and emoji panel open in `field`, if either is.
-pub fn in_field(
-    popup: Option<&Popup>,
-    field: Field,
-) -> (Option<&edit_menu::Menu>, Option<&emoji::Panel>) {
-    match popup {
-        Some(Popup::FieldMenu(f, menu)) if *f == field => (Some(menu), None),
-        Some(Popup::FieldEmoji(f, panel)) if *f == field => (None, Some(panel)),
-        _ => (None, None),
     }
 }
 

@@ -581,6 +581,54 @@ async fn up_in_the_empty_composer_edits_our_last_message() {
     assert_eq!(edit.text(), "Melt");
 }
 
+/// A message edited in place completes mentions as the composer does:
+/// Enter takes the person offered and goes on editing. ⌥⌘↑ is left to
+/// the window, to go to another room.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn an_edit_completes_mentions() {
+    let (mut ui, _dir) = room_with("editmention", &["Thanks"]).await;
+    let room = ui.room();
+    room.members_loaded(Ok(vec![person(
+        "@ana:example.org",
+        "Ana",
+        mtrx_core::Role::Member,
+    )]));
+    let row = row_of(room, "Thanks");
+    let key = (room.rows.iter().filter_map(Row::event))
+        .find(|event| event.id == row)
+        .map(|event| event.key.clone())
+        .unwrap();
+    ui.update(Message::Shown(room::Message::Act(actions::Message::Edit(
+        key,
+        "Thanks".into(),
+    ))));
+    for c in [" ", "@", "a", "n"] {
+        assert_eq!(
+            ui.press(Key::Character(c.into()), Modifiers::empty()),
+            Status::Captured,
+            "{c:?}"
+        );
+    }
+    let edit = ui.room().editing.as_ref().expect("editing");
+    assert_eq!(edit.text(), "Thanks @an");
+    assert!(edit.field.completion().is_some());
+
+    let (statuses, _) = ui.messages(&[press(
+        Key::Named(Named::ArrowUp),
+        Modifiers::COMMAND | Modifiers::ALT,
+    )]);
+    assert_eq!(statuses, [Status::Ignored]);
+
+    assert_eq!(
+        ui.press(Key::Named(Named::Enter), Modifiers::empty()),
+        Status::Captured
+    );
+    let edit = ui.room().editing.as_ref().expect("still editing");
+    assert_eq!(edit.text(), "Thanks @Ana");
+    assert!(edit.field.completion().is_none());
+}
+
 /// Whether the widget with `id` is focused, once operated.
 struct Focused(iced::advanced::widget::Id, Option<bool>);
 

@@ -16,7 +16,7 @@ use mtrx_core::{OwnedRoomId, ScheduledMessage, describe_send_time, parse_send_ti
 
 use crate::{
     actions::{Editing, InlineEdit},
-    app, fonts,
+    app, fonts, message_field,
     popover::{Edge, Side, popover},
     room, style,
 };
@@ -259,20 +259,19 @@ pub struct Pending<'a> {
 }
 
 /// The bar of a room's scheduled messages; the one being edited shows its
-/// editor (`popup`: the window's, which may be the editor's menu or emoji),
-/// the one `rescheduling` its time picker.
+/// field (`fields`: what it shows of the room and the window), the one
+/// `rescheduling` its time picker.
 pub fn queue<'a>(
     room: &OwnedRoomId,
     pending: &Pending<'a>,
     rescheduling: Option<&'a SendLater>,
     editing: Option<&'a InlineEdit>,
-    frequent_emoji: &[String],
-    popup: Option<&'a app::Popup>,
+    fields: message_field::Context<'a, '_>,
 ) -> Element<'a, app::Message> {
     let (messages, now) = (&pending.messages, pending.now);
     column(messages.iter().map(|message| {
         let edit = editing.filter(|e| e.target == Editing::Scheduled(message.id.clone()));
-        let item = item(room, message, edit, frequent_emoji, now, popup);
+        let item = item(room, message, edit, fields, now);
         let picker = rescheduling
             .filter(|later| {
                 later
@@ -293,9 +292,8 @@ fn item<'a>(
     room: &OwnedRoomId,
     message: &'a ScheduledMessage,
     edit: Option<&'a InlineEdit>,
-    frequent_emoji: &[String],
+    fields: message_field::Context<'a, '_>,
     now: SystemTime,
-    popup: Option<&'a app::Popup>,
 ) -> Element<'a, app::Message> {
     let editing = edit.is_some();
     let when = describe_send_time(message.send_at, now);
@@ -329,7 +327,7 @@ fn item<'a>(
         "Change time"
     };
     let content: Element<'a, app::Message> = match edit {
-        Some(edit) => column![status.size(12), edit.view(room, frequent_emoji, popup)]
+        Some(edit) => column![status.size(12), edit.view(room, fields)]
             .spacing(6)
             .into(),
         None => row![

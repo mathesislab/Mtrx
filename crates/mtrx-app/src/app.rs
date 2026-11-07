@@ -33,7 +33,7 @@ use crate::{
     avatar::Avatars,
     badge::{self, Badge},
     calls,
-    clipboard::{self, Copied, Pasted},
+    clipboard::{self, Copied},
     dialog::{self, Dialog},
     directory,
     downloads::{self, Downloads},
@@ -2560,106 +2560,6 @@ impl App {
                 Task::future(media::pick_files()).then(move |paths| attach(id.clone(), paths))
             }
             room::Message::FileDropped(path) => attach(id, vec![path]),
-            room::Message::Paste(field, how) => Task::perform(
-                clipboard::read(how, field == Field::Composer),
-                move |pasted| room::Message::Pasted(field, pasted).to(&id),
-            ),
-            room::Message::Pasted(field, pasted) => match pasted {
-                // As if dropped.
-                Some(Pasted::Files(paths)) => attach(id, paths),
-                Some(Pasted::Image(file)) => {
-                    Task::perform(media::attached(file), move |attached| {
-                        room::Message::Attached(vec![attached]).to(&id)
-                    })
-                }
-                Some(Pasted::Text(text)) => self.update(in_field(
-                    &id,
-                    field,
-                    text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text))),
-                )),
-                None => Task::none(),
-            },
-            room::Message::EditMenu(field, message) => {
-                use edit_menu::Message as Menu;
-                use text_editor::{Action, Edit};
-
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let Some(room) = main.pane.open_mut(&id) else {
-                    return Task::none();
-                };
-                let (content, focus) = match field {
-                    Field::Composer => {
-                        return self.field(id, field, message_field::Message::Menu(message));
-                    }
-                    Field::Edit => {
-                        let Some(edit) = room.editing.as_mut() else {
-                            return Task::none();
-                        };
-                        (edit.content_mut(), InlineEdit::focus())
-                    }
-                };
-                // Any choice closes the menu.
-                let misspelled = match main
-                    .popup
-                    .take_if(|p| matches!(p, Popup::FieldMenu(f, _) if *f == field))
-                {
-                    Some(Popup::FieldMenu(_, menu)) => menu.misspelled,
-                    _ => None,
-                };
-                if message == Menu::Open {
-                    main.popup = Some(Popup::FieldMenu(field, edit_menu::Menu::at(content)));
-                    return Task::none();
-                }
-                let selection = content.selection();
-                // The spelling replaces the word as typed over it.
-                let correction = match (&message, &misspelled) {
-                    (Menu::Correct(i), Some(misspelled)) => {
-                        misspelled.select(content);
-                        misspelled.suggestions.get(*i).cloned()
-                    }
-                    _ => None,
-                };
-                // The field keeps the focus, as a text field does.
-                let done = match message {
-                    Menu::Open | Menu::Close => return Task::none(),
-                    Menu::Correct(_) => correction.map_or_else(Task::none, |spelling| {
-                        self.update(in_field(
-                            &id,
-                            field,
-                            Action::Edit(Edit::Paste(Arc::new(spelling))),
-                        ))
-                    }),
-                    Menu::LearnSpelling => {
-                        if let Some(misspelled) = misspelled {
-                            spelling::learn(&misspelled.word);
-                        }
-                        Task::none()
-                    }
-                    Menu::IgnoreSpelling => {
-                        if let Some(misspelled) = misspelled {
-                            spelling::ignore(&misspelled.word);
-                        }
-                        Task::none()
-                    }
-                    Menu::Cut => Task::batch([
-                        selection.map_or_else(Task::none, iced::clipboard::write),
-                        self.update(in_field(&id, field, Action::Edit(Edit::Delete))),
-                    ]),
-                    Menu::Copy => selection.map_or_else(Task::none, iced::clipboard::write),
-                    Menu::Paste => {
-                        self.update(room::Message::Paste(field, clipboard::Paste::Rich).to(&id))
-                    }
-                    Menu::SelectAll => self.update(in_field(&id, field, Action::SelectAll)),
-                    #[cfg(target_os = "macos")]
-                    Menu::EmojiAndSymbols => {
-                        edit_menu::emoji_and_symbols();
-                        Task::none()
-                    }
-                };
-                Task::batch([focus, done])
-            }
             room::Message::Attached(attached) => {
                 if let Screen::Main(main) = &mut self.screen
                     && let Some(room) = main.pane.open_mut(&id)
@@ -3331,19 +3231,6 @@ impl App {
                 );
                 Task::batch([react, used_emoji(main, vec![emoji])])
             }
-            Act::EditEmoji(message) => {
-                if room.editing.is_none() {
-                    return Task::none();
-                }
-                field_emoji(main, Field::Edit, message)
-            }
-            Act::EditInsertEmoji(emoji) => {
-                if let Some(edit) = &mut room.editing {
-                    edit.insert_emoji(&emoji);
-                }
-                // Counted as used once saved.
-                InlineEdit::focus()
-            }
             Act::OpenMenu(row, at) => {
                 main.popup = Some(Popup::MessageMenu { row, at });
                 Task::none()
@@ -3482,22 +3369,18 @@ impl App {
                     .take_if(|popup| matches!(popup, Popup::SendLater(_)));
                 Task::none()
             }
-            Act::Edit(key, text) => {
-                room.editing = Some(InlineEdit::new(Editing::Sent(key), &text));
-                InlineEdit::focus()
-            }
+            Act::Edit(key, text) => room
+                .editing
+                .insert(InlineEdit::new(Editing::Sent(key), &text))
+                .focus(),
             Act::EditLast => {
                 let Some((row, key, text)) = room.newest_editable() else {
                     return Task::none();
                 };
-                room.editing = Some(InlineEdit::new(Editing::Sent(key), &text));
-                Task::batch([InlineEdit::focus(), room::scroll_to_row(&row)])
-            }
-            Act::EditAction(action) => {
-                if let Some(edit) = &mut room.editing {
-                    edit.perform(action);
-                }
-                Task::none()
+                let edit = room
+                    .editing
+                    .insert(InlineEdit::new(Editing::Sent(key), &text));
+                Task::batch([edit.focus(), room::scroll_to_row(&row)])
             }
             Act::SaveEdit => {
                 let Some(edit) = &room.editing else {
@@ -3705,13 +3588,13 @@ impl App {
                     reply(Later::Scheduled),
                 )
             }
-            Later::Edit(message) => {
-                room.editing = Some(InlineEdit::new(
+            Later::Edit(message) => room
+                .editing
+                .insert(InlineEdit::new(
                     Editing::Scheduled(message.id.clone()),
                     &message.text,
-                ));
-                InlineEdit::focus()
-            }
+                ))
+                .focus(),
             Later::SendNow(id) => Task::perform(
                 async move { session.send_scheduled_now(&id).await.map(|_| ()) },
                 reply(Later::Done),
@@ -4860,14 +4743,6 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
     }
 }
 
-/// `action` performed in `field` of `room`.
-fn in_field(room: &OwnedRoomId, field: Field, action: text_editor::Action) -> Message {
-    match field {
-        Field::Composer => composer(room, message_field::Message::Action(action)),
-        Field::Edit => actions::act(room, actions::Message::EditAction(action)),
-    }
-}
-
 /// `message` to the composer of `room`.
 fn composer(room: &OwnedRoomId, message: message_field::Message) -> Message {
     room::Message::Field(Field::Composer, message).to(room)
@@ -4902,32 +4777,6 @@ fn close_menu(main: &mut Main, from: &media::Origin) {
                 main.popup
                     .take_if(|popup| matches!(popup, Popup::MessageMenu { .. }));
             }
-        }
-    }
-}
-
-/// A message to the emoji panel of `field` in the open room.
-fn field_emoji(main: &mut Main, field: Field, message: emoji::Message) -> Task<Message> {
-    match message {
-        emoji::Message::Close => {
-            main.popup
-                .take_if(|popup| matches!(popup, Popup::FieldEmoji(f, _) if *f == field));
-            Task::none()
-        }
-        emoji::Message::Open => {
-            main.popup = Some(Popup::FieldEmoji(field, emoji::Panel::default()));
-            Task::batch([
-                iced::widget::operation::focus(emoji::SEARCH),
-                load_frequent_emoji(&main.session),
-            ])
-        }
-        message => {
-            if let Some(Popup::FieldEmoji(f, panel)) = &mut main.popup
-                && *f == field
-            {
-                panel.update(message);
-            }
-            Task::none()
         }
     }
 }

@@ -5,11 +5,10 @@
 use iced::{
     Alignment, Color, Element, Length, Padding, Theme,
     advanced::widget::Id,
-    keyboard::{Key, key::Named},
     mouse,
     widget::{
         button, column, container, hover, mouse_area, row, scrollable, space, span, text,
-        text::Wrapping, text_editor,
+        text::Wrapping,
     },
 };
 use mtrx_core::{
@@ -21,19 +20,17 @@ use mtrx_format::Document;
 use crate::{
     app,
     avatar::{Avatars, Shape},
-    clipboard::{self, Copied},
-    edit_menu,
+    clipboard::Copied,
     ellipsis::ellipsis,
     emoji, fonts,
-    highlight::{self, Marks},
     hint::{Position, hint, hint_with},
     icons, info, message,
-    message_field::Field,
+    message_field::{self, Field, MessageField},
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
     room,
     selectable::text::selectable,
-    selection::{self, Unit},
+    selection::Unit,
     style,
 };
 
@@ -69,16 +66,11 @@ pub enum Message {
     Edit(EventKey, String),
     /// ↑ in an empty composer: edit our newest message.
     EditLast,
-    EditAction(text_editor::Action),
     SaveEdit,
     CancelEdit,
     EditSaved(Result<(), String>),
     /// All emoji in the reaction picker.
     Emoji(emoji::Message),
-    /// The emoji panel of the message being edited.
-    EditEmoji(emoji::Message),
-    /// Put an emoji into the message being edited.
-    EditInsertEmoji(String),
     /// Ask before deleting a timeline row's message.
     AskDelete(String),
     Delete(EventKey),
@@ -209,14 +201,11 @@ impl Target {
     }
 }
 
-/// The field editing a message in place.
-const EDITOR: &str = "inline-edit";
-
 /// A message being edited where it is shown: a sent one in the timeline, or
 /// a scheduled one in its row. The composer keeps its draft meanwhile.
 pub struct InlineEdit {
     pub target: Editing,
-    content: text_editor::Content,
+    pub field: MessageField,
     /// The text before editing.
     original: String,
 }
@@ -230,17 +219,11 @@ pub enum Editing {
 
 impl InlineEdit {
     pub fn new(target: Editing, text: &str) -> Self {
-        let mut content = text_editor::Content::with_text(text);
-        content.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
         Self {
             target,
-            content,
+            field: MessageField::new(Field::Edit, text),
             original: text.to_owned(),
         }
-    }
-
-    pub fn insert_emoji(&mut self, emoji: &str) {
-        emoji::insert(&mut self.content, emoji);
     }
 
     /// The emoji the edit adds, one for each use.
@@ -248,83 +231,41 @@ impl InlineEdit {
         emoji::added(&self.original, &self.text())
     }
 
-    /// Put the cursor into the editor.
-    pub fn focus<T>() -> iced::Task<T> {
-        iced::widget::operation::focus(EDITOR)
-    }
-
-    pub fn perform(&mut self, action: text_editor::Action) {
-        self.content.perform(action);
+    /// Put the cursor into its field.
+    pub fn focus<T>(&self) -> iced::Task<T> {
+        self.field.focus()
     }
 
     pub fn text(&self) -> String {
-        self.content.text().trim_end().to_owned()
+        self.field.text().trim_end().to_owned()
     }
 
-    /// Its editor, for its menu's actions.
-    pub fn content_mut(&mut self) -> &mut text_editor::Content {
-        &mut self.content
-    }
-
-    /// The editor, with emoji, Save and Cancel; Enter saves, Esc cancels.
-    /// `popup`: the window's, which may be its menu or emoji panel.
+    /// Its field, with Save and Cancel; Enter saves, the window's Esc
+    /// cancels.
     pub fn view<'a>(
         &'a self,
         room: &OwnedRoomId,
-        frequent: &[String],
-        popup: Option<&'a app::Popup>,
+        cx: message_field::Context<'a, '_>,
     ) -> Element<'a, app::Message> {
-        let (menu, emoji) = room::in_field(popup, Field::Edit);
-        let selected = self.content.selection().is_some();
-        let (on_action, on_key) = (room.clone(), room.clone());
-        let editor = text_editor(&self.content)
-            .id(EDITOR)
-            .highlight_with::<highlight::Highlighter>(
-                Marks::new(Default::default()),
-                highlight::format,
-            )
-            .style(style::editor)
-            .on_action(move |action| act(&on_action, Message::EditAction(action)))
-            .key_binding(move |press| {
-                let custom = |message| Some(text_editor::Binding::Custom(message));
-                // Rich text as Markdown, as in the composer.
-                if let Some(how) = clipboard::paste(&press) {
-                    return custom(room::Message::Paste(Field::Edit, how).to(&on_key));
-                }
-                match press.key {
-                    Key::Named(Named::Enter) if !press.modifiers.shift() => {
-                        custom(act(&on_key, Message::SaveEdit))
-                    }
-                    _ => selection::editor_key(press, selected),
-                }
-            })
-            .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
-            .max_height(240);
-        let editor = edit_menu::with_menu(editor, menu, selected, |message| {
-            room::Message::EditMenu(Field::Edit, message).to(room)
-        });
-        let editor = emoji::in_field(
-            editor,
-            emoji.is_some(),
-            true,
-            act(room, Message::EditEmoji(emoji::Message::Open)),
+        let field = self.field.view(
+            message_field::Look {
+                placeholder: None,
+                cancellable: false,
+                edit_last: false,
+                side: Side::Below,
+                compact: true,
+                padding: Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT),
+                max_height: 240.0,
+                tools: None,
+            },
+            cx,
+            {
+                let room = room.clone();
+                move |message| room::Message::Field(Field::Edit, message).to(&room)
+            },
         );
-        let panel = emoji.map(|panel| {
-            panel.view(
-                frequent,
-                |emoji| act(room, Message::EditInsertEmoji(emoji)),
-                {
-                    let room = room.clone();
-                    move |message| act(&room, Message::EditEmoji(message))
-                },
-            )
-        });
-        let editor = popover(editor, panel, Side::Below, Edge::Right)
-            .on_dismiss(act(room, Message::EditEmoji(emoji::Message::Close)))
-            .click_through();
-        let empty = self.content.text().trim().is_empty();
-        let view = column![
-            editor,
+        column![
+            field,
             row![
                 text("Enter saves · Esc cancels")
                     .size(11)
@@ -337,13 +278,13 @@ impl InlineEdit {
                 button(text("Save").size(12))
                     .padding([2, 10])
                     .style(style::primary_button)
-                    .on_press_maybe((!empty).then(|| act(room, Message::SaveEdit))),
+                    .on_press_maybe((!self.field.is_empty()).then(|| act(room, Message::SaveEdit))),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
         ]
-        .spacing(4);
-        view.into()
+        .spacing(4)
+        .into()
     }
 }
 

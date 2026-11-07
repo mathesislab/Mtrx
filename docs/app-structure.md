@@ -276,6 +276,14 @@ impl MessageField {
 - The composer wraps the field with attachments and the Send button. The edit wraps it with Save/Cancel.
 - Both pass the window's room keys through.
 
+**As built (S)**
+- The field owns its mention completion. Its keys, a click on a candidate and Esc's close come as `Message::Mention` and go up as `Event::Mention`. `Room::mention` gives `MessageField::mention` the candidates, from `mention::Mentionable` (members, mention texts, us, `@room`).
+- `Look` keeps the key flags, `side`, `compact`, `max_height` and `placeholder`. It takes `padding` (for `top_inset`) and `tools` (the composer's paperclip, beside the smiley). The room's part is `message_field::Context`: `mentions`, `avatars`, `frequent` and the window's `popup`, from which the field reads its own menu and panel.
+- `view` returns `Element<'a, app::Message>`, not a generic `M`: the completion shows avatars, which send app messages (`wanting`).
+- `Event::EmojiShown`: opening the panel reloads the most used emoji, which needs the session.
+- Enter, Esc and ↑ are `Message::{Submit, Cancel, EditLast}`, sent up as the same events. The edit leaves Esc to the window, as before.
+- `Field` moved from `clipboard` into `message_field`. `clipboard::read` takes whether files and pictures are wanted.
+
 **Deleted**
 - The composer's `text_editor` block (`room.rs:974-1080`) and `InlineEdit::view`'s editor (`actions.rs:279-321`).
 - `room::Message::{Composer, EditMenu, Paste, Pasted, ComposerEmoji, InsertEmoji}`, `actions::Message::{EditAction, EditEmoji, EditInsertEmoji}`.
