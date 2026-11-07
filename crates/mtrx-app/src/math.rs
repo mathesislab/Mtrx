@@ -36,6 +36,13 @@ pub enum Rendered {
     Failed,
 }
 
+/// A message's math to typeset for the room as it is laid out.
+#[derive(Clone, Debug)]
+pub struct Request {
+    pub document: Document,
+    pub params: Params,
+}
+
 /// Layout inputs that affect every rendering.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Params {
@@ -78,20 +85,24 @@ impl Math {
         self.images.get(key)
     }
 
-    /// Start rendering unless it is cached or already running.
+    /// Whether to render it: not rendered (nor failed), nor rendering.
+    pub fn wanted(&self, key: &Key) -> bool {
+        !self.images.contains_key(key) && !self.pending.contains(key)
+    }
+
+    /// Start rendering if [wanted](Self::wanted).
     pub fn request<M: Send + 'static>(
         &mut self,
-        document: &Document,
-        params: &Params,
+        request: Request,
         done: fn(Key, Rendered) -> M,
     ) -> Task<M> {
-        let key = Self::key(document, params);
-        if self.images.contains_key(&key) || !self.pending.insert(key) {
+        let key = Self::key(&request.document, &request.params);
+        if !self.wanted(&key) {
             return Task::none();
         }
+        self.pending.insert(key);
         let renderer = self.renderer.clone();
-        let document = document.clone();
-        let params = *params;
+        let Request { document, params } = request;
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || render(&renderer, &document, key, &params))
@@ -207,9 +218,9 @@ fn render(renderer: &Renderer, document: &Document, key: Key, params: &Params) -
 #[cfg(test)]
 impl Math {
     /// Render synchronously (tests).
-    pub fn render_now(&mut self, document: &Document, params: &Params) {
-        let key = Self::key(document, params);
-        let rendered = render(&self.renderer, document, key, params);
+    pub fn render_now(&mut self, request: Request) {
+        let key = Self::key(&request.document, &request.params);
+        let rendered = render(&self.renderer, &request.document, key, &request.params);
         assert!(matches!(rendered, Rendered::Image { .. }), "render failed");
         self.insert(key, rendered);
     }
@@ -218,6 +229,36 @@ impl Math {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Asked for twice, a message is typeset once; laid out wider, anew.
+    #[test]
+    fn asked_twice_renders_once() {
+        let mut math = Math::new();
+        let request = Request {
+            document: Document::from_html(r#"<span data-mx-maths="x^2"><code>x^2</code></span>"#),
+            params: Params {
+                max_width: 400.0,
+                scale: 2.0,
+                text: iced::Color::BLACK,
+                link: iced::Color::BLACK,
+                muted: iced::Color::BLACK,
+            },
+        };
+        let key = Math::key(&request.document, &request.params);
+        let done: fn(Key, Rendered) = |_, _| ();
+        assert!(math.wanted(&key));
+        assert_eq!(math.request(request.clone(), done).units(), 1);
+        assert!(!math.wanted(&key));
+        assert_eq!(math.request(request.clone(), done).units(), 0);
+        let wider = Request {
+            params: Params {
+                max_width: 600.0,
+                ..request.params
+            },
+            ..request
+        };
+        assert_eq!(math.request(wider, done).units(), 1);
+    }
 
     #[test]
     fn saves_math_as_a_png_on_white() {

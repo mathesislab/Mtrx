@@ -273,18 +273,6 @@ impl Join {
         }
     }
 
-    /// Pictures of the listed rooms, with their size.
-    pub fn avatars(&self) -> impl Iterator<Item = (&mtrx_core::MxcUri, f32)> {
-        let preview = self
-            .preview
-            .as_ref()
-            .and_then(|(_, p)| p.as_ref()?.as_ref().ok());
-        self.rooms
-            .iter()
-            .chain(preview)
-            .filter_map(|r| Some((r.avatar.as_deref()?, directory::AVATAR)))
-    }
-
     /// `pictures`: rooms show their pictures, as the room list does.
     pub fn view<'a>(
         &'a self,

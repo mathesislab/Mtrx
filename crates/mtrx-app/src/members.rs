@@ -120,20 +120,6 @@ pub fn rows<'a>(
     rows.into()
 }
 
-/// Pictures of the listed members, with their size.
-pub fn avatars(members: &[Member]) -> impl Iterator<Item = (&mtrx_core::MxcUri, f32)> {
-    avatars_of(members)
-}
-
-/// Pictures of `members` at the list's size, also for mentions.
-pub fn avatars_of<'a>(
-    members: impl IntoIterator<Item = &'a Member>,
-) -> impl Iterator<Item = (&'a mtrx_core::MxcUri, f32)> {
-    members
-        .into_iter()
-        .filter_map(|m| Some((m.user.avatar.as_deref()?, AVATAR)))
-}
-
 fn heading<'a>(label: String) -> Element<'a, Message> {
     container(
         text(label.to_uppercase())

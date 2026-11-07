@@ -14,24 +14,23 @@ use iced::{
     Element, Length, Point, Rectangle, Size, Subscription, Task, Theme, mouse,
     theme::Mode,
     widget::{
-        button, column, container, image, mouse_area, opaque, row, stack, text, text_editor,
-        text_input,
+        button, column, container, mouse_area, opaque, row, stack, text, text_editor, text_input,
     },
     window,
 };
 use mtrx_core::{
     CallService, Connection, Contact, Draft, DraftKeeper, Live, Media, MediaRef, Membership,
-    Notification, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
-    OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists,
-    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
-    SpaceKey, Topic, Url,
+    Notification, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
+    Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists, RoomOrAliasId,
+    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, SpaceKey, Topic,
+    Url,
 };
 use mtrx_google::Google;
 
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, PickerAt},
     arrange::{self, Arrange},
-    avatar::{self, Avatars},
+    avatar::Avatars,
     badge::{self, Badge},
     calls,
     clipboard::{self, Copied, Field, Pasted},
@@ -44,7 +43,7 @@ use crate::{
     info, join,
     last_view::LastView,
     login::{self, Login},
-    math::{self, Math, Rendered},
+    math::{self, Math},
     media::{self, Previews, Viewer},
     members, mention, message,
     message_menu::MenuAt,
@@ -187,7 +186,6 @@ pub enum Message {
     Recover,
     RecoveryProgress(RecoveryStep),
     Recovered(Result<bool, String>),
-    MathRendered(math::Key, Rendered),
     LinkClicked(String),
     WindowResized(Size),
     /// The window opened at `.2` (its outer position), with these displays
@@ -205,8 +203,8 @@ pub enum Message {
     /// Text size, or the PDF viewer's zoom while it is open.
     Zoom(Zoom),
     ThemeMode(Mode),
-    AvatarLoaded(avatar::Key, Option<image::Handle>),
-    PreviewLoaded(MediaRef, Option<media::Preview>),
+    /// Pictures and typeset math: asked for by the views, and loaded.
+    Media(media::Message),
     /// Show an image large.
     OpenImage(downloads::File),
     CloseImage,
@@ -585,33 +583,6 @@ impl Main {
         if let Some(room) = left.id() {
             self.popup.take_if(|popup| popup.of_room(room));
         }
-    }
-
-    /// Pictures of the spaces, listed rooms, and the open room's header and
-    /// timeline senders, with their sizes.
-    fn avatars_on_screen(&self, settings: &Settings) -> Vec<(OwnedMxcUri, f32)> {
-        let rooms = &self.lists.rooms;
-        let mut wanted = sidebar::avatars(&self.room_list_view(settings));
-        wanted.extend(self.card.as_ref().and_then(|c| c.avatar(rooms)));
-        if let Some(overview) = self.card.as_ref().and_then(|c| c.overview.as_ref()) {
-            wanted.extend(overview.avatars());
-            wanted.extend(self.space_rooms.avatars());
-        }
-        if let Some(Modal::Join(join)) = &self.modal {
-            wanted.extend(join.avatars());
-        }
-        if let Some(room) = self.pane.room() {
-            wanted.extend(room.avatars(
-                rooms.iter().find(|r| r.id == room.id),
-                &self.own_user,
-                self.show_members,
-                self.popup.as_ref(),
-            ));
-        }
-        wanted
-            .into_iter()
-            .map(|(mxc, size)| (mxc.to_owned(), size))
-            .collect()
     }
 
     fn room_list_view<'a>(&'a self, settings: &'a Settings) -> sidebar::RoomListView<'a> {
@@ -1008,8 +979,7 @@ impl App {
                 {
                     tracing::warn!("could not save settings: {e}");
                 }
-                // Math is laid out for the room's width.
-                self.render_math()
+                Task::none()
             }
             Message::Restored(Ok(Shared(session))) | Message::LoggedIn(Ok(Shared(session))) => {
                 let mut main = Main::new(session.clone());
@@ -1123,7 +1093,7 @@ impl App {
                     }
                     Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
                 }
-                Task::batch([self.load_avatars(), self.restore_view()])
+                self.restore_view()
             }
             Message::Rooms(lists) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1136,12 +1106,7 @@ impl App {
                     .map_or(Task::none(), |space| {
                         Task::done(Message::ShowSpace(space, overview::Tab::Rooms))
                     });
-                Task::batch([
-                    joined,
-                    self.load_pinned(),
-                    self.load_avatars(),
-                    self.restore_view(),
-                ])
+                Task::batch([joined, self.load_pinned(), self.restore_view()])
             }
             Message::SelectSpace(space) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1151,7 +1116,7 @@ impl App {
                 main.card = None;
                 main.restore = None;
                 main.arrange.escape();
-                self.load_avatars()
+                Task::none()
             }
             Message::Arrange(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1164,8 +1129,7 @@ impl App {
                     grouping: self.settings.room_list,
                     popup: &mut main.popup,
                 };
-                let task = main.arrange.update(message, context);
-                Task::batch([task, self.load_avatars()])
+                main.arrange.update(message, context)
             }
             Message::ArrangeFailed(e) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -1248,9 +1212,6 @@ impl App {
                             members,
                             draft,
                             go_to,
-                            self.render_math(),
-                            self.load_avatars(),
-                            self.load_previews(),
                             self.load_call_service(&id),
                             self.load_pinned(),
                         ])
@@ -1405,7 +1366,6 @@ impl App {
                 Task::batch([
                     remember.unwrap_or_else(Task::none),
                     self.join_action(action),
-                    self.load_avatars(),
                 ])
             }
             Message::ShowSpace(space, tab) => self.show_card(info::Target::Room(space), tab),
@@ -1523,7 +1483,7 @@ impl App {
                         overview_task(&overview_session, &mut main.space_rooms, &o.space, action)
                     }),
                 };
-                Task::batch([task, overview, self.load_avatars()])
+                Task::batch([task, overview])
             }
             Message::FavouritePerson(user) => {
                 let Screen::Main(main) = &self.screen else {
@@ -1665,13 +1625,13 @@ impl App {
                     Task::none()
                 };
                 main.filter = filter;
-                Task::batch([load, self.load_avatars()])
+                load
             }
             Message::SpaceRoomsLoaded(space, result) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.space_rooms.loaded(space, result);
                 }
-                self.load_avatars()
+                Task::none()
             }
             Message::JoinFound(room, via, knock) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2031,10 +1991,6 @@ impl App {
                 }
                 Task::none()
             }
-            Message::MathRendered(key, rendered) => {
-                self.math.insert(key, rendered);
-                Task::none()
-            }
             // A mention shows the person's card, with the way to the direct
             // chat; other links open in the browser.
             Message::LinkClicked(url) => match message::mentioned_user(&url) {
@@ -2057,7 +2013,7 @@ impl App {
             Message::WindowResized(size) => {
                 // Reported in layout units.
                 self.window = size * self.scale_factor();
-                self.rescaled()
+                self.pdf_resized()
             }
             Message::WindowOpened(id, Some(displays), Some(position)) => {
                 // Left on a display since unplugged, the window opens on the
@@ -2107,7 +2063,7 @@ impl App {
             Message::WindowPlaced { position: None, .. } => Task::none(),
             Message::ScaleFactor(scale) => {
                 self.scale = scale;
-                self.rescaled()
+                self.pdf_resized()
             }
             Message::Zoom(zoom) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -2121,24 +2077,13 @@ impl App {
                 }
                 self.settings.text_size = self.settings.text_size.zoom(zoom);
                 self.save_settings();
-                self.rescaled()
+                self.pdf_resized()
             }
             Message::ThemeMode(mode) => {
                 self.system_mode = mode;
-                self.render_math()
-            }
-            Message::AvatarLoaded(key, handle) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.avatars.insert(key, handle);
-                }
                 Task::none()
             }
-            Message::PreviewLoaded(media, picture) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.previews.insert(media, picture);
-                }
-                Task::none()
-            }
+            Message::Media(message) => self.media(message),
             Message::OpenImage(file) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -2278,14 +2223,7 @@ impl App {
                         room::Message::SendingSlow(row.clone()).to(&id)
                     })
                 });
-                Task::batch([
-                    Task::batch(clocks),
-                    read,
-                    fill(room),
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                Task::batch([Task::batch(clocks), read, fill(room)])
             }
             room::Message::Scrolled(viewport) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2298,11 +2236,7 @@ impl App {
                     Older::None => Task::none(),
                     Older::ShowMore => {
                         room.show_more();
-                        Task::batch([
-                            self.render_math(),
-                            self.load_avatars(),
-                            self.load_previews(),
-                        ])
+                        Task::none()
                     }
                     Older::Paginate => paginate(room),
                 }
@@ -2315,7 +2249,7 @@ impl App {
                     return Task::none();
                 };
                 room.paginating = false;
-                let more = match result {
+                match result {
                     Ok(()) => {
                         room.show_more();
                         fill(room)
@@ -2326,13 +2260,7 @@ impl App {
                         room.error = Some(e);
                         Task::none()
                     }
-                };
-                Task::batch([
-                    more,
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                }
             }
             room::Message::Composer(action) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2363,13 +2291,7 @@ impl App {
                 } else {
                     Task::none()
                 };
-                // The pictures of those offered.
-                let avatars = if room.completion.is_some() {
-                    self.load_avatars()
-                } else {
-                    Task::none()
-                };
-                Task::batch([members, typing, avatars])
+                Task::batch([members, typing])
             }
             room::Message::TypeInComposer(text) => {
                 if self.covered() {
@@ -2432,7 +2354,7 @@ impl App {
                 {
                     room.members_loaded(result);
                 }
-                self.load_avatars()
+                Task::none()
             }
             room::Message::Send => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2505,12 +2427,7 @@ impl App {
                     return room::scroll(scroll);
                 }
                 room.show_all();
-                Task::batch([
-                    room::scroll(scroll),
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                room::scroll(scroll)
             }
             room::Message::Select(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2634,14 +2551,7 @@ impl App {
                         room.reload(timeline);
                         // Its rows are new.
                         main.popup.take_if(|popup| popup.of_room(&id));
-                        Task::batch([
-                            fill(room),
-                            mark_read(room),
-                            self.render_math(),
-                            self.load_avatars(),
-                            self.load_previews(),
-                            self.load_call_service(&id),
-                        ])
+                        Task::batch([fill(room), mark_read(room), self.load_call_service(&id)])
                     }
                     Err(e) => {
                         room.reloading = false;
@@ -2681,17 +2591,11 @@ impl App {
                     return Task::none();
                 };
                 room.error = None;
-                let go = match room.reveal(&event) {
+                match room.reveal(&event) {
                     Some(row) => go_to(room, row),
                     // A new one replaces the one under way.
                     None => seek(room, event),
-                };
-                Task::batch([
-                    go,
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                }
             }
             room::Message::Sought(result) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2724,13 +2628,7 @@ impl App {
                 {
                     go = go_to(room, row);
                 }
-                Task::batch([
-                    caught_up,
-                    go,
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                Task::batch([caught_up, go])
             }
             room::Message::Unmark(row) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -3124,11 +3022,11 @@ impl App {
                 self.save_settings();
                 #[cfg(target_os = "macos")]
                 self.settings.appearance.apply();
-                self.render_math()
+                Task::none()
             }
             settings::Action::TextSize => {
                 self.save_settings();
-                self.rescaled()
+                self.pdf_resized()
             }
             settings::Action::Spelling => {
                 self.save_settings();
@@ -3748,13 +3646,7 @@ impl App {
         }
         let scroll = room.show_found();
         // The match may be in a message not rendered before.
-        Task::batch([
-            focus,
-            scroll,
-            self.render_math(),
-            self.load_avatars(),
-            self.load_previews(),
-        ])
+        Task::batch([focus, scroll])
     }
 
     fn later(&mut self, id: OwnedRoomId, message: send_later::Message) -> Task<Message> {
@@ -3874,12 +3766,8 @@ impl App {
         }
     }
 
-    /// Math and the PDF viewer follow the window's size, the display's
-    /// scale and the text size.
-    fn rescaled(&mut self) -> Task<Message> {
-        Task::batch([self.render_math(), self.pdf_resized()])
-    }
-
+    /// The PDF viewer follows the window's size, the display's scale and
+    /// the text size. (Math does too, by the keys of its pictures.)
     fn pdf_resized(&mut self) -> Task<Message> {
         let (viewport, scale) = (self.viewport(), self.pixel_scale());
         match &mut self.screen {
@@ -3950,23 +3838,6 @@ impl App {
         }
     }
 
-    /// Request images for all math messages of the open room.
-    fn render_math(&mut self) -> Task<Message> {
-        let params = self.math_params();
-        let Screen::Main(main) = &self.screen else {
-            return Task::none();
-        };
-        let Some(room) = main.pane.room() else {
-            return Task::none();
-        };
-        let tasks: Vec<_> = room
-            .math_documents()
-            .map(|doc| self.math.request(doc, &params, Message::MathRendered))
-            .collect();
-        Task::batch(tasks)
-    }
-
-    /// Request the pictures on screen.
     /// Show a room's members anew where they are listed: beside the open
     /// room, or in its space's overview.
     fn refresh_members(&mut self, room: &OwnedRoomId) -> Task<Message> {
@@ -4185,40 +4056,47 @@ impl App {
             overview_task(&main.session, &mut main.space_rooms, &o.space, o.opened())
         });
         main.card = Some(card);
-        Task::batch([load, presence, overview, self.load_avatars()])
+        Task::batch([load, presence, overview])
     }
 
-    fn load_avatars(&mut self) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
+    /// Load what a view asks for, unless it is loaded or loading, and keep
+    /// what was loaded.
+    fn media(&mut self, message: media::Message) -> Task<Message> {
+        use media::Message::{
+            AvatarLoaded, AvatarWanted, MathRendered, MathWanted, PreviewLoaded, PreviewWanted,
         };
-        let tasks: Vec<_> = main
-            .avatars_on_screen(&self.settings)
-            .into_iter()
-            .map(|(mxc, size)| {
-                main.avatars
-                    .request(&main.session, &mxc, size, Message::AvatarLoaded)
-            })
-            .collect();
-        Task::batch(tasks)
-    }
-
-    /// Request the previews of the open room's rendered images.
-    fn load_previews(&mut self) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
-        };
-        let Some(room) = main.pane.room() else {
-            return Task::none();
-        };
-        let tasks: Vec<_> = room
-            .previewed()
-            .map(|media| {
+        match (message, &mut self.screen) {
+            (MathWanted(request), _) => self.math.request(request, |key, rendered| {
+                Message::Media(MathRendered(key, rendered))
+            }),
+            (MathRendered(key, rendered), _) => {
+                self.math.insert(key, rendered);
+                Task::none()
+            }
+            (AvatarWanted(key), Screen::Main(main)) => {
+                main.avatars.request(&main.session, key, |key, handle| {
+                    Message::Media(AvatarLoaded(key, handle))
+                })
+            }
+            (AvatarLoaded(key, handle), Screen::Main(main)) => {
+                main.avatars.insert(key, handle);
+                Task::none()
+            }
+            (PreviewWanted(media), Screen::Main(main)) => {
                 main.previews
-                    .request(&main.session, media, Message::PreviewLoaded)
-            })
-            .collect();
-        Task::batch(tasks)
+                    .request(&main.session, &media, |media, preview| {
+                        Message::Media(PreviewLoaded(media, preview))
+                    })
+            }
+            (PreviewLoaded(media, preview), Screen::Main(main)) => {
+                main.previews.insert(media, preview);
+                Task::none()
+            }
+            // Signed out since.
+            (AvatarWanted(_) | AvatarLoaded(..) | PreviewWanted(_) | PreviewLoaded(..), _) => {
+                Task::none()
+            }
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

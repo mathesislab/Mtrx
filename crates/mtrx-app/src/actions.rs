@@ -13,8 +13,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    Draft, Event, EventKey, MessageAction, MessageRow, MxcUri, OwnedEventId, OwnedRoomId, Reaction,
-    Reply, SendState, User,
+    Draft, Event, EventKey, MessageAction, MessageRow, OwnedEventId, OwnedRoomId, Reaction, Reply,
+    SendState, User,
 };
 use mtrx_format::Document;
 
@@ -878,39 +878,6 @@ fn named(names: &[&str]) -> String {
         Some((last, front)) => format!("{} and {last}", front.join(", ")),
         None => String::new(),
     }
-}
-
-/// Pictures of readers shown, with their sizes: in the markers, and of
-/// everyone while `listed`.
-pub fn reader_avatars(event: &Event, listed: bool) -> impl Iterator<Item = (&MxcUri, f32)> {
-    let markers = event
-        .read_by
-        .iter()
-        .take(MAX_READERS)
-        .filter_map(|r| Some((r.avatar.as_deref()?, READER_AVATAR)));
-    let list = listed_avatars(&event.read_by).filter(move |_| listed);
-    markers.chain(list)
-}
-
-/// Pictures of everyone who reacted with `key` to the message, while
-/// listed.
-pub fn reactor_avatars<'a>(
-    event: &'a Event,
-    key: Option<&'a str>,
-) -> impl Iterator<Item = (&'a MxcUri, f32)> {
-    let by = match &event.content {
-        mtrx_core::EventContent::Message(m) => key
-            .and_then(|key| m.reactions.iter().find(|r| r.key == key))
-            .map_or(&[][..], |r| r.by.as_slice()),
-        _ => &[],
-    };
-    listed_avatars(by)
-}
-
-fn listed_avatars(people: &[User]) -> impl Iterator<Item = (&MxcUri, f32)> {
-    people
-        .iter()
-        .filter_map(|r| Some((r.avatar.as_deref()?, LISTED_AVATAR)))
 }
 
 /// Others typing, above the composer: a line always there, empty when

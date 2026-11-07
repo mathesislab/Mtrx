@@ -23,14 +23,14 @@ use mtrx_core::{
 use tokio::sync::Semaphore;
 
 use crate::{
-    app::Message,
-    clipboard,
+    app, avatar, clipboard,
     context_menu::context_menu,
     downloads::{self, File},
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint},
-    icons, message_menu, pdf, room, style,
+    icons, math, message_menu, pdf, room, style,
+    want::wanting,
 };
 
 /// Where copying an image was asked from, to show there how it went.
@@ -40,6 +40,20 @@ pub enum Origin {
     Viewer,
     /// A message's file in the room.
     Room(OwnedRoomId),
+}
+
+/// Pictures the views show: asked for while not loaded
+/// ([`crate::want`]), and loaded (`None` if that failed).
+#[derive(Debug, Clone)]
+pub enum Message {
+    AvatarWanted(avatar::Key),
+    AvatarLoaded(avatar::Key, Option<image::Handle>),
+    /// An image's preview, or whether a PDF can be read.
+    PreviewWanted(Media),
+    PreviewLoaded(MediaRef, Option<Preview>),
+    /// A message's math, typeset.
+    MathWanted(math::Request),
+    MathRendered(math::Key, math::Rendered),
 }
 
 /// Largest size of an image in the timeline, in logical pixels.
@@ -121,25 +135,35 @@ impl Previews {
         matches!(self.loaded.get(media), Some(Loaded::Failed(_)))
     }
 
-    /// Start downloading unless it is cached, running, or failed recently:
-    /// an image's preview, or a PDF to check it can be read.
+    /// Whether to download it: not loaded, nor loading, nor failed
+    /// recently.
+    fn wanted(&self, media: &MediaRef) -> bool {
+        let loaded = match self.loaded.get(media) {
+            Some(Loaded::Ready(_)) => true,
+            Some(Loaded::Failed(at)) => at.elapsed() < RETRY_AFTER,
+            None => false,
+        };
+        !loaded && !self.pending.contains(media)
+    }
+
+    /// Start downloading if [wanted](Self::wanted): an image's preview, or
+    /// a PDF to check it can be read.
     pub fn request<M: Send + 'static>(
         &mut self,
         session: &Arc<Session>,
         media: &Media,
         done: fn(MediaRef, Option<Preview>) -> M,
     ) -> Task<M> {
-        let is_pdf = pdf::is_pdf(media);
-        let media = &media.source;
-        let wanted = match self.loaded.get(media) {
-            Some(Loaded::Ready(_)) => false,
-            Some(Loaded::Failed(at)) => at.elapsed() >= RETRY_AFTER,
-            None => true,
-        };
-        if !wanted || !self.pending.insert(media.clone()) {
+        if !self.wanted(&media.source) {
             return Task::none();
         }
-        let (session, downloads, media) = (session.clone(), self.downloads.clone(), media.clone());
+        self.pending.insert(media.source.clone());
+        let is_pdf = pdf::is_pdf(media);
+        let (session, downloads, media) = (
+            session.clone(),
+            self.downloads.clone(),
+            media.source.clone(),
+        );
         Task::perform(
             async move {
                 let picture = async {
@@ -202,7 +226,7 @@ fn check_pdf(bytes: Vec<u8>) -> Preview {
 
 /// Whether a message's file is looked at in the background: images for
 /// their previews, and PDFs that are not too large to check.
-pub fn previewed(media: &Media) -> bool {
+fn previewed(media: &Media) -> bool {
     media.kind == MediaKind::Image
         || (pdf::is_pdf(media) && media.size.is_none_or(|size| size <= pdf::MAX_BYTES))
 }
@@ -256,7 +280,8 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
 /// a PDF's card opens the viewer once known to be readable, other cards the
 /// file in its app. `body` shows below it if it is a caption rather than
 /// the filename. The file is in `room`, in message `event`; an image has a
-/// download button beside it while the message is `hovered`.
+/// download button beside it while the message is `hovered`. An image's
+/// preview, or whether a PDF can be read, is asked for.
 pub fn view<'a>(
     room: &OwnedRoomId,
     event: Option<&OwnedEventId>,
@@ -264,7 +289,7 @@ pub fn view<'a>(
     body: &'a str,
     previews: &Previews,
     hovered: bool,
-) -> Element<'a, Message> {
+) -> Element<'a, app::Message> {
     let file = File {
         media: media.clone(),
         room: room.clone(),
@@ -285,7 +310,7 @@ pub fn view<'a>(
         _ if pdf::is_pdf(media) => match (previewed(media), previews.readable(&media.source)) {
             (false, _) => open_card(file, Some("Too large to preview here")),
             (true, Some(true)) => {
-                let open = Message::OpenPdf(file.clone());
+                let open = app::Message::OpenPdf(file.clone());
                 card(&file, open, "Open in the viewer", None)
             }
             (true, Some(false)) => open_card(file, Some("Preview not available for this document")),
@@ -293,6 +318,9 @@ pub fn view<'a>(
         },
         _ => open_card(file, None),
     };
+    let want = (previewed(media) && previews.wanted(&media.source))
+        .then(|| app::Message::Media(Message::PreviewWanted(media.clone())));
+    let content = wanting(content, want);
     if body == media.filename {
         content
     } else {
@@ -301,9 +329,9 @@ pub fn view<'a>(
 }
 
 /// An image in the timeline; clicking it opens the viewer.
-fn inline_image<'a>(file: &File, picture: Option<&Picture>) -> Element<'a, Message> {
+fn inline_image<'a>(file: &File, picture: Option<&Picture>) -> Element<'a, app::Message> {
     let size = dimensions(&file.media, picture).map_or(PLACEHOLDER, |(w, h)| fit(w, h, MAX_INLINE));
-    let content: Element<'a, Message> = match picture {
+    let content: Element<'a, app::Message> = match picture {
         Some(picture) => image(picture.handle.clone())
             .width(size.width)
             .height(size.height)
@@ -312,12 +340,12 @@ fn inline_image<'a>(file: &File, picture: Option<&Picture>) -> Element<'a, Messa
         None => placeholder(size),
     };
     mouse_area(content)
-        .on_press(Message::OpenImage(file.clone()))
+        .on_press(app::Message::OpenImage(file.clone()))
         .interaction(mouse::Interaction::Pointer)
         .into()
 }
 
-fn placeholder<'a>(size: Size) -> Element<'a, Message> {
+fn placeholder<'a>(size: Size) -> Element<'a, app::Message> {
     container(text("Loading image…").size(12).style(text::secondary))
         .center_x(size.width)
         .center_y(size.height)
@@ -326,8 +354,8 @@ fn placeholder<'a>(size: Size) -> Element<'a, Message> {
 }
 
 /// A card that opens the file in its app (downloading it first).
-fn open_card<'a>(file: File, note: Option<&'a str>) -> Element<'a, Message> {
-    let open = Message::Downloads(downloads::Message::OpenFile(file.clone()));
+fn open_card<'a>(file: File, note: Option<&'a str>) -> Element<'a, app::Message> {
+    let open = app::Message::Downloads(downloads::Message::OpenFile(file.clone()));
     card(&file, open, "Open in its app", note)
 }
 
@@ -335,10 +363,10 @@ fn open_card<'a>(file: File, note: Option<&'a str>) -> Element<'a, Message> {
 /// button; clicking it sends `open`, which `tip` explains.
 fn card<'a>(
     file: &File,
-    open: Message,
+    open: app::Message,
     tip: &'a str,
     note: Option<&'a str>,
-) -> Element<'a, Message> {
+) -> Element<'a, app::Message> {
     let media = &file.media;
     let mut details = match media.size {
         Some(size) => format!("{} · {}", human_size(size), kind_label(media)),
@@ -376,7 +404,7 @@ fn card<'a>(
 }
 
 /// Downloads the file to the Downloads folder.
-pub fn download_button<'a>(file: &File) -> Element<'a, Message> {
+pub fn download_button<'a>(file: &File) -> Element<'a, app::Message> {
     hint(
         button(icons::download(18.0, |theme| {
             theme
@@ -388,7 +416,7 @@ pub fn download_button<'a>(file: &File) -> Element<'a, Message> {
         }))
         .padding([6, 8])
         .style(style::secondary_button)
-        .on_press(Message::Downloads(downloads::Message::Download(
+        .on_press(app::Message::Downloads(downloads::Message::Download(
             file.clone(),
         ))),
         "Download to your Downloads folder",
@@ -450,7 +478,7 @@ impl Viewer {
     }
 
     /// Download and decode the whole image.
-    pub fn load(&self, session: Arc<Session>) -> Task<Message> {
+    pub fn load(&self, session: Arc<Session>) -> Task<app::Message> {
         let media = self.file.media.source.clone();
         Task::perform(
             {
@@ -467,7 +495,7 @@ impl Viewer {
                         .ok_or_else(|| "not an image we can show".to_owned())
                 }
             },
-            move |result| Message::ImageLoaded(media.clone(), result),
+            move |result| app::Message::ImageLoaded(media.clone(), result),
         )
     }
 
@@ -484,7 +512,7 @@ impl Viewer {
 
     /// The image as large as fits (at most its own size), with its name,
     /// Save and Close below. Clicking around it closes it.
-    pub fn view<'a>(&'a self, previews: &'a Previews) -> Element<'a, Message> {
+    pub fn view<'a>(&'a self, previews: &'a Previews) -> Element<'a, app::Message> {
         let picture = self
             .full
             .as_ref()
@@ -496,7 +524,7 @@ impl Viewer {
             );
             let size = dimensions(&self.file.media, picture)
                 .map_or(PLACEHOLDER, |(w, h)| fit(w, h, bounds));
-            let shown: Element<'a, Message> = match picture {
+            let shown: Element<'a, app::Message> = match picture {
                 Some(picture) => image(picture.handle.clone())
                     .width(size.width)
                     .height(size.height)
@@ -507,8 +535,8 @@ impl Viewer {
             let menu = self
                 .menu
                 .then(|| message_menu::view(message_menu::media_items(&self.file, Origin::Viewer)));
-            let shown = context_menu(shown, menu, Message::ViewerMenu(true))
-                .on_dismiss(Message::ViewerMenu(false));
+            let shown = context_menu(shown, menu, app::Message::ViewerMenu(true))
+                .on_dismiss(app::Message::ViewerMenu(false));
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);
             container(
                 column![opaque(shown), opaque(self.bar(bar_width))]
@@ -523,11 +551,11 @@ impl Viewer {
                 .padding(VIEWER_MARGIN)
                 .style(style::viewer_backdrop),
         )
-        .on_press(Message::CloseImage)
+        .on_press(app::Message::CloseImage)
         .into()
     }
 
-    fn bar<'a>(&'a self, width: f32) -> Element<'a, Message> {
+    fn bar<'a>(&'a self, width: f32) -> Element<'a, app::Message> {
         let mut name = column![
             ellipsis(&self.file.media.filename)
                 .font(fonts::SEMIBOLD)
@@ -541,7 +569,7 @@ impl Viewer {
             row![
                 name,
                 download_button(&self.file),
-                frame::close_button(Message::CloseImage),
+                frame::close_button(app::Message::CloseImage),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -643,11 +671,11 @@ pub async fn attached(file: Attachment) -> Result<Attached, String> {
 /// index.
 pub fn attached_view<'a>(
     attached: &'a [Attached],
-    remove: impl Fn(usize) -> Message,
-) -> Element<'a, Message> {
+    remove: impl Fn(usize) -> app::Message,
+) -> Element<'a, app::Message> {
     let chips = attached.iter().enumerate().map(|(index, attached)| {
         let thumb = CHIP_HEIGHT - 12.0;
-        let picture: Element<'a, Message> = match &attached.preview {
+        let picture: Element<'a, app::Message> = match &attached.preview {
             Some(handle) => image(handle.clone())
                 .width(thumb)
                 .height(thumb)
@@ -703,10 +731,10 @@ pub fn attached_view<'a>(
 }
 
 /// Files dropped onto the window, for the room shown.
-pub fn dropped_files() -> Subscription<Message> {
+pub fn dropped_files() -> Subscription<app::Message> {
     event::listen_with(|event, _status, _window| match event {
         iced::Event::Window(window::Event::FileDropped(path)) => {
-            Some(Message::Shown(room::Message::FileDropped(path)))
+            Some(app::Message::Shown(room::Message::FileDropped(path)))
         }
         _ => None,
     })
@@ -721,7 +749,7 @@ mod tests {
     use super::*;
 
     /// The messages sent by right-clicking `view` at `at`.
-    fn right_click(view: Element<'_, Message>, at: (f32, f32)) -> Vec<Message> {
+    fn right_click(view: Element<'_, app::Message>, at: (f32, f32)) -> Vec<app::Message> {
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), view);
         ui.point_at(at);
         let _ = ui.simulate([iced::Event::Mouse(mouse::Event::ButtonPressed(
@@ -747,11 +775,11 @@ mod tests {
         let inline = context_menu(
             view(&room, None, &media, &media.filename, &previews, false),
             None,
-            Message::CloseImage,
+            app::Message::CloseImage,
         );
         assert!(matches!(
             right_click(inline.into(), (50.0, 50.0))[..],
-            [Message::CloseImage]
+            [app::Message::CloseImage]
         ));
         // Shown large, it has a menu of its own, not around it.
         let mut viewer = Viewer::new(File {
@@ -777,7 +805,7 @@ mod tests {
             mouse::Button::Right,
         ))];
         let sent = send(&mut ui, &mut renderer, &right, (400.0, 270.0));
-        assert!(matches!(sent[..], [Message::ViewerMenu(true)]));
+        assert!(matches!(sent[..], [app::Message::ViewerMenu(true)]));
         // Its first item, just below where it was right-clicked.
         let cache = ui.into_cache();
         viewer.menu = true;
@@ -789,18 +817,18 @@ mod tests {
             (420.0, 285.0),
         );
         assert!(
-            matches!(&sent[..], [Message::CopyImage(copied, Origin::Viewer)] if *copied == media),
+            matches!(&sent[..], [app::Message::CopyImage(copied, Origin::Viewer)] if *copied == media),
             "{sent:?}"
         );
     }
 
     /// The messages `events` at `at` send.
     fn send(
-        ui: &mut UserInterface<'_, Message, Theme, iced::Renderer>,
+        ui: &mut UserInterface<'_, app::Message, Theme, iced::Renderer>,
         renderer: &mut iced::Renderer,
         events: &[iced::Event],
         at: (f32, f32),
-    ) -> Vec<Message> {
+    ) -> Vec<app::Message> {
         let mut sent = Vec::new();
         let _ = ui.update(
             events,
@@ -810,6 +838,45 @@ mod tests {
             &mut sent,
         );
         sent
+    }
+
+    /// An image asks for its preview and a PDF to be checked, until loaded
+    /// (or failed); a PDF too large to check does not.
+    #[test]
+    fn files_ask_for_their_previews() {
+        let file = |filename: &str, kind, size| Media {
+            kind,
+            filename: filename.into(),
+            size,
+            mimetype: None,
+            width: None,
+            height: None,
+            source: MediaRef::plain(&format!("mxc://example.org/{filename}")),
+        };
+        let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
+        let asked = |media: &Media, previews: &Previews| -> Vec<app::Message> {
+            let shown = view(&room, None, media, &media.filename, previews, false);
+            let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), shown);
+            let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
+                Instant::now(),
+            ))]);
+            ui.into_messages().collect()
+        };
+        let mut previews = Previews::new();
+        let image = file("ice.png", MediaKind::Image, None);
+        let pdf = file("melt.pdf", MediaKind::File, Some(1000));
+        let large = file("atlas.pdf", MediaKind::File, Some(pdf::MAX_BYTES + 1));
+        for media in [&image, &pdf] {
+            assert!(matches!(
+                &asked(media, &previews)[..],
+                [app::Message::Media(Message::PreviewWanted(wanted))] if wanted == media
+            ));
+        }
+        assert!(asked(&large, &previews).is_empty());
+        previews.insert(image.source.clone(), None);
+        previews.insert(pdf.source.clone(), Some(Preview::Readable));
+        assert!(asked(&image, &previews).is_empty());
+        assert!(asked(&pdf, &previews).is_empty());
     }
 
     #[test]

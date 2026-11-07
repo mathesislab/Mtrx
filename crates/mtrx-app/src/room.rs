@@ -19,8 +19,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Draft, DraftKeeper, Event, EventContent, EventKey, Media, Member, MessageKind,
-    MessageRow, MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomHandle, RoomKind, RoomSummary,
+    CallService, Draft, DraftKeeper, Event, EventContent, EventKey, Member, MessageKind,
+    MessageRow, OwnedEventId, OwnedRoomId, OwnedUserId, RoomHandle, RoomKind, RoomSummary,
     RoomTimeline, Row, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, User, UserId,
 };
 
@@ -59,6 +59,7 @@ use crate::{
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
     },
     topic,
+    want::wanting,
 };
 
 /// The topic panel's share of the room header's width.
@@ -580,71 +581,6 @@ impl Room {
 
     fn visible(&self) -> &[Row] {
         &self.rows[self.rows.len().saturating_sub(self.shown)..]
-    }
-
-    /// The events of the rendered message rows.
-    fn visible_events(&self) -> impl Iterator<Item = &Event> {
-        self.visible().iter().filter_map(Row::event)
-    }
-
-    /// Rendered messages with math, for typesetting.
-    pub fn math_documents(&self) -> impl Iterator<Item = &mtrx_format::Document> {
-        self.visible_events().filter_map(|e| match &e.content {
-            EventContent::Message(m) if m.document.has_math() => Some(&m.document),
-            _ => None,
-        })
-    }
-
-    /// Pictures of the header and the rendered senders, with their sizes.
-    /// `members_shown`: with the member list's; `popup`: with those it
-    /// lists.
-    pub fn avatars<'a>(
-        &'a self,
-        summary: Option<&'a RoomSummary>,
-        own: &UserId,
-        members_shown: bool,
-        popup: Option<&'a Popup>,
-    ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
-        let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
-        let senders = self.visible_events().flat_map(move |event| {
-            let sender = (event.sender.avatar.as_deref()).map(|a| (a, SENDER_AVATAR));
-            let listed = matches!(popup, Some(Popup::Readers(row)) if *row == event.id);
-            let reactors = match popup {
-                Some(Popup::Reactors { row, key }) if *row == event.id => Some(key.as_str()),
-                _ => None,
-            };
-            sender
-                .into_iter()
-                .chain(actions::reader_avatars(event, listed))
-                .chain(actions::reactor_avatars(event, reactors))
-        });
-        let listed = match &self.member_list {
-            Some(Ok(list)) if members_shown => list.as_slice(),
-            _ => &[],
-        };
-        let members = members::avatars(listed);
-        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
-        let candidates = self
-            .candidates(own, mention_room)
-            .into_iter()
-            .filter_map(|candidate| match candidate {
-                Candidate::Member { member, .. } => Some(member),
-                Candidate::Room => None,
-            });
-        let completed = members::avatars_of(candidates);
-        room.into_iter()
-            .chain(senders)
-            .chain(members)
-            .chain(completed)
-    }
-
-    /// Images of the rendered messages, for loading their previews.
-    /// Files with previews: images and PDFs.
-    pub fn previewed(&self) -> impl Iterator<Item = &Media> {
-        self.visible_events().filter_map(|e| match &e.content {
-            EventContent::Message(m) => m.media.as_ref().filter(|media| media::previewed(media)),
-            _ => None,
-        })
     }
 
     /// Move the end of the selection by `step`, on into the part of the
@@ -1503,7 +1439,8 @@ fn event_view<'a>(
         EventContent::Message(m) => {
             let content: Element<'a, app::Message> = match (m.kind, m.document.has_math()) {
                 (MessageKind::Text | MessageKind::Notice | MessageKind::Emote, true) => {
-                    match math.get(&Math::key(&m.document, params)) {
+                    let key = Math::key(&m.document, params);
+                    match math.get(&key) {
                         Some(Rendered::Image {
                             handle,
                             width,
@@ -1525,15 +1462,26 @@ fn event_view<'a>(
                             .on_gesture(select.on_gesture)
                             .into()
                         }
+                        // Typeset once rendered; as text until then, or if
+                        // it failed.
                         _ => {
                             as_text = true;
-                            message::view(
-                                &m.document,
-                                theme,
-                                context.own_user,
-                                links(),
-                                select(),
-                                m.edited,
+                            let want = math.wanted(&key).then(|| {
+                                app::Message::Media(media::Message::MathWanted(math::Request {
+                                    document: m.document.clone(),
+                                    params: *params,
+                                }))
+                            });
+                            wanting(
+                                message::view(
+                                    &m.document,
+                                    theme,
+                                    context.own_user,
+                                    links(),
+                                    select(),
+                                    m.edited,
+                                ),
+                                want,
                             )
                         }
                     }

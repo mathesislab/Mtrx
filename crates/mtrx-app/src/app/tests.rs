@@ -111,12 +111,16 @@ fn snapshot(app: &App, name: &str) {
     snapshot_at(app, name, None);
 }
 
+/// One renderer at a time: renderers made and drawing at once in parallel
+/// tests crashed on Windows CI (software Direct3D) and Linux CI.
+fn rendering() -> std::sync::MutexGuard<'static, ()> {
+    static RENDERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RENDERING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A snapshot with the cursor at `cursor`, e.g. for a hint.
 fn snapshot_at(app: &App, name: &str, cursor: Option<iced::Point>) {
-    // One at a time: renderers drawing at once in parallel tests crashed
-    // on Windows CI (software Direct3D).
-    static RENDERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _rendering = RENDERING.lock().unwrap_or_else(|e| e.into_inner());
+    let _rendering = rendering();
     // Snapshots are for looking at, not regression baselines: always rewrite.
     // iced_test appends the renderer name, e.g. `login-wgpu.png`.
     let path = snapshot_dir().join(name);
@@ -144,6 +148,43 @@ fn snapshot_at(app: &App, name: &str, cursor: Option<iced::Point>) {
     }
     let snapshot = ui.snapshot(&app.theme()).unwrap();
     assert!(snapshot.matches_image(&path).unwrap());
+}
+
+/// Load what the window's view asks for, as the app would, until it asks
+/// for nothing more.
+async fn load_wanted(app: &mut App, session: &Session) {
+    loop {
+        let wanted: Vec<media::Message> = {
+            let _rendering = rendering();
+            let mut ui =
+                Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+            let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            ))]);
+            (ui.into_messages())
+                .filter_map(|message| match message {
+                    Message::Media(wanted) => Some(wanted),
+                    _ => None,
+                })
+                .collect()
+        };
+        if wanted.is_empty() {
+            return;
+        }
+        let Screen::Main(main) = &mut app.screen else {
+            unreachable!("asked for outside the main screen")
+        };
+        for want in wanted {
+            match want {
+                media::Message::AvatarWanted(key) => main.avatars.load_now(session, key).await,
+                media::Message::PreviewWanted(media) => {
+                    main.previews.load_now(session, &media).await
+                }
+                media::Message::MathWanted(request) => app.math.render_now(request),
+                loaded => unreachable!("views only ask: {loaded:?}"),
+            }
+        }
+    }
 }
 
 fn app(screen: Screen, mode: Mode) -> App {
@@ -937,19 +978,11 @@ async fn main_screen_with_math() {
             );
         }
         main.pane = Pane::Open(open);
-        for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-            main.avatars.load_now(&alice, &mxc, size).await;
-        }
 
         let mut app = app(Screen::Main(Box::new(main)), mode);
         // Both name styles: plain (the default) in light, coloured in dark.
         app.settings.colored_names = mode == Mode::Dark;
-        let params = app.math_params();
-        if let Screen::Main(main) = &app.screen {
-            for document in main.pane.room().unwrap().math_documents() {
-                app.math.render_now(document, &params);
-            }
-        }
+        load_wanted(&mut app, &alice).await;
         if mode == Mode::Dark
             && let Screen::Main(main) = &mut app.screen
         {
@@ -988,9 +1021,7 @@ async fn main_screen_with_math() {
                 .map(|ev| ev.id.clone())
                 .unwrap();
             main.popup = Some(Popup::Readers(read));
-            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-                main.avatars.load_now(&alice, &mxc, size).await;
-            }
+            load_wanted(&mut app, &alice).await;
             snapshot(&app, "readers-light");
             // Everyone who reacted with the reaction of two, listed from its
             // count, instead of the readers.
@@ -1013,9 +1044,7 @@ async fn main_screen_with_math() {
                 row: reacted.0,
                 key: reacted.1,
             });
-            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-                main.avatars.load_now(&alice, &mxc, size).await;
-            }
+            load_wanted(&mut app, &alice).await;
             snapshot(&app, "reactors-light");
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
@@ -2172,7 +2201,7 @@ async fn media_messages() {
     let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
-    let main_with = async |modal: Option<Modal>| {
+    let app_with = async |modal: Option<Modal>, mode: Mode| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
         main.verified = Some(true);
@@ -2182,16 +2211,14 @@ async fn media_messages() {
             main.session.draft_keeper(&room),
         );
         show(&mut open, entries.clone());
-        let images: Vec<Media> = open.previewed().cloned().collect();
-        for media in &images {
-            main.previews.load_now(&session, media).await;
-        }
         main.pane = Pane::Open(open);
         main.modal = modal;
-        Box::new(main)
+        let mut app = app(Screen::Main(Box::new(main)), mode);
+        load_wanted(&mut app, &session).await;
+        app
     };
     for (mode, name) in [(Mode::Light, "media-light"), (Mode::Dark, "media-dark")] {
-        snapshot(&app(Screen::Main(main_with(None).await), mode), name);
+        snapshot(&app_with(None, mode).await, name);
     }
     // Files attached to a message being written sit in the composer.
     let files = dir.path().join("attach");
@@ -2203,7 +2230,10 @@ async fn media_messages() {
     )
     .unwrap();
     std::fs::write(&paths[1], crate::pdf::sample()).unwrap();
-    let mut main = main_with(None).await;
+    let mut app = app_with(None, Mode::Light).await;
+    let Screen::Main(main) = &mut app.screen else {
+        unreachable!()
+    };
     let open = main.pane.room_mut().unwrap();
     open.attachments = crate::media::read_attached(paths)
         .await
@@ -2211,10 +2241,7 @@ async fn media_messages() {
         .map(Result::unwrap)
         .collect();
     open.composer = text_editor::Content::with_text("The calving front this morning:");
-    snapshot(
-        &app(Screen::Main(main), Mode::Light),
-        "composer-attachments",
-    );
+    snapshot(&app, "composer-attachments");
     let in_room = |media: Media| crate::downloads::File {
         media,
         room: room.clone(),
@@ -2223,29 +2250,20 @@ async fn media_messages() {
     let mut viewer = Viewer::new(in_room(image));
     viewer.load_now(&session).await;
     snapshot(
-        &app(
-            Screen::Main(main_with(Some(Modal::Image(viewer))).await),
-            Mode::Light,
-        ),
+        &app_with(Some(Modal::Image(viewer)), Mode::Light).await,
         "image-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf.clone()), Size::new(1200.0, 800.0), 2.0);
     viewer.open_now(&session).await;
     snapshot(
-        &app(
-            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
-            Mode::Light,
-        ),
+        &app_with(Some(Modal::Pdf(viewer)), Mode::Light).await,
         "pdf-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf), Size::new(1200.0, 800.0), 2.0);
     viewer.set_zoom(0.5);
     viewer.open_now(&session).await;
     snapshot(
-        &app(
-            Screen::Main(main_with(Some(Modal::Pdf(viewer))).await),
-            Mode::Dark,
-        ),
+        &app_with(Some(Modal::Pdf(viewer)), Mode::Dark).await,
         "pdf-viewer-zoomed-out",
     );
 }
@@ -2792,15 +2810,7 @@ async fn website_screenshots() {
         app
     };
     async fn finish(app: &mut App, ana: &Session) {
-        let params = app.math_params();
-        if let Screen::Main(main) = &mut app.screen {
-            for document in main.pane.room().unwrap().math_documents() {
-                app.math.render_now(document, &params);
-            }
-            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-                main.avatars.load_now(ana, &mxc, size).await;
-            }
-        }
+        load_wanted(app, ana).await;
     }
 
     for (mode, name) in [
