@@ -173,7 +173,7 @@ async fn room_with(prefix: &str, messages: &[&str]) -> (Ui, TempDir) {
     }
     while !timeline.paginate_back(50).await.unwrap() {}
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let drafts = main.session.draft_keeper(&room);
     let mut open = Room::new(main.session.room(&room).unwrap(), timeline.clone(), drafts);
     show(&mut open, timeline.current());

@@ -99,13 +99,13 @@ impl App {
                 match result {
                     Ok((Shared(lists), verified)) => {
                         main.room_lists = Some(lists);
-                        main.verified = Some(verified);
+                        main.account.verified = Some(verified);
                     }
                     Err(e) => main
                         .notices
                         .report(format!("Could not load the rooms: {e}"), None),
                 }
-                self.restore_view()
+                self.main_update(|main, parts| main.restore_view(parts))
             }
             Message::SignInAgain => {
                 let Screen::Main(main) = &self.screen else {

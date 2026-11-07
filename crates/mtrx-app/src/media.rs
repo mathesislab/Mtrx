@@ -24,13 +24,17 @@ use mtrx_format::Document;
 use tokio::sync::Semaphore;
 
 use crate::{
-    app, avatar, clipboard,
+    actions,
+    app::{self, Cx, Popup, modal, pane},
+    avatar::{self, Avatars},
+    clipboard,
     context_menu::context_menu,
-    downloads::{self, File},
+    downloads::{self, Downloads, File},
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint},
-    icons, math,
+    icons,
+    math::{self, Math},
     menu::{self, Width},
     message_menu, pdf, room, style,
     task::Owned,
@@ -766,6 +770,153 @@ pub fn dropped_files() -> Subscription<app::Message> {
         }
         _ => None,
     })
+}
+
+/// The pictures and typeset math the views show, and downloads.
+pub struct MediaState {
+    pub avatars: Avatars,
+    pub previews: Previews,
+    pub math: Math,
+    pub downloads: Downloads,
+}
+
+impl MediaState {
+    pub fn new() -> Self {
+        Self {
+            avatars: Avatars::new(),
+            previews: Previews::new(),
+            math: Math::new(),
+            downloads: Downloads::default(),
+        }
+    }
+
+    /// Load what a view asks for, unless it is loaded or loading, and keep
+    /// what was loaded; copy and save images; downloads.
+    pub fn update(&mut self, message: Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+        match message {
+            Message::MathWanted(request) => self.math.request(request, |key, rendered| {
+                app::Message::Media(Message::MathRendered(key, rendered))
+            }),
+            Message::MathRendered(key, rendered) => {
+                self.math.insert(key, rendered);
+                Task::none()
+            }
+            Message::AvatarWanted(key) => self.avatars.request(cx.session, key, |key, handle| {
+                app::Message::Media(Message::AvatarLoaded(key, handle))
+            }),
+            Message::AvatarLoaded(key, handle) => {
+                self.avatars.insert(key, handle);
+                Task::none()
+            }
+            Message::PreviewWanted(media) => {
+                self.previews.request(cx.session, &media, |media, preview| {
+                    app::Message::Media(Message::PreviewLoaded(media, preview))
+                })
+            }
+            Message::PreviewLoaded(media, preview) => {
+                self.previews.insert(media, preview);
+                Task::none()
+            }
+            Message::CopyImage(file, from) => {
+                close_menu(cx.popup, &from);
+                Task::perform(copy_image(cx.session.clone(), file), move |result| {
+                    app::Message::Media(Message::Done(from.clone(), result))
+                })
+            }
+            Message::CopyMath(document, from) => {
+                close_menu(cx.popup, &from);
+                Task::perform(self.math.copy_image(&document), move |result| {
+                    app::Message::Media(Message::Done(from.clone(), result))
+                })
+            }
+            Message::SaveMath(document, from) => {
+                close_menu(cx.popup, &from);
+                let png = self.math.png(&document);
+                Task::perform(
+                    async move {
+                        let png = png.await?;
+                        let Some(file) = rfd::AsyncFileDialog::new()
+                            .set_file_name("message.png")
+                            .save_file()
+                            .await
+                        else {
+                            return Ok(());
+                        };
+                        file.write(&png)
+                            .await
+                            .map_err(|e| format!("Could not save {}: {e}", file.file_name()))
+                    },
+                    move |result| app::Message::Media(Message::Done(from.clone(), result)),
+                )
+            }
+            // Shown where it was asked from.
+            Message::Done(from, result) => match (from, result) {
+                (_, Ok(())) => Task::none(),
+                (Origin::Viewer, Err(e)) => Task::done(modal::to(modal::Message::Failed(e))),
+                (Origin::Room(id), Err(e)) => {
+                    Task::done(actions::act(&id, actions::Message::Done(Err(e))))
+                }
+            },
+            Message::Downloads(message) => self.downloads(message, cx),
+        }
+    }
+
+    fn downloads(&mut self, message: downloads::Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+        match message {
+            downloads::Message::GoTo(id, event) => {
+                cx.popup
+                    .take_if(|popup| matches!(popup, Popup::Downloads { .. }));
+                Task::done(pane::to(pane::Message::GoTo(id, event)))
+            }
+            downloads::Message::Report(problem) => {
+                cx.notices.report(problem, None);
+                Task::none()
+            }
+            downloads::Message::OpenList => {
+                *cx.popup = Some(Popup::Downloads { menu: None });
+                Task::none()
+            }
+            downloads::Message::Menu(menu) => {
+                if let Some(Popup::Downloads { menu: open }) = cx.popup {
+                    *open = menu;
+                }
+                Task::none()
+            }
+            message => {
+                // Chosen in a message's menu, or the viewer's.
+                if let downloads::Message::SaveAs(_) = &message {
+                    cx.popup.take_if(|popup| {
+                        matches!(popup, Popup::MessageMenu { .. } | Popup::Viewer)
+                    });
+                }
+                // A row's choice closes its menu.
+                if Downloads::chosen(&message)
+                    && let Some(Popup::Downloads { menu }) = cx.popup
+                {
+                    *menu = None;
+                }
+                let updated = matches!(message, downloads::Message::Updated(_));
+                let task = self.downloads.update(cx.session, message);
+                if updated && let Some(Popup::Downloads { menu }) = cx.popup {
+                    *cx.popup = (self.downloads.kept(*menu)).map(|menu| Popup::Downloads { menu });
+                }
+                task.map(|message| app::Message::Media(Message::Downloads(message)))
+            }
+        }
+    }
+}
+
+/// A menu's choice closes it: the menu of a message in the room, or the
+/// viewer's.
+fn close_menu(popup: &mut Option<Popup>, from: &Origin) {
+    match from {
+        Origin::Viewer => {
+            popup.take_if(|popup| matches!(popup, Popup::Viewer));
+        }
+        Origin::Room(_) => {
+            popup.take_if(|popup| matches!(popup, Popup::MessageMenu { .. }));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,8 @@ pub enum Message {
     Pdf(pdf_viewer::Message),
     /// Fast ticks while something is in progress.
     Progress,
+    /// Copying the image shown failed: the viewer says so (else a notice).
+    Failed(String),
 }
 
 /// The panel over the window, above the card, and the requests of dialogs
@@ -232,6 +234,14 @@ impl Modal {
                 Some(viewer) => viewer.update(message),
                 None => Task::none(),
             },
+            Message::Failed(e) => {
+                match &mut self.shown {
+                    Some(Shown::Image(viewer)) => viewer.error = Some(e),
+                    Some(Shown::Pdf(pdf)) => pdf.error = Some(e),
+                    _ => cx.notices.report(e, None),
+                }
+                Task::none()
+            }
             Message::Progress => {
                 if let Some(Shown::Dialog(dialog)) = &mut self.shown {
                     dialog.tick(Instant::now());

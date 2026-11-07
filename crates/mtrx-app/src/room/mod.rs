@@ -20,7 +20,7 @@ use mtrx_core::{
 
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, Target},
-    app::{self, Popup, Shared},
+    app::{self, Shared},
     calls::{self, RoomCalls},
     clipboard::Copied,
     emoji,
@@ -138,6 +138,10 @@ pub enum Message {
     Unattach(usize),
     /// The timeline loaded anew (⌘R).
     Reloaded(Result<Shared<RoomTimeline>, String>),
+    /// The server is back: history that could not load while offline.
+    Online,
+    /// The scheduled messages of all rooms changed.
+    Scheduled(Vec<ScheduledMessage>),
 }
 
 impl Message {
@@ -287,7 +291,7 @@ impl Room {
 
     /// The scheduled messages changed: one being edited may have been sent
     /// (it became due) or cancelled elsewhere.
-    pub fn scheduled_changed(&mut self, scheduled: &[ScheduledMessage], popup: &mut Option<Popup>) {
+    pub fn scheduled_changed(&mut self, scheduled: &[ScheduledMessage]) {
         let gone = |id: &str| !scheduled.iter().any(|m| m.id == id);
         let Some(edit) = &self.editing else {
             return;
@@ -299,8 +303,6 @@ impl Room {
         if self.composer.is_empty() {
             self.composer.set_text(&edit.text());
             self.editing = None;
-            popup.take_if(|popup| popup.in_field(Field::Edit));
-            self.drafts.changed(self.draft());
             self.error = Some(
                 "The scheduled message was sent before your changes were saved; \
                  they are in the composer."

@@ -13,8 +13,8 @@ use iced::{Rectangle, Size, theme::Mode, widget::text_editor};
 use iced_test::simulator::Simulator;
 use mtrx_core::{
     Attachment, CallService, Connection, EventContent, Media, NewRoom, OwnedEventId, Profile,
-    RoomKind, RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile, SecretStore,
-    Section, SendState, Session, TimelineEntry,
+    RoomKind, RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile,
+    ScheduledMessage, SecretStore, Section, SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use tempfile::TempDir;
@@ -186,11 +186,13 @@ async fn load_wanted(app: &mut App, session: &Session) {
         };
         for want in wanted {
             match want {
-                media::Message::AvatarWanted(key) => main.avatars.load_now(session, key).await,
-                media::Message::PreviewWanted(media) => {
-                    main.previews.load_now(session, &media).await
+                media::Message::AvatarWanted(key) => {
+                    main.media.avatars.load_now(session, key).await
                 }
-                media::Message::MathWanted(request) => app.math.render_now(request),
+                media::Message::PreviewWanted(media) => {
+                    main.media.previews.load_now(session, &media).await
+                }
+                media::Message::MathWanted(request) => main.media.math.render_now(request),
                 loaded => unreachable!("views only ask: {loaded:?}"),
             }
         }
@@ -216,7 +218,6 @@ fn app(screen: Screen, mode: Mode) -> App {
             ..Window::new(Placement::default(), None)
         },
         screen,
-        math: Math::new(),
         badge: Badge::default(),
         updater: Updater::default(),
     }
@@ -892,7 +893,7 @@ async fn main_screen_with_math() {
             notes.unread_messages = 2;
             state.rooms.push(notes);
         }
-        main.verified = Some(true);
+        main.account.verified = Some(true);
         let mut open = Room::new(
             alice.room(&room).unwrap(),
             timeline.clone(),
@@ -1240,8 +1241,12 @@ fn composer_keeps_focus(app: &mut App) {
             room(app).composer.set_text("Thanks @an");
         }),
         ("one picked", |app| room(app).composer.complete("@Ana")),
-        ("offline", |app| main(app).connection = Connection::Offline),
-        ("online", |app| main(app).connection = Connection::Online),
+        ("offline", |app| {
+            main(app).account.connection = Connection::Offline
+        }),
+        ("online", |app| {
+            main(app).account.connection = Connection::Online
+        }),
         ("a banner", |app| {
             main(app).notices.report("Something failed".into(), None)
         }),
@@ -1252,7 +1257,7 @@ fn composer_keeps_focus(app: &mut App) {
         ("settings close", |app| main(app).modal.shown = None),
         ("a message is queued", |app| {
             let room_id = room(app).id.clone();
-            main(app).scheduled = vec![ScheduledMessage {
+            main(app).account.scheduled = vec![ScheduledMessage {
                 id: "q".into(),
                 room_id,
                 text: "Later".into(),
@@ -1262,7 +1267,7 @@ fn composer_keeps_focus(app: &mut App) {
                 files: Vec::new(),
             }];
         }),
-        ("and sent", |app| main(app).scheduled.clear()),
+        ("and sent", |app| main(app).account.scheduled.clear()),
     ];
     for (what, change) in changes {
         change(app);
@@ -1364,9 +1369,9 @@ async fn send_later_bar() {
     };
     let mut main = Main::new(Arc::new(alice));
     main.show_rooms(rooms);
-    main.verified = Some(true);
-    main.now = now;
-    main.scheduled = vec![
+    main.account.verified = Some(true);
+    main.account.now = now;
+    main.account.scheduled = vec![
         scheduled(
             "a",
             "Reminder: send me your figures before the meeting.",
@@ -1449,7 +1454,7 @@ async fn send_later_bar() {
             at: actions::PickerAt::Toolbar,
             all: Some(emoji::Panel::default()),
         });
-        main.frequent_emoji = vec!["🦀".into(), "🧊".into()];
+        main.people.frequent_emoji = vec!["🦀".into(), "🧊".into()];
     }
     snapshot(&app, "emoji");
     if let Screen::Main(main) = &mut app.screen {
@@ -1735,7 +1740,7 @@ async fn room_management_screens() {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
         main.sidebar.space = Some(space.clone());
-        main.verified = Some(true);
+        main.account.verified = Some(true);
         let mut open = Room::new(
             main.session.room(&room).unwrap(),
             timeline.clone(),
@@ -1771,11 +1776,11 @@ async fn room_management_screens() {
         "status-problem",
     );
     snapshot(
-        &main_with(&|main| main.connection = Connection::Offline),
+        &main_with(&|main| main.account.connection = Connection::Offline),
         "offline",
     );
     snapshot(
-        &main_with(&|main| main.connection = Connection::SignedOut),
+        &main_with(&|main| main.account.connection = Connection::SignedOut),
         "signed-out",
     );
     snapshot(
@@ -2096,7 +2101,7 @@ async fn mention_colours() {
 
     let mut main = Main::new(Arc::new(alice));
     main.show_rooms(rooms);
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         main.session.room(&room).unwrap(),
         timeline.clone(),
@@ -2225,7 +2230,7 @@ async fn media_messages() {
     let app_with = async |modal: Option<modal::Shown>, mode: Mode| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
-        main.verified = Some(true);
+        main.account.verified = Some(true);
         let mut open = Room::new(
             main.session.room(&room).unwrap(),
             timeline.clone(),
@@ -2356,7 +2361,7 @@ async fn room_categories() {
     let main_with = |configure: &dyn Fn(&mut Main)| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
-        main.verified = Some(true);
+        main.account.verified = Some(true);
         configure(&mut main);
         app(Screen::Main(Box::new(main)), Mode::Light)
     };
@@ -2539,7 +2544,7 @@ async fn show_menu() {
         &main.own_user,
         BTreeSet::new(),
     ));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     main.sidebar.space = Some(space.clone());
     let send = |main: &mut Main, message| {
         let _ = main.sidebar.arrange.update(
@@ -2811,9 +2816,9 @@ async fn website_screenshots() {
         let mut main = Main::new(ana.clone());
         main.show_rooms(rooms.clone());
         main.sidebar.space = Some(space.clone());
-        main.verified = Some(true);
-        main.now = now;
-        main.scheduled = vec![ScheduledMessage {
+        main.account.verified = Some(true);
+        main.account.now = now;
+        main.account.scheduled = vec![ScheduledMessage {
             id: "a".into(),
             room_id: room.clone(),
             text: "Reminder: figures for Thursday's meeting, please!".into(),
@@ -2914,7 +2919,7 @@ async fn composer_scrolls_alone() {
     }
     while !timeline.paginate_back(50).await.unwrap() {}
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         main.session.room(&room).unwrap(),
         timeline.clone(),
@@ -3112,7 +3117,7 @@ async fn drafts_stay_in_their_room() {
     key_of(&timeline, "Coffee at three?").await;
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let open = Room::new(
         alice.room(&a).unwrap(),
         timeline.clone(),
@@ -3214,7 +3219,7 @@ async fn typing_while_a_room_opens_goes_nowhere() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         alice.room(&a).unwrap(),
         timeline.clone(),
@@ -3256,7 +3261,7 @@ async fn an_invite_chosen_while_a_room_opens_stays() {
         .unwrap();
     let invite: OwnedRoomId = "!invite:localhost".try_into().unwrap();
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     main.show_rooms(RoomListState {
         rooms: vec![
             summary(&a, "a"),
@@ -3297,7 +3302,7 @@ async fn results_stay_with_their_room() {
     let b = alice.create_room(new_room("b")).await.unwrap();
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(
         main.session.room(&a).unwrap(),
         timeline,
@@ -3342,7 +3347,7 @@ async fn a_room_that_failed_to_open_opens_again() {
         .unwrap();
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let mut main = Main::new(Arc::new(alice));
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     main.show_rooms(RoomListState {
         rooms: vec![summary(&a, "a")],
         loaded: false,
@@ -3384,7 +3389,7 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("cancelled", &dir).await;
     let mut shown = Main::new(Arc::new(alice));
-    shown.verified = Some(true);
+    shown.account.verified = Some(true);
     let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
     fn main(app: &mut App) -> &mut Main {
         match &mut app.screen {
@@ -3446,7 +3451,7 @@ async fn a_cancelled_request_still_takes_effect() {
     let dir = TempDir::new().unwrap();
     let (_, alice) = user("cancelleffect", &dir).await;
     let mut shown = Main::new(Arc::new(alice));
-    shown.verified = Some(true);
+    shown.account.verified = Some(true);
     let mut app = app(Screen::Main(Box::new(shown)), Mode::Light);
     fn main(app: &mut App) -> &mut Main {
         match &mut app.screen {
@@ -3518,7 +3523,7 @@ async fn a_chat_that_cannot_start_reports_in_the_notice_bar() {
     let alice = Arc::new(alice);
     alice.logout().await.unwrap();
     let mut main = Main::new(alice);
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
     let _ = app.update(Message::Modal(modal::Message::OpenDialog(
         dialog::Kind::SignOut,
@@ -3569,7 +3574,7 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(alice.room(&a).unwrap(), timeline, alice.draft_keeper(&a));
     open.composer.set_text("Later, in a");
     main.pane.shown = Shown::Open(open);
@@ -3617,7 +3622,7 @@ async fn loads_end_with_their_room_and_requests_run_on() {
     let timeline = Arc::new(alice.timeline(&a).await.unwrap());
     let alice = Arc::new(alice);
     let mut main = Main::new(alice.clone());
-    main.verified = Some(true);
+    main.account.verified = Some(true);
     let mut open = Room::new(alice.room(&a).unwrap(), timeline, alice.draft_keeper(&a));
     open.composer.set_text("Later, in a");
     main.pane.shown = Shown::Open(open);

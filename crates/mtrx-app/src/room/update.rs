@@ -251,6 +251,11 @@ impl Room {
                 }
             },
             Message::DraftLoaded(draft) => self.restore_draft(draft),
+            Message::Online => self.fill(),
+            Message::Scheduled(scheduled) => {
+                self.scheduled_changed(&scheduled);
+                Task::none()
+            }
             Message::ReplyFound(target) => {
                 self.reply_found(target);
                 Task::none()

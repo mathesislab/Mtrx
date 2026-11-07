@@ -306,7 +306,9 @@ impl App {
             }
             // The window was in use until now.
             Message::Focused(_) => match &self.screen {
-                Screen::Main(main) => main.activity(mtrx_core::Activity::Input),
+                Screen::Main(main) => main
+                    .people
+                    .activity(&main.session, mtrx_core::Activity::Input),
                 _ => Task::none(),
             },
             _ => Task::none(),
@@ -335,7 +337,7 @@ impl App {
         .unwrap_or_else(Task::none);
         // Others see us offline now, not once the server forgets us.
         let offline = match &self.screen {
-            Screen::Main(main) if !main.presences.unavailable() => {
+            Screen::Main(main) if !main.people.presences.unavailable() => {
                 let session = main.session.clone();
                 Task::future(async move {
                     presence::go_offline(&session, mtrx_core::Activity::Background).await

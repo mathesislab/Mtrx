@@ -38,6 +38,8 @@ pub enum Message {
     /// Reload the open room's timeline (⌘R / Ctrl+R); while offline, try
     /// the server now.
     Reload,
+    /// Show a message, opening its room ("Go to message").
+    GoTo(OwnedRoomId, OwnedEventId),
 }
 
 /// The room pane and its member list.
@@ -299,6 +301,14 @@ impl Pane {
                 };
                 let overview = Task::done(app::Message::Card(info::Message::MembersChanged(room)));
                 Task::batch([beside, overview])
+            }
+            Message::GoTo(id, event) => {
+                if self.open(&id).is_some() {
+                    return Task::done(room::Message::GoTo(event).to(&id));
+                }
+                let open = self.open_room(id.clone(), cx);
+                self.go_to = Some((id, event));
+                open
             }
             Message::Reload => {
                 match cx.connection {
