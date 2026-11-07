@@ -6,7 +6,8 @@ import SwiftUI
 /// address or link names, pasted into the search field.
 struct JoinView: View {
     @StateObject private var model: JoinModel
-    @EnvironmentObject private var session: SessionModel
+    @EnvironmentObject private var rooms: RoomListModel
+    @EnvironmentObject private var home: HomeNavigation
     @Environment(\.dismiss) private var dismiss
     @State private var askingServer = false
     @State private var typedServer = ""
@@ -126,22 +127,22 @@ struct JoinView: View {
     }
 
     private func row(_ room: DirectoryRoom) -> some View {
-        DirectoryRoomRow(room: room, button: session.button(for: room), busy: model.isBusy(room)) {
+        DirectoryRoomRow(room: room, button: rooms.button(for: room), busy: model.isBusy(room)) {
             act(on: room)
         }
     }
 
     private func act(on room: DirectoryRoom) {
         guard !model.isBusy(room) else { return }
-        switch session.button(for: room).action {
+        switch rooms.button(for: room).action {
         case .join, .askToJoin:
             Task { await model.join(room) }
         case .open:
             dismiss()
-            session.open(room.id, kind: room.isSpace ? .space : .room)
+            home.open(room.id, kind: room.isSpace ? .space : .room)
         case .invited:
             dismiss()
-            session.invite = RoomRef(id: room.id)
+            home.invite = RoomRef(id: room.id)
         case .asked, .inviteOnly:
             break
         }

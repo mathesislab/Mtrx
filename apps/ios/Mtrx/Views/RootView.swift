@@ -12,10 +12,7 @@ struct RootView: View {
             SignInView(model: model)
         case .signedIn(let model):
             HomeView()
-                .environmentObject(model)
-                .environmentObject(model.images)
-                .environmentObject(model.presence)
-                .environmentObject(model.downloads)
+                .account(model)
         case .failed(let message):
             VStack(spacing: 16) {
                 Image(systemName: "exclamationmark.triangle")
@@ -34,5 +31,19 @@ struct RootView: View {
             }
             .padding(32)
         }
+    }
+}
+
+extension View {
+    /// The signed-in account's models, for the views to observe: each only
+    /// those it shows. Sheets and covers are given them again.
+    func account(_ session: SessionModel) -> some View {
+        environmentObject(session)
+            .environmentObject(session.rooms)
+            .environmentObject(session.home)
+            .environmentObject(session.encryption)
+            .environmentObject(session.images)
+            .environmentObject(session.presence)
+            .environmentObject(session.downloads)
     }
 }

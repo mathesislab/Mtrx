@@ -123,18 +123,18 @@ final class SpaceSectionsTests: XCTestCase {
         await eventually { session.roomListListener != nil }
         let on = lists()
         session.roomListListener?.onUpdate(lists: on)
-        await eventually { model.lists === on }
-        XCTAssertTrue(model.notesAtTop)
-        XCTAssertEqual(model.lists.notes()?.id, "!notes")
-        await model.setNotesAtTop(false).value
+        await eventually { model.rooms.lists === on }
+        XCTAssertTrue(model.rooms.notesAtTop)
+        XCTAssertEqual(model.rooms.lists.notes()?.id, "!notes")
+        await model.rooms.setNotesAtTop(false).value
         XCTAssertEqual(session.changes, ["notes at top false"])
         // As the library lists it.
         let off = lists(notesAtTop: false)
         session.roomListListener?.onUpdate(lists: off)
-        await eventually { !model.notesAtTop }
-        XCTAssertNil(model.lists.notes())
+        await eventually { !model.rooms.notesAtTop }
+        XCTAssertNil(model.rooms.lists.notes())
         session.changeError = MtrxError.Other(reason: "No connection")
-        await model.setNotesAtTop(true).value
+        await model.rooms.setNotesAtTop(true).value
         XCTAssertEqual(model.error, "No connection")
     }
 }

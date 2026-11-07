@@ -43,7 +43,7 @@ final class PresenceModelTests: XCTestCase {
 
     private func push(_ lists: RoomLists) async {
         session.roomListListener?.onUpdate(lists: lists)
-        await eventually { self.model.lists === lists }
+        await eventually { self.model.rooms.lists === lists }
     }
 
     // MARK: Others
@@ -75,7 +75,7 @@ final class PresenceModelTests: XCTestCase {
         await start()
         model.setForeground(true)
         await push(rooms())
-        let bobRoom = model.room("!bob")!
+        let bobRoom = model.rooms.room("!bob")!
         XCTAssertNil(presence.presence(of: bobRoom))
 
         session.presenceSubscriptions[0].listener.onUpdate(presences: [Self.bob: Make.presence(.online)])
@@ -86,8 +86,8 @@ final class PresenceModelTests: XCTestCase {
         await eventually { self.presence.presence(of: bobRoom)?.state == .unavailable }
         XCTAssertEqual(presence.presence(of: Self.carol)?.state, .online)
         // Rooms that are not someone else's direct chat show none.
-        XCTAssertNil(presence.presence(of: model.room("!notes")!))
-        XCTAssertNil(presence.presence(of: model.room("!lab")!))
+        XCTAssertNil(presence.presence(of: model.rooms.room("!notes")!))
+        XCTAssertNil(presence.presence(of: model.rooms.room("!lab")!))
     }
 
     func testReadsOnlyInTheForeground() async {
@@ -186,7 +186,7 @@ final class PresenceModelTests: XCTestCase {
     private func assertHidden(file: StaticString = #filePath, line: UInt = #line) async {
         XCTAssertFalse(presence.available, file: file, line: line)
         XCTAssertTrue(presence.presences.isEmpty, file: file, line: line)
-        XCTAssertNil(presence.presence(of: model.room("!bob")!), file: file, line: line)
+        XCTAssertNil(presence.presence(of: model.rooms.room("!bob")!), file: file, line: line)
         XCTAssertEqual(session.presenceSubscriptions.map(\.handle.cancelled), [true], file: file, line: line)
 
         await settle()
