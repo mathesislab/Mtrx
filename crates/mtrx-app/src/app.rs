@@ -9,6 +9,7 @@ pub mod window;
 
 pub use self::window::closing;
 use self::{
+    modal::Modal,
     pane::{Pane, Shown},
     window::{Resize, Window},
 };
@@ -19,7 +20,7 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -28,9 +29,9 @@ use iced::{
     widget::{button, column, container, mouse_area, opaque, row, stack, text, text_input},
 };
 use mtrx_core::{
-    Connection, Contact, DownloadId, Live, Notification, OwnedRoomId, OwnedRoomOrAliasId,
-    OwnedServerName, OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListState, RoomLists,
-    RoomTag, ScheduledMessage, SecretStore, Session,
+    Connection, Contact, DownloadId, Live, Notification, OwnedRoomId, OwnedUserId, Profile,
+    RecoveryStep, RoomKind, RoomListState, RoomLists, RoomTag, ScheduledMessage, SecretStore,
+    Session,
 };
 use mtrx_google::Google;
 
@@ -40,8 +41,7 @@ use crate::{
     avatar::Avatars,
     badge::{self, Badge},
     calls,
-    dialog::{self, Dialog},
-    directory,
+    dialog::{self},
     downloads::{self, Downloads},
     edit_menu, emoji,
     find::{self},
@@ -50,11 +50,11 @@ use crate::{
     last_view::LastView,
     login::Login,
     math::Math,
-    media::{self, Previews, Viewer},
+    media::{self, Previews},
     members, message,
     message_field::Field,
     message_menu::MenuAt,
-    overview, pdf_viewer, pins,
+    overview, pins,
     placement::Placement,
     popover,
     presence::{self, Presences},
@@ -64,7 +64,7 @@ use crate::{
     settings::{self, Settings},
     sidebar::{self, Sidebar},
     spelling, style,
-    task::{self, Owned},
+    task::{self},
     tint::Tint,
     update::{self, Updater},
 };
@@ -133,6 +133,10 @@ pub enum Message {
     LinkClicked(String),
     /// Close the popup: a click outside it, or its Cancel.
     ClosePopup,
+    /// We left a room: what shows it closes.
+    Left(OwnedRoomId),
+    /// A space just joined: selected, with its overview once it is listed.
+    ShowJoined(OwnedRoomId),
     CloseNotice,
 }
 
@@ -178,17 +182,12 @@ struct Main {
     now: SystemTime,
     avatars: Avatars,
     /// The panel over the window, above the card.
-    modal: Option<Modal>,
+    modal: Modal,
     /// The menu or picker open, anywhere in the window.
     popup: Option<Popup>,
     /// A space just joined, whose overview shows once it is in the room
     /// list.
     joined_space: Option<OwnedRoomId>,
-    /// The last dialog request made.
-    last_request: dialog::RequestId,
-    /// Dialogs closed while their requests run: notices for success and
-    /// failure.
-    background: HashMap<dialog::RequestId, (String, String)>,
     /// This desktop's "Notes at the top" was offered to the account.
     notes_moved: bool,
     notices: Notices,
@@ -210,21 +209,6 @@ struct Main {
     /// Others' presence, for the people shown.
     presences: Presences,
     downloads: Downloads,
-}
-
-/// What shows over the whole window, above the card: one at a time, the
-/// one opened last replacing any other.
-// One, in the boxed [`Main`].
-#[allow(clippy::large_enum_variant)]
-enum Modal {
-    Settings(settings::Panel),
-    Dialog(Dialog),
-    /// Joining a space or room from elsewhere.
-    Join(join::Join),
-    /// An image shown large.
-    Image(Viewer),
-    /// A PDF shown large.
-    Pdf(pdf_viewer::Viewer),
 }
 
 /// A menu or picker: one at a time in the whole window, the one opened last
@@ -298,7 +282,7 @@ impl Popup {
     }
 
     /// It goes with the card: a member's menu, or the card's own.
-    fn of_card(&self) -> bool {
+    pub fn of_card(&self) -> bool {
         matches!(
             self,
             Popup::MemberMenu(_) | Popup::CardPicture | Popup::CardAddToSpace
@@ -385,6 +369,8 @@ pub struct Cx<'a> {
     /// Saved after the update if [`Cx::save_settings`] was called.
     pub settings: &'a mut Settings,
     pub google: &'a Arc<Google>,
+    /// The viewport and pixel scale.
+    pub window: &'a Window,
     /// The menu or picker open in the window.
     pub popup: &'a mut Option<Popup>,
     pub notices: &'a mut Notices,
@@ -415,6 +401,8 @@ impl Cx<'_> {
 struct AppParts<'a> {
     settings: &'a mut Settings,
     google: &'a Arc<Google>,
+    window: &'a Window,
+    updater: &'a mut Updater,
     /// Set when the update changed the settings, for `App` to save.
     save: bool,
 }
@@ -449,11 +437,9 @@ impl Main {
             now: SystemTime::now(),
             session,
             avatars: Avatars::new(),
-            modal: None,
+            modal: Modal::default(),
             popup: None,
             joined_space: None,
-            last_request: Default::default(),
-            background: HashMap::new(),
             notes_moved: false,
             notices: Notices::default(),
             previews: Previews::new(),
@@ -462,12 +448,6 @@ impl Main {
 }
 
 impl Main {
-    /// Show `shown` in the room pane: the popup of the room shown before
-    /// closes, and its draft is kept now.
-    fn set_pane(&mut self, shown: Shown) -> Task<Message> {
-        self.pane.set(shown, &mut self.popup)
-    }
-
     /// A message for a component, with what it may read and change
     /// besides its own state.
     fn update(&mut self, message: Message, parts: &mut AppParts<'_>) -> Task<Message> {
@@ -500,6 +480,9 @@ impl Main {
             notices,
             sidebar,
             pane,
+            card,
+            modal,
+            joined_space,
             ..
         } = self;
         let mut cx = Cx {
@@ -509,25 +492,117 @@ impl Main {
             connection: *connection,
             settings: &mut *parts.settings,
             google: parts.google,
+            window: parts.window,
             popup,
             notices,
             save: false,
             close_card: false,
         };
+        // A card shown, or closed.
+        let mut shown_card = None;
         let task = match message {
             Message::Sidebar(message) => sidebar.update(message, &mut cx),
             Message::Pane(message) => pane.update(message, &mut cx),
             Message::Room(id, message) => pane.room_message(id, message, &mut cx),
             Message::Shown(message) => pane.shown_message(message, &mut cx),
+            Message::Card(info::Message::Show(target, tab)) => {
+                let (card, task) = info::Card::open(target, tab, &mut cx);
+                shown_card = Some(Some(card));
+                task
+            }
+            Message::Card(info::Message::Close) => {
+                shown_card = Some(None);
+                Task::none()
+            }
+            Message::Card(message) => match card {
+                Some(card) => card.update(message, &mut cx),
+                None => Task::none(),
+            },
+            Message::Modal(message) => modal.update(message, &mut cx, parts.updater, sidebar),
+            Message::Left(id) => {
+                let left = if pane.id() == Some(&id) {
+                    pane.set(Shown::Empty, cx.popup)
+                } else {
+                    Task::none()
+                };
+                if card.as_ref().and_then(|c| c.room()) == Some(&id) {
+                    cx.close_card();
+                }
+                if sidebar.space.as_ref() == Some(&id) {
+                    sidebar.select(None);
+                }
+                left
+            }
+            Message::ShowJoined(space) => {
+                let select = sidebar.select_space(Some(space.clone()), &mut cx);
+                // Its overview once the room list has it.
+                let show = if cx.lists.room(&space).is_some() {
+                    Task::done(info::show_space(space, overview::Tab::Rooms))
+                } else {
+                    *joined_space = Some(space);
+                    Task::none()
+                };
+                Task::batch([select, show])
+            }
             // `App::handle`'s.
             _ => Task::none(),
         };
         let (save, close_card) = (cx.save, cx.close_card);
         parts.save |= save;
         if close_card {
-            self.card = None;
+            self.set_card(None);
+        }
+        if let Some(card) = shown_card {
+            self.set_card(card);
         }
         task
+    }
+
+    /// Show `card`, or none: the popups of the card shown before close.
+    fn set_card(&mut self, card: Option<info::Card>) {
+        self.popup.take_if(|popup| popup.of_card());
+        self.card = card;
+    }
+
+    /// Esc closes the topmost thing: the popup (on top, as what opens over
+    /// it closes it), its innermost part first; the modal, the card, then in
+    /// the open room the mention offered, the find bar, the selection, the
+    /// reply and the message edited in place; then a drag or category
+    /// name, else the search.
+    fn escape(&mut self) -> Task<Message> {
+        if let Some(popup) = &mut self.popup {
+            if !popup.escape() {
+                self.popup = None;
+            }
+            return Task::none();
+        }
+        if let Some(task) = self.modal.escape() {
+            return task;
+        }
+        if self.card.is_some() {
+            self.set_card(None);
+            return Task::none();
+        }
+        let room = self.pane.room_mut();
+        if let Some(task) = room.and_then(|room| room.escape(&self.own_user, &self.lists)) {
+            return task;
+        }
+        self.sidebar.escape();
+        Task::none()
+    }
+
+    /// ⌘↩: the open dialog's main action, or saving the card's changes.
+    fn submit(&self) -> Task<Message> {
+        let submit = match (&self.modal.shown, &self.card) {
+            (Some(modal::Shown::Dialog(_)), _) => Some(Message::Modal(modal::Message::Dialog(
+                dialog::Message::Submit,
+            ))),
+            (Some(_), _) => None,
+            (None, card) => card
+                .as_ref()
+                .and_then(|card| card.submit(&self.lists.rooms)),
+        };
+        submit.map_or_else(Task::none, Task::done)
     }
 
     /// Save the space and room shown when they change, to show them again
@@ -781,33 +856,11 @@ impl App {
                 | Message::Sidebar(sidebar::Message::AddMenu)
                 | Message::Sidebar(sidebar::Message::GoTo(_))
                 | Message::ClosePopup
+                | Message::ShowJoined(_)
                 | Message::Pane(pane::Message::Open(_) | pane::Message::Answered(..))
                 | Message::Window(window::Message::Resized(_))
         );
-        // A menu's choice closes it, as does what opens over it: so an
-        // open popup is always on top.
-        if let Screen::Main(main) = &mut self.screen
-            && matches!(
-                message,
-                Message::Modal(modal::Message::OpenDialog(_))
-                    | Message::Modal(modal::Message::OpenJoin)
-                    | Message::Modal(modal::Message::ShowSettings(true))
-                    | Message::Modal(modal::Message::OpenImage(_))
-                    | Message::Modal(modal::Message::OpenPdf(_))
-                    | Message::Card(info::Message::Show(..))
-            )
-        {
-            main.popup = None;
-        }
-        let card = self.card_shown();
         let task = self.handle(message);
-        // A member's menu and the card's go with the card they were opened
-        // on.
-        if self.card_shown() != card
-            && let Screen::Main(main) = &mut self.screen
-        {
-            main.popup.take_if(|popup| popup.of_card());
-        }
         let task = Task::batch([task, self.move_notes_at_top()]);
         if let Screen::Main(main) = &mut self.screen {
             main.remember_view(self.view_file.as_deref());
@@ -845,32 +898,45 @@ impl App {
                     });
                 Task::batch([joined, main.load_pinned(), self.restore_view()])
             }
-            Message::Modal(modal::Message::ShowSettings(false)) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.modal
-                        .take_if(|modal| matches!(modal, Modal::Settings(_)));
-                }
-                Task::none()
-            }
-            Message::Modal(modal::Message::ShowSettings(true)) => self.open_settings(),
-            Message::Modal(modal::Message::Settings(message)) => self.settings_update(message),
             #[cfg(target_os = "macos")]
             Message::CheckForUpdates => {
                 let check = (self.updater).update(update::Message::Check, &self.settings.updates);
-                Task::batch([self.open_settings(), check])
+                let open = self.update(Message::Modal(modal::Message::ShowSettings(true)));
+                Task::batch([open, check])
             }
             Message::Update(message) => {
                 let task = self.updater.update(message, &self.settings.updates);
-                self.update_seen();
+                if let Screen::Main(main) = &mut self.screen
+                    && main.modal.see_update(&self.updater, &mut self.settings)
+                {
+                    self.save_settings();
+                }
                 task
             }
-            Message::Sidebar(_) | Message::Pane(_) | Message::Room(..) | Message::Shown(_) => {
+            Message::Escape => match &mut self.screen {
+                Screen::Main(main) => main.escape(),
+                _ => Task::none(),
+            },
+            Message::Submit => match &self.screen {
+                Screen::Main(main) => main.submit(),
+                _ => Task::none(),
+            },
+            Message::Sidebar(_)
+            | Message::Pane(_)
+            | Message::Room(..)
+            | Message::Shown(_)
+            | Message::Card(_)
+            | Message::Modal(_)
+            | Message::Left(_)
+            | Message::ShowJoined(_) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
                 let mut parts = AppParts {
                     settings: &mut self.settings,
                     google: &self.google,
+                    window: &self.window,
+                    updater: &mut self.updater,
                     save: false,
                 };
                 let task = main.update(message, &mut parts);
@@ -885,46 +951,6 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Modal(modal::Message::OpenDialog(kind)) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                // A card stays below, e.g. a space's overview, to come
-                // back to.
-                let near = near_spaces(&kind, &main.lists.graph, main.sidebar.space.as_ref());
-                main.sidebar.arrange.escape();
-                let mut dialog = Dialog::new(kind);
-                dialog.fill_category(&main.sidebar.arrange.categories);
-                if !dialog.picks_people() {
-                    main.modal = Some(Modal::Dialog(dialog));
-                    return Task::none();
-                }
-                dialog.prefer_spaces(near);
-                dialog.offer_self(main.own_user.clone());
-                dialog.update(dialog::Message::Contacts(main.contacts.clone()));
-                let session = main.session.clone();
-                let owners = if dialog.creates_room() {
-                    let session = session.clone();
-                    dialog.offer_owners(Task::perform(
-                        async move { session.offers_owners().await },
-                        |offered| {
-                            Message::Modal(modal::Message::Dialog(dialog::Message::OwnersOffered(
-                                offered,
-                            )))
-                        },
-                    ))
-                } else {
-                    Task::none()
-                };
-                main.modal = Some(Modal::Dialog(dialog));
-                Task::batch([
-                    Task::perform(
-                        async move { session.contacts().await.unwrap_or_default() },
-                        |m| Message::People(people::Message::ContactsLoaded(m)),
-                    ),
-                    owners,
-                ])
-            }
             Message::People(people::Message::FrequentEmoji(emoji)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.frequent_emoji = emoji;
@@ -933,208 +959,36 @@ impl App {
             }
             Message::People(people::Message::ContactsLoaded(contacts)) => {
                 if let Screen::Main(main) = &mut self.screen {
-                    if let Some(Modal::Dialog(dialog)) = &mut main.modal {
+                    if let Some(modal::Shown::Dialog(dialog)) = &mut main.modal.shown {
                         dialog.update(dialog::Message::Contacts(contacts.clone()));
                     }
                     main.contacts = contacts;
                 }
                 Task::none()
             }
-            Message::Card(info::Message::MembersChanged(room)) => {
+            // Those known so far at once, then afresh.
+            Message::People(people::Message::LoadContacts) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                match &mut main.card {
-                    Some(card) if card.overview.as_ref().is_some_and(|o| o.space == room) => {
-                        overview_task(
-                            &main.session,
-                            &mut main.sidebar.space_rooms,
-                            &mut card.tasks,
-                            &room,
-                            overview::Action::LoadMembers,
-                        )
-                    }
-                    _ => Task::none(),
+                if let Some(modal::Shown::Dialog(dialog)) = &mut main.modal.shown {
+                    dialog.update(dialog::Message::Contacts(main.contacts.clone()));
                 }
-            }
-            Message::Card(info::Message::Show(target, tab)) => self.show_card(target, tab),
-            Message::Modal(modal::Message::OpenJoin) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                main.card = None;
                 let session = main.session.clone();
-                let (join, action) = join::Join::new(
-                    session.user_id().server_name().to_owned(),
-                    &session.directory_servers().servers,
-                );
-                main.modal = Some(Modal::Join(join));
-                Task::batch([
-                    self.join_action(action),
-                    iced::widget::operation::focus(join::SEARCH),
-                ])
+                Task::perform(
+                    async move { session.contacts().await.unwrap_or_default() },
+                    |contacts| Message::People(people::Message::ContactsLoaded(contacts)),
+                )
             }
-            Message::Modal(modal::Message::Join(message)) => {
-                let Screen::Main(main) = &mut self.screen else {
+            Message::People(people::Message::LookUp(user)) => {
+                let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                let Some(Modal::Join(join)) = &mut main.modal else {
+                if main.presences.unavailable() {
                     return Task::none();
-                };
-                // A server whose directory answered is remembered.
-                let remember = match &message {
-                    join::Message::Found(search, Ok(_)) => search.server.clone().map(|server| {
-                        let session = main.session.clone();
-                        task::background("remember a directory server", async move {
-                            session.remember_directory_server(&server).await
-                        })
-                    }),
-                    _ => None,
-                };
-                let action = join.update(message);
-                Task::batch([
-                    remember.unwrap_or_else(Task::none),
-                    self.join_action(action),
-                ])
-            }
-            Message::Card(message) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let Some(card) = &mut main.card else {
-                    return Task::none();
-                };
-                let overview_session = main.session.clone();
-                let room = card.handle.clone();
-                let saved = |result| Message::Card(info::Message::Saved(result));
-                // A menu's choice closes it.
-                match &message {
-                    info::Message::OpenPictureMenu => {
-                        main.popup = Some(Popup::CardPicture);
-                        return Task::none();
-                    }
-                    info::Message::OpenSpacesMenu => {
-                        main.popup = Some(Popup::CardAddToSpace);
-                        return Task::none();
-                    }
-                    info::Message::ChangePicture | info::Message::RemovePicture => {
-                        main.popup
-                            .take_if(|popup| matches!(popup, Popup::CardPicture));
-                    }
-                    info::Message::Change(_) => {
-                        main.popup
-                            .take_if(|popup| matches!(popup, Popup::CardAddToSpace));
-                    }
-                    _ => {}
                 }
-                let task = match (&message, room) {
-                    (info::Message::Close, _) => {
-                        main.card = None;
-                        return Task::none();
-                    }
-                    (info::Message::Copy(text), _) => iced::clipboard::write(text.clone()),
-                    (info::Message::SaveDetails, Some(room)) => {
-                        let Some(summary) = main.lists.rooms.iter().find(|r| r.id == room.id())
-                        else {
-                            return Task::none();
-                        };
-                        let (name, topic) = card.changed_details(summary);
-                        task::request(
-                            async move {
-                                if let Some(name) = name {
-                                    room.set_name(&name).await?;
-                                }
-                                if let Some(topic) = topic {
-                                    room.set_topic(&topic).await?;
-                                }
-                                Ok(())
-                            },
-                            saved,
-                        )
-                    }
-                    (info::Message::JoinRule(rule), Some(room)) => {
-                        let rule = *rule;
-                        task::request(async move { room.set_join_rule(rule).await }, saved)
-                    }
-                    (info::Message::Notify(mode), Some(room)) => {
-                        let mode = *mode;
-                        task::request(async move { room.set_notify(mode).await }, saved)
-                    }
-                    (info::Message::ChangePicture, Some(room)) => task::request(
-                        async move {
-                            let Some(file) = rfd::AsyncFileDialog::new()
-                                .set_title("Room picture")
-                                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
-                                .pick_file()
-                                .await
-                            else {
-                                return Ok(());
-                            };
-                            room.set_picture(file.path()).await
-                        },
-                        saved,
-                    ),
-                    (info::Message::RemovePicture, Some(room)) => {
-                        task::request(async move { room.remove_picture().await }, saved)
-                    }
-                    (info::Message::Change(change), Some(room)) => {
-                        let change = change.clone();
-                        let session = main.session.clone();
-                        task::request(
-                            async move {
-                                use info::Change;
-                                match change {
-                                    Change::Address(name) => {
-                                        room.set_address(name.as_deref()).await
-                                    }
-                                    Change::Listed(on) => room.set_listed(on).await,
-                                    Change::History(h) => room.set_history(h).await,
-                                    Change::Permissions(p) => room.set_permissions(p).await,
-                                    Change::Suggested(space, on) => {
-                                        session.room(&space)?.set_suggested(room.id(), on).await
-                                    }
-                                    Change::AddToSpace(space) => {
-                                        session.room(&space)?.add_child(room.id()).await
-                                    }
-                                    Change::RemoveFromSpace(space) => {
-                                        session.room(&space)?.remove_child(room.id()).await
-                                    }
-                                    Change::Unban(user) => room.unban(&user).await,
-                                }
-                            },
-                            saved,
-                        )
-                    }
-                    (info::Message::LetEveryoneEdit, Some(room)) => task::request(
-                        async move {
-                            let update = room.let_everyone_edit_all().await?;
-                            let skipped = match update.not_allowed.len() {
-                                0 => String::new(),
-                                n => format!(
-                                    " {n} could not be changed: you are not an admin there."
-                                ),
-                            };
-                            let opened = update.changed.len();
-                            Ok(format!("Opened {opened} room(s).{skipped}"))
-                        },
-                        |result| Message::Card(info::Message::Opened(result)),
-                    ),
-                    _ => Task::none(),
-                };
-                let overview = match card.update(message) {
-                    overview::Action::None => Task::none(),
-                    action => match &card.overview {
-                        Some(o) => overview_task(
-                            &overview_session,
-                            &mut main.sidebar.space_rooms,
-                            &mut card.tasks,
-                            &o.space,
-                            action,
-                        ),
-                        None => Task::none(),
-                    },
-                };
-                Task::batch([task, overview])
+                presence::look_up(&main.session, user)
+                    .map(|message| Message::People(people::Message::Presence(message)))
             }
             Message::People(people::Message::FavouritePerson(user)) => {
                 let Screen::Main(main) = &self.screen else {
@@ -1171,62 +1025,6 @@ impl App {
                 };
                 let session = main.session.clone();
                 Task::future(async move { session.reconnect().await }).discard()
-            }
-            Message::Modal(modal::Message::Dialog(message)) => self.dialog(message),
-            // Closes the topmost thing: the popup (on top, as what opens
-            // over it closes it), the modal, the card, then in the open room
-            // the mention offered, the find bar, the selection, the reply
-            // and the message edited in place; then a drag or category
-            // name, else the search.
-            Message::Escape => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                // The innermost first.
-                if let Some(popup) = &mut main.popup {
-                    if !popup.escape() {
-                        main.popup = None;
-                    }
-                    return Task::none();
-                }
-                match &mut main.modal {
-                    Some(Modal::Dialog(_)) => {
-                        return Task::done(Message::Modal(modal::Message::Dialog(
-                            dialog::Message::Cancel,
-                        )));
-                    }
-                    Some(Modal::Join(_)) => {
-                        return Task::done(Message::Modal(modal::Message::Join(
-                            join::Message::Close,
-                        )));
-                    }
-                    Some(_) => main.modal = None,
-                    None if main.card.is_some() => main.card = None,
-                    None => {
-                        let escaped = (main.pane.room_mut())
-                            .and_then(|room| room.escape(&main.own_user, &main.lists));
-                        if let Some(task) = escaped {
-                            return task;
-                        }
-                        main.sidebar.escape();
-                    }
-                }
-                Task::none()
-            }
-            Message::Submit => {
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                let submit = match (&main.modal, &main.card) {
-                    (Some(Modal::Dialog(_)), _) => Some(Message::Modal(modal::Message::Dialog(
-                        dialog::Message::Submit,
-                    ))),
-                    (Some(_), _) => None,
-                    (None, card) => card
-                        .as_ref()
-                        .and_then(|card| card.submit(&main.lists.rooms)),
-                };
-                submit.map_or_else(Task::none, Task::done)
             }
             Message::People(people::Message::StartNotes) => {
                 let Screen::Main(main) = &self.screen else {
@@ -1312,14 +1110,6 @@ impl App {
             Message::CloseNotice => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.notices.close();
-                }
-                Task::none()
-            }
-            Message::Modal(modal::Message::Progress) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(Modal::Dialog(dialog)) = &mut main.modal
-                {
-                    dialog.tick(Instant::now());
                 }
                 Task::none()
             }
@@ -1423,47 +1213,6 @@ impl App {
                     Task::none()
                 }
             },
-            Message::Modal(modal::Message::OpenImage(file)) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let mut viewer = Viewer::new(file);
-                let load = viewer.load(main.session.clone());
-                main.modal = Some(Modal::Image(viewer));
-                load
-            }
-            Message::Modal(modal::Message::OpenViewerMenu) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(Modal::Image(_)) = &main.modal
-                {
-                    main.popup = Some(Popup::Viewer);
-                }
-                Task::none()
-            }
-            Message::Modal(modal::Message::CloseImage) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.modal
-                        .take_if(|modal| matches!(modal, Modal::Image(_) | Modal::Pdf(_)));
-                    main.popup.take_if(|popup| matches!(popup, Popup::Viewer));
-                }
-                Task::none()
-            }
-            Message::Modal(modal::Message::OpenPdf(file)) => {
-                let mut viewer = pdf_viewer::Viewer::new(file, self.viewport(), self.pixel_scale());
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let open = viewer.open(main.session.clone());
-                main.modal = Some(Modal::Pdf(viewer));
-                open
-            }
-            Message::Modal(modal::Message::Pdf(message)) => match &mut self.screen {
-                Screen::Main(main) => match &mut main.modal {
-                    Some(Modal::Pdf(viewer)) => viewer.update(message),
-                    _ => Task::none(),
-                },
-                _ => Task::none(),
-            },
             Message::Media(media::Message::Downloads(message)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -1566,9 +1315,9 @@ impl App {
                 };
                 // Shown where it was asked from, else as a notice.
                 let error = match &from {
-                    media::Origin::Viewer => match &mut main.modal {
-                        Some(Modal::Image(viewer)) => Some(&mut viewer.error),
-                        Some(Modal::Pdf(pdf)) => Some(&mut pdf.error),
+                    media::Origin::Viewer => match &mut main.modal.shown {
+                        Some(modal::Shown::Image(viewer)) => Some(&mut viewer.error),
+                        Some(modal::Shown::Pdf(pdf)) => Some(&mut pdf.error),
                         _ => None,
                     },
                     media::Origin::Room(id) => main.pane.open_mut(id).map(|room| &mut room.error),
@@ -1580,182 +1329,7 @@ impl App {
                 Task::none()
             }
             Message::Media(message) => self.media(message),
-            Message::Modal(modal::Message::ImageLoaded(media, result)) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(Modal::Image(viewer)) = &mut main.modal
-                {
-                    viewer.loaded(&media, result);
-                }
-                Task::none()
-            }
         }
-    }
-
-    fn dialog(&mut self, message: dialog::Message) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
-        };
-        // The request of a dialog closed while it ran: what it changed, and
-        // a notice, which opens what it made.
-        let message = match message {
-            dialog::Message::Done(id, result) if main.background.contains_key(&id) => {
-                let (done, failed) = main.background.remove(&id).unwrap_or_default();
-                return match result {
-                    Ok(opened) => {
-                        let room = match &opened {
-                            dialog::Opened::Room(id) | dialog::Opened::Space(id) => {
-                                Some(id.clone())
-                            }
-                            _ => None,
-                        };
-                        main.notices.done(done, room);
-                        self.request_done(opened)
-                    }
-                    Err(e) => {
-                        main.notices.report(format!("{failed}: {e}"), None);
-                        Task::none()
-                    }
-                };
-            }
-            message => message,
-        };
-        let Some(Modal::Dialog(dialog)) = &mut main.modal else {
-            return Task::none();
-        };
-        let session = main.session.clone();
-        match dialog.update(message) {
-            dialog::Action::None => Task::none(),
-            dialog::Action::Close => {
-                main.modal = None;
-                Task::none()
-            }
-            dialog::Action::Background(id) => {
-                main.background.insert(id, dialog.outcome());
-                main.modal = None;
-                Task::none()
-            }
-            dialog::Action::Search(query) => dialog.search_users(Task::perform(
-                {
-                    let query = query.clone();
-                    async move { session.search_users(&query, 10).await.unwrap_or_default() }
-                },
-                move |users| {
-                    Message::Modal(modal::Message::Dialog(dialog::Message::Suggestions(
-                        query, users,
-                    )))
-                },
-            )),
-            dialog::Action::Arrange(message) => {
-                main.modal = None;
-                self.update(Message::Sidebar(sidebar::Message::Arrange(message)))
-            }
-            dialog::Action::Submit(request) => {
-                let id = main.last_request.next();
-                main.last_request = id;
-                dialog.sent(id);
-                Task::perform(run_request(session, request), move |result| {
-                    Message::Modal(modal::Message::Dialog(dialog::Message::Done(id, result)))
-                })
-            }
-            dialog::Action::Finished(opened) => {
-                main.modal = None;
-                let show = match &opened {
-                    dialog::Opened::Room(id) => {
-                        self.update(Message::Pane(pane::Message::Open(id.clone())))
-                    }
-                    dialog::Opened::Space(id) => self.update(Message::Sidebar(
-                        sidebar::Message::SelectSpace(Some(id.clone())),
-                    )),
-                    _ => Task::none(),
-                };
-                Task::batch([self.request_done(opened), show])
-            }
-        }
-    }
-
-    /// What a dialog's request changed, shown, whether the dialog still
-    /// shows or not: a room left closes, signing out ends the session.
-    fn request_done(&mut self, opened: dialog::Opened) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
-        };
-        match opened {
-            dialog::Opened::Nothing | dialog::Opened::Room(_) | dialog::Opened::Space(_) => {
-                Task::none()
-            }
-            dialog::Opened::Members(room) => {
-                self.update(Message::Pane(pane::Message::MembersChanged(room, Ok(()))))
-            }
-            dialog::Opened::Left(id) => {
-                let left = if main.pane.id() == Some(&id) {
-                    main.set_pane(Shown::Empty)
-                } else {
-                    Task::none()
-                };
-                if main.card.as_ref().and_then(|c| c.room()) == Some(&id) {
-                    main.card = None;
-                }
-                if main.sidebar.space.as_ref() == Some(&id) {
-                    main.sidebar.select(None);
-                }
-                left
-            }
-            dialog::Opened::SignedOut => {
-                self.screen = Screen::Login(Login::default());
-                Task::none()
-            }
-        }
-    }
-
-    fn open_settings(&mut self) -> Task<Message> {
-        let mut panel = settings::Panel::default();
-        panel.google.account = self.google.account().unwrap_or_else(|e| {
-            panel.google.error = Some(e.to_string());
-            None
-        });
-        let mut tasks = Vec::new();
-        if let Screen::Main(main) = &self.screen {
-            panel.account = Some(main.session.user_id().to_string());
-            let name = |id: &OwnedRoomId| {
-                (main.lists.room(id)).map_or_else(|| id.to_string(), |r| r.name.clone())
-            };
-            let rights =
-                |id: &OwnedRoomId| main.lists.room(id).map(|r| r.rights).unwrap_or_default();
-            if let Some(space) = &main.sidebar.space {
-                panel.space = Some(settings::SpaceCalls::new(
-                    space.clone(),
-                    name(space),
-                    rights(space),
-                ));
-                let (session, space) = (main.session.clone(), space.clone());
-                tasks.push(panel.load_space(Task::perform(
-                    async move {
-                        let service = match session.room(&space) {
-                            Ok(room) => room.call_service().await.ok().flatten(),
-                            Err(_) => None,
-                        };
-                        settings::Message::SpaceLoaded(space, service)
-                    },
-                    |m| Message::Modal(modal::Message::Settings(m)),
-                )));
-            }
-        }
-        if let Screen::Main(main) = &mut self.screen {
-            main.modal = Some(Modal::Settings(panel));
-        }
-        self.update_seen();
-        Task::batch(tasks)
-    }
-
-    /// An update shown in the open settings is seen: no dot on the gear
-    /// until a newer one.
-    fn update_seen(&mut self) {
-        if self.settings_panel().is_none() || !self.updater.unseen(&self.settings.updates) {
-            return;
-        }
-        let version = (self.updater.available.as_ref()).map(|u| u.version.to_string());
-        self.settings.updates.seen = version;
-        self.save_settings();
     }
 
     /// Saves the settings; the open panel says if that failed.
@@ -1767,136 +1341,6 @@ impl App {
             .map(|e| e.to_string());
         if let Some(panel) = self.settings_panel() {
             panel.error = error;
-        }
-    }
-
-    fn settings_update(&mut self, message: settings::Message) -> Task<Message> {
-        // Preferences change also from outside the panel, e.g. a card.
-        let panel = match &mut self.screen {
-            Screen::Main(main) => match &mut main.modal {
-                Some(Modal::Settings(panel)) => Some(panel),
-                _ => None,
-            },
-            _ => None,
-        };
-        let action = match (message, panel) {
-            (settings::Message::Preference(preference), _) => {
-                settings::change(&mut self.settings, preference)
-            }
-            (message, Some(panel)) => panel.update(&mut self.settings, message),
-            (_, None) => return Task::none(),
-        };
-        match action {
-            settings::Action::None => Task::none(),
-            settings::Action::Save => {
-                self.save_settings();
-                Task::none()
-            }
-            settings::Action::CheckUpdates => {
-                self.save_settings();
-                self.updater
-                    .update(update::Message::Check, &self.settings.updates)
-            }
-            settings::Action::Appearance => {
-                self.save_settings();
-                #[cfg(target_os = "macos")]
-                self.settings.appearance.apply();
-                Task::none()
-            }
-            settings::Action::TextSize => {
-                self.save_settings();
-                self.pdf_resized()
-            }
-            settings::Action::Spelling => {
-                self.save_settings();
-                spelling::set_enabled(self.settings.check_spelling);
-                Task::none()
-            }
-            settings::Action::SharePresence => {
-                self.save_settings();
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                // The switch is off while the server does not share presence.
-                presence::sharing(&main.session, self.settings.share_presence)
-                    .map(|m| Message::People(people::Message::Presence(m)))
-            }
-            settings::Action::GoogleSignIn(client) => {
-                let google = self.google.clone();
-                let sign_in = Task::perform(
-                    async move {
-                        google
-                            .sign_in(client, |url| {
-                                let _ = open::that_detached(url.as_str());
-                            })
-                            .await
-                    },
-                    |result| {
-                        Message::Modal(modal::Message::Settings(settings::Message::GoogleSignedIn(
-                            result.map_err(|e| e.to_string()),
-                        )))
-                    },
-                );
-                // Asked for from the panel, which shows it signing in.
-                match self.settings_panel() {
-                    Some(panel) => panel.google_sign_in(sign_in),
-                    None => Task::none(),
-                }
-            }
-            settings::Action::Colour(space, tint) => {
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                let session = main.session.clone();
-                task::request(
-                    async move {
-                        session
-                            .change_room_list_colours(|colours| {
-                                let name = tint.name().to_owned();
-                                match space {
-                                    Some(space) => {
-                                        colours.spaces.insert(space, name);
-                                    }
-                                    None => colours.home = Some(name),
-                                }
-                            })
-                            .await
-                    },
-                    |result| {
-                        Message::Modal(modal::Message::Settings(settings::Message::ColourSaved(
-                            result,
-                        )))
-                    },
-                )
-            }
-            settings::Action::AtHome(at_home) => self.update(Message::Sidebar(
-                sidebar::Message::Arrange(arrange::Message::AtHome(at_home)),
-            )),
-            settings::Action::NotesAtTop(on) => self.update(Message::Sidebar(
-                sidebar::Message::Arrange(arrange::Message::NotesAtTop(on)),
-            )),
-            settings::Action::GoogleSignOut => {
-                let google = self.google.clone();
-                Task::perform(async move { google.sign_out().await }, |result| {
-                    Message::Modal(modal::Message::Settings(
-                        settings::Message::GoogleSignedOut(result.map_err(|e| e.to_string())),
-                    ))
-                })
-            }
-            settings::Action::SetSpaceService(space, service) => {
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                let session = main.session.clone();
-                task::request(
-                    async move { session.room(&space)?.set_call_service(service).await },
-                    |result| {
-                        Message::Modal(modal::Message::Settings(settings::Message::SpaceSaved(
-                            result,
-                        )))
-                    },
-                )
-            }
         }
     }
 
@@ -1916,21 +1360,7 @@ impl App {
     /// The settings panel, while open.
     fn settings_panel(&mut self) -> Option<&mut settings::Panel> {
         match &mut self.screen {
-            Screen::Main(main) => match &mut main.modal {
-                Some(Modal::Settings(panel)) => Some(panel),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// The PDF viewer, while it shows.
-    fn pdf_viewer(&mut self) -> Option<&mut pdf_viewer::Viewer> {
-        match &mut self.screen {
-            Screen::Main(main) => match &mut main.modal {
-                Some(Modal::Pdf(pdf)) => Some(pdf),
-                _ => None,
-            },
+            Screen::Main(main) => main.modal.settings(),
             _ => None,
         }
     }
@@ -1940,9 +1370,9 @@ impl App {
     fn pdf_resized(&mut self) -> Task<Message> {
         let (viewport, scale) = (self.viewport(), self.pixel_scale());
         match &mut self.screen {
-            Screen::Main(main) => match &mut main.modal {
-                Some(Modal::Pdf(pdf)) => pdf.resized(viewport, scale),
-                _ => Task::none(),
+            Screen::Main(main) => match main.modal.pdf() {
+                Some(pdf) => pdf.resized(viewport, scale),
+                None => Task::none(),
             },
             _ => Task::none(),
         }
@@ -1988,167 +1418,6 @@ impl App {
         Task::done(Message::Sidebar(sidebar::Message::Arrange(
             arrange::Message::NotesAtTop(self.settings.pinned_notes),
         )))
-    }
-
-    /// Which card is shown, and on which tab: whether one is, its room, and
-    /// a space's tab.
-    fn card_shown(&self) -> Option<(Option<OwnedRoomId>, Option<overview::Tab>)> {
-        let Screen::Main(main) = &self.screen else {
-            return None;
-        };
-        let card = main.card.as_ref()?;
-        Some((card.room().cloned(), card.overview.as_ref().map(|o| o.tab)))
-    }
-
-    /// Run what the join dialog asks for.
-    fn join_action(&mut self, action: join::Action) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
-        };
-        let session = main.session.clone();
-        let done = |room: OwnedRoomOrAliasId| {
-            move |result| Message::Modal(modal::Message::Join(join::Message::Done(room, result)))
-        };
-        let join = match &mut main.modal {
-            Some(Modal::Join(join)) => Some(join),
-            _ => None,
-        };
-        match action {
-            join::Action::None => Task::none(),
-            join::Action::Close => {
-                main.modal = None;
-                Task::none()
-            }
-            join::Action::Search(search) => join.map_or_else(Task::none, |join| {
-                join.browse(task::request(
-                    {
-                        let search = search.clone();
-                        async move {
-                            session
-                                .public_rooms(
-                                    search.server.as_deref(),
-                                    &search.query,
-                                    search.kind,
-                                    search.page,
-                                )
-                                .await
-                        }
-                    },
-                    move |result| {
-                        Message::Modal(modal::Message::Join(join::Message::Found(search, result)))
-                    },
-                ))
-            }),
-            join::Action::Preview(address, via) => join.map_or_else(Task::none, |join| {
-                join.browse(task::request(
-                    {
-                        let address = address.clone();
-                        async move { session.preview(&address, via).await }
-                    },
-                    move |result| {
-                        Message::Modal(modal::Message::Join(join::Message::Previewed(
-                            address.to_string(),
-                            result,
-                        )))
-                    },
-                ))
-            }),
-            join::Action::Join(room, via, space) => task::request(
-                {
-                    let join = directory::join(session, room.clone(), via, false);
-                    async move {
-                        let id = join.await?;
-                        Ok(if space {
-                            join::Joined::Space(id)
-                        } else {
-                            join::Joined::Room
-                        })
-                    }
-                },
-                done(room),
-            ),
-            join::Action::Knock(room, via) => task::request(
-                {
-                    let knock = directory::join(session, room.clone(), via, true);
-                    async move { knock.await.map(|_| join::Joined::Asked) }
-                },
-                done(room),
-            ),
-            join::Action::ShowSpace(space) => {
-                main.modal = None;
-                main.joined_space = Some(space.clone());
-                let shown = main.lists.rooms.iter().any(|r| r.id == space);
-                let select = self.update(Message::Sidebar(sidebar::Message::SelectSpace(Some(
-                    space.clone(),
-                ))));
-                if shown {
-                    if let Screen::Main(main) = &mut self.screen {
-                        main.joined_space = None;
-                    }
-                    Task::batch([
-                        select,
-                        Task::done(info::show_space(space, overview::Tab::Rooms)),
-                    ])
-                } else {
-                    select
-                }
-            }
-        }
-    }
-
-    /// Show the card of a person or room; a space's opens on `tab`.
-    fn show_card(&mut self, target: info::Target, tab: overview::Tab) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
-        };
-        main.sidebar.arrange.escape();
-        let mut card = info::Card::new(target, &main.lists.rooms, tab);
-        let room = card.room().map(|id| (id.clone(), main.session.room(id)));
-        card.handle = room
-            .as_ref()
-            .and_then(|(_, handle)| handle.as_ref().ok().cloned());
-        // Fresher than the watcher's, and for people it does not follow.
-        let presence = match card.user() {
-            Some(user) if *user != main.own_user && !main.presences.unavailable() => {
-                presence::look_up(&main.session, user.clone())
-                    .map(|m| Message::People(people::Message::Presence(m)))
-            }
-            _ => Task::none(),
-        };
-        let load = match card.user() {
-            Some(user) => {
-                let (session, user) = (main.session.clone(), user.clone());
-                card.tasks.load(
-                    info::Load::User,
-                    {
-                        let user = user.clone();
-                        async move { session.user_info(&user).await }
-                    },
-                    move |result| Message::Card(info::Message::UserLoaded(user, result)),
-                )
-            }
-            // A room's settings are followed while its card shows
-            // (`subscription`).
-            None => match room {
-                Some((id, Err(e))) => Task::done(Message::Card(info::Message::Settings(
-                    id,
-                    Err(e.to_string()),
-                ))),
-                _ => Task::none(),
-            },
-        };
-        let overview = match &card.overview {
-            Some(o) => overview_task(
-                &main.session,
-                &mut main.sidebar.space_rooms,
-                &mut card.tasks,
-                &o.space,
-                o.opened(),
-            ),
-            None => Task::none(),
-        };
-        main.card = Some(card);
-        Task::batch([load, presence, overview])
     }
 
     /// Load what a view asks for, unless it is loaded or loading, and keep
@@ -2273,7 +1542,7 @@ impl App {
             if self.settings.share_presence && !main.presences.unavailable() {
                 subscriptions.push(iced::event::listen_with(input));
             }
-            if let Some(Modal::Dialog(dialog)) = &main.modal
+            if let Some(modal::Shown::Dialog(dialog)) = &main.modal.shown
                 && dialog.busy()
             {
                 subscriptions.push(
@@ -2360,9 +1629,9 @@ impl App {
                     });
                     layers = layers.push(panel(card, Message::Card(info::Message::Close), true));
                 }
-                let modal = match &main.modal {
+                let modal = match &main.modal.shown {
                     None => return layers.into(),
-                    Some(Modal::Settings(settings)) => {
+                    Some(modal::Shown::Settings(settings)) => {
                         let spaces = (main.lists.top_level_spaces().into_iter())
                             .map(|s| (s.id.clone(), s.name.clone()))
                             .collect();
@@ -2380,21 +1649,21 @@ impl App {
                             true,
                         )
                     }
-                    Some(Modal::Dialog(dialog)) => panel(
+                    Some(modal::Shown::Dialog(dialog)) => panel(
                         dialog.view(&main.lists, &main.sidebar.arrange, &self.settings.room_list),
                         Message::Modal(modal::Message::Dialog(dialog::Message::Cancel)),
                         false,
                     ),
-                    Some(Modal::Join(join)) => panel(
+                    Some(modal::Shown::Join(join)) => panel(
                         join.view(&main.lists, &main.avatars, self.settings.room_pictures),
                         Message::Modal(modal::Message::Join(join::Message::Close)),
                         true,
                     ),
                     // Fill the window, with their own backdrop.
-                    Some(Modal::Image(viewer)) => opaque(
+                    Some(modal::Shown::Image(viewer)) => opaque(
                         viewer.view(&main.previews, matches!(main.popup, Some(Popup::Viewer))),
                     ),
-                    Some(Modal::Pdf(pdf)) => opaque(pdf.view()),
+                    Some(modal::Shown::Pdf(pdf)) => opaque(pdf.view()),
                 };
                 layers.push(modal).into()
             }
@@ -2724,61 +1993,6 @@ fn notice_bar(notice: &Notice) -> Element<'_, Message> {
         .into()
 }
 
-/// Carry out a dialog's request.
-async fn run_request(
-    session: Arc<Session>,
-    request: dialog::Request,
-) -> Result<dialog::Opened, String> {
-    use dialog::{Opened, Request};
-    let result = async {
-        Ok(match request {
-            Request::CreateRoom(new) => Opened::Room(session.create_room(new).await?),
-            Request::CreateSpace(new) => Opened::Space(session.create_room(new).await?),
-            Request::DirectChat(user) => Opened::Room(session.direct_chat(&user).await?),
-            Request::Invite(room, people) => {
-                let room = session.room(&room)?;
-                for person in &people {
-                    room.invite(person).await?;
-                }
-                Opened::Nothing
-            }
-            Request::AddToSpace(space, rooms) => {
-                let space = session.room(&space)?;
-                for room in &rooms {
-                    space.add_child(room).await?;
-                }
-                Opened::Nothing
-            }
-            Request::Leave(room) => {
-                session.room(&room)?.leave().await?;
-                Opened::Left(room)
-            }
-            Request::RemoveMember(room, user, reason, ban) => {
-                (session.room(&room)?)
-                    .remove(&user, ban, reason.as_deref())
-                    .await?;
-                Opened::Members(room)
-            }
-            Request::SetLevel(room, user, level) => {
-                session.room(&room)?.set_level(&user, level).await?;
-                Opened::Members(room)
-            }
-            Request::Encrypt(room) => {
-                session.room(&room)?.encrypt().await?;
-                Opened::Nothing
-            }
-            Request::SignOut => {
-                // Others see us offline now, not once the server forgets us.
-                presence::go_offline(&session, mtrx_core::Activity::SignOut).await;
-                session.logout().await?;
-                Opened::SignedOut
-            }
-        })
-    }
-    .await;
-    result.map_err(|e: mtrx_core::Error| e.to_string())
-}
-
 /// ⌘K / Ctrl+K focuses the room search, Esc closes what floats on top or
 /// clears the search, ⌘↩ submits a dialog, ⌘C, ⌘A and Shift with an arrow act on the timeline's selection;
 /// window focus.
@@ -2957,53 +2171,6 @@ fn close_menu(main: &mut Main, from: &media::Origin) {
     }
 }
 
-/// Load or join what a space's overview needs; the card owns its loads.
-fn overview_task(
-    session: &Arc<Session>,
-    space_rooms: &mut directory::SpaceRooms,
-    card: &mut Owned<info::Load>,
-    space: &OwnedRoomId,
-    action: overview::Action,
-) -> Task<Message> {
-    use overview::{Action, Message as Overview};
-    let session = session.clone();
-    let done = |message: Overview| Message::Card(info::Message::Overview(message));
-    match action {
-        Action::None => Task::none(),
-        Action::Load(spaces) => Task::batch(
-            spaces
-                .iter()
-                .map(|space| sidebar::list_space_rooms(&session, space_rooms, space)),
-        ),
-        Action::LoadMembers => {
-            let space = space.clone();
-            card.load(
-                info::Load::Members,
-                async move { session.room(&space)?.members().await },
-                move |result| done(Overview::MembersLoaded(result)),
-            )
-        }
-        Action::Join(room, via) => joined_in_overview(session, room, via, false),
-        Action::Knock(room, via) => joined_in_overview(session, room, via, true),
-    }
-}
-
-/// Join a room a space's overview lists, or ask to (`knock`).
-fn joined_in_overview(
-    session: Arc<Session>,
-    room: OwnedRoomId,
-    via: Vec<OwnedServerName>,
-    knock: bool,
-) -> Task<Message> {
-    let join = directory::join(session, room.clone().into(), via, knock);
-    task::request(join, move |result| {
-        Message::Card(info::Message::Overview(overview::Message::Done(
-            room,
-            result.map(|_| ()),
-        )))
-    })
-}
-
 /// macOS asks once whether Mtrx may show notifications; only for the app
 /// bundle (`Mtrx.app`), as macOS sends them for bundles only.
 fn ask_to_notify() -> Task<Message> {
@@ -3062,28 +2229,6 @@ async fn notify(notification: Notification) -> bool {
             false
         }
         Err(_) => false,
-    }
-}
-
-/// Spaces whose members a dialog suggests first: the space a room is
-/// created in, the spaces around a room people are invited to, or the
-/// space shown.
-fn near_spaces(
-    kind: &dialog::Kind,
-    graph: &mtrx_core::SpaceGraph,
-    shown: Option<&OwnedRoomId>,
-) -> Vec<OwnedRoomId> {
-    let around = |room: &OwnedRoomId| {
-        let mut spaces = graph.ancestors(room);
-        spaces.push(room.clone());
-        spaces
-    };
-    match kind {
-        dialog::Kind::NewRoom {
-            space: Some((space, _)),
-        } => around(space),
-        dialog::Kind::Invite { room, .. } => around(room),
-        _ => shown.map(around).unwrap_or_default(),
     }
 }
 

@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use futures_util::StreamExt;
@@ -22,9 +22,13 @@ use tempfile::TempDir;
 use super::*;
 use crate::{
     actions::{self, Compose, Editing},
+    dialog::Dialog,
     find::Find,
-    fonts, mention, message_field,
+    fonts,
+    media::Viewer,
+    mention, message_field,
     message_menu::MenuAt,
+    pdf_viewer,
     placement::{self, Frame},
     room::{Load, Room},
     selection::{Point, Pos, Selection},
@@ -1243,9 +1247,9 @@ fn composer_keeps_focus(app: &mut App) {
         }),
         ("it goes", |app| main(app).notices.close()),
         ("settings open", |app| {
-            main(app).modal = Some(Modal::Settings(settings::Panel::default()));
+            main(app).modal.shown = Some(modal::Shown::Settings(settings::Panel::default()));
         }),
-        ("settings close", |app| main(app).modal = None),
+        ("settings close", |app| main(app).modal.shown = None),
         ("a message is queued", |app| {
             let room_id = room(app).id.clone();
             main(app).scheduled = vec![ScheduledMessage {
@@ -1534,7 +1538,7 @@ async fn send_later_bar() {
         open.composer.set_text("Who can take the Monday slot? ❤");
     }
     if let Screen::Main(main) = &mut app.screen {
-        main.modal = Some(Modal::Settings(settings::Panel::default()));
+        main.modal.shown = Some(modal::Shown::Settings(settings::Panel::default()));
     }
     // A newer version, also the dot on the gear behind the panel.
     app.updater.available = Some(update::Update {
@@ -1795,7 +1799,7 @@ async fn room_management_screens() {
                 avatar: None,
             }));
             dialog.update(dialog::Message::CoOwner(nils, true));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "new-room-owners",
     );
@@ -1807,7 +1811,7 @@ async fn room_management_screens() {
             dialog.update(dialog::Message::Name("model runs".into()));
             dialog.update(dialog::Message::Submit);
             dialog.tick(Instant::now() + Duration::from_secs(20));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "dialog-slow",
     );
@@ -1866,11 +1870,11 @@ async fn room_management_screens() {
                 &[],
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::UserLoaded(
+            card.apply(info::Message::UserLoaded(
                 bob.user_id(),
                 Ok(bob_info.clone()),
             ));
-            card.update(info::Message::Copy(bob.user_id().to_string()));
+            card.apply(info::Message::Copy(bob.user_id().to_string()));
             main.card = Some(card);
         }),
         "info-user",
@@ -1883,9 +1887,9 @@ async fn room_management_screens() {
                 &main.lists.rooms,
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::Settings(room.clone(), Ok(settings.clone())));
+            card.apply(info::Message::Settings(room.clone(), Ok(settings.clone())));
             // A link being added.
-            card.update(info::Message::Topic(topic::Edit::Add(false)));
+            card.apply(info::Message::Topic(topic::Edit::Add(false)));
             main.card = Some(card);
         }),
         "room-settings",
@@ -1897,7 +1901,7 @@ async fn room_management_screens() {
             });
             dialog.prefer_spaces(vec![space.clone()]);
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "new-room-people",
     );
@@ -1906,7 +1910,7 @@ async fn room_management_screens() {
             let mut dialog = Dialog::new(dialog::Kind::DirectChat);
             dialog.offer_self(main.own_user.clone());
             dialog.update(dialog::Message::Contacts(contacts.clone()));
-            main.modal = Some(Modal::Dialog(dialog));
+            main.modal.shown = Some(modal::Shown::Dialog(dialog));
         }),
         "direct-chat-people",
     );
@@ -1943,7 +1947,7 @@ async fn room_management_screens() {
                 &main.lists.rooms,
                 overview::Tab::Rooms,
             );
-            card.update(info::Message::Settings(
+            card.apply(info::Message::Settings(
                 space.clone(),
                 Ok(space_settings.clone()),
             ));
@@ -2007,7 +2011,7 @@ async fn room_management_screens() {
                     next: None,
                 }),
             ));
-            main.modal = Some(Modal::Join(join));
+            main.modal.shown = Some(modal::Shown::Join(join));
         }),
         "join",
     );
@@ -2218,7 +2222,7 @@ async fn media_messages() {
     let (image, pdf) = (file(".png"), file(".pdf"));
 
     let session = Arc::new(alice);
-    let app_with = async |modal: Option<Modal>, mode: Mode| {
+    let app_with = async |modal: Option<modal::Shown>, mode: Mode| {
         let mut main = Main::new(session.clone());
         main.show_rooms(rooms.clone());
         main.verified = Some(true);
@@ -2229,7 +2233,7 @@ async fn media_messages() {
         );
         show(&mut open, entries.clone());
         main.pane.shown = Shown::Open(open);
-        main.modal = modal;
+        main.modal.shown = modal;
         let mut app = app(Screen::Main(Box::new(main)), mode);
         load_wanted(&mut app, &session).await;
         app
@@ -2267,20 +2271,20 @@ async fn media_messages() {
     let mut viewer = Viewer::new(in_room(image));
     viewer.load_now(&session).await;
     snapshot(
-        &app_with(Some(Modal::Image(viewer)), Mode::Light).await,
+        &app_with(Some(modal::Shown::Image(viewer)), Mode::Light).await,
         "image-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf.clone()), Size::new(1200.0, 800.0), 2.0);
     viewer.open_now(&session).await;
     snapshot(
-        &app_with(Some(Modal::Pdf(viewer)), Mode::Light).await,
+        &app_with(Some(modal::Shown::Pdf(viewer)), Mode::Light).await,
         "pdf-viewer",
     );
     let mut viewer = pdf_viewer::Viewer::new(in_room(pdf), Size::new(1200.0, 800.0), 2.0);
     viewer.set_zoom(0.5);
     viewer.open_now(&session).await;
     snapshot(
-        &app_with(Some(Modal::Pdf(viewer)), Mode::Dark).await,
+        &app_with(Some(modal::Shown::Pdf(viewer)), Mode::Dark).await,
         "pdf-viewer-zoomed-out",
     );
 }
@@ -3056,6 +3060,26 @@ fn pane(app: &App) -> &Shown {
 }
 
 /// Run `task` to its end, as iced would, for its messages.
+/// Give the app the messages `task` sends at once, as components send
+/// each other (`Task::done`), and theirs, as the runtime would; what waits
+/// (a request to the server) is not run.
+fn settle(app: &mut App, task: Task<Message>) {
+    use futures_util::FutureExt;
+    let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+        return;
+    };
+    let mut ready = Vec::new();
+    while let Some(Some(action)) = stream.next().now_or_never() {
+        if let iced_runtime::Action::Output(message) = action {
+            ready.push(message);
+        }
+    }
+    for message in ready {
+        let task = app.update(message);
+        settle(app, task);
+    }
+}
+
 async fn messages_of(task: Task<Message>) -> Vec<Message> {
     let Some(stream) = iced_runtime::task::into_stream(task) else {
         return Vec::new();
@@ -3132,7 +3156,7 @@ async fn drafts_stay_in_their_room() {
     let Screen::Main(main) = &mut app.screen else {
         unreachable!()
     };
-    let _ = messages_of(main.set_pane(Shown::Open(other))).await;
+    let _ = messages_of(main.pane.set(Shown::Open(other), &mut main.popup)).await;
     let kept = mtrx_core::Draft {
         text: "Yes, see you there".into(),
         ..kept
@@ -3378,16 +3402,16 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Submit,
     )));
-    let first = main(&mut app).last_request;
+    let first = main(&mut app).modal.last_request;
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Cancel,
     )));
-    assert!(main(&mut app).modal.is_none());
+    assert!(main(&mut app).modal.shown.is_none());
     let _ = app.update(Message::Modal(modal::Message::OpenDialog(leave("second"))));
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Submit,
     )));
-    let second = main(&mut app).last_request;
+    let second = main(&mut app).modal.last_request;
     assert_ne!(first, second);
 
     let failed = Err("no such room".into());
@@ -3397,7 +3421,7 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     let notice = main(&mut app).notices.shown.take().expect("a notice");
     assert!(notice.error);
     assert_eq!(notice.text, "Could not leave first: no such room");
-    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+    let Some(modal::Shown::Dialog(open)) = &main(&mut app).modal.shown else {
         panic!("the second dialog closed");
     };
     assert!(open.busy(), "still waiting for its own request");
@@ -3407,7 +3431,7 @@ async fn a_cancelled_request_reports_in_the_notice_bar() {
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Done(second, failed),
     )));
-    let Some(Modal::Dialog(open)) = &main(&mut app).modal else {
+    let Some(modal::Shown::Dialog(open)) = &main(&mut app).modal.shown else {
         panic!("the second dialog closed");
     };
     assert!(!open.busy());
@@ -3431,7 +3455,10 @@ async fn a_cancelled_request_still_takes_effect() {
         }
     }
     let lab: OwnedRoomId = "!lab:localhost".try_into().unwrap();
-    let _ = main(&mut app).set_pane(Shown::Opening(lab.clone()));
+    let shown = main(&mut app);
+    let _ = shown
+        .pane
+        .set(Shown::Opening(lab.clone()), &mut shown.popup);
     main(&mut app).sidebar.space = Some(lab.clone());
 
     // Not run: the results are given below.
@@ -3443,14 +3470,15 @@ async fn a_cancelled_request_still_takes_effect() {
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Submit,
     )));
-    let left = main(&mut app).last_request;
+    let left = main(&mut app).modal.last_request;
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Cancel,
     )));
     let done = Ok(dialog::Opened::Left(lab.clone()));
-    let _ = app.update(Message::Modal(modal::Message::Dialog(
+    let task = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Done(left, done),
     )));
+    settle(&mut app, task);
     assert!(main(&mut app).notices.shown.is_some());
     assert!(
         main(&mut app).pane.id().is_none(),
@@ -3467,14 +3495,15 @@ async fn a_cancelled_request_still_takes_effect() {
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Submit,
     )));
-    let out = main(&mut app).last_request;
+    let out = main(&mut app).modal.last_request;
     let _ = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Cancel,
     )));
     let done = Ok(dialog::Opened::SignedOut);
-    let _ = app.update(Message::Modal(modal::Message::Dialog(
+    let task = app.update(Message::Modal(modal::Message::Dialog(
         dialog::Message::Done(out, done),
     )));
+    settle(&mut app, task);
     assert!(matches!(app.screen, Screen::Login(_)), "still signed in");
 }
 
@@ -3517,7 +3546,7 @@ async fn a_chat_that_cannot_start_reports_in_the_notice_bar() {
         "{}",
         notice.text
     );
-    let Some(Modal::Dialog(open)) = &main.modal else {
+    let Some(modal::Shown::Dialog(open)) = &main.modal.shown else {
         panic!("the dialog closed");
     };
     assert!(!open.busy());

@@ -23,6 +23,9 @@ pub enum Message {
     /// Open the room above or below in the room list, or one by its row.
     GoTo(Go),
     FocusSearch,
+    /// List the rooms of these spaces, unless being listed: for a space's
+    /// overview.
+    ListSpaces(Vec<OwnedRoomId>),
     /// A space's rooms as its server listed them, or why not.
     SpaceRoomsLoaded(OwnedRoomId, Result<Vec<DirectoryRoom>, String>),
     /// Join a room the search found in our spaces, or ask to (`true`).
@@ -96,15 +99,23 @@ impl Sidebar {
         }
     }
 
+    /// Select `space`, chosen: what floats over the window closes, and a
+    /// drag or category name ends.
+    pub fn select_space(
+        &mut self,
+        space: Option<OwnedRoomId>,
+        cx: &mut Cx<'_>,
+    ) -> Task<app::Message> {
+        cx.cover();
+        cx.close_card();
+        self.select(space);
+        self.arrange.escape();
+        Task::none()
+    }
+
     pub fn update(&mut self, message: Message, cx: &mut Cx<'_>) -> Task<app::Message> {
         match message {
-            Message::SelectSpace(space) => {
-                cx.cover();
-                cx.close_card();
-                self.select(space);
-                self.arrange.escape();
-                Task::none()
-            }
+            Message::SelectSpace(space) => self.select_space(space, cx),
             Message::Filter(filter) => {
                 // A search starting looks through our spaces' rooms anew.
                 let load =
@@ -134,6 +145,10 @@ impl Sidebar {
             // `Main`'s, which has the room list as shown.
             Message::GoTo(_) => Task::none(),
             Message::FocusSearch => iced::widget::operation::focus(SEARCH),
+            Message::ListSpaces(spaces) => Task::batch(
+                (spaces.iter())
+                    .map(|space| list_space_rooms(cx.session, &mut self.space_rooms, space)),
+            ),
             Message::SpaceRoomsLoaded(space, result) => {
                 self.space_rooms.loaded(space, result);
                 Task::none()

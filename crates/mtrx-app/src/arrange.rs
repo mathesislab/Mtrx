@@ -31,6 +31,9 @@ pub enum Message {
     SectionHovered(Section, bool),
     /// The cursor entered or left the pinned Notes row, which is not dragged.
     NotesRow(bool),
+    /// Something opens over the room list: a drag or a category's name
+    /// ends.
+    Stop,
     /// The left mouse button, anywhere.
     Pressed,
     Released,
@@ -196,6 +199,9 @@ impl Arrange {
         let room_menu = |popup: &mut Popup| matches!(popup, Popup::RoomMenu(_));
         let category_menu = |popup: &mut Popup| matches!(popup, Popup::CategoryMenu(_));
         match message {
+            Message::Stop => {
+                self.escape();
+            }
             Message::Categories(categories) => self.categories = categories,
             Message::Row(room, entered) => self.hover(Dragged::Room(room), entered),
             Message::Grip(section, entered) => self.hover(Dragged::Section(section), entered),

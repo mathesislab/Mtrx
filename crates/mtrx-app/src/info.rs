@@ -4,21 +4,24 @@
 use std::{
     fmt,
     hash::{Hash, Hasher},
+    sync::Arc,
     time::SystemTime,
 };
 
 use iced::{
-    Alignment, Element, Length, Subscription, Theme,
+    Alignment, Element, Length, Subscription, Task, Theme,
     futures::{StreamExt, stream},
     widget::{button, column, container, pick_list, row, space, stack, text, text_input, toggler},
 };
 use mtrx_core::{
-    CallService, History, JoinRule, Membership, NotifyMode, OwnedRoomId, OwnedUserId, Permissions,
-    RoomHandle, RoomKind, RoomLists, RoomSettings, RoomSummary, RoomTag, Topic, User, UserInfo,
+    CallService, History, JoinRule, Membership, NotifyMode, OwnedRoomId, OwnedServerName,
+    OwnedUserId, Permissions, RoomHandle, RoomKind, RoomLists, RoomSettings, RoomSummary, RoomTag,
+    Session, Topic, User, UserInfo,
 };
 
 use crate::{
-    app, arrange,
+    app::{self, Cx, Popup, people},
+    arrange,
     avatar::{Avatars, Shape},
     dialog::Kind,
     directory, fonts, frame,
@@ -31,7 +34,7 @@ use crate::{
     selectable::text::selectable_text,
     settings::{self, Preference},
     sidebar, spelling, style,
-    task::Owned,
+    task::{self, Owned},
     topic,
 };
 
@@ -112,6 +115,27 @@ pub enum Message {
     /// A room's members were changed: a space's overview shows them anew.
     MembersChanged(OwnedRoomId),
     Close,
+}
+
+/// Join a room a space's overview lists, or ask to (`knock`).
+fn joined_in_overview(
+    session: Arc<Session>,
+    room: OwnedRoomId,
+    via: Vec<OwnedServerName>,
+    knock: bool,
+) -> Task<app::Message> {
+    let join = directory::join(session, room.clone().into(), via, knock);
+    task::request(join, move |result| {
+        to(Message::Overview(overview::Message::Done(
+            room,
+            result.map(|_| ()),
+        )))
+    })
+}
+
+/// `message` for the card, as the app gets it.
+pub fn to(message: Message) -> app::Message {
+    app::Message::Card(message)
 }
 
 /// Show the card of a person or room.
@@ -262,8 +286,216 @@ impl Card {
         )
     }
 
-    /// What the space's overview needs done, if anything.
-    pub fn update(&mut self, message: Message) -> overview::Action {
+    /// Show the card of a person or room; a space's opens on `tab`. It
+    /// opens over the room list, whose drag or category name ends.
+    pub fn open(target: Target, tab: overview::Tab, cx: &mut Cx<'_>) -> (Self, Task<app::Message>) {
+        cx.cover();
+        let stop = Task::done(app::Message::Sidebar(sidebar::Message::Arrange(
+            arrange::Message::Stop,
+        )));
+        let mut card = Card::new(target, &cx.lists.rooms, tab);
+        let room = card.room().map(|id| (id.clone(), cx.session.room(id)));
+        card.handle = room
+            .as_ref()
+            .and_then(|(_, handle)| handle.as_ref().ok().cloned());
+        // Fresher than the watcher's, and for people it does not follow.
+        let presence = match card.user() {
+            Some(user) if user != cx.own_user => {
+                Task::done(app::Message::People(people::Message::LookUp(user.clone())))
+            }
+            _ => Task::none(),
+        };
+        let load = match card.user() {
+            Some(user) => {
+                let (session, user) = (cx.session.clone(), user.clone());
+                card.tasks.load(
+                    Load::User,
+                    {
+                        let user = user.clone();
+                        async move { session.user_info(&user).await }
+                    },
+                    move |result| to(Message::UserLoaded(user, result)),
+                )
+            }
+            // A room's settings are followed while its card shows
+            // (`subscription`).
+            None => match room {
+                Some((id, Err(e))) => Task::done(to(Message::Settings(id, Err(e.to_string())))),
+                _ => Task::none(),
+            },
+        };
+        let overview = match card.overview.as_ref().map(|o| o.opened()) {
+            Some(action) => card.overview_task(action, cx),
+            None => Task::none(),
+        };
+        (card, Task::batch([stop, load, presence, overview]))
+    }
+
+    /// `message`, and what the card then asks of the app. A member's menu
+    /// goes with the tab it was opened on.
+    pub fn update(&mut self, message: Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+        let tab = self.tab();
+        let task = self.handle(message, cx);
+        if self.tab() != tab {
+            cx.popup.take_if(|popup| popup.of_card());
+        }
+        task
+    }
+
+    /// A space's tab shown.
+    fn tab(&self) -> Option<overview::Tab> {
+        self.overview.as_ref().map(|o| o.tab)
+    }
+
+    fn handle(&mut self, message: Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+        let room = self.handle.clone();
+        let saved = |result| to(Message::Saved(result));
+        // A menu's choice closes it.
+        match &message {
+            Message::OpenPictureMenu => {
+                *cx.popup = Some(Popup::CardPicture);
+                return Task::none();
+            }
+            Message::OpenSpacesMenu => {
+                *cx.popup = Some(Popup::CardAddToSpace);
+                return Task::none();
+            }
+            Message::ChangePicture | Message::RemovePicture => {
+                cx.popup
+                    .take_if(|popup| matches!(popup, Popup::CardPicture));
+            }
+            Message::Change(_) => {
+                cx.popup
+                    .take_if(|popup| matches!(popup, Popup::CardAddToSpace));
+            }
+            Message::MembersChanged(room) => {
+                return match &self.overview {
+                    Some(o) if o.space == *room => {
+                        self.overview_task(overview::Action::LoadMembers, cx)
+                    }
+                    _ => Task::none(),
+                };
+            }
+            _ => {}
+        }
+        let task = match (&message, room) {
+            (Message::Copy(text), _) => iced::clipboard::write(text.clone()),
+            (Message::SaveDetails, Some(room)) => {
+                let Some(summary) = cx.lists.room(room.id()) else {
+                    return Task::none();
+                };
+                let (name, topic) = self.changed_details(summary);
+                task::request(
+                    async move {
+                        if let Some(name) = name {
+                            room.set_name(&name).await?;
+                        }
+                        if let Some(topic) = topic {
+                            room.set_topic(&topic).await?;
+                        }
+                        Ok(())
+                    },
+                    saved,
+                )
+            }
+            (Message::JoinRule(rule), Some(room)) => {
+                let rule = *rule;
+                task::request(async move { room.set_join_rule(rule).await }, saved)
+            }
+            (Message::Notify(mode), Some(room)) => {
+                let mode = *mode;
+                task::request(async move { room.set_notify(mode).await }, saved)
+            }
+            (Message::ChangePicture, Some(room)) => task::request(
+                async move {
+                    let Some(file) = rfd::AsyncFileDialog::new()
+                        .set_title("Room picture")
+                        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+                        .pick_file()
+                        .await
+                    else {
+                        return Ok(());
+                    };
+                    room.set_picture(file.path()).await
+                },
+                saved,
+            ),
+            (Message::RemovePicture, Some(room)) => {
+                task::request(async move { room.remove_picture().await }, saved)
+            }
+            (Message::Change(change), Some(room)) => {
+                let change = change.clone();
+                let session = cx.session.clone();
+                task::request(
+                    async move {
+                        match change {
+                            Change::Address(name) => room.set_address(name.as_deref()).await,
+                            Change::Listed(on) => room.set_listed(on).await,
+                            Change::History(h) => room.set_history(h).await,
+                            Change::Permissions(p) => room.set_permissions(p).await,
+                            Change::Suggested(space, on) => {
+                                session.room(&space)?.set_suggested(room.id(), on).await
+                            }
+                            Change::AddToSpace(space) => {
+                                session.room(&space)?.add_child(room.id()).await
+                            }
+                            Change::RemoveFromSpace(space) => {
+                                session.room(&space)?.remove_child(room.id()).await
+                            }
+                            Change::Unban(user) => room.unban(&user).await,
+                        }
+                    },
+                    saved,
+                )
+            }
+            (Message::LetEveryoneEdit, Some(room)) => task::request(
+                async move {
+                    let update = room.let_everyone_edit_all().await?;
+                    let skipped = match update.not_allowed.len() {
+                        0 => String::new(),
+                        n => format!(" {n} could not be changed: you are not an admin there."),
+                    };
+                    let opened = update.changed.len();
+                    Ok(format!("Opened {opened} room(s).{skipped}"))
+                },
+                |result| to(Message::Opened(result)),
+            ),
+            _ => Task::none(),
+        };
+        let overview = match self.apply(message) {
+            overview::Action::None => Task::none(),
+            action => self.overview_task(action, cx),
+        };
+        Task::batch([task, overview])
+    }
+
+    /// Load or join what a space's overview needs; the card owns its loads,
+    /// the room list the space's rooms (its search shares them).
+    fn overview_task(&mut self, action: overview::Action, cx: &mut Cx<'_>) -> Task<app::Message> {
+        use overview::{Action, Message as Overview};
+        let Some(space) = self.overview.as_ref().map(|o| o.space.clone()) else {
+            return Task::none();
+        };
+        let session = cx.session.clone();
+        let done = |message: Overview| to(Message::Overview(message));
+        match action {
+            Action::None => Task::none(),
+            Action::Load(spaces) => {
+                Task::done(app::Message::Sidebar(sidebar::Message::ListSpaces(spaces)))
+            }
+            Action::LoadMembers => self.tasks.load(
+                Load::Members,
+                async move { session.room(&space)?.members().await },
+                move |result| done(Overview::MembersLoaded(result)),
+            ),
+            Action::Join(room, via) => joined_in_overview(session, room, via, false),
+            Action::Knock(room, via) => joined_in_overview(session, room, via, true),
+        }
+    }
+
+    /// What the message changes on the card; what the space's overview
+    /// then needs done, if anything.
+    pub fn apply(&mut self, message: Message) -> overview::Action {
         match message {
             Message::UserLoaded(id, Ok(info)) => {
                 if let Target::User(user) = &mut self.target
@@ -317,6 +549,7 @@ impl Card {
                     return overview.update(message);
                 }
             }
+            // The app's.
             Message::Show(..) | Message::MembersChanged(_) | Message::Close => {}
         }
         overview::Action::None

@@ -12,8 +12,12 @@ use crate::{app, presence};
 pub enum Message {
     /// Others' presence, and ours.
     Presence(presence::Message),
+    /// Load the people the user knows, for a dialog's suggestions.
+    LoadContacts,
     /// People the user knows, for suggestions.
     ContactsLoaded(Vec<Contact>),
+    /// Look up someone's presence now, for their card.
+    LookUp(OwnedUserId),
     /// The emoji the user reacts with, most used first.
     FrequentEmoji(Vec<String>),
     /// Start or open a direct chat with a member.

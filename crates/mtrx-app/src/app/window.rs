@@ -293,7 +293,9 @@ impl App {
         let input = match message {
             Message::Close(id) => return self.close(id),
             Message::Zoom(zoom) => {
-                if let Some(pdf) = self.pdf_viewer() {
+                if let Screen::Main(main) = &mut self.screen
+                    && let Some(pdf) = main.modal.pdf()
+                {
                     return pdf.update(crate::pdf_viewer::Message::Zoom(match zoom {
                         Zoom::In => crate::pdf_viewer::Zoom::In,
                         Zoom::Out => crate::pdf_viewer::Zoom::Out,

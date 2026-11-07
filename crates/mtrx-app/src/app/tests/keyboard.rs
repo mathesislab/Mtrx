@@ -556,7 +556,7 @@ async fn typing_with_nothing_focused_goes_to_the_composer() {
     assert_eq!(ui.room().composer.text(), "Ok");
 
     // Nothing focused, under the settings: nothing.
-    ui.main().modal = Some(Modal::Settings(settings::Panel::default()));
+    ui.main().modal.shown = Some(modal::Shown::Settings(settings::Panel::default()));
     ui.run(iced::widget::operation::focus("nothing"));
     assert_eq!(
         ui.press(Key::Character("x".into()), Modifiers::empty()),
@@ -855,17 +855,20 @@ async fn escape_closes_the_modal_then_the_card() {
         &[],
         overview::Tab::Rooms,
     ));
-    ui.main().modal = Some(Modal::Settings(settings::Panel::default()));
+    ui.main().modal.shown = Some(modal::Shown::Settings(settings::Panel::default()));
     ui.update(Message::Modal(modal::Message::OpenDialog(
         dialog::Kind::Leave {
             room,
             name: "modal".into(),
         },
     )));
-    assert!(matches!(ui.main().modal, Some(Modal::Dialog(_))));
+    assert!(matches!(
+        ui.main().modal.shown,
+        Some(modal::Shown::Dialog(_))
+    ));
 
     ui.press(Key::Named(Named::Escape), Modifiers::empty());
-    assert!(ui.main().modal.is_none());
+    assert!(ui.main().modal.shown.is_none());
     assert!(ui.main().card.is_some());
     ui.press(Key::Named(Named::Escape), Modifiers::empty());
     assert!(ui.main().card.is_none());
@@ -911,17 +914,17 @@ async fn esc_closes_a_cards_menu_not_the_card() {
         room,
         event: None,
     };
-    ui.main().modal = Some(Modal::Image(Viewer::new(file)));
+    ui.main().modal.shown = Some(modal::Shown::Image(Viewer::new(file)));
     ui.update(Message::Modal(modal::Message::OpenViewerMenu));
     assert!(matches!(ui.main().popup, Some(Popup::Viewer)));
     esc(&mut ui);
     assert!(ui.main().popup.is_none());
     assert!(
-        matches!(ui.main().modal, Some(Modal::Image(_))),
+        matches!(ui.main().modal.shown, Some(modal::Shown::Image(_))),
         "the viewer stays"
     );
     esc(&mut ui);
-    assert!(ui.main().modal.is_none());
+    assert!(ui.main().modal.shown.is_none());
 }
 
 /// The downloads list is the window's popup: Esc closes a download's menu
@@ -1013,6 +1016,7 @@ async fn one_popup_in_the_window() {
 
     ui.update(room::Message::Calls(calls::Message::OpenMenu).to(&room));
     assert!(matches!(ui.main().popup, Some(Popup::Calls(_))));
-    let _ = ui.main().set_pane(Shown::Empty);
+    let main = ui.main();
+    let _ = main.pane.set(Shown::Empty, &mut main.popup);
     assert!(ui.main().popup.is_none());
 }

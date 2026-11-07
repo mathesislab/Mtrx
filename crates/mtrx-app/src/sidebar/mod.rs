@@ -41,7 +41,7 @@ use crate::{
 
 mod state;
 
-pub use state::{Message, Sidebar, list_space_rooms};
+pub use state::{Message, Sidebar};
 
 /// The space's topic panel at most; longer, it scrolls.
 const TOPIC_HEIGHT: f32 = 420.0;

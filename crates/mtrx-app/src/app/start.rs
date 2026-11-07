@@ -26,6 +26,8 @@ pub enum Message {
     SignInAgain,
     /// The ended session's local data is gone.
     Forgotten(Result<(), String>),
+    /// We signed out: sign in anew.
+    SignedOut,
 }
 
 impl App {
@@ -113,6 +115,10 @@ impl App {
                 task::request(async move { session.forget().await }, |result| {
                     to(Message::Forgotten(result))
                 })
+            }
+            Message::SignedOut => {
+                self.screen = Screen::Login(Login::default());
+                Task::none()
             }
             Message::Forgotten(result) => {
                 let Screen::Main(main) = &self.screen else {
