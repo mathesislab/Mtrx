@@ -2,15 +2,18 @@
 //! them: a picture, the name, what it is about, who can join, and Join, Ask
 //! to join or Open.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use iced::{
     Alignment, Color, Element, Length, Task, Theme,
     widget::{button, column, container, hover, row, space, text},
 };
 use mtrx_core::{
-    DirectoryRoom, JoinAction, JoinRule, Membership, OwnedRoomId, Role, RoomKind, RoomLists,
-    RoomSummary,
+    DirectoryRoom, JoinAction, JoinRule, Membership, OwnedRoomId, OwnedRoomOrAliasId,
+    OwnedServerName, Role, RoomKind, RoomLists, RoomSummary, Session,
 };
 
 use crate::{
@@ -383,6 +386,22 @@ pub fn searched_spaces(lists: &RoomLists, selected: Option<&OwnedRoomId>) -> Vec
             .filter(is_space)
             .map(|r| r.id.clone())
             .collect(),
+    }
+}
+
+/// Join a room or space that a space, a directory or a link lists, or ask
+/// to join it (`knock`): its ID. The room lists show it as joined, or asked,
+/// at once.
+pub async fn join(
+    session: Arc<Session>,
+    room: OwnedRoomOrAliasId,
+    via: Vec<OwnedServerName>,
+    knock: bool,
+) -> mtrx_core::Result<OwnedRoomId> {
+    if knock {
+        session.knock(&room, via).await
+    } else {
+        session.join(&room, &via).await
     }
 }
 

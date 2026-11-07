@@ -13,9 +13,9 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, DirectoryRoom, Grouping, Layout, Membership, OwnedRoomId, OwnedServerName,
-    OwnedUserId, Rights, RoomKind, RoomListColours, RoomLists, RoomSummary, RoomTag,
-    ScheduledMessage, Section, Sort, SpaceKey, Topic, UserId,
+    CallService, DirectoryRoom, Grouping, Layout, Membership, OwnedRoomId, OwnedUserId, Rights,
+    RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, Topic,
+    UserId,
 };
 
 use crate::{
@@ -39,39 +39,9 @@ use crate::{
     topic,
 };
 
-/// The space bar's and the room list's.
-#[derive(Debug, Clone)]
-pub enum Message {
-    SelectSpace(Option<OwnedRoomId>),
-    /// The room search text.
-    Filter(String),
-    /// Open the first room matching the search.
-    OpenFirstMatch,
-    /// Open the room above or below in the room list, or one by its row.
-    GoTo(Go),
-    FocusSearch,
-    /// A space's rooms as its server listed them, or why not.
-    SpaceRoomsLoaded(OwnedRoomId, Result<Vec<DirectoryRoom>, String>),
-    /// Join a room the search found in our spaces, or ask to (`true`).
-    JoinFound(OwnedRoomId, Vec<OwnedServerName>, bool),
-    /// Joined it (or asked to, `true`), or not.
-    FoundJoined(OwnedRoomId, bool, Result<(), String>),
-    Scrolled,
-    OutOfView(OutOfView),
-    /// Scroll the room list to this offset.
-    ScrollTo(f32),
-    /// Open the room list's "+".
-    AddMenu,
-    SpaceMenu(SpaceMenu),
-    /// The selected space's topic and links, in its topic panel.
-    SpaceTopic(OwnedRoomId, topic::Message),
-    Arrange(arrange::Message),
-    ArrangeFailed(String),
-    /// The room list's colours changed, here or on another device.
-    Colours(RoomListColours),
-    /// Colours from the settings file were moved to the account, or not.
-    ColoursMoved(Result<(), String>),
-}
+mod state;
+
+pub use state::{Message, Sidebar, list_space_rooms};
 
 /// The space's topic panel at most; longer, it scrolls.
 const TOPIC_HEIGHT: f32 = 420.0;

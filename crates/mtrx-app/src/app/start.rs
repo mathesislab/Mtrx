@@ -99,7 +99,9 @@ impl App {
                         main.room_lists = Some(lists);
                         main.verified = Some(verified);
                     }
-                    Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
+                    Err(e) => main
+                        .notices
+                        .report(format!("Could not load the rooms: {e}"), None),
                 }
                 self.restore_view()
             }

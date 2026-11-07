@@ -109,6 +109,8 @@ pub enum Message {
     /// What that changed, or why it failed.
     Opened(Result<String, String>),
     Overview(overview::Message),
+    /// A room's members were changed: a space's overview shows them anew.
+    MembersChanged(OwnedRoomId),
     Close,
 }
 
@@ -315,7 +317,7 @@ impl Card {
                     return overview.update(message);
                 }
             }
-            Message::Show(..) | Message::Close => {}
+            Message::Show(..) | Message::MembersChanged(_) | Message::Close => {}
         }
         overview::Action::None
     }

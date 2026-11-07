@@ -177,7 +177,7 @@ async fn room_with(prefix: &str, messages: &[&str]) -> (Ui, TempDir) {
     let drafts = main.session.draft_keeper(&room);
     let mut open = Room::new(main.session.room(&room).unwrap(), timeline.clone(), drafts);
     show(&mut open, timeline.current());
-    main.pane = Pane::Open(open);
+    main.pane.shown = Shown::Open(open);
     (Ui::new(app(Screen::Main(Box::new(main)), Mode::Light)), dir)
 }
 
@@ -472,13 +472,13 @@ async fn keys_go_to_other_rooms_from_the_composer() {
             let _ = ui.app.update(message);
         }
         assert!(
-            matches!(&ui.main().pane, Pane::Opening(id) if *id == other),
+            matches!(&ui.main().pane.shown, Shown::Opening(id) if *id == other),
             "{key:?}"
         );
         // Open again for the next key.
         let drafts = ui.main().session.draft_keeper(&open);
         let handle = ui.main().session.room(&open).unwrap();
-        ui.main().pane = Pane::Open(Room::new(handle, timeline.clone(), drafts));
+        ui.main().pane.shown = Shown::Open(Room::new(handle, timeline.clone(), drafts));
     }
 }
 
@@ -1013,6 +1013,6 @@ async fn one_popup_in_the_window() {
 
     ui.update(room::Message::Calls(calls::Message::OpenMenu).to(&room));
     assert!(matches!(ui.main().popup, Some(Popup::Calls(_))));
-    let _ = ui.main().set_pane(Pane::Empty);
+    let _ = ui.main().set_pane(Shown::Empty);
     assert!(ui.main().popup.is_none());
 }
