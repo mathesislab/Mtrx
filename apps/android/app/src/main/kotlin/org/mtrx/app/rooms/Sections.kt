@@ -1,13 +1,8 @@
 package org.mtrx.app.rooms
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.mtrx.app.model.HOME_SAVED
+import org.mtrx.app.model.Preference
 import uniffi.mtrx.SectionLayout
 
 // How this phone shows a space's sections (the library's `ListSection`s),
@@ -39,38 +34,16 @@ const val HOME_GROUP = "home"
 fun foldedGroups(prefs: Map<String, SectionPrefs>): List<String> =
     prefs.filterValues { it.groupFolded }.keys.map { if (it == HOME_SAVED) HOME_GROUP else it }
 
-/** Where the sections' arrangement is kept, per space (`SpaceKey.saved`), on this phone. */
-interface SectionStore {
-    /** The saved arrangements; null if none, or they cannot be read. */
-    suspend fun load(): Map<String, SectionPrefs>?
-
-    suspend fun save(prefs: Map<String, SectionPrefs>)
-}
-
 /**
  * How this phone arranges each space's sections (shown, folded, order)
  * and whether its group on the Rooms tab is folded, by `SpaceKey.saved`
- * (Home's too), saved in [store]. Not the account's: the desktop and
- * other devices keep theirs. Used on [scope]'s (main) thread. The changes
- * take the keys of the space's sections now ([keys], in the phone's
- * order), so that a reorder keeps sections new to the phone in place.
+ * (Home's too), kept in [saved]. Not the account's: the desktop and other
+ * devices keep theirs. The changes take the keys of the space's sections
+ * now ([keys], in the phone's order), so that a reorder keeps sections new
+ * to the phone in place.
  */
-class SectionLayouts(private val store: SectionStore, private val scope: CoroutineScope) {
-    private val _prefs = MutableStateFlow<Map<String, SectionPrefs>>(emptyMap())
-    val prefs: StateFlow<Map<String, SectionPrefs>> = _prefs.asStateFlow()
-
-    /** Changed before the saved ones were read: those are stale. */
-    private var changed = false
-
-    // Saves run in order and each saves the latest.
-    private val saving = Mutex()
-
-    init {
-        scope.launch {
-            val saved = store.load()
-            if (!changed && saved != null) _prefs.value = saved
-        }
-    }
+class SectionLayouts(private val saved: Preference<Map<String, SectionPrefs>>) {
+    val prefs: StateFlow<Map<String, SectionPrefs>> = saved.value
 
     /** Fold [key], or unfold it. */
     fun toggleFold(space: String, key: String) = change(space) {
@@ -97,10 +70,7 @@ class SectionLayouts(private val store: SectionStore, private val scope: Corouti
         it.copy(order = order)
     }
 
-    private fun change(space: String, update: (SectionPrefs) -> SectionPrefs) {
-        changed = true
-        val current = _prefs.value[space] ?: SectionPrefs()
-        _prefs.value = _prefs.value + (space to update(current))
-        scope.launch { saving.withLock { store.save(_prefs.value) } }
+    private fun change(space: String, update: (SectionPrefs) -> SectionPrefs) = saved.update { prefs ->
+        prefs + (space to update(prefs[space] ?: SectionPrefs()))
     }
 }

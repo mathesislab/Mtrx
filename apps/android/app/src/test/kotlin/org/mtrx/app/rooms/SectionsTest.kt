@@ -10,9 +10,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeMtrx
-import org.mtrx.app.FakeSectionStore
 import org.mtrx.app.FakeSession
 import org.mtrx.app.model.HOME_SAVED
+import org.mtrx.app.model.MemoryStore
+import org.mtrx.app.model.Preference
 import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
 import uniffi.mtrx.SectionLayout
@@ -21,6 +22,9 @@ import uniffi.mtrx.SectionLayout
 @OptIn(ExperimentalCoroutinesApi::class)
 class SectionsTest {
     private fun TestScope.scope() = CoroutineScope(UnconfinedTestDispatcher(testScheduler))
+
+    private fun TestScope.layouts(store: MemoryStore<Map<String, SectionPrefs>>) =
+        SectionLayouts(Preference(store, emptyMap(), scope()))
 
     @Test
     fun theLayoutAsTheLibraryTakesIt() {
@@ -31,8 +35,8 @@ class SectionsTest {
 
     @Test
     fun foldingShowingAndOrderAreSavedPerSpace() = runTest {
-        val store = FakeSectionStore()
-        val layouts = SectionLayouts(store, scope())
+        val store = MemoryStore<Map<String, SectionPrefs>>()
+        val layouts = layouts(store)
         val keys = listOf("invites", "direct_messages", "rooms")
         layouts.toggleFold("!s:x", "rooms")
         layouts.setShown("!s:x", "invites", false)
@@ -46,13 +50,13 @@ class SectionsTest {
         assertTrue(layouts.prefs.value["!s:x"]!!.folded.isEmpty())
         // Other spaces keep theirs; the next launch reads them.
         assertNull(layouts.prefs.value["!other:x"])
-        assertEquals(store.saved, SectionLayouts(store, scope()).prefs.value)
+        assertEquals(store.saved, layouts(store).prefs.value)
     }
 
     @Test
     fun theRoomsTabsGroupsFoldPerSpaceHomeToo() = runTest {
-        val store = FakeSectionStore()
-        val layouts = SectionLayouts(store, scope())
+        val store = MemoryStore<Map<String, SectionPrefs>>()
+        val layouts = layouts(store)
         layouts.toggleGroupFold("!s:x")
         // By the group's key, saved by Home's.
         layouts.toggleGroupFold(HOME_GROUP)
@@ -62,7 +66,7 @@ class SectionsTest {
         // Its sections' folding apart.
         assertEquals(SectionPrefs(groupFolded = true), store.saved!!["!s:x"])
         layouts.toggleGroupFold("!s:x")
-        assertEquals(listOf(HOME_GROUP), foldedGroups(SectionLayouts(store, scope()).prefs.value))
+        assertEquals(listOf(HOME_GROUP), foldedGroups(layouts(store).prefs.value))
     }
 
     @Test

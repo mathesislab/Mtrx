@@ -20,7 +20,7 @@ fun sharePresenceFootnote(available: Boolean): String =
 /** The Settings tab's "Privacy" section: "Share my presence". */
 @Composable
 fun PrivacySection(account: Account, presence: PresenceModel) {
-    val sharing by account.sharePresence.on.collectAsStateWithLifecycle()
+    val sharing by account.sharePresence.value.collectAsStateWithLifecycle()
     val available by presence.available.collectAsStateWithLifecycle()
     ListItem(
         headlineContent = { Text("Share my presence") },

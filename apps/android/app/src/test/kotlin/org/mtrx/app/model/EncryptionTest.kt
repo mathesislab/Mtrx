@@ -12,8 +12,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSession
-import org.mtrx.app.FakeSortStore
-import org.mtrx.app.FakeSpaceStore
 import org.mtrx.app.FakeVerification
 import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
@@ -39,7 +37,7 @@ class EncryptionTest {
     }
 
     private fun TestScope.signedIn(session: FakeSession): Account =
-        testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
             .also { it.start() }
 
     private val Account.encryption get() = signedIn.encryption
@@ -107,7 +105,7 @@ class EncryptionTest {
             recoverySteps = listOf(RecoveryStep.CheckingKey)
             recoveryError = MtrxException.Other("The Base58 decoded key has an invalid length")
         }
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         account.signedIn.recover("wrong")
         assertEquals(Recovery.Failed("The Base58 decoded key has an invalid length"), account.signedIn.recovery.value)
@@ -119,7 +117,7 @@ class EncryptionTest {
             recoverySteps = listOf(RecoveryStep.CheckingKey)
             recoveryError = MtrxException.InvalidInput("The recovery key is not valid")
         }
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         account.signedIn.recover("EsTc not a key")
         assertEquals(Recovery.InvalidKey, account.signedIn.recovery.value)
@@ -129,7 +127,7 @@ class EncryptionTest {
     @Test
     fun requestFromAnotherUserIsCancelled() = runTest {
         val session = FakeSession()
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         val request = FakeVerification("@eve:example.org")
         session.verificationRequests!!.onRequest(request)
@@ -141,7 +139,7 @@ class EncryptionTest {
     @Test
     fun requestFromOurOtherDeviceIsAcceptedOrDeclined() = runTest {
         val session = FakeSession()
-        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
+        val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
         account.start()
         val signedIn = account.signedIn
 
