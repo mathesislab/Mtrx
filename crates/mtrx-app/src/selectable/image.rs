@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn code_in_a_typeset_message_is_selected_by_character() {
-        use crate::math::{Math, Params, Rendered};
+        use crate::math::{Math, Params, Rendered, Request};
         let document = mtrx_format::Document::from_html(
             r#"Run <code>ls -l</code> for <span data-mx-maths="x"><code>x</code></span>"#,
         );
@@ -418,7 +418,10 @@ mod tests {
             muted: iced::Color::BLACK,
         };
         let mut math = Math::new();
-        math.render_now(&document, &params);
+        math.render_now(Request {
+            document: document.clone(),
+            params,
+        });
         let Some(Rendered::Image { text, .. }) = math.get(&Math::key(&document, &params)) else {
             panic!("not rendered");
         };

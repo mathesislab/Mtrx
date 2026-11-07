@@ -983,8 +983,7 @@ impl App {
                 {
                     tracing::warn!("could not save settings: {e}");
                 }
-                // Math is laid out for the room's width.
-                self.render_math()
+                Task::none()
             }
             Message::Restored(Ok(Shared(session))) | Message::LoggedIn(Ok(Shared(session))) => {
                 let mut main = Main::new(session.clone());
@@ -1218,7 +1217,6 @@ impl App {
                             members,
                             draft,
                             go_to,
-                            self.render_math(),
                             self.load_call_service(&id),
                             self.load_pinned(),
                         ])
@@ -2024,7 +2022,7 @@ impl App {
             Message::WindowResized(size) => {
                 // Reported in layout units.
                 self.window = size * self.scale_factor();
-                self.rescaled()
+                self.pdf_resized()
             }
             Message::WindowOpened(id, Some(displays), Some(position)) => {
                 // Left on a display since unplugged, the window opens on the
@@ -2074,7 +2072,7 @@ impl App {
             Message::WindowPlaced { position: None, .. } => Task::none(),
             Message::ScaleFactor(scale) => {
                 self.scale = scale;
-                self.rescaled()
+                self.pdf_resized()
             }
             Message::Zoom(zoom) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -2088,11 +2086,11 @@ impl App {
                 }
                 self.settings.text_size = self.settings.text_size.zoom(zoom);
                 self.save_settings();
-                self.rescaled()
+                self.pdf_resized()
             }
             Message::ThemeMode(mode) => {
                 self.system_mode = mode;
-                self.render_math()
+                Task::none()
             }
             Message::Media(message) => self.media(message),
             Message::AvatarLoaded(key, handle) => {
@@ -2246,7 +2244,7 @@ impl App {
                         room::Message::SendingSlow(row.clone()).to(&id)
                     })
                 });
-                Task::batch([Task::batch(clocks), read, fill(room), self.render_math()])
+                Task::batch([Task::batch(clocks), read, fill(room)])
             }
             room::Message::Scrolled(viewport) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2259,7 +2257,7 @@ impl App {
                     Older::None => Task::none(),
                     Older::ShowMore => {
                         room.show_more();
-                        self.render_math()
+                        Task::none()
                     }
                     Older::Paginate => paginate(room),
                 }
@@ -2284,7 +2282,7 @@ impl App {
                         Task::none()
                     }
                 };
-                Task::batch([more, self.render_math()])
+                more
             }
             room::Message::Composer(action) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2451,7 +2449,7 @@ impl App {
                     return room::scroll(scroll);
                 }
                 room.show_all();
-                Task::batch([room::scroll(scroll), self.render_math()])
+                room::scroll(scroll)
             }
             room::Message::Select(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2575,12 +2573,7 @@ impl App {
                         room.reload(timeline);
                         // Its rows are new.
                         main.popup.take_if(|popup| popup.of_room(&id));
-                        Task::batch([
-                            fill(room),
-                            mark_read(room),
-                            self.render_math(),
-                            self.load_call_service(&id),
-                        ])
+                        Task::batch([fill(room), mark_read(room), self.load_call_service(&id)])
                     }
                     Err(e) => {
                         room.reloading = false;
@@ -2625,7 +2618,7 @@ impl App {
                     // A new one replaces the one under way.
                     None => seek(room, event),
                 };
-                Task::batch([go, self.render_math()])
+                go
             }
             room::Message::Sought(result) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2658,7 +2651,7 @@ impl App {
                 {
                     go = go_to(room, row);
                 }
-                Task::batch([caught_up, go, self.render_math()])
+                Task::batch([caught_up, go])
             }
             room::Message::Unmark(row) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -3052,11 +3045,11 @@ impl App {
                 self.save_settings();
                 #[cfg(target_os = "macos")]
                 self.settings.appearance.apply();
-                self.render_math()
+                Task::none()
             }
             settings::Action::TextSize => {
                 self.save_settings();
-                self.rescaled()
+                self.pdf_resized()
             }
             settings::Action::Spelling => {
                 self.save_settings();
@@ -3676,7 +3669,7 @@ impl App {
         }
         let scroll = room.show_found();
         // The match may be in a message not rendered before.
-        Task::batch([focus, scroll, self.render_math()])
+        Task::batch([focus, scroll])
     }
 
     fn later(&mut self, id: OwnedRoomId, message: send_later::Message) -> Task<Message> {
@@ -3796,12 +3789,8 @@ impl App {
         }
     }
 
-    /// Math and the PDF viewer follow the window's size, the display's
-    /// scale and the text size.
-    fn rescaled(&mut self) -> Task<Message> {
-        Task::batch([self.render_math(), self.pdf_resized()])
-    }
-
+    /// The PDF viewer follows the window's size, the display's scale and
+    /// the text size. (Math does too, by the keys of its pictures.)
     fn pdf_resized(&mut self) -> Task<Message> {
         let (viewport, scale) = (self.viewport(), self.pixel_scale());
         match &mut self.screen {
@@ -3870,22 +3859,6 @@ impl App {
             link: palette.primary.base.color,
             muted: style::muted(&theme),
         }
-    }
-
-    /// Request images for all math messages of the open room.
-    fn render_math(&mut self) -> Task<Message> {
-        let params = self.math_params();
-        let Screen::Main(main) = &self.screen else {
-            return Task::none();
-        };
-        let Some(room) = main.pane.room() else {
-            return Task::none();
-        };
-        let tasks: Vec<_> = room
-            .math_documents()
-            .map(|doc| self.math.request(doc, &params, Message::MathRendered))
-            .collect();
-        Task::batch(tasks)
     }
 
     /// Show a room's members anew where they are listed: beside the open
@@ -4111,18 +4084,20 @@ impl App {
 
     /// Load what a view asks for, unless it is loaded or loading.
     fn media(&mut self, message: media::Message) -> Task<Message> {
-        let Screen::Main(main) = &mut self.screen else {
-            return Task::none();
-        };
-        match message {
-            media::Message::AvatarWanted(key) => {
+        match (message, &mut self.screen) {
+            (media::Message::MathWanted(request), _) => {
+                self.math.request(request, Message::MathRendered)
+            }
+            (media::Message::AvatarWanted(key), Screen::Main(main)) => {
                 main.avatars
                     .request(&main.session, key, Message::AvatarLoaded)
             }
-            media::Message::PreviewWanted(media) => {
+            (media::Message::PreviewWanted(media), Screen::Main(main)) => {
                 main.previews
                     .request(&main.session, &media, Message::PreviewLoaded)
             }
+            // Signed out since.
+            (media::Message::AvatarWanted(_) | media::Message::PreviewWanted(_), _) => Task::none(),
         }
     }
 

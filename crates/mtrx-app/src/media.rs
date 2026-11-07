@@ -29,7 +29,7 @@ use crate::{
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint},
-    icons, message_menu, pdf, room, style,
+    icons, math, message_menu, pdf, room, style,
     want::wanting,
 };
 
@@ -49,6 +49,8 @@ pub enum Message {
     AvatarWanted(avatar::Key),
     /// An image's preview, or whether a PDF can be read.
     PreviewWanted(Media),
+    /// A message's math, typeset.
+    MathWanted(math::Request),
 }
 
 /// Largest size of an image in the timeline, in logical pixels.

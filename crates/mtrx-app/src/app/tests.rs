@@ -172,6 +172,7 @@ async fn load_wanted(app: &mut App, session: &Session) {
                 media::Message::PreviewWanted(media) => {
                     main.previews.load_now(session, &media).await
                 }
+                media::Message::MathWanted(request) => app.math.render_now(request),
             }
         }
     }
@@ -973,12 +974,6 @@ async fn main_screen_with_math() {
         // Both name styles: plain (the default) in light, coloured in dark.
         app.settings.colored_names = mode == Mode::Dark;
         load_wanted(&mut app, &alice).await;
-        let params = app.math_params();
-        if let Screen::Main(main) = &app.screen {
-            for document in main.pane.room().unwrap().math_documents() {
-                app.math.render_now(document, &params);
-            }
-        }
         if mode == Mode::Dark
             && let Screen::Main(main) = &mut app.screen
         {
@@ -2806,12 +2801,6 @@ async fn website_screenshots() {
         app
     };
     async fn finish(app: &mut App, ana: &Session) {
-        let params = app.math_params();
-        if let Screen::Main(main) = &mut app.screen {
-            for document in main.pane.room().unwrap().math_documents() {
-                app.math.render_now(document, &params);
-            }
-        }
         load_wanted(app, ana).await;
     }
 

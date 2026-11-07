@@ -59,6 +59,7 @@ use crate::{
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
     },
     topic,
+    want::wanting,
 };
 
 /// The topic panel's share of the room header's width.
@@ -580,19 +581,6 @@ impl Room {
 
     fn visible(&self) -> &[Row] {
         &self.rows[self.rows.len().saturating_sub(self.shown)..]
-    }
-
-    /// The events of the rendered message rows.
-    fn visible_events(&self) -> impl Iterator<Item = &Event> {
-        self.visible().iter().filter_map(Row::event)
-    }
-
-    /// Rendered messages with math, for typesetting.
-    pub fn math_documents(&self) -> impl Iterator<Item = &mtrx_format::Document> {
-        self.visible_events().filter_map(|e| match &e.content {
-            EventContent::Message(m) if m.document.has_math() => Some(&m.document),
-            _ => None,
-        })
     }
 
     /// Move the end of the selection by `step`, on into the part of the
@@ -1451,7 +1439,8 @@ fn event_view<'a>(
         EventContent::Message(m) => {
             let content: Element<'a, app::Message> = match (m.kind, m.document.has_math()) {
                 (MessageKind::Text | MessageKind::Notice | MessageKind::Emote, true) => {
-                    match math.get(&Math::key(&m.document, params)) {
+                    let key = Math::key(&m.document, params);
+                    match math.get(&key) {
                         Some(Rendered::Image {
                             handle,
                             width,
@@ -1473,15 +1462,26 @@ fn event_view<'a>(
                             .on_gesture(select.on_gesture)
                             .into()
                         }
+                        // Typeset once rendered; as text until then, or if
+                        // it failed.
                         _ => {
                             as_text = true;
-                            message::view(
-                                &m.document,
-                                theme,
-                                context.own_user,
-                                links(),
-                                select(),
-                                m.edited,
+                            let want = math.wanted(&key).then(|| {
+                                app::Message::Media(media::Message::MathWanted(math::Request {
+                                    document: m.document.clone(),
+                                    params: *params,
+                                }))
+                            });
+                            wanting(
+                                message::view(
+                                    &m.document,
+                                    theme,
+                                    context.own_user,
+                                    links(),
+                                    select(),
+                                    m.edited,
+                                ),
+                                want,
                             )
                         }
                     }
