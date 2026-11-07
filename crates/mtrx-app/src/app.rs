@@ -14,8 +14,7 @@ use iced::{
     Element, Length, Point, Rectangle, Size, Subscription, Task, Theme, mouse,
     theme::Mode,
     widget::{
-        button, column, container, image, mouse_area, opaque, row, stack, text, text_editor,
-        text_input,
+        button, column, container, mouse_area, opaque, row, stack, text, text_editor, text_input,
     },
     window,
 };
@@ -31,7 +30,7 @@ use mtrx_google::Google;
 use crate::{
     actions::{self, Compose, Editing, InlineEdit, PickerAt},
     arrange::{self, Arrange},
-    avatar::{self, Avatars},
+    avatar::Avatars,
     badge::{self, Badge},
     calls,
     clipboard::{self, Copied, Field, Pasted},
@@ -44,7 +43,7 @@ use crate::{
     info, join,
     last_view::LastView,
     login::{self, Login},
-    math::{self, Math, Rendered},
+    math::{self, Math},
     media::{self, Previews, Viewer},
     members, mention, message,
     message_menu::MenuAt,
@@ -187,7 +186,6 @@ pub enum Message {
     Recover,
     RecoveryProgress(RecoveryStep),
     Recovered(Result<bool, String>),
-    MathRendered(math::Key, Rendered),
     LinkClicked(String),
     WindowResized(Size),
     /// The window opened at `.2` (its outer position), with these displays
@@ -205,10 +203,8 @@ pub enum Message {
     /// Text size, or the PDF viewer's zoom while it is open.
     Zoom(Zoom),
     ThemeMode(Mode),
-    /// What a view asks for, such as a picture it shows.
+    /// Pictures and typeset math: asked for by the views, and loaded.
     Media(media::Message),
-    AvatarLoaded(avatar::Key, Option<image::Handle>),
-    PreviewLoaded(MediaRef, Option<media::Preview>),
     /// Show an image large.
     OpenImage(downloads::File),
     CloseImage,
@@ -1995,10 +1991,6 @@ impl App {
                 }
                 Task::none()
             }
-            Message::MathRendered(key, rendered) => {
-                self.math.insert(key, rendered);
-                Task::none()
-            }
             // A mention shows the person's card, with the way to the direct
             // chat; other links open in the browser.
             Message::LinkClicked(url) => match message::mentioned_user(&url) {
@@ -2092,18 +2084,6 @@ impl App {
                 Task::none()
             }
             Message::Media(message) => self.media(message),
-            Message::AvatarLoaded(key, handle) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.avatars.insert(key, handle);
-                }
-                Task::none()
-            }
-            Message::PreviewLoaded(media, picture) => {
-                if let Screen::Main(main) = &mut self.screen {
-                    main.previews.insert(media, picture);
-                }
-                Task::none()
-            }
             Message::OpenImage(file) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -4079,22 +4059,43 @@ impl App {
         Task::batch([load, presence, overview])
     }
 
-    /// Load what a view asks for, unless it is loaded or loading.
+    /// Load what a view asks for, unless it is loaded or loading, and keep
+    /// what was loaded.
     fn media(&mut self, message: media::Message) -> Task<Message> {
+        use media::Message::{
+            AvatarLoaded, AvatarWanted, MathRendered, MathWanted, PreviewLoaded, PreviewWanted,
+        };
         match (message, &mut self.screen) {
-            (media::Message::MathWanted(request), _) => {
-                self.math.request(request, Message::MathRendered)
+            (MathWanted(request), _) => self.math.request(request, |key, rendered| {
+                Message::Media(MathRendered(key, rendered))
+            }),
+            (MathRendered(key, rendered), _) => {
+                self.math.insert(key, rendered);
+                Task::none()
             }
-            (media::Message::AvatarWanted(key), Screen::Main(main)) => {
-                main.avatars
-                    .request(&main.session, key, Message::AvatarLoaded)
+            (AvatarWanted(key), Screen::Main(main)) => {
+                main.avatars.request(&main.session, key, |key, handle| {
+                    Message::Media(AvatarLoaded(key, handle))
+                })
             }
-            (media::Message::PreviewWanted(media), Screen::Main(main)) => {
+            (AvatarLoaded(key, handle), Screen::Main(main)) => {
+                main.avatars.insert(key, handle);
+                Task::none()
+            }
+            (PreviewWanted(media), Screen::Main(main)) => {
                 main.previews
-                    .request(&main.session, &media, Message::PreviewLoaded)
+                    .request(&main.session, &media, |media, preview| {
+                        Message::Media(PreviewLoaded(media, preview))
+                    })
+            }
+            (PreviewLoaded(media, preview), Screen::Main(main)) => {
+                main.previews.insert(media, preview);
+                Task::none()
             }
             // Signed out since.
-            (media::Message::AvatarWanted(_) | media::Message::PreviewWanted(_), _) => Task::none(),
+            (AvatarWanted(_) | AvatarLoaded(..) | PreviewWanted(_) | PreviewLoaded(..), _) => {
+                Task::none()
+            }
         }
     }
 

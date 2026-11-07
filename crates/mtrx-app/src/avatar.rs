@@ -291,11 +291,8 @@ mod tests {
             ))]);
             ui.into_messages().collect()
         };
-        let request = |avatars: &mut Avatars| {
-            avatars
-                .request(&session, key.clone(), app::Message::AvatarLoaded)
-                .units()
-        };
+        let request =
+            |avatars: &mut Avatars| avatars.request(&session, key.clone(), |_, _| ()).units();
 
         let mut avatars = Avatars::new();
         assert!(matches!(

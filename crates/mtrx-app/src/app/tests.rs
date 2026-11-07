@@ -173,6 +173,7 @@ async fn load_wanted(app: &mut App, session: &Session) {
                     main.previews.load_now(session, &media).await
                 }
                 media::Message::MathWanted(request) => app.math.render_now(request),
+                loaded => unreachable!("views only ask: {loaded:?}"),
             }
         }
     }

@@ -42,15 +42,18 @@ pub enum Origin {
     Room(OwnedRoomId),
 }
 
-/// What the views ask for: pictures they show and that are not loaded
-/// yet ([`crate::want`]).
+/// Pictures the views show: asked for while not loaded
+/// ([`crate::want`]), and loaded (`None` if that failed).
 #[derive(Debug, Clone)]
 pub enum Message {
     AvatarWanted(avatar::Key),
+    AvatarLoaded(avatar::Key, Option<image::Handle>),
     /// An image's preview, or whether a PDF can be read.
     PreviewWanted(Media),
+    PreviewLoaded(MediaRef, Option<Preview>),
     /// A message's math, typeset.
     MathWanted(math::Request),
+    MathRendered(math::Key, math::Rendered),
 }
 
 /// Largest size of an image in the timeline, in logical pixels.
