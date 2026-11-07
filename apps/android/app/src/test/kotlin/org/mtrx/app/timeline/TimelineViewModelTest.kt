@@ -37,7 +37,6 @@ import uniffi.mtrx.QuoteState
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.RowContent
 import uniffi.mtrx.TimelineRow
-import uniffi.mtrx.Topic
 import uniffi.mtrx.User
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -65,20 +64,6 @@ class TimelineViewModelTest {
     private fun open(roomId: String, store: ViewModelStore = ViewModelStore()): TimelineViewModel {
         val factory = viewModelFactory { initializer { TimelineViewModel(roomId, session, onRead = {}) } }
         return ViewModelProvider(store, factory)[TimelineViewModel::class.java]
-    }
-
-    @Test
-    fun theRoomsSharedWithThePersonLoadAsTheirPanelOpens() = runTest {
-        session.shared["@bob:x"] = listOf("!lab:x", "!team:x")
-        val viewModel = viewModel()
-        assertNull(viewModel.sharedRooms.value)
-        viewModel.showSharedRooms("@bob:x")
-        assertEquals(listOf("!lab:x", "!team:x"), viewModel.sharedRooms.value)
-        // Failing: none, and why.
-        session.sharedError = MtrxException.Other("offline")
-        viewModel.showSharedRooms("@bob:x")
-        assertEquals(emptyList<String>(), viewModel.sharedRooms.value)
-        assertEquals("offline", viewModel.error.value)
     }
 
     @Test
@@ -505,19 +490,10 @@ class TimelineViewModelTest {
     }
 
     @Test
-    fun topicIsSavedAndPinnedMessagesShow() = runTest {
-        val viewModel = TimelineViewModel("!a:x", session, onRead = {}, composeTopic = { "composed ${it.text}" })
-        viewModel.saveTopic(Topic("Ice", emptyList()))
+    fun aMessageIsPinned() = runTest {
+        val viewModel = TimelineViewModel("!a:x", session, onRead = {})
         viewModel.setPinned("\$1", true)
-        assertEquals(listOf("topic composed Ice", "pin \$1"), session.roomCalls)
-
-        // The pinned messages while the panel shows them.
-        assertNull(viewModel.pinned.value)
-        viewModel.showPinned()
-        session.pinnedRoomTimeline.listener!!.onUpdate(listOf(textEvent("p", alice, "pinned")))
-        assertEquals(listOf("p"), viewModel.pinned.value?.map { it.id })
-        viewModel.hidePinned()
-        assertNull(viewModel.pinned.value)
-        assertTrue(session.pinnedRoomTimeline.closed)
+        viewModel.setPinned("\$1", false)
+        assertEquals(listOf("pin \$1", "unpin \$1"), session.roomCalls)
     }
 }

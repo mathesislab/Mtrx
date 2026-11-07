@@ -41,6 +41,7 @@ import org.mtrx.app.settings.AskNotificationPermissionOnce
 import org.mtrx.app.settings.RecoveryScreen
 import org.mtrx.app.settings.VerificationRequestDialog
 import org.mtrx.app.settings.VerificationScreen
+import org.mtrx.app.timeline.PinnedModel
 import org.mtrx.app.timeline.TimelineScreen
 import org.mtrx.app.timeline.TimelineViewModel
 import org.mtrx.app.timeline.roomHeader
@@ -277,7 +278,7 @@ private fun RoomPane(
         return
     }
     key(roomId) {
-        // The timeline's model lives while the room shows.
+        // The room's models live while it shows.
         val owner = remember {
             object : ViewModelStoreOwner {
                 override val viewModelStore = ViewModelStore()
@@ -292,6 +293,10 @@ private fun RoomPane(
                 onInput = session.presence::input,
             )
         }
+        val pinned: PinnedModel = viewModel(viewModelStoreOwner = owner) { PinnedModel(roomId, session.session) }
+        val info: RoomInfoModel = viewModel(viewModelStoreOwner = owner) {
+            RoomInfoModel(roomId, session.session, ::composeTopic)
+        }
         // Its notifications go, and pushes for it post none while it shows.
         DisposableEffect(roomId) {
             account.roomOpened(roomId)
@@ -303,6 +308,9 @@ private fun RoomPane(
         TimelineScreen(
             header,
             viewModel,
+            pinned,
+            info,
+            session.session,
             session.images,
             spaces = remember(rooms) { rooms.topLevelSpaces().filter { it.rights.invite } },
             rooms = rooms,
@@ -327,6 +335,7 @@ private fun InfoScreen(
     nav: NavHostController,
     openLink: (String) -> Unit,
 ) {
+    LaunchedEffect(model) { model.load() }
     val settings by model.settings.collectAsStateWithLifecycle()
     val members by model.members.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
@@ -367,6 +376,7 @@ private fun OverviewScreen(
     openLink: (String) -> Unit,
     openRoom: (String) -> Unit,
 ) {
+    LaunchedEffect(model) { model.load() }
     val settings by model.settings.collectAsStateWithLifecycle()
     val members by model.members.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()

@@ -304,12 +304,7 @@ object NoTimelineActions : TimelineActions {
     override fun unsend(itemId: String) {}
     override fun goToOriginal(eventId: String) {}
     override fun showPersonInfo(userId: String) {}
-    override fun showSharedRooms(userId: String) {}
-    override fun clearError() {}
-    override fun saveTopic(topic: Topic) {}
     override fun setPinned(eventId: String, pin: Boolean) {}
-    override fun showPinned() {}
-    override fun hidePinned() {}
     override fun file(media: Media, eventId: String?, use: FileUse) {}
     override fun cancelDownload(id: ULong) {}
 }
