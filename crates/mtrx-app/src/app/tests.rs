@@ -1435,18 +1435,7 @@ async fn send_later_bar() {
     };
     let outside = messages(iced::Point::new(700.0, 150.0));
     assert!(
-        outside.iter().any(|m| {
-            matches!(
-                m,
-                Message::Room(
-                    _,
-                    room::Message::Field(
-                        Field::Composer,
-                        message_field::Message::Emoji(emoji::Message::Close)
-                    )
-                )
-            )
-        }),
+        outside.iter().any(|m| matches!(m, Message::ClosePopup)),
         "{outside:?}"
     );
     let on_crab = messages(iced::Point::new(782.0, 447.0));
