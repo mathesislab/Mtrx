@@ -19,7 +19,7 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Draft, DraftKeeper, Event, EventContent, EventKey, Media, Member, MessageKind,
+    CallService, Draft, DraftKeeper, Event, EventContent, EventKey, Member, MessageKind,
     MessageRow, OwnedEventId, OwnedRoomId, OwnedUserId, RoomHandle, RoomKind, RoomSummary,
     RoomTimeline, Row, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, User, UserId,
 };

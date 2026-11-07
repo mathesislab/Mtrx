@@ -1133,8 +1133,7 @@ impl App {
                     grouping: self.settings.room_list,
                     popup: &mut main.popup,
                 };
-                let task = main.arrange.update(message, context);
-                task
+                main.arrange.update(message, context)
             }
             Message::ArrangeFailed(e) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -2270,7 +2269,7 @@ impl App {
                     return Task::none();
                 };
                 room.paginating = false;
-                let more = match result {
+                match result {
                     Ok(()) => {
                         room.show_more();
                         fill(room)
@@ -2281,8 +2280,7 @@ impl App {
                         room.error = Some(e);
                         Task::none()
                     }
-                };
-                more
+                }
             }
             room::Message::Composer(action) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2613,12 +2611,11 @@ impl App {
                     return Task::none();
                 };
                 room.error = None;
-                let go = match room.reveal(&event) {
+                match room.reveal(&event) {
                     Some(row) => go_to(room, row),
                     // A new one replaces the one under way.
                     None => seek(room, event),
-                };
-                go
+                }
             }
             room::Message::Sought(result) => {
                 let Screen::Main(main) = &mut self.screen else {
