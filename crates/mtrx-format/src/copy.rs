@@ -274,6 +274,12 @@ fn inlines_html(inlines: &[Inline], out: &mut String, target: Target) {
                     Style::Underline => "u",
                     Style::Superscript => "sup",
                     Style::Subscript => "sub",
+                    Style::Spoiler if target == Target::Page => {
+                        out.push_str("<span class=\"spoiler\">");
+                        inlines_html(content, out, target);
+                        out.push_str("</span>");
+                        continue;
+                    }
                     // Copied, it is no secret.
                     Style::Spoiler => {
                         inlines_html(content, out, target);
