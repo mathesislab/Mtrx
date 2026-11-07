@@ -31,21 +31,21 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import org.mtrx.app.model.Account
+import org.mtrx.app.model.SignedInSession
 import org.mtrx.app.model.VerificationModel
 import uniffi.mtrx.VerificationEmoji
 import uniffi.mtrx.VerificationState
 
 /**
- * The account's verification ([Account.verification]) when the screen
- * opens, outgoing or accepted, until it is done or cancelled; [onClose]
- * leaves the screen.
+ * The session's verification ([SignedInSession.verification]) when the
+ * screen opens, outgoing or accepted, until it is done or cancelled;
+ * [onClose] leaves the screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun VerificationScreen(account: Account, onClose: () -> Unit) {
+fun VerificationScreen(session: SignedInSession, onClose: () -> Unit) {
     // The one it was opened for, also once closed (while the screen leaves).
-    val current = remember(account) { account.verification.value }
+    val current = remember(session) { session.verification.value }
     if (current == null) {
         // None (the screen restored after the process was stopped).
         val currentOnClose by rememberUpdatedState(onClose)
@@ -56,7 +56,7 @@ fun VerificationScreen(account: Account, onClose: () -> Unit) {
     val busy by current.busy.collectAsStateWithLifecycle()
     val error by current.error.collectAsStateWithLifecycle()
     val close = {
-        account.closeVerification(current)
+        session.closeVerification(current)
         onClose()
     }
     // Back is Cancel while it runs (not while keys are shared), Close after.

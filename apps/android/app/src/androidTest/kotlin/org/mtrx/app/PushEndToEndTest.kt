@@ -72,7 +72,8 @@ class PushEndToEndTest {
             account.login(HOMESERVER, bob, PASSWORD)
             account.setForeground(true).join()
         }
-        val bobSession = (account.state.value as AccountState.SignedIn).session
+        val bobInApp = (account.state.value as AccountState.SignedIn).session
+        val bobSession = bobInApp.session
 
         // Alice in a Mtrx of her own.
         val dir = File(app.cacheDir, "push-test-$suffix")
@@ -108,7 +109,7 @@ class PushEndToEndTest {
             aliceRooms.get()?.rooms()?.any { it.id == roomId && it.encrypted && it.joinedMembers == 2uL } == true
         }
         waitUntil("Bob's app to see the room") {
-            account.rooms.value.rooms().any { it.id == roomId && it.membership == uniffi.mtrx.Membership.JOINED && it.encrypted }
+            bobInApp.rooms.value.rooms().any { it.id == roomId && it.membership == uniffi.mtrx.Membership.JOINED && it.encrypted }
         }
 
         // The pusher, as the app sets it for a new endpoint.

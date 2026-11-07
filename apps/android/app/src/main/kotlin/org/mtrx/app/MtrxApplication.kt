@@ -60,7 +60,7 @@ class MtrxApplication : Application() {
         ) { PusherDevice(Build.MODEL, Locale.getDefault().toLanguageTag()) }
         // A sender's avatar only while the app's session is open.
         notifications = MessageNotifications(this) { mxcUri ->
-            (account.state.value as? AccountState.SignedIn)?.images?.avatar(mxcUri, AVATAR_PX)
+            (account.state.value as? AccountState.SignedIn)?.session?.images?.avatar(mxcUri, AVATAR_PX)
         }
         notifications.createChannel()
         account = Account(

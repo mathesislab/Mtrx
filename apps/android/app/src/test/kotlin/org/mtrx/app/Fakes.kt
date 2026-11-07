@@ -5,6 +5,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
 import org.mtrx.app.model.Account
+import org.mtrx.app.model.AccountState
+import org.mtrx.app.model.SignedInSession
 import org.mtrx.app.model.Distributors
 import org.mtrx.app.model.GatewayDiscovery
 import org.mtrx.app.model.Logger
@@ -173,6 +175,10 @@ class FakeSession : Session(NoHandle) {
     override suspend fun pushers(): List<PusherInfo> = serverPushers.values.toList()
 
     override fun userId(): String = USER_ID
+
+    override fun homeserver(): String = "https://example.org"
+
+    override fun deviceId(): String = "PHONE"
 
     override fun connection(): ConnectionState = ConnectionState.ONLINE
 
@@ -1339,6 +1345,9 @@ fun testAccount(
     sections: SectionStore = FakeSectionStore(),
     log: FakeLog = FakeLog(),
 ): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, log)
+
+/** The account's open session; signed in. */
+val Account.signedIn: SignedInSession get() = (state.value as AccountState.SignedIn).session
 
 /** What the models logged, as "tag: message". */
 class FakeLog : Logger {
