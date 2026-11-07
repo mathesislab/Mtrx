@@ -1,5 +1,5 @@
 //! Mentioning people while writing: `@` and the start of a name offers the
-//! room's members to complete it with. A mention is text in the composer,
+//! room's members to complete it with. A mention is text in a message field,
 //! `@` + a display name (when no other member has it) or a user ID, or
 //! `@room`; sending resolves it against the members (see
 //! [`mtrx_core::mention_targets`]).
@@ -10,13 +10,13 @@ use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, row, text, text_editor},
 };
-use mtrx_core::{Member, OwnedRoomId, UserId};
+use mtrx_core::{Member, UserId};
 
 use crate::{
     app,
     avatar::{Avatars, Shape},
     ellipsis::ellipsis,
-    room, style,
+    style,
 };
 
 /// Candidates offered at most.
@@ -101,6 +101,29 @@ pub fn completion(content: &text_editor::Content) -> Option<Query> {
     })
 }
 
+/// Who may be mentioned in a room, and as what.
+#[derive(Clone, Copy)]
+pub struct Mentionable<'a> {
+    /// The room's members, once loaded: nothing is offered before.
+    pub members: Option<&'a [Member]>,
+    /// What `@` may mention, see [`texts`]; highlighted where one writes.
+    pub texts: &'a Arc<[String]>,
+    /// Us, never offered.
+    pub own: &'a UserId,
+    /// `@room` is offered too (our right).
+    pub room: bool,
+}
+
+impl<'a> Mentionable<'a> {
+    /// Who `query` may mention, see [`candidates`].
+    pub fn candidates(&self, query: &str) -> Vec<Candidate<'a>> {
+        match self.members {
+            Some(members) => candidates(query, members, self.texts, self.own, self.room),
+            None => Vec::new(),
+        }
+    }
+}
+
 /// Who a query may mention.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Candidate<'a> {
@@ -180,13 +203,13 @@ pub fn insert(content: &mut text_editor::Content, query: &Query, mention: &str) 
     content.perform(Action::Edit(Edit::Paste(Arc::new(format!("{mention} ")))));
 }
 
-/// The candidates, `selected` highlighted; a click completes with one in
-/// `room`'s composer.
+/// The candidates, `selected` highlighted; a click on one sends `pick`
+/// with its mention.
 pub fn view<'a>(
-    room: &OwnedRoomId,
     candidates: &[Candidate<'_>],
     selected: usize,
     avatars: &Avatars,
+    pick: impl Fn(String) -> app::Message,
 ) -> Element<'a, app::Message> {
     let rows = candidates.iter().enumerate().map(|(i, candidate)| {
         let (picture, name, detail): (Element<'a, app::Message>, String, String) = match candidate {
@@ -226,7 +249,7 @@ pub fn view<'a>(
         .width(Length::Fill)
         .padding([3, 6])
         .style(style::list_item(i == selected))
-        .on_press(room::Message::Mention(Message::Pick(candidate.mention())).to(room))
+        .on_press(pick(candidate.mention()))
         .into()
     });
     container(column(rows).spacing(1))

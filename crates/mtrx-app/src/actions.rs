@@ -21,13 +21,14 @@ use mtrx_format::Document;
 use crate::{
     app,
     avatar::{Avatars, Shape},
-    clipboard::{self, Copied, Field},
+    clipboard::{self, Copied},
     edit_menu,
     ellipsis::ellipsis,
     emoji, fonts,
     highlight::{self, Marks},
     hint::{Position, hint, hint_with},
     icons, info, message,
+    message_field::Field,
     message_menu::MenuAt,
     popover::{Edge, Side, popover},
     room,
@@ -299,7 +300,9 @@ impl InlineEdit {
             })
             .padding(iced::Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT))
             .max_height(240);
-        let editor = edit_menu::with_menu(room, Field::Edit, editor, menu, selected);
+        let editor = edit_menu::with_menu(editor, menu, selected, |message| {
+            room::Message::EditMenu(Field::Edit, message).to(room)
+        });
         let editor = emoji::in_field(
             editor,
             emoji.is_some(),

@@ -377,7 +377,7 @@ async fn keys_scroll_the_timeline() {
     assert_near(ui.scrolled(), all - view);
 
     // The composer takes them.
-    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    ui.run(iced::widget::operation::focus(message_field::COMPOSER));
     assert_eq!(
         ui.press(Named::PageUp, Modifiers::empty()),
         Status::Captured
@@ -433,7 +433,7 @@ async fn keys_go_to_other_rooms_from_the_composer() {
         loaded: false,
         ..Default::default()
     });
-    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    ui.run(iced::widget::operation::focus(message_field::COMPOSER));
 
     let keys = [
         (
@@ -448,7 +448,13 @@ async fn keys_go_to_other_rooms_from_the_composer() {
         let typing = |m: &Message| {
             matches!(
                 m,
-                Message::Room(_, room::Message::Composer(text_editor::Action::Edit(_)))
+                Message::Room(
+                    _,
+                    room::Message::Field(
+                        Field::Composer,
+                        message_field::Message::Action(text_editor::Action::Edit(_))
+                    )
+                )
             )
         };
         assert!(!messages.iter().any(typing), "{key:?}");
@@ -562,12 +568,12 @@ async fn up_in_the_empty_composer_edits_our_last_message() {
     assert_eq!(ui.press(up.clone(), Modifiers::empty()), Status::Ignored);
     assert!(ui.room().editing.is_none());
     // A draft: the cursor moves.
-    ui.room().set_composer(typed("Draft"));
-    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    ui.room().composer.set_text("Draft");
+    ui.run(iced::widget::operation::focus(message_field::COMPOSER));
     assert_eq!(ui.press(up.clone(), Modifiers::empty()), Status::Captured);
     assert!(ui.room().editing.is_none());
 
-    ui.room().set_composer(text_editor::Content::new());
+    ui.room().composer.set_text("");
     ui.send(&[]);
     assert_eq!(ui.press(up, Modifiers::empty()), Status::Captured);
     let edit = ui.room().editing.as_ref().expect("editing");
@@ -699,7 +705,7 @@ impl Ui {
 async fn shift_arrow_extends_a_selection_made_after_typing() {
     let (mut ui, _dir) = room_with("shiftsel", &["Calving fronts retreat"]).await;
     let event = row_of(ui.room(), "Calving fronts retreat");
-    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    ui.run(iced::widget::operation::focus(message_field::COMPOSER));
     assert!(ui.composer_focused());
     // Across the start of the message's text.
     let row = ui.bounds(iced::advanced::widget::Id::from(format!("row:{event}")));
@@ -724,7 +730,7 @@ async fn shift_arrow_extends_a_selection_made_after_typing() {
 async fn enter_sends_only_from_the_composer() {
     let (mut ui, _dir) = room_with("enter", &["Hello"]).await;
     let enter = || Key::Named(Named::Enter);
-    ui.room().set_composer(typed("Draft"));
+    ui.room().composer.set_text("Draft");
     ui.send(&[]);
     assert!(!ui.composer_focused());
     assert_eq!(ui.press(enter(), Modifiers::empty()), Status::Ignored);
@@ -738,7 +744,7 @@ async fn enter_sends_only_from_the_composer() {
     ui.press(Key::Named(Named::Escape), Modifiers::empty());
     assert!(!ui.room().compose.cancellable());
 
-    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    ui.run(iced::widget::operation::focus(message_field::COMPOSER));
     assert_eq!(ui.press(enter(), Modifiers::empty()), Status::Captured);
     assert_eq!(ui.room().composer.text(), "");
 }
@@ -772,12 +778,12 @@ async fn shortcuts_type_nothing_in_fields() {
         "[GoToRoom(Row(0))]"
     );
 
-    ui.run(iced::widget::operation::focus(room::COMPOSER));
+    ui.run(iced::widget::operation::focus(message_field::COMPOSER));
     assert_eq!(typed(&mut ui, "k", Modifiers::COMMAND), "[FocusSearch]");
     // Typing still types, also with ⌥.
     assert_eq!(
         typed(&mut ui, "é", Modifiers::ALT),
-        format!("[Room({open:?}, Composer(Edit(Insert('é'))))]")
+        format!("[Room({open:?}, Field(Composer, Action(Edit(Insert('é')))))]")
     );
 }
 

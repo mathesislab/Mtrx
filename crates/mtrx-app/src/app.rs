@@ -33,7 +33,7 @@ use crate::{
     avatar::Avatars,
     badge::{self, Badge},
     calls,
-    clipboard::{self, Copied, Field, Pasted},
+    clipboard::{self, Copied, Pasted},
     dialog::{self, Dialog},
     directory,
     downloads::{self, Downloads},
@@ -45,7 +45,8 @@ use crate::{
     login::{self, Login},
     math::{self, Math},
     media::{self, Previews, Viewer},
-    members, mention, message,
+    members, message,
+    message_field::{self, Field},
     message_menu::MenuAt,
     overview, pdf_viewer, pins,
     placement::{self, Frame, Placement},
@@ -1706,13 +1707,12 @@ impl App {
                     None if main.card.is_some() => main.card = None,
                     None => match main.pane.room_mut() {
                         Some(room)
-                            if !(room.candidates(
+                            if room.completing(
                                 &main.own_user,
                                 mention_room(&main.lists, &room.id),
-                            ))
-                            .is_empty() =>
+                            ) =>
                         {
-                            room.completion = None;
+                            room.close_completion();
                         }
                         Some(room) if room.find.is_some() => room.find = None,
                         Some(room) if room.selection.is_some() => room.selection = None,
@@ -2262,37 +2262,7 @@ impl App {
                     }
                 }
             }
-            room::Message::Composer(action) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let Some(room) = main.pane.open_mut(&id) else {
-                    return Task::none();
-                };
-                let edit = action.is_edit();
-                room.composer.perform(action);
-                room.update_completion();
-                // Mentions need the members: loaded on the first `@`.
-                let members = if room.completion.is_some()
-                    && room.member_list.is_none()
-                    && !room.loading_members
-                {
-                    load_members(room)
-                } else {
-                    Task::none()
-                };
-                let typing = if edit {
-                    let timeline = room.timeline.clone();
-                    let typing = !room.composer.text().trim().is_empty();
-                    Task::future(async move {
-                        let _ = timeline.typing(typing).await;
-                    })
-                    .discard()
-                } else {
-                    Task::none()
-                };
-                Task::batch([members, typing])
-            }
+            room::Message::Field(field, message) => self.field(id, field, message),
             room::Message::TypeInComposer(text) => {
                 if self.covered() {
                     return Task::none();
@@ -2302,51 +2272,14 @@ impl App {
                     .chars()
                     .map(|c| {
                         let edit = text_editor::Action::Edit(text_editor::Edit::Insert(c));
-                        self.update(room::Message::Composer(edit).to(&id))
+                        self.update(composer(&id, message_field::Message::Action(edit)))
                     })
                     .collect();
                 Task::batch(
                     typed
                         .into_iter()
-                        .chain([iced::widget::operation::focus(room::COMPOSER)]),
+                        .chain([iced::widget::operation::focus(message_field::COMPOSER)]),
                 )
-            }
-            room::Message::Mention(message) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let Some(room) = main.pane.open_mut(&id) else {
-                    return Task::none();
-                };
-                let everyone = mention_room(&main.lists, &id);
-                let count = room.candidates(&main.own_user, everyone).len();
-                let mention = match message {
-                    mention::Message::Close => {
-                        room.completion = None;
-                        return Task::none();
-                    }
-                    mention::Message::Up | mention::Message::Down => {
-                        let step = if matches!(message, mention::Message::Up) {
-                            -1
-                        } else {
-                            1
-                        };
-                        if let Some(completion) = &mut room.completion {
-                            completion.step(step, count);
-                        }
-                        return Task::none();
-                    }
-                    mention::Message::Choose => {
-                        let selected = room.completion.as_ref().map_or(0, |c| c.selected);
-                        match room.candidates(&main.own_user, everyone).get(selected) {
-                            Some(candidate) => candidate.mention(),
-                            None => return Task::none(),
-                        }
-                    }
-                    mention::Message::Pick(mention) => mention,
-                };
-                room.complete(&mention);
-                iced::widget::operation::focus(room::COMPOSER)
             }
             room::Message::MembersLoaded(result) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -2368,7 +2301,7 @@ impl App {
                     return Task::none();
                 }
                 let compose = std::mem::take(&mut room.compose);
-                room.set_composer(text_editor::Content::new());
+                room.composer.set_text("");
                 let files = std::mem::take(&mut room.attachments)
                     .into_iter()
                     .map(|attached| attached.file)
@@ -2523,22 +2456,6 @@ impl App {
                 room.pins.update(message);
                 Task::none()
             }
-            room::Message::ComposerEmoji(message) => match &mut self.screen {
-                Screen::Main(main) => field_emoji(main, Field::Composer, message),
-                _ => Task::none(),
-            },
-            room::Message::InsertEmoji(emoji) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                let Some(room) = main.pane.open_mut(&id) else {
-                    return Task::none();
-                };
-                emoji::insert(&mut room.composer, &emoji);
-                room.update_completion();
-                // Counted as used once sent.
-                iced::widget::operation::focus(room::COMPOSER)
-            }
             room::Message::Reloaded(result) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -2643,11 +2560,10 @@ impl App {
                 Task::future(media::pick_files()).then(move |paths| attach(id.clone(), paths))
             }
             room::Message::FileDropped(path) => attach(id, vec![path]),
-            room::Message::Paste(field, how) => {
-                Task::perform(clipboard::read(how, field), move |pasted| {
-                    room::Message::Pasted(field, pasted).to(&id)
-                })
-            }
+            room::Message::Paste(field, how) => Task::perform(
+                clipboard::read(how, field == Field::Composer),
+                move |pasted| room::Message::Pasted(field, pasted).to(&id),
+            ),
             room::Message::Pasted(field, pasted) => match pasted {
                 // As if dropped.
                 Some(Pasted::Files(paths)) => attach(id, paths),
@@ -2674,10 +2590,9 @@ impl App {
                     return Task::none();
                 };
                 let (content, focus) = match field {
-                    Field::Composer => (
-                        &mut room.composer,
-                        iced::widget::operation::focus(room::COMPOSER),
-                    ),
+                    Field::Composer => {
+                        return self.field(id, field, message_field::Message::Menu(message));
+                    }
                     Field::Edit => {
                         let Some(edit) = room.editing.as_mut() else {
                             return Task::none();
@@ -3322,6 +3237,65 @@ impl App {
         )
     }
 
+    /// `message` to `field` of room `id`, and what it then asks of the room.
+    fn field(
+        &mut self,
+        id: OwnedRoomId,
+        field: Field,
+        message: message_field::Message,
+    ) -> Task<Message> {
+        use message_field::Event;
+        let Screen::Main(main) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(room) = main.pane.open_mut(&id) else {
+            return Task::none();
+        };
+        let Some(target) = room.field_mut(field) else {
+            return Task::none();
+        };
+        let (task, event) = target.update(message, &mut main.popup);
+        let task = task.map({
+            let id = id.clone();
+            move |message| room::Message::Field(field, message).to(&id)
+        });
+        // Mentions need the members: loaded on the first `@`.
+        let members = if room.wants_members() {
+            load_members(room)
+        } else {
+            Task::none()
+        };
+        let asked = match (field, event) {
+            (_, None) => Task::none(),
+            (Field::Composer, Some(Event::Edited)) => {
+                let timeline = room.timeline.clone();
+                let typing = !room.composer.is_empty();
+                Task::future(async move {
+                    let _ = timeline.typing(typing).await;
+                })
+                .discard()
+            }
+            (Field::Edit, Some(Event::Edited)) => Task::none(),
+            (Field::Composer, Some(Event::Submit)) => self.room(id, room::Message::Send),
+            (Field::Edit, Some(Event::Submit)) => self.act(id, actions::Message::SaveEdit),
+            (Field::Composer, Some(Event::Cancel)) => self.act(id, actions::Message::CancelCompose),
+            (Field::Edit, Some(Event::Cancel)) => self.act(id, actions::Message::CancelEdit),
+            (_, Some(Event::EditLast)) => self.act(id, actions::Message::EditLast),
+            (_, Some(Event::Mention(message))) => {
+                let everyone = mention_room(&main.lists, &id);
+                room.mention(field, message, &main.own_user, everyone)
+            }
+            (_, Some(Event::Attach(paths))) => attach(id, paths),
+            (_, Some(Event::AttachImage(file))) => {
+                Task::perform(media::attached(file), move |attached| {
+                    room::Message::Attached(vec![attached]).to(&id)
+                })
+            }
+            (_, Some(Event::EmojiShown)) => load_frequent_emoji(&main.session),
+        };
+        Task::batch([task, members, asked])
+    }
+
     fn act(&mut self, id: OwnedRoomId, message: actions::Message) -> Task<Message> {
         use actions::Message as Act;
         let Screen::Main(main) = &mut self.screen else {
@@ -3749,7 +3723,7 @@ impl App {
             // Scheduling took the composer's text; a new time leaves it alone.
             Later::Scheduled(Ok(())) => {
                 room.compose = Compose::New;
-                room.set_composer(text_editor::Content::new());
+                room.composer.set_text("");
                 room.attachments.clear();
                 main.popup.take_if(picking);
                 Task::none()
@@ -4889,9 +4863,14 @@ fn input(event: iced::Event, _status: iced::event::Status, _window: window::Id) 
 /// `action` performed in `field` of `room`.
 fn in_field(room: &OwnedRoomId, field: Field, action: text_editor::Action) -> Message {
     match field {
-        Field::Composer => room::Message::Composer(action).to(room),
+        Field::Composer => composer(room, message_field::Message::Action(action)),
         Field::Edit => actions::act(room, actions::Message::EditAction(action)),
     }
+}
+
+/// `message` to the composer of `room`.
+fn composer(room: &OwnedRoomId, message: message_field::Message) -> Message {
+    room::Message::Field(Field::Composer, message).to(room)
 }
 
 /// Keep `draft`, a room's last, at once: the room was left, or the window

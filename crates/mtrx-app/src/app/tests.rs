@@ -21,7 +21,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::{
-    fonts,
+    fonts, mention,
     message_menu::MenuAt,
     selection::{Point, Pos, Selection},
 };
@@ -1203,7 +1203,10 @@ fn composer_keeps_focus(app: &mut App) {
     .unwrap();
     let size = Size::new(1200.0, 800.0);
     let mut ui = UserInterface::build(app.view(), size, Cache::default(), &mut renderer);
-    ui.operate(&renderer, &mut focusable::focus(room::COMPOSER.into()));
+    ui.operate(
+        &renderer,
+        &mut focusable::focus(message_field::COMPOSER.into()),
+    );
     let mut cache = ui.into_cache();
 
     type Change = (&'static str, fn(&mut App));
@@ -1223,9 +1226,9 @@ fn composer_keeps_focus(app: &mut App) {
         ("mentions offered", |app| {
             let member = person("@ana:example.org", "Ana", mtrx_core::Role::Member);
             room(app).members_loaded(Ok(vec![member]));
-            room(app).set_composer(typed("Thanks @an"));
+            room(app).composer.set_text("Thanks @an");
         }),
-        ("one picked", |app| room(app).complete("@Ana")),
+        ("one picked", |app| room(app).composer.complete("@Ana")),
         ("offline", |app| main(app).connection = Connection::Offline),
         ("online", |app| main(app).connection = Connection::Online),
         ("a banner", |app| {
@@ -1282,7 +1285,7 @@ impl iced::advanced::widget::Operation for ComposerFocused {
         _bounds: iced::Rectangle,
         state: &mut dyn iced::advanced::widget::operation::Focusable,
     ) {
-        if id == Some(&iced::advanced::widget::Id::new(room::COMPOSER)) {
+        if id == Some(&iced::advanced::widget::Id::new(message_field::COMPOSER)) {
             self.0 = Some(state.is_focused());
         }
     }
@@ -1388,7 +1391,7 @@ async fn send_later_bar() {
         main.session.draft_keeper(&room),
     );
     show(&mut open, timeline.current());
-    open.composer = text_editor::Content::with_text("Who can take the Monday slot? ❤");
+    open.composer.set_text("Who can take the Monday slot? ❤");
     main.popup = Some(Popup::SendLater(send_later::SendLater {
         picker: send_later::Picker::new(now, mtrx_core::parse_send_time("tomorrow 8:00", now)),
         rescheduling: None,
@@ -1454,16 +1457,23 @@ async fn send_later_bar() {
         outside.iter().any(|m| {
             matches!(
                 m,
-                Message::Room(_, room::Message::ComposerEmoji(emoji::Message::Close))
+                Message::Room(
+                    _,
+                    room::Message::Field(
+                        Field::Composer,
+                        message_field::Message::Emoji(emoji::Message::Close)
+                    )
+                )
             )
         }),
         "{outside:?}"
     );
     let on_crab = messages(iced::Point::new(782.0, 447.0));
     assert!(
-        on_crab
-            .iter()
-            .any(|m| matches!(m, Message::Room(_, room::Message::InsertEmoji(e)) if e == "🦀")),
+        on_crab.iter().any(|m| matches!(m, Message::Room(
+                _,
+                room::Message::Field(Field::Composer, message_field::Message::InsertEmoji(e))
+            ) if e == "🦀")),
         "{on_crab:?}"
     );
     if let Screen::Main(main) = &mut app.screen
@@ -1505,16 +1515,17 @@ async fn send_later_bar() {
             person("@ana:example.org", "Ana", Member),
             person("@ana:other.org", "Ana", Member),
         ]));
-        open.set_composer(typed(
-            "Thanks @Anna Lindqvist! Who can take the Monday slot? @an",
-        ));
+        open.composer
+            .set_text("Thanks @Anna Lindqvist! Who can take the Monday slot? @an");
     }
     snapshot(&app, "composer-mention");
-    let _ = app.update(Message::Shown(room::Message::Mention(
-        mention::Message::Down,
+    let _ = app.update(Message::Shown(room::Message::Field(
+        Field::Composer,
+        message_field::Message::Mention(mention::Message::Down),
     )));
-    let _ = app.update(Message::Shown(room::Message::Mention(
-        mention::Message::Choose,
+    let _ = app.update(Message::Shown(room::Message::Field(
+        Field::Composer,
+        message_field::Message::Mention(mention::Message::Choose),
     )));
     if let Screen::Main(main) = &mut app.screen
         && let Some(open) = main.pane.room_mut()
@@ -1523,8 +1534,8 @@ async fn send_later_bar() {
             open.composer.text(),
             "Thanks @Anna Lindqvist! Who can take the Monday slot? @Andreas Born "
         );
-        assert_eq!(open.completion, None);
-        open.set_composer(typed("Who can take the Monday slot? ❤"));
+        assert_eq!(open.composer.completion(), None);
+        open.composer.set_text("Who can take the Monday slot? ❤");
     }
     if let Screen::Main(main) = &mut app.screen {
         main.modal = Some(Modal::Settings(settings::Panel::default()));
@@ -2240,7 +2251,7 @@ async fn media_messages() {
         .into_iter()
         .map(Result::unwrap)
         .collect();
-    open.composer = text_editor::Content::with_text("The calving front this morning:");
+    open.composer.set_text("The calving front this morning:");
     snapshot(&app, "composer-attachments");
     let in_room = |media: Media| crate::downloads::File {
         media,
@@ -2827,7 +2838,8 @@ async fn website_screenshots() {
     if let Screen::Main(main) = &mut app.screen
         && let Some(open) = main.pane.room_mut()
     {
-        open.composer = text_editor::Content::with_text("Results are in the shared folder 📈");
+        open.composer
+            .set_text("Results are in the shared folder 📈");
         main.popup = Some(Popup::SendLater(send_later::SendLater {
             picker: send_later::Picker::new(now, mtrx_core::parse_send_time("tomorrow 8:00", now)),
             rescheduling: None,
@@ -2906,7 +2918,7 @@ async fn composer_scrolls_alone() {
             }
         })
         .collect();
-    open.composer = typed(&draft.join("\n"));
+    open.composer.set_text(&draft.join("\n"));
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
@@ -2960,7 +2972,13 @@ async fn composer_scrolls_alone() {
         );
         for message in messages {
             assert!(
-                matches!(message, Message::Room(_, room::Message::Composer(_))),
+                matches!(
+                    message,
+                    Message::Room(
+                        _,
+                        room::Message::Field(Field::Composer, message_field::Message::Action(_))
+                    )
+                ),
                 "{message:?}"
             );
             let _ = app.update(message);
@@ -3077,8 +3095,11 @@ async fn drafts_stay_in_their_room() {
     let _ = app.update(Message::Shown(room::Message::Act(actions::Message::Reply(
         target.unwrap(),
     ))));
-    let _ = app.update(Message::Shown(room::Message::Composer(
-        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Yes, see you".into()))),
+    let _ = app.update(Message::Shown(room::Message::Field(
+        Field::Composer,
+        message_field::Message::Action(text_editor::Action::Edit(text_editor::Edit::Paste(
+            Arc::new("Yes, see you".into()),
+        ))),
     )));
     let kept = mtrx_core::Draft {
         text: "Yes, see you".into(),
@@ -3087,8 +3108,11 @@ async fn drafts_stay_in_their_room() {
     draft_kept(&alice, &a, Some(kept.clone())).await;
 
     // More written, then another room opened at once: kept as it was.
-    let _ = app.update(Message::Shown(room::Message::Composer(
-        text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(" there".into()))),
+    let _ = app.update(Message::Shown(room::Message::Field(
+        Field::Composer,
+        message_field::Message::Action(text_editor::Action::Edit(text_editor::Edit::Paste(
+            Arc::new(" there".into()),
+        ))),
     )));
     let before = app.room_draft();
     let other_timeline = Arc::new(alice.timeline(&b).await.unwrap());
@@ -3161,7 +3185,7 @@ async fn typing_while_a_room_opens_goes_nowhere() {
         timeline.clone(),
         alice.draft_keeper(&a),
     );
-    open.set_composer(typed("Hello"));
+    open.composer.set_text("Hello");
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
@@ -3244,7 +3268,7 @@ async fn results_stay_with_their_room() {
         timeline,
         main.session.draft_keeper(&a),
     );
-    open.set_composer(typed("Later, in a"));
+    open.composer.set_text("Later, in a");
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 
@@ -3254,7 +3278,7 @@ async fn results_stay_with_their_room() {
     for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
         let _ = app.update(message);
     }
-    open_room(&mut app).set_composer(typed("Draft in b"));
+    open_room(&mut app).composer.set_text("Draft in b");
     for message in messages_of(scheduled).await {
         let _ = app.update(message);
     }
@@ -3469,7 +3493,7 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
     let mut main = Main::new(alice.clone());
     main.verified = Some(true);
     let mut open = Room::new(alice.room(&a).unwrap(), timeline, alice.draft_keeper(&a));
-    open.set_composer(typed("Later, in a"));
+    open.composer.set_text("Later, in a");
     main.pane = Pane::Open(open);
     let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
 

@@ -44,6 +44,7 @@ mod mention;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod message;
+mod message_field;
 mod message_menu;
 mod overview;
 mod pdf;
