@@ -151,14 +151,14 @@ final class ScreenshotTests: XCTestCase {
         let pinned = PinnedModel(session: session, roomId: "!ice")
         try await snap(
             "06-topic-panel",
-            TopicPanel(topic: parseTopic(topic: Screens.topic), canEdit: true, info: info, pinned: pinned) { _ in })
+            TopicPanel(topic: Screens.topic, canEdit: true, info: info, pinned: pinned) { _ in })
     }
 
     func testTopicEditor() async throws {
         let info = roomInfo(Screens.ice)
         try await snap(
             "06b-topic-editor",
-            NavigationStack { TopicEditor(draft: TopicDraft(parseTopic(topic: Screens.topic)), info: info) })
+            NavigationStack { TopicEditor(draft: TopicDraft(Screens.topic), info: info) })
     }
 
     func testRoomInfo() async throws {
@@ -289,18 +289,25 @@ final class ScreenshotTests: XCTestCase {
 private enum Screens {
     static let now = Date()
 
-    static let topic = """
-        Sea ice and ice sheets: models, data and papers.
-        Weekly meeting on Thursdays.
-        [call Weekly passcode 4711] https://meet.example.org/ice
-        [link Drafts] https://overleaf.com/project/ice
-        """
+    /// With a call: Join in the room's header.
+    static let topic = Make.topic(
+        "Sea ice and ice sheets: models, data and papers.\nWeekly meeting on Thursdays.",
+        calls: [Make.link("https://meet.example.org/ice", title: "Weekly", passcode: "4711")],
+        links: [Make.link("https://overleaf.com/project/ice", title: "Drafts")])
 
     static let ice = Make.room(
         "!ice", name: "Ice sheets", unread: 0, lastActivity: now, topic: topic,
         pinned: ["$p2"], alias: "#ice:example.org", members: 4)
+    /// With links: chips in its overview.
     static let polar = Make.room(
-        "!polar", kind: .space, name: "Polar lab", topic: "The polar group: rooms for projects and talk.",
+        "!polar", kind: .space, name: "Polar lab",
+        topic: Make.topic(
+            "The polar group: rooms for projects and talk.",
+            calls: [Make.link("https://meet.example.org/polar", name: "meet.example.org")],
+            links: [
+                Make.link("https://drive.example.org/polar", title: "Shared drive"),
+                Make.link("https://wiki.example.org/polar", title: "Wiki"),
+            ]),
         members: 12)
 
     /// Ann and Bob are in the Polar lab, Ann in Teaching too.
@@ -327,7 +334,7 @@ private enum Screens {
             Make.room(
                 "!bob", kind: .direct, name: "Bob Meyer", directUser: "@bob:example.org",
                 lastActivity: now.addingTimeInterval(-7_200)),
-            Make.room("!party", membership: .invited, name: "Summer party", topic: "Saturday at the lake."),
+            Make.room("!party", membership: .invited, name: "Summer party", topic: Make.topic("Saturday at the lake.")),
             Make.room("!seminar", membership: .asked, name: "Seminar"),
             Make.room(
                 "!cy", kind: .direct, name: "Cy Park", directUser: "@cy:example.org",
@@ -418,17 +425,17 @@ private enum Screens {
 
     static let children = [
         Make.directoryRoom(
-            "!ice", name: "Ice sheets", membership: .joined, members: 4, topic: "Models, data and papers",
+            "!ice", name: "Ice sheets", membership: .joined, members: 4, topic: Make.topic("Models, data and papers"),
             role: .admin),
         Make.directoryRoom("!sea", name: "Sea ice", membership: .joined, members: 9),
-        Make.directoryRoom("!field", name: "Fieldwork", joinRule: .spaceMembers, members: 6, topic: "Spring campaign"),
+        Make.directoryRoom("!field", name: "Fieldwork", joinRule: .spaceMembers, members: 6, topic: Make.topic("Spring campaign")),
         Make.directoryRoom("!data", name: "Data", joinRule: .knock, members: 3),
         Make.directoryRoom("!seminar", name: "Seminar", joinRule: .knock, membership: .asked, members: 15),
         Make.directoryRoom("!glacio", name: "Glaciology", space: true, members: 20, children: 4),
     ]
 
     static let directory = [
-        Make.directoryRoom("!matrix", name: "Matrix HQ", members: 12_000, topic: "The Matrix protocol"),
+        Make.directoryRoom("!matrix", name: "Matrix HQ", members: 12_000, topic: Make.topic("The Matrix protocol")),
         Make.directoryRoom("!climate", name: "Climate science", space: true, members: 340, children: 12),
         Make.directoryRoom("!earth", name: "Earth system models", joinRule: .knock, members: 85),
         Make.directoryRoom("!ice", name: "Ice sheets", membership: .joined, members: 4, role: .admin),

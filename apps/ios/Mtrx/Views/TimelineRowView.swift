@@ -525,6 +525,8 @@ struct FlowLayout: Layout {
     var spacing: CGFloat
     /// Rows lined up on the right.
     var trailing = false
+    /// Rows centred.
+    var centered = false
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let rows = arrange(subviews, width: proposal.width ?? .infinity)
@@ -536,7 +538,7 @@ struct FlowLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var y = bounds.minY
         for row in arrange(subviews, width: bounds.width) {
-            var x = trailing ? bounds.maxX - row.width : bounds.minX
+            var x = trailing ? bounds.maxX - row.width : centered ? bounds.midX - row.width / 2 : bounds.minX
             for index in row.indices {
                 let size = subviews[index].sizeThatFits(.unspecified)
                 subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
