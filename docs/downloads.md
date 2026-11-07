@@ -379,3 +379,15 @@ Size: M–L. About 500 lines of core, 300 desktop and 150 per phone. One PR is e
 ## Decisions (2026-11-06)
 
 All recommendations taken: 1a (`reqwest` non-optional in core, same version as the SDK's), 2a, 3a, 4a, 5a, 6a, 7a. The user asked for performant, robust and conceptually clean code and left the choices to the recommendations.
+
+## As built (PR 84)
+
+Differences from the design above:
+
+- **Cache names on the phones:** `<cache>/media/<server>/<media-id>/<safe sender name>`, not a SHA-256 name. QuickLook and share sheets show the real file name, and core needs no `sha2`.
+- **A cleared cache file** (the OS removed it) drops its finished download from the list at start, instead of showing "Moved or deleted".
+- **Stalls:** a download fails with "The server stopped sending" after 60 s without data. The request's own timeout is 24 h, since the SDK client's 30 s default would cut off large files.
+- **tokio** in core gains the `io-util` feature for buffered writes.
+- **iOS:** a separate `DownloadsModel`, owned by `SessionModel` and injected like `presence`, holds the one subscription, so progress redraws only file bubbles.
+- **Android:** open uses `ACTION_VIEW` (the system still asks when several apps can), so "No app can open this file" needs no `<queries>` entry; share uses a chooser. Images and videos also get a progress ring.
+- **Desktop:** a file of unknown length shows an empty progress bar, not an animated one. "Go to message" opens the room, then jumps to the event (`Main.go_to`).
