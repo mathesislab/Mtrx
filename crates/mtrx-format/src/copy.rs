@@ -1,6 +1,7 @@
 //! Copying a document, or the selected part of one, as HTML for the
 //! clipboard: what other apps (Mail, a word processor) keep of its
 //! formatting, links and lists. Math stays `$…$`, as in its plain text.
+//! The same HTML, made safe, for a page of its own (an export).
 
 use std::ops::Range;
 
@@ -28,9 +29,37 @@ impl Document {
     /// `matrix.to` links.
     pub fn to_html(&self) -> String {
         let mut out = String::new();
-        blocks_html(&self.blocks, &mut out);
+        blocks_html(&self.blocks, &mut out, Target::Clipboard);
         out
     }
+
+    /// HTML for a web page of its own, such as an export: only `http`,
+    /// `https` and `mailto` links (others are their text), math as `$…$`
+    /// and `$$…$$` text in `math` spans and paragraphs, spoilers in
+    /// `spoiler` spans.
+    pub fn to_page_html(&self) -> String {
+        let mut out = String::new();
+        blocks_html(&self.blocks, &mut out, Target::Page);
+        out
+    }
+}
+
+/// Where HTML goes: the clipboard, or a page of its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Clipboard,
+    Page,
+}
+
+/// Whether a page may link to `url`: the web and mail only, never
+/// `javascript:` or a local file.
+fn is_safe_link(url: &str) -> bool {
+    let Some((scheme, _)) = url.split_once(':') else {
+        return false;
+    };
+    ["https", "http", "mailto"]
+        .iter()
+        .any(|safe| scheme.eq_ignore_ascii_case(safe))
 }
 
 struct Clip<F> {
@@ -174,22 +203,22 @@ fn has_text(inlines: &[Inline]) -> bool {
     inlines.iter().any(|inline| *inline != Inline::LineBreak)
 }
 
-fn blocks_html(blocks: &[Block], out: &mut String) {
+fn blocks_html(blocks: &[Block], out: &mut String, target: Target) {
     for block in blocks {
         match block {
             Block::Paragraph(content) => {
                 out.push_str("<p>");
-                inlines_html(content, out);
+                inlines_html(content, out, target);
                 out.push_str("</p>");
             }
             Block::Heading { level, content } => {
                 out.push_str(&format!("<h{level}>"));
-                inlines_html(content, out);
+                inlines_html(content, out, target);
                 out.push_str(&format!("</h{level}>"));
             }
             Block::Quote(inner) => {
                 out.push_str("<blockquote>");
-                blocks_html(inner, out);
+                blocks_html(inner, out, target);
                 out.push_str("</blockquote>");
             }
             Block::List { start, items } => {
@@ -202,8 +231,8 @@ fn blocks_html(blocks: &[Block], out: &mut String) {
                     out.push_str("<li>");
                     // A one-paragraph item, as most are, without the <p>.
                     match &item[..] {
-                        [Block::Paragraph(content)] => inlines_html(content, out),
-                        blocks => blocks_html(blocks, out),
+                        [Block::Paragraph(content)] => inlines_html(content, out, target),
+                        blocks => blocks_html(blocks, out, target),
                     }
                     out.push_str("</li>");
                 }
@@ -221,7 +250,10 @@ fn blocks_html(blocks: &[Block], out: &mut String) {
                 out.push_str("</code></pre>");
             }
             Block::Math(tex) => {
-                out.push_str("<p>$$");
+                out.push_str(match target {
+                    Target::Clipboard => "<p>$$",
+                    Target::Page => "<p class=\"math\">$$",
+                });
                 out.push_str(&escape(tex, false));
                 out.push_str("$$</p>");
             }
@@ -230,7 +262,7 @@ fn blocks_html(blocks: &[Block], out: &mut String) {
     }
 }
 
-fn inlines_html(inlines: &[Inline], out: &mut String) {
+fn inlines_html(inlines: &[Inline], out: &mut String, target: Target) {
     for inline in inlines {
         match inline {
             Inline::Text(text) => out.push_str(&escape(text, false)),
@@ -244,12 +276,12 @@ fn inlines_html(inlines: &[Inline], out: &mut String) {
                     Style::Subscript => "sub",
                     // Copied, it is no secret.
                     Style::Spoiler => {
-                        inlines_html(content, out);
+                        inlines_html(content, out, target);
                         continue;
                     }
                 };
                 out.push_str(&format!("<{tag}>"));
-                inlines_html(content, out);
+                inlines_html(content, out, target);
                 out.push_str(&format!("</{tag}>"));
             }
             Inline::Code(code) => {
@@ -257,15 +289,24 @@ fn inlines_html(inlines: &[Inline], out: &mut String) {
                 out.push_str(&escape(code, false));
                 out.push_str("</code>");
             }
+            Inline::Link { content, url } if target == Target::Page && !is_safe_link(url) => {
+                inlines_html(content, out, target)
+            }
             Inline::Link { url, content } => {
                 out.push_str(&format!("<a href=\"{}\">", escape(url, true)));
-                inlines_html(content, out);
+                inlines_html(content, out, target);
                 out.push_str("</a>");
             }
             Inline::Math(tex) => {
+                if target == Target::Page {
+                    out.push_str("<span class=\"math\">");
+                }
                 out.push('$');
                 out.push_str(&escape(tex, false));
                 out.push('$');
+                if target == Target::Page {
+                    out.push_str("</span>");
+                }
             }
             Inline::Mention { user_id, name } => out.push_str(&format!(
                 "<a href=\"https://matrix.to/#/{}\">{}</a>",
@@ -273,6 +314,62 @@ fn inlines_html(inlines: &[Inline], out: &mut String) {
                 escape(name, false)
             )),
             Inline::LineBreak => out.push_str("<br>"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pages_keep_safe_links_only_and_mark_math() {
+        let document = Document::from_html(
+            "<p><a href=\"magnet:?xt=urn:x\">get</a> <a href=\"ftp://x.org/f\">old</a> \
+             <a href=\"https://x.org/?a=1&amp;b=&quot;\">web</a> \
+             <a href=\"mailto:a@b.org\">mail</a> \
+             <span data-mx-maths=\"x&lt;1\"><code>x&lt;1</code></span> \
+             <span data-mx-spoiler>secret</span> &lt;script&gt;</p>",
+        );
+        let html = document.to_page_html();
+        assert!(
+            !html.contains("magnet:") && !html.contains("ftp:"),
+            "{html}"
+        );
+        assert!(html.contains("get") && html.contains("old"), "{html}");
+        assert!(
+            html.contains("<a href=\"https://x.org/?a=1&amp;b=&quot;\">web</a>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<a href=\"mailto:a@b.org\">mail</a>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"math\">$x&lt;1$</span>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"spoiler\">secret</span>"),
+            "{html}"
+        );
+        assert!(html.contains("&lt;script&gt;"), "{html}");
+        // The clipboard's keeps every link.
+        assert!(document.to_html().contains("magnet:"));
+    }
+
+    #[test]
+    fn only_web_and_mail_links_are_safe() {
+        for url in ["https://x.org", "HTTP://x.org", "mailto:a@b.org"] {
+            assert!(is_safe_link(url), "{url}");
+        }
+        for url in [
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "x.html",
+            "magnet:?x",
+        ] {
+            assert!(!is_safe_link(url), "{url}");
         }
     }
 }

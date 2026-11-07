@@ -20,9 +20,10 @@ use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
     Activity, Attachment, CallService, Connection, DirectoryKind, DownloadState, Draft,
-    EventContent, History, JoinAction, JoinRule, Membership, MembershipChange, MessageAction,
-    NewRoom, NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights,
-    Role, RoomKind, SaveTo, SecretStore, Session, TimelineEntry, VerificationState,
+    EventContent, ExportFiles, ExportFormat, ExportOf, ExportRange, ExportRequest, ExportState,
+    History, JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom,
+    NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights, Role,
+    RoomKind, SaveTo, SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -2554,4 +2555,352 @@ async fn changes_show_before_sync_brings_them() -> Result<()> {
 
 fn answered_event() -> mtrx_core::OwnedEventId {
     "$answered:example.org".try_into().unwrap()
+}
+
+/// Wait for export `id` to end; how it ended.
+async fn export_ended(session: &Session, id: mtrx_core::ExportId) -> Result<mtrx_core::Export> {
+    let exports = session.exports();
+    let list = timeout(
+        "export ended",
+        exports.wait_for(|list| list.iter().any(|e| e.id == id && !e.is_running())),
+    )
+    .await?;
+    list.into_iter()
+        .find(|e| e.id == id)
+        .context("export listed")
+}
+
+fn read(path: &std::path::Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
+/// A space with a subspace, an unencrypted and an encrypted room and one
+/// we left: exported as HTML and JSON, with the edit, reaction, reply,
+/// decrypted message and file in place, and the index's tree.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn export_a_space() -> Result<()> {
+    let (_, alice) = new_user("export").await?;
+    let (_, bob) = new_user("export").await?;
+    let s = &alice.session;
+    let new = |name: &str, space: bool, encrypted: bool, invite: bool| NewRoom {
+        name: Some(name.into()),
+        space,
+        encrypted,
+        invite: if invite {
+            vec![bob.session.user_id()]
+        } else {
+            Vec::new()
+        },
+        ..Default::default()
+    };
+    let space = s.create_room(new("Ice sheets", true, false, false)).await?;
+    let field = s.create_room(new("Field", true, false, false)).await?;
+    let lab = s.create_room(new("Lab chat", false, false, true)).await?;
+    let trip = s.create_room(new("Field trip", false, true, true)).await?;
+    let old = s.create_room(new("Old room", false, false, false)).await?;
+    s.room(&space)?.add_child(&lab).await?;
+    s.room(&space)?.add_child(&field).await?;
+    s.room(&space)?.add_child(&old).await?;
+    s.room(&field)?.add_child(&trip).await?;
+    s.room(&old)?.leave().await?;
+    join_synced(&bob, &lab, "Lab chat").await?;
+    join_synced(&bob, &trip, "Field trip").await?;
+
+    // Lab chat: a question, a reply, an edit, a reaction and a file.
+    let lab_timeline = s.timeline(&lab).await?;
+    let bob_lab = bob.session.timeline(&lab).await?;
+    let question = send_text(&lab_timeline, "Which dataset?").await?;
+    send_text(&lab_timeline, "Draft plan").await?;
+    wait_for("bob sees the question", bob_lab.updates(), |e| {
+        has_message(e, "Which dataset?")
+    })
+    .await?;
+    let reply = bob_lab
+        .send_markdown("The **new** one", Some(&question))
+        .await?;
+    timeout("reply", reply.sent()).await??;
+    let entries = wait_for("the draft", lab_timeline.updates(), |e| {
+        has_message(e, "Draft plan") && has_message(e, "The **new** one")
+    })
+    .await?;
+    let draft = find_message(&entries, "Draft plan").unwrap().key.clone();
+    lab_timeline.edit_markdown(&draft, "Final plan").await?;
+    let answer = find_message(&entries, "The **new** one")
+        .unwrap()
+        .key
+        .clone();
+    lab_timeline.toggle_reaction(&answer, "👍").await?;
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let attachment = Attachment {
+        filename: "melt.bin".into(),
+        mimetype: "application/octet-stream".into(),
+        bytes: data.clone(),
+    };
+    timeout(
+        "file sent",
+        lab_timeline.send("", vec![attachment], None).await?.sent(),
+    )
+    .await??;
+    wait_for("edited and reacted", lab_timeline.updates(), |e| {
+        find_message(e, "Final plan").is_some_and(|ev| message(ev).edited)
+            && find_message(e, "The **new** one")
+                .is_some_and(|ev| !message(ev).reactions.is_empty())
+    })
+    .await?;
+
+    // Field trip: bob's encrypted message, which alice decrypts.
+    let trip_timeline = s.timeline(&trip).await?;
+    wait_for("bob joined the trip", trip_timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
+    })
+    .await?;
+    let bob_trip = bob.session.timeline(&trip).await?;
+    send_text(&bob_trip, "Crevasse at km 12").await?;
+    wait_for("alice decrypts", trip_timeline.updates(), |e| {
+        has_message(e, "Crevasse at km 12")
+    })
+    .await?;
+
+    let list = s.room_list().await?;
+    wait_for("the tree", list.updates(), |state| {
+        state.graph.children(&space).len() == 3 && !state.graph.children(&field).is_empty()
+    })
+    .await?;
+
+    let dir = TempDir::new()?;
+    let request = |format| ExportRequest {
+        of: ExportOf::Space {
+            space: space.clone(),
+            rooms: vec![lab.clone(), trip.clone()],
+        },
+        format,
+        range: ExportRange::All,
+        files: ExportFiles::default(),
+        to: SaveTo::File(dir.path().to_owned()),
+    };
+
+    let id = s.export(request(ExportFormat::Html))?;
+    let export = export_ended(s, id).await?;
+    let ExportState::Done(summary) = &export.state else {
+        bail!("not done: {:?}", export.state)
+    };
+    assert_eq!(summary.rooms, 2);
+    assert_eq!(summary.files, 1);
+    assert_eq!(summary.undecryptable, 0);
+    let folder = &export.folder;
+    let folder_name = folder.file_name().unwrap().to_string_lossy();
+    assert!(
+        folder_name.starts_with("Mtrx – Ice sheets – "),
+        "{folder_name}"
+    );
+    assert!(folder.join("style.css").exists());
+    assert!(!folder.join(".spool").exists());
+    let index = read(&export.index)?;
+    assert!(
+        index.contains("<a href=\"Lab%20chat/messages.html\">Lab chat</a>"),
+        "{index}"
+    );
+    assert!(index.contains(">Field</li>"), "{index}");
+    assert!(index.contains("<a href=\"Field%20trip/messages.html\">Field trip</a>"));
+    assert!(
+        index.contains("<span class=\"count\">Not joined</span>"),
+        "{index}"
+    );
+    let page = read(&folder.join("Lab chat").join("messages.html"))?;
+    assert!(
+        page.contains("Final plan") && !page.contains("Draft plan"),
+        "{page}"
+    );
+    assert!(page.contains("(edited)"));
+    assert!(page.contains("The <strong>new</strong> one"), "{page}");
+    assert!(page.contains("👍 1"), "{page}");
+    assert!(page.contains("Which dataset?</blockquote>"), "{page}");
+    let files: Vec<_> = std::fs::read_dir(folder.join("Lab chat").join("files"))?
+        .collect::<std::io::Result<_>>()?;
+    assert_eq!(files.len(), 1);
+    let saved = files[0].path();
+    assert!(saved.to_string_lossy().ends_with(" melt.bin"), "{saved:?}");
+    assert!(std::fs::read(&saved)? == data);
+    let trip_page = read(&folder.join("Field trip").join("messages.html"))?;
+    assert!(trip_page.contains("Crevasse at km 12"), "{trip_page}");
+
+    let id = s.export(request(ExportFormat::Json))?;
+    let export = export_ended(s, id).await?;
+    assert!(
+        matches!(export.state, ExportState::Done(_)),
+        "{:?}",
+        export.state
+    );
+    assert_ne!(&export.folder, folder, "a folder of its own");
+    let index: serde_json::Value = serde_json::from_str(&read(&export.index)?)?;
+    assert_eq!(index["state"], "done");
+    let lab_json: serde_json::Value = serde_json::from_str(&read(
+        &export.folder.join("Lab chat").join("messages.json"),
+    )?)?;
+    assert_eq!(lab_json["room_id"], lab.as_str());
+    assert_eq!(lab_json["status"], "complete");
+    let messages = lab_json["messages"].as_array().context("messages")?;
+    let bodies: Vec<&str> = (messages.iter())
+        .filter_map(|m| m["content"]["body"].as_str())
+        .collect();
+    // As sent: the original and its edit.
+    assert!(bodies.contains(&"Draft plan"), "{bodies:?}");
+    assert!(
+        (messages.iter()).any(|m| m["content"]["m.relates_to"]["rel_type"] == "m.replace"),
+        "the edit"
+    );
+    assert_eq!(lab_json["files"].as_object().map(|f| f.len()), Some(1));
+    let trip_json = read(&export.folder.join("Field trip").join("messages.json"))?;
+    assert!(trip_json.contains("Crevasse at km 12"), "decrypted");
+    Ok(())
+}
+
+/// Messages from before we were in an encrypted room can't be decrypted:
+/// marked and counted. The limits keep the newest.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn export_limits_and_undecryptable_messages() -> Result<()> {
+    let (_, alice) = new_user("exportutd").await?;
+    let (_, bob) = new_user("exportutd").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("vault".into()),
+            encrypted: true,
+            ..Default::default()
+        })
+        .await?;
+    let timeline = alice.session.timeline(&room).await?;
+    send_text(&timeline, "Before bob").await?;
+    alice
+        .session
+        .room(&room)?
+        .invite(&bob.session.user_id())
+        .await?;
+    join_synced(&bob, &room, "vault").await?;
+    wait_for("bob joined", timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
+    })
+    .await?;
+    let since = SystemTime::now();
+    send_text(&timeline, "After bob").await?;
+    let bob_timeline = bob.session.timeline(&room).await?;
+    wait_for("bob decrypts", bob_timeline.updates(), |e| {
+        has_message(e, "After bob")
+    })
+    .await?;
+
+    let dir = TempDir::new()?;
+    let export = |range| {
+        let session = &bob.session;
+        let id = session.export(ExportRequest {
+            of: ExportOf::Room(room.clone()),
+            format: ExportFormat::PlainText,
+            range,
+            files: ExportFiles::default(),
+            to: SaveTo::File(dir.path().to_owned()),
+        });
+        async move {
+            let export = export_ended(session, id?).await?;
+            let text = read(&export.folder.join("vault").join("messages.txt"))?;
+            anyhow::Ok((export, text))
+        }
+    };
+    let (all, text) = export(ExportRange::All).await?;
+    let ExportState::Done(summary) = &all.state else {
+        bail!("not done: {:?}", all.state)
+    };
+    assert_eq!(summary.undecryptable, 1, "{text}");
+    assert!(text.contains("[Unable to decrypt this message"), "{text}");
+    assert!(text.contains(": After bob"), "{text}");
+    assert!(read(&all.index)?.contains("vault (vault/messages.txt): 2 messages"));
+
+    let (_, text) = export(ExportRange::Last(1)).await?;
+    assert!(
+        text.contains(": After bob") && !text.contains("Unable to decrypt"),
+        "{text}"
+    );
+    let (_, text) = export(ExportRange::Since(since)).await?;
+    assert!(
+        text.contains(": After bob") && !text.contains("Unable to decrypt"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// A cancelled export keeps what it wrote: valid files, the open room
+/// ending where it stopped, and the index saying so.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn cancelling_an_export_keeps_what_was_written() -> Result<()> {
+    let (_, alice) = new_user("exportcancel").await?;
+    let s = &alice.session;
+    let space = s
+        .create_room(NewRoom {
+            name: Some("Notes".into()),
+            space: true,
+            ..Default::default()
+        })
+        .await?;
+    let mut rooms = Vec::new();
+    for name in ["one", "two"] {
+        let room = s
+            .create_room(NewRoom {
+                name: Some(name.into()),
+                ..Default::default()
+            })
+            .await?;
+        s.room(&space)?.add_child(&room).await?;
+        let timeline = s.timeline(&room).await?;
+        for n in 0..3 {
+            send_text(&timeline, &format!("{name} {n}")).await?;
+        }
+        rooms.push(room);
+    }
+    let dir = TempDir::new()?;
+    let id = s.export(ExportRequest {
+        of: ExportOf::Space {
+            space: space.clone(),
+            rooms: rooms.clone(),
+        },
+        format: ExportFormat::Json,
+        range: ExportRange::All,
+        files: ExportFiles::default(),
+        to: SaveTo::File(dir.path().to_owned()),
+    })?;
+    // The folder is there at once, while it runs.
+    let running = s.exports().get();
+    let started = running.iter().find(|e| e.id == id).context("listed")?;
+    assert!(started.is_running());
+    assert!(started.folder.exists());
+    s.cancel_export(id);
+    let export = export_ended(s, id).await?;
+    assert!(
+        matches!(export.state, ExportState::Cancelled(_)),
+        "{:?}",
+        export.state
+    );
+    assert!(!export.folder.to_string_lossy().ends_with(".part"));
+    assert!(!export.folder.join(".spool").exists());
+    let index: serde_json::Value = serde_json::from_str(&read(&export.index)?)?;
+    assert_eq!(index["state"], "cancelled");
+    for name in ["one", "two"] {
+        let path = export.folder.join(name).join("messages.json");
+        if path.exists() {
+            let room: serde_json::Value = serde_json::from_str(&read(&path)?)?;
+            assert!(
+                room["status"] == "stopped" || room["status"] == "complete",
+                "{room}"
+            );
+        }
+    }
+    s.remove_export(id);
+    assert!(s.exports().get().iter().all(|e| e.id != id));
+    assert!(export.folder.exists(), "the folder stays");
+    Ok(())
 }

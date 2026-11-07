@@ -17,6 +17,7 @@ mod echo;
 mod emoji;
 mod encryption;
 mod error;
+mod export;
 mod fetch;
 mod lists;
 mod live;
@@ -58,6 +59,10 @@ pub use encryption::{
     VerificationState,
 };
 pub use error::{Error, Result};
+pub use export::{
+    Export, ExportFiles, ExportFormat, ExportId, ExportOf, ExportRange, ExportRequest, ExportState,
+    ExportSummary,
+};
 pub use lists::{
     Badges, ListSection, RoomLists, RoomSort, SectionChoice, SectionLayout, SpaceEntry, SpaceKey,
 };

@@ -49,6 +49,9 @@ pub enum Error {
     /// A download failed or was cancelled (why, in English).
     #[error("{0}")]
     Download(String),
+    /// An export could not start (why, in English).
+    #[error("{0}")]
+    Export(String),
     #[error("notifications: {0}")]
     Notifications(String),
     /// The server does not share presence: it refuses ours and others'
