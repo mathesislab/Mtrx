@@ -6,7 +6,7 @@ import XCTest
 final class DirectoryRowsTests: XCTestCase {
     func testDetails() {
         XCTAssertEqual(
-            DirectoryRows.details(Make.directoryRoom("!s", space: true, members: 12, topic: "\nIce\nmore", children: 4)),
+            DirectoryRows.details(Make.directoryRoom("!s", space: true, members: 12, topic: Make.topic("\nIce\nmore"), children: 4)),
             "Space · 4 rooms · Ice · 12 members")
         XCTAssertEqual(DirectoryRows.details(Make.directoryRoom("!r", members: 1)), "1 member")
     }

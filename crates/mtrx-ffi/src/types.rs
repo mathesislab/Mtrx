@@ -128,7 +128,7 @@ pub struct RoomSummary {
     /// `mxc://` URI, for `Session.avatar`. For a direct chat without its own
     /// picture, the other person's.
     pub avatar_url: Option<String>,
-    pub topic: Option<String>,
+    pub topic: crate::Topic,
     pub kind: RoomKind,
     /// Joined, or invited and not joined yet. Rooms asked to join are not
     /// listed: `RoomLists.membership`.
@@ -160,7 +160,7 @@ impl From<&core::RoomSummary> for RoomSummary {
             id: room.id.to_string(),
             name: room.name.clone(),
             avatar_url: room.avatar.as_ref().map(ToString::to_string),
-            topic: room.topic.clone(),
+            topic: crate::Topic::from(&room.topic),
             kind: match room.kind {
                 core::RoomKind::Room => RoomKind::Room,
                 core::RoomKind::Space => RoomKind::Space,
@@ -1021,7 +1021,9 @@ mod tests {
             id: "!room:example.org".try_into().unwrap(),
             name: "Ice sheets".into(),
             avatar: None,
-            topic: Some("Greenland".into()),
+            topic: core::Topic::parse(
+                "Greenland\n[call Weekly passcode 1] https://zoom.us/j/1\n[link] https://a.org/",
+            ),
             kind: core::RoomKind::Direct,
             membership: core::Membership::Joined,
             encrypted: true,

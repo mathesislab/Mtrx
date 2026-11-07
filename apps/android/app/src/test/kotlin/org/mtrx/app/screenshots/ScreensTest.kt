@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Rule
 import org.junit.Test
 import org.mtrx.app.member
+import org.mtrx.app.topicOf
 import org.mtrx.app.model.RoomSort
 import org.mtrx.app.rooms.InviteContent
 import org.mtrx.app.rooms.JoinContent
@@ -184,7 +185,7 @@ open class ScreensTest {
     @Composable
     private fun OverviewAtEnd(updating: Boolean, failed: Boolean) {
         val long = teamChildren + (1..12).map { org.mtrx.app.directoryRoom("!extra$it:example.org", "Project $it", members = it.toLong()) } +
-            org.mtrx.app.directoryRoom("!last:example.org", "Last room", members = 2, topic = "The list's last row")
+            org.mtrx.app.directoryRoom("!last:example.org", "Last room", members = 2, topic = topicOf("The list's last row"))
         SpaceOverviewContent(
             teamHeader,
             OverviewRooms(long, updating = updating, failed = failed, pending = emptySet(), buttonOf = { org.mtrx.app.joinButton(it) }),
@@ -222,7 +223,7 @@ open class ScreensTest {
                 kind = DirectoryKind.ALL,
                 results = JoinResults.Listed(
                     listOf(
-                        org.mtrx.app.directoryRoom("!glacio:example.org", "Glaciology", members = 240, topic = "Everything about glaciers"),
+                        org.mtrx.app.directoryRoom("!glacio:example.org", "Glaciology", members = 240, topic = topicOf("Everything about glaciers")),
                         org.mtrx.app.directoryRoom("!ice:example.org", "Ice sheets", membership = Membership.JOINED, members = 12),
                         org.mtrx.app.directoryRoom("!polar:example.org", "Polar science", space = true, members = 80),
                         org.mtrx.app.directoryRoom("!icecore:example.org", "Ice cores", joinRule = uniffi.mtrx.JoinRule.KNOCK, members = 18),
@@ -259,7 +260,7 @@ open class ScreensTest {
 
     @Test
     fun invite() = snap("invite") {
-        InviteContent(listed(WORKSHOP).copy(topic = "Planning the 2027 ice sheet workshop"), images, busy = false, onAccept = {}, onDecline = {}, onBack = {})
+        InviteContent(listed(WORKSHOP).copy(topic = topicOf("Planning the 2027 ice sheet workshop")), images, busy = false, onAccept = {}, onDecline = {}, onBack = {})
     }
 }
 

@@ -92,32 +92,74 @@ final class RoomInfoModelTests: XCTestCase {
     }
 }
 
-/// The topic's preview line and editing it.
-final class TopicsTests: XCTestCase {
-    func testPreviewsTheTextElseTheLinks() {
-        let text = parseTopic(topic: "About.\nMore")
-        XCTAssertEqual(Topics.preview(text, canEdit: false), "About.")
-        let links = parseTopic(topic: "[call Weekly] https://zoom.us/j/1\n[link] https://overleaf.com/a")
-        XCTAssertEqual(Topics.preview(links, canEdit: false), "Weekly · overleaf.com")
-        XCTAssertEqual(Topics.preview(parseTopic(topic: ""), canEdit: true), "Add a topic")
-        XCTAssertNil(Topics.preview(parseTopic(topic: ""), canEdit: false))
-    }
+/// Editing a topic: the library composes what the editor typed.
+final class TopicDraftTests: XCTestCase {
+    private let topic = Make.topic(
+        "Ice group",
+        calls: [Make.link("https://meet.example.org/ice", title: "Weekly", passcode: "42")],
+        links: [Make.link("https://example.org/drive", name: "example.org")])
 
     func testAnEditedTopicRoundTrips() {
-        let topic = "Ice group\n[call Weekly passcode 42] https://meet.example.org/ice\n[link] https://example.org/drive"
-        var draft = TopicDraft(parseTopic(topic: topic))
+        let draft = TopicDraft(topic)
         XCTAssertEqual(draft.calls.map(\.passcode), ["42"])
-        XCTAssertEqual(parseTopic(topic: draft.topic), parseTopic(topic: topic))
-        draft.add(call: false)
-        draft.links[2].url = "not a link"
-        XCTAssertEqual(draft.dropped, 1)
-        XCTAssertEqual(parseTopic(topic: draft.topic).links.count, 2)
-        draft.remove(draft.links[0].id)
-        XCTAssertEqual(parseTopic(topic: draft.topic).links.map(\.call), [false])
+        XCTAssertEqual(draft.links.map(\.title), [""])
+        XCTAssertEqual(
+            draft.topic,
+            "Ice group\n[call Weekly passcode 42] https://meet.example.org/ice\n[link] https://example.org/drive")
     }
 
-    func testFirstLine() {
-        XCTAssertEqual(Topics.firstLine("\n  Sea ice  \nmore"), "Sea ice")
-        XCTAssertNil(Topics.firstLine(nil))
+    func testAnAddressThatIsNotAWebAddressIsMarkedAndLeftOut() {
+        var draft = TopicDraft(topic)
+        draft.add(call: false)
+        XCTAssertEqual(draft.dropped, 0, "nothing typed in yet")
+        draft.links[1].url = "mailto:ann@example.org"
+        XCTAssertFalse(draft.links[1].valid)
+        XCTAssertEqual(draft.dropped, 1)
+        draft.links[0].url = "example.org/papers"
+        XCTAssertTrue(draft.links[0].valid, "https:// may be left out")
+        XCTAssertEqual(
+            draft.topic,
+            "Ice group\n[call Weekly passcode 42] https://meet.example.org/ice\n[link] https://example.org/papers")
+        draft.remove(call: false, at: [1])
+        XCTAssertEqual(draft.dropped, 0)
+    }
+
+    func testAMovedCallBecomesTheRoomsCall() {
+        var draft = TopicDraft(topic)
+        draft.add(call: true)
+        draft.calls[1].url = "zoom.us/j/1"
+        draft.move(call: true, from: [1], to: 0)
+        XCTAssertEqual(
+            draft.topic,
+            "Ice group\n[call] https://zoom.us/j/1\n[call Weekly passcode 42] https://meet.example.org/ice\n"
+                + "[link] https://example.org/drive")
+    }
+}
+
+/// The room header: its topic line, and Join for the room's call.
+final class RoomHeaderTests: XCTestCase {
+    func testTheLineIsThePreviewElseAddATopic() {
+        XCTAssertEqual(RoomHeader.line(Make.topic("About.\nMore"), canEdit: false), "About.")
+        XCTAssertEqual(RoomHeader.line(.none, canEdit: true), "Add a topic")
+        XCTAssertNil(RoomHeader.line(.none, canEdit: false))
+    }
+
+    func testJoinOnlyWithACall() throws {
+        XCTAssertNil(HeaderLinks(Make.topic("About."), canEdit: true), "nothing to offer")
+
+        let drive = Make.link("https://example.org/drive", name: "example.org")
+        let links = try XCTUnwrap(HeaderLinks(Make.topic(links: [drive]), canEdit: false))
+        XCTAssertNil(links.join, "links only: the menu, no Join")
+        XCTAssertEqual(links.groups.map(\.title), ["Links"])
+        XCTAssertEqual(links.canEdit, false)
+
+        let weekly = Make.link("https://meet.example.org/ice", title: "Weekly", passcode: "42")
+        let daily = Make.link("https://zoom.us/j/1", name: "Zoom")
+        let header = try XCTUnwrap(HeaderLinks(Make.topic(calls: [weekly, daily], links: [drive]), canEdit: true))
+        XCTAssertEqual(header.join, weekly, "the first call is the room's")
+        XCTAssertEqual(header.joinLabel, "Join Weekly, passcode 42")
+        XCTAssertEqual(header.groups.map(\.title), ["Calls", "Links"], "calls first")
+        XCTAssertEqual(header.groups.map(\.links), [[weekly, daily], [drive]])
+        XCTAssertEqual(header.canEdit, true, "Edit links… last")
     }
 }

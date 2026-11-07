@@ -166,7 +166,7 @@ impl RoomCalls {
             }
         };
         let calls = topic.calls().count();
-        let links = topic.links.len() - calls;
+        let links = topic.others().count();
         let mut counts = row![].spacing(4).align_y(Alignment::Center);
         if calls > 0 {
             counts = counts.push(icons::camera(13.0, style::on_secondary));
@@ -220,7 +220,7 @@ impl RoomCalls {
     ) -> Vec<Entry<'a, app::Message>> {
         let mut entries = Vec::new();
         let (calls, links): (Vec<&RoomLink>, Vec<&RoomLink>) =
-            topic.links.iter().partition(|l| l.is_call());
+            (topic.calls().collect(), topic.others().collect());
         for (group, order, message) in [
             (calls, &state.calls, Message::Calls as fn(_) -> _),
             (links, &state.links, Message::Links),
@@ -429,9 +429,9 @@ pub fn update(room: &mut Room, message: Message, cx: &mut Cx<'_>) -> Task<app::M
         return Task::none();
     };
     // A call moved to the top becomes the room's: the topic changes.
-    let listed = (cx.lists.room(&id)).and_then(|r| r.topic.as_deref());
-    let shown = Topic::parse(listed.unwrap_or_default());
-    let topic = topic::moved(shown, calls, moved).to_topic();
+    let (from, to) = moved;
+    let listed = topic::of(cx.lists.room(&id)).clone();
+    let topic = listed.moved(calls, from, to).to_topic();
     topic::save(
         cx.session,
         &mut room.topic,

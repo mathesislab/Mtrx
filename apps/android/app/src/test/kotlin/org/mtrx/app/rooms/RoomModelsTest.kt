@@ -33,7 +33,6 @@ import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.DirectoryPage
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.MtrxException
-import uniffi.mtrx.Topic
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RoomModelsTest {
@@ -56,7 +55,7 @@ class RoomModelsTest {
     fun roomInfoFollowsTheSettingsAndReadsTheMembersOnceLoaded() = runTest {
         session.settings = roomSettings(joinRule = JoinRule.PUBLIC)
         session.memberList = listOf(member("@b:x"))
-        val model = RoomInfoModel(room, session) { it.text }
+        val model = RoomInfoModel(room, session) { text, _ -> text }
         // Nothing read until Room info shows.
         assertNull(model.settings.value)
         assertNull(model.members.value)
@@ -78,10 +77,10 @@ class RoomModelsTest {
     @Test
     fun aTopicSavedFromTheRoomScreenIsNotCancelledByLeaving() = runTest {
         val store = ViewModelStore()
-        val factory = viewModelFactory { initializer { RoomInfoModel(room, session) { "composed ${it.text}" } } }
+        val factory = viewModelFactory { initializer { RoomInfoModel(room, session) { text, _ -> "composed $text" } } }
         val model = ViewModelProvider(store, factory)[RoomInfoModel::class.java]
         session.roomGate = CompletableDeferred()
-        model.setTopic(Topic("Ice", emptyList()))
+        model.setTopic(TopicDraft("Ice"))
         store.clear()
         // The call runs to its end: its answer arrives.
         session.roomError = MtrxException.Other("not allowed")
@@ -93,14 +92,14 @@ class RoomModelsTest {
     @Test
     fun aChangeShowsAtOnceAndAFailedOneGoesAgain() = runTest {
         session.settings = roomSettings(banned = listOf(Banned(user("@c:x"), reason = null)))
-        val model = RoomInfoModel(room, session) { "composed ${it.text}" }
+        val model = RoomInfoModel(room, session) { text, _ -> "composed $text" }
         model.load()
         session.roomGate = CompletableDeferred()
         model.setJoinRule(JoinRule.KNOCK)
         model.setAddress(" #ice ")
         assertEquals(JoinRule.KNOCK, model.settings.value?.joinRule)
         assertEquals("#ice:example.org", model.settings.value?.address)
-        model.setTopic(Topic("Ice", emptyList()))
+        model.setTopic(TopicDraft("Ice"))
         model.setAddress("")
         assertNull(model.busy.value)
         session.roomGate!!.complete(Unit)
@@ -115,7 +114,7 @@ class RoomModelsTest {
 
     @Test
     fun memberChangesReadTheMembersAgainAndFailuresShow() = runTest {
-        val model = RoomInfoModel(room, session) { it.text }
+        val model = RoomInfoModel(room, session) { text, _ -> text }
         session.memberList = listOf(member("@b:x", level = 50))
         model.setLevel("@b:x", 50)
         model.remove("@c:x", "  ", ban = true)

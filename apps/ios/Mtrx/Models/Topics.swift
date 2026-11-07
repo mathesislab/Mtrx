@@ -1,92 +1,125 @@
-import Foundation
 import MtrxFFI
+import SwiftUI
 
-/// A room's topic: its text and the links on lines of their own (calls and
-/// other links), as the desktop shows and edits them.
-enum Topics {
-    /// The line the room's header previews the topic with: its text's first
-    /// line, else its links' names, else "Add a topic" if we may edit it.
-    static func preview(_ topic: Topic, canEdit: Bool) -> String? {
-        if let first = topic.text.split(separator: "\n", omittingEmptySubsequences: false).first,
-           !topic.text.isEmpty
-        {
-            return String(first)
-        }
-        if !topic.links.isEmpty {
-            return topic.links.map(\.name).joined(separator: " · ")
-        }
-        return canEdit ? "Add a topic" : nil
+// A room's topic comes parsed from the library (`RoomSummary.topic`): its
+// text, its calls (the first is the room's, which the header joins) and its
+// other links, as the desktop shows and edits them.
+
+extension Topic {
+    /// No topic.
+    static let none = Topic(text: "", calls: [], links: [], firstLine: nil, preview: nil)
+}
+
+/// What the room header offers of a topic's calls and links: Join for the
+/// room's call, and a menu with the calls, then the links, then Edit links…
+/// where we may edit the topic. None without calls or links.
+struct HeaderLinks: Equatable {
+    struct Group: Equatable {
+        let title: String
+        let call: Bool
+        let links: [RoomLink]
     }
 
-    /// The first non-empty line of a topic's text, for a room's details.
-    static func firstLine(_ topic: String?) -> String? {
-        guard let topic else { return nil }
-        return parseTopic(topic: topic).text
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty }
+    /// The room's call: a tap on Join opens it.
+    let join: RoomLink?
+    /// Calls, then Links, each where there are any.
+    let groups: [Group]
+    let canEdit: Bool
+
+    init?(_ topic: Topic, canEdit: Bool) {
+        guard !topic.calls.isEmpty || !topic.links.isEmpty else { return nil }
+        join = topic.calls.first
+        groups = [
+            Group(title: "Calls", call: true, links: topic.calls),
+            Group(title: "Links", call: false, links: topic.links),
+        ].filter { !$0.links.isEmpty }
+        self.canEdit = canEdit
+    }
+
+    /// "Join Weekly, passcode 123".
+    var joinLabel: String? {
+        join.map { call in
+            call.passcode.map { "Join \(call.name), passcode \($0)" } ?? "Join \(call.name)"
+        }
     }
 }
 
-/// A topic being edited: its text, and its calls and links, each with a
-/// title, an address, and for calls a passcode.
+/// A topic being edited: its text, its calls and its other links, each in
+/// its order and with a title, an address, and for calls a passcode.
 struct TopicDraft: Equatable {
     struct Link: Identifiable, Equatable {
         let id = UUID()
-        var call: Bool
         var title = ""
         var url = ""
         var passcode = ""
 
-        /// Its address is a web link the topic can keep.
-        var valid: Bool {
-            let url = url.trimmingCharacters(in: .whitespaces)
-            guard let parsed = URL(string: url), let scheme = parsed.scheme?.lowercased() else { return false }
-            return (scheme == "https" || scheme == "http") && parsed.host != nil
+        init(title: String = "", url: String = "", passcode: String = "") {
+            self.title = title
+            self.url = url
+            self.passcode = passcode
+        }
+
+        init(_ link: RoomLink) {
+            self.init(title: link.title ?? "", url: link.url, passcode: link.passcode ?? "")
+        }
+
+        /// Its address is a web address the topic can keep (the library's
+        /// rule: "https://" may be left out).
+        var valid: Bool { linkUrl(text: url) != nil }
+
+        /// Nothing typed in: left out when saved, without a word.
+        func blank(call: Bool) -> Bool {
+            [title, url, call ? passcode : ""].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+        }
+
+        func draft(call: Bool) -> LinkDraft {
+            LinkDraft(call: call, title: title, url: url, passcode: call ? passcode : "")
         }
     }
 
     var text: String
+    /// In order: the first is the room's call.
+    var calls: [Link]
     var links: [Link]
 
     init(_ topic: Topic) {
         text = topic.text
-        links = topic.links.map {
-            Link(call: $0.call, title: $0.title ?? "", url: $0.url, passcode: $0.passcode ?? "")
-        }
+        calls = topic.calls.map(Link.init)
+        links = topic.links.map(Link.init)
     }
 
-    init(text: String = "", links: [Link] = []) {
+    init(text: String = "", calls: [Link] = [], links: [Link] = []) {
         self.text = text
+        self.calls = calls
         self.links = links
     }
 
-    /// The calls first, as the topic keeps them, then the other links.
-    var calls: [Link] { links.filter(\.call) }
-    var others: [Link] { links.filter { !$0.call } }
-
     mutating func add(call: Bool) {
-        links.append(Link(call: call))
+        if call { calls.append(Link()) } else { links.append(Link()) }
     }
 
-    mutating func remove(_ id: UUID) {
-        links.removeAll { $0.id == id }
+    mutating func remove(call: Bool, at offsets: IndexSet) {
+        if call { calls.remove(atOffsets: offsets) } else { links.remove(atOffsets: offsets) }
     }
 
-    /// Links without an address the topic can keep: left out when saved.
+    mutating func move(call: Bool, from offsets: IndexSet, to offset: Int) {
+        if call {
+            calls.move(fromOffsets: offsets, toOffset: offset)
+        } else {
+            links.move(fromOffsets: offsets, toOffset: offset)
+        }
+    }
+
+    /// Calls and links typed in without a web address: left out when saved.
     var dropped: Int {
-        links.filter { !$0.valid }.count
+        calls.filter { !$0.blank(call: true) && !$0.valid }.count
+            + links.filter { !$0.blank(call: false) && !$0.valid }.count
     }
 
-    /// The topic to save.
+    /// The topic to save (the library's: calls first, each kind in its
+    /// order).
     var topic: String {
-        composeTopic(
-            topic: Topic(
-                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                links: (calls + others).map {
-                    RoomLink(
-                        call: $0.call, title: $0.title, url: $0.url, passcode: $0.call ? $0.passcode : nil, name: "")
-                }))
+        composeTopic(text: text, links: calls.map { $0.draft(call: true) } + links.map { $0.draft(call: false) })
     }
 }
 

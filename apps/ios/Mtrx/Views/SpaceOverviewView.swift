@@ -1,7 +1,7 @@
 import MtrxFFI
 import SwiftUI
 
-/// A space's overview, full screen: its picture, name and topic, then its
+/// A space's overview, full screen: its picture, name, topic and links, then its
 /// Rooms (to join or open), Members, or Settings. A joined subspace opens
 /// its own overview over it.
 struct SpaceOverviewView: View {
@@ -19,6 +19,7 @@ struct SpaceOverviewView: View {
                     }
                 }
         }
+        .opensRoomLinks()
     }
 
     private func page(_ space: RoomSummary) -> SpaceOverviewPage {
@@ -122,13 +123,17 @@ struct SpaceOverviewPage: View {
                 Text(space.name)
                     .font(.title3.weight(.semibold))
                     .multilineTextAlignment(.center)
-                let topic = parseTopic(topic: space.topic ?? "")
+                let topic = space.topic
                 if !topic.text.isEmpty {
                     Text(Formatting.linked(topic.text))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .lineLimit(4)
+                }
+                if !topic.calls.isEmpty || !topic.links.isEmpty {
+                    LinkChips(topic: topic)
+                        .padding(.top, 2)
                 }
             }
             .frame(maxWidth: .infinity)

@@ -14,7 +14,7 @@ enum DirectoryRows {
             case let n: parts.append("Space · \(n) rooms")
             }
         }
-        if let line = Topics.firstLine(room.topic) {
+        if let line = room.topic.firstLine {
             parts.append(line)
         }
         parts.append(room.members == 1 ? "1 member" : "\(room.members) members")
@@ -117,7 +117,7 @@ final class SpaceOverviewModel: JoiningModel {
         guard !filter.isEmpty else { return rooms }
         return rooms.filter {
             $0.name.localizedCaseInsensitiveContains(filter)
-                || ($0.topic?.localizedCaseInsensitiveContains(filter) ?? false)
+                || $0.topic.text.localizedCaseInsensitiveContains(filter)
         }
     }
 

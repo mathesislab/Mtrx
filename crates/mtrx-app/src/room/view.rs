@@ -11,7 +11,7 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Event, EventContent, MessageKind, MessageRow, OwnedRoomId, OwnedUserId, RoomKind,
-    RoomSummary, Row, Topic, UserId,
+    RoomSummary, Row, UserId,
 };
 
 use crate::{
@@ -329,7 +329,7 @@ impl Room {
     ) -> Element<'a, app::Message> {
         let avatars = look.avatars;
         let name = summary.map_or("", |s| s.name.as_str());
-        let topic = Topic::parse(summary.and_then(|s| s.topic.as_deref()).unwrap_or_default());
+        let topic = topic::of(summary);
         let rights = summary.map(|s| s.rights).unwrap_or_default();
         let can_edit = rights.change_topic;
         // A direct chat's person, as long as their presence is known.
@@ -369,7 +369,7 @@ impl Room {
         // The caret, then a preview of the topic and how many messages are
         // pinned while closed: open or close the topic panel. While it is
         // open, a click here is outside it and closes it.
-        let preview = topic::preview(&topic, look.call_services, can_edit);
+        let preview = topic::preview(topic, look.call_services, can_edit);
         let pinned = summary.map_or(&[][..], |s| &s.pinned);
         if summary.is_some() && (preview.is_some() || !pinned.is_empty()) {
             let open = self.topic.open;
@@ -435,7 +435,7 @@ impl Room {
             row![
                 about,
                 self.calls.header_controls(
-                    &topic,
+                    topic,
                     look.call_services,
                     can_edit,
                     match look.popup {
@@ -477,7 +477,7 @@ impl Room {
         let panel = self.topic.open.then(|| {
             let topic = self
                 .topic
-                .view(&topic, look.call_services, can_edit, move |message| {
+                .view(topic, look.call_services, can_edit, move |message| {
                     Message::Topic(message).to(&self.id)
                 });
             let mut content = column![topic].spacing(14);

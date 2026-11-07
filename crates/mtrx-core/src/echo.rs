@@ -18,7 +18,7 @@ use tokio::sync::watch;
 
 use crate::{
     History, JoinRule, Membership, NotifyMode, Permissions, RoomSettings, RoomSummary, RoomTag,
-    SpaceLink,
+    SpaceLink, Topic,
 };
 
 /// How long a change the server accepted may still differ from what sync
@@ -266,8 +266,8 @@ pub(crate) struct PendingRead {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Changes {
     tags: Pendings<RoomTag>,
-    /// Without a topic: none.
-    topics: Pendings<Option<String>>,
+    /// Without a topic: empty.
+    topics: Pendings<Topic>,
     /// Only names that are not blank: a room without one is named after
     /// its members.
     names: Pendings<String>,
@@ -328,21 +328,15 @@ impl Echoes {
         (self.changes).send_if_modified(|changes| answer(&mut changes.tags, room, &tag, ok, now));
     }
 
-    /// `room`'s topic is being set to `topic` (none to remove it).
-    pub(crate) fn set_topic(&self, room: &RoomId, topic: Option<String>) {
+    /// `room`'s topic is being set to `topic` (empty to remove it).
+    pub(crate) fn set_topic(&self, room: &RoomId, topic: Topic) {
         self.changes.send_modify(|changes| {
             changes.topics.insert(room.to_owned(), Pending::new(topic));
         });
     }
 
     /// The server answered setting `room`'s topic: on failure it goes.
-    pub(crate) fn topic_answered(
-        &self,
-        room: &RoomId,
-        topic: &Option<String>,
-        ok: bool,
-        now: Instant,
-    ) {
+    pub(crate) fn topic_answered(&self, room: &RoomId, topic: &Topic, ok: bool, now: Instant) {
         (self.changes)
             .send_if_modified(|changes| answer(&mut changes.topics, room, topic, ok, now));
     }
@@ -655,7 +649,7 @@ mod tests {
         let echoes = Echoes::default();
         let a = owned_room_id!("!a:x");
         echoes.set_tag(&a, RoomTag::Favourite);
-        echoes.set_topic(&a, Some("About.".into()));
+        echoes.set_topic(&a, Topic::parse("About."));
         echoes.set_pinned(&a, vec![owned_event_id!("$1")]);
         echoes.lay_over(&mut [], Instant::now());
         assert_eq!(echoes.changes.borrow().count(), 0);
@@ -669,22 +663,22 @@ mod tests {
             room(a.as_str(), RoomKind::Room),
             room(b.as_str(), RoomKind::Room),
         ];
-        rooms[1].topic = Some("Old".into());
+        rooms[1].topic = Topic::parse("Old");
         let now = Instant::now();
-        let new = Some("New".into());
+        let new = Topic::parse("New\n[call] https://zoom.us/j/1");
         echoes.set_topic(&a, new.clone());
-        echoes.set_topic(&b, None);
+        echoes.set_topic(&b, Topic::default());
         let mut shown = rooms.clone();
         echoes.lay_over(&mut shown, now);
         assert_eq!(shown[0].topic, new);
-        assert_eq!(shown[1].topic, None);
+        assert!(shown[1].topic.is_empty());
 
         echoes.topic_answered(&a, &new, true, now);
-        echoes.topic_answered(&b, &None, false, now);
+        echoes.topic_answered(&b, &Topic::default(), false, now);
         let mut shown = rooms.clone();
         assert_eq!(echoes.lay_over(&mut shown, now), Some(now + ECHO_TIMEOUT));
         assert_eq!(shown[0].topic, new);
-        assert_eq!(shown[1].topic.as_deref(), Some("Old"));
+        assert_eq!(shown[1].topic.text, "Old");
 
         rooms[0].topic = new.clone();
         echoes.lay_over(&mut rooms.clone(), now);

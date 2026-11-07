@@ -2,6 +2,7 @@ package org.mtrx.app.rooms
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.height
@@ -50,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,7 +71,9 @@ import uniffi.mtrx.JoinButton
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
+import uniffi.mtrx.RoomLink
 import uniffi.mtrx.RoomSettings
+import uniffi.mtrx.Topic
 
 /** The tabs of a space's overview. */
 enum class OverviewTab(val label: String) { ROOMS("Rooms"), MEMBERS("Members"), SETTINGS("Settings") }
@@ -98,8 +102,9 @@ class OverviewRowActions(
 
 /**
  * A space's overview, full screen: its picture, name, Invite… and Leave…,
- * its topic, and the tabs Rooms (its rooms to join or open), Members and
- * Settings (as Room info).
+ * its topic with its calls and links as chips, and the tabs Rooms (its rooms
+ * to join or open), Members and Settings (the topic to edit, then as Room
+ * info).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -127,6 +132,7 @@ fun SpaceOverviewContent(
     val pillHeight = maxOf(PILL_HEIGHT, linesHeight(MaterialTheme.typography.labelMedium) + 8.dp)
     var filter by rememberSaveable { mutableStateOf("") }
     val snackbar = remember { SnackbarHostState() }
+    val openRoomLink = rememberRoomLinkOpener(onOpenLink, snackbar)
     LaunchedEffect(error) {
         val message = error ?: return@LaunchedEffect
         snackbar.showSnackbar(message)
@@ -155,8 +161,8 @@ fun SpaceOverviewContent(
                 contentPadding = PaddingValues(bottom = if (pill != null) pillHeight + PILL_MARGIN * 2 else 0.dp),
             ) {
                 item(key = "header") { InfoHeader(header, settings, images, busy, infoActions, onLeave) }
-                item(key = "topic") {
-                    TopicBox(header.topic, header.rights.changeTopic, infoActions::setTopic, onOpenLink)
+                if (header.topic.text.isNotBlank() || header.topic.hasLinks) {
+                    item(key = "topic") { SpaceTopic(header.topic, openRoomLink) }
                 }
                 item(key = "tabs") {
                     // As the tabs: above the default text size, no tick, and
@@ -182,10 +188,15 @@ fun SpaceOverviewContent(
                 when (tab) {
                     OverviewTab.ROOMS -> roomsTab(rooms, filter, { filter = it }, images, rowActions)
                     OverviewTab.MEMBERS -> membersSection(members, images, infoActions)
-                    OverviewTab.SETTINGS -> if (settings == null) {
-                        item(key = "loading") { Spinner() }
-                    } else {
-                        settingsSection(header, settings, members?.count { it.membership == Membership.JOINED }, spaceNames, ownUserId, infoActions)
+                    OverviewTab.SETTINGS -> {
+                        item(key = "topic-box") {
+                            TopicBox(header.topic, header.rights.changeTopic, infoActions::setTopic, openRoomLink)
+                        }
+                        if (settings == null) {
+                            item(key = "loading") { Spinner() }
+                        } else {
+                            settingsSection(header, settings, members?.count { it.membership == Membership.JOINED }, spaceNames, ownUserId, infoActions)
+                        }
                     }
                 }
             }
@@ -247,6 +258,30 @@ private fun StatusPill(pill: OverviewPill, server: String, onRetry: () -> Unit, 
                 Text("Updating…", style = MaterialTheme.typography.labelMedium)
             }
         }
+    }
+}
+
+/** A space's topic under its name: the text, then its calls and links as chips ([onOpen]); edited in Settings. */
+@Composable
+private fun SpaceTopic(topic: Topic, onOpen: (RoomLink) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (topic.text.isNotBlank()) {
+            Text(
+                topic.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        LinkChips(topic, onOpen, Modifier.fillMaxWidth())
     }
 }
 
