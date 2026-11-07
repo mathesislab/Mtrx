@@ -7,7 +7,8 @@ pub mod people;
 pub mod start;
 pub mod window;
 
-use self::window::Resize;
+pub use self::window::closing;
+use self::window::{Resize, Window};
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -21,7 +22,6 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use iced::{
     Element, Length, Size, Subscription, Task, Theme, mouse,
-    theme::Mode,
     widget::{
         button, column, container, mouse_area, opaque, row, stack, text, text_editor, text_input,
     },
@@ -49,24 +49,22 @@ use crate::{
     hint::{Position, hint},
     info, join,
     last_view::LastView,
-    login::{self, Login},
-    math::{self, Math},
+    login::Login,
+    math::Math,
     media::{self, Previews, Viewer},
     members, message,
     message_field::{self, Field},
     message_menu::MenuAt,
     overview, pdf_viewer, pins,
-    placement::{self, Frame, Placement},
+    placement::Placement,
     popover,
     presence::{self, Presences},
     room::{self, Load, Look, Older, Room},
     selection::{self, Selection},
     send_later,
     settings::{self, Settings},
-    sidebar, spelling,
-    style::{self, MESSAGE_INSET, SPACE_BAR_WIDTH},
+    sidebar, spelling, style,
     task::{self, Owned},
-    text_size::Zoom,
     tint::Tint,
     topic,
     update::{self, Updater},
@@ -141,9 +139,6 @@ pub enum Message {
 
 pub struct App {
     profile: Profile,
-    /// The window has the keyboard focus (notifications only when not
-    /// looking at the room).
-    focused: bool,
     /// Connection for creating Google Meet links, shared by all accounts.
     google: Arc<Google>,
     settings: Settings,
@@ -151,20 +146,8 @@ pub struct App {
     settings_file: Option<PathBuf>,
     /// Where the last space and room shown are saved; `None` in tests.
     view_file: Option<PathBuf>,
-    /// The window's size and position, to open it there again.
-    placement: Placement,
-    /// Where the placement is saved; `None` in tests.
-    placement_file: Option<PathBuf>,
-    /// The room list's edge is being dragged.
-    resizing: bool,
+    window: Window,
     screen: Screen,
-    /// Light or dark as iced reports the system (on macOS, the app's
-    /// appearance, see [`crate::appearance`]).
-    system_mode: Mode,
-    /// The window's size in logical pixels, whatever the text size.
-    window: Size,
-    /// The display's scale: physical pixels per logical pixel.
-    scale: f32,
     math: Math,
     badge: Badge,
     updater: Updater,
@@ -411,11 +394,6 @@ impl Popup {
     }
 }
 
-/// The room list's width limits, and its draggable edge's.
-const MIN_ROOM_LIST_WIDTH: f32 = 200.0;
-const MAX_ROOM_LIST_WIDTH: f32 = 520.0;
-const RESIZE_HANDLE: f32 = 5.0;
-
 /// Something finished in the background, or failed.
 struct Notice {
     text: String,
@@ -637,20 +615,6 @@ impl Environment {
     }
 }
 
-/// The window's settings for closing it (`docs/native-behaviour.md`, A1). On
-/// macOS closing it hides it, as a Mac app's main window, and the app goes
-/// on (synced, notifying); clicking its Dock icon shows it again (our
-/// winit). Quitting, and elsewhere closing, requests to close it: the app
-/// goes offline and ends its session first, see [`window::Message::Close`].
-pub fn closing(mut window: iced::window::Settings) -> iced::window::Settings {
-    window.exit_on_close_request = false;
-    #[cfg(target_os = "macos")]
-    {
-        window.platform_specific.hides_on_close = true;
-    }
-    window
-}
-
 impl App {
     pub fn boot(environment: Environment) -> (Self, Task<Message>) {
         let Environment {
@@ -667,38 +631,17 @@ impl App {
         update::clean_up();
         let app = Self {
             profile: profile.clone(),
-            focused: true,
             google: Arc::new(Google::new(&data_root, secrets)),
             settings,
             settings_file: Some(settings_file),
             view_file: Some(LastView::path(&profile)),
-            placement_file: Some(Placement::path(&profile)),
-            window: placement
-                .frame
-                .map_or(placement::DEFAULT_SIZE, |frame| frame.size()),
-            placement,
-            resizing: false,
+            window: Window::new(placement, Some(Placement::path(&profile))),
             screen: Screen::Starting,
-            system_mode: Mode::Light,
-            scale: 1.0,
             math: Math::new(),
             badge: Badge::default(),
             updater: Updater::default(),
         };
-        let restore = Task::perform(
-            async move { Session::restore(profile).await.map(|s| Shared(Arc::new(s))) },
-            |result| {
-                Message::Start(start::Message::Restored(
-                    result.map_err(|e| Shared(Arc::new(e))),
-                ))
-            },
-        );
-        let scale = iced::window::oldest().then(|id| match id {
-            Some(id) => iced::window::scale_factor(id)
-                .map(|m| Message::Window(window::Message::ScaleFactor(m))),
-            None => Task::none(),
-        });
-        let mode = iced::system::theme().map(|m| Message::Window(window::Message::Theme(m)));
+        let restore = app.restore();
         // Once the app has launched, over winit's own.
         #[cfg(target_os = "macos")]
         let menu_bar = iced::window::oldest().then(|id| match id {
@@ -707,33 +650,16 @@ impl App {
         });
         #[cfg(not(target_os = "macos"))]
         let menu_bar = Task::none();
-        // Whether the window opened on a display, see `window::Message::Opened`.
-        let opened = iced::window::oldest().then(|id| match id {
-            Some(id) => iced::window::run(id, placement::displays).then(move |displays| {
-                iced::window::position(id).map(move |position| {
-                    Message::Window(window::Message::Opened(id, displays.clone(), position))
-                })
-            }),
-            None => Task::none(),
-        });
         let update = Task::done(Message::Update(update::Message::Tick));
         (
             app,
-            Task::batch([
-                restore,
-                scale,
-                mode,
-                opened,
-                menu_bar,
-                update,
-                ask_to_notify(),
-            ]),
+            Task::batch([restore, Window::boot(), menu_bar, update, ask_to_notify()]),
         )
     }
 
     /// The theme the app is drawn in.
     pub fn theme(&self) -> Theme {
-        self.settings.appearance.theme(self.system_mode)
+        self.window.theme(&self.settings)
     }
 
     /// Layout units per logical pixel, which iced applies on top of the
@@ -744,12 +670,12 @@ impl App {
 
     /// The window's size in layout units.
     fn viewport(&self) -> Size {
-        self.window / self.scale_factor()
+        self.window.viewport(&self.settings)
     }
 
     /// Physical pixels per layout unit, for drawing images sharp.
     fn pixel_scale(&self) -> f32 {
-        self.scale * self.scale_factor()
+        self.window.pixel_scale(&self.settings)
     }
 
     /// The theme iced fixes the window to, if any.
@@ -879,6 +805,8 @@ impl App {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Window(message) => self.window_update(message),
+            Message::Start(message) => self.start(message),
             Message::Sidebar(sidebar::Message::Scrolled) => Task::none(),
             Message::Sidebar(sidebar::Message::OutOfView(out_of_view)) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -887,53 +815,6 @@ impl App {
                 Task::none()
             }
             Message::Sidebar(sidebar::Message::ScrollTo(offset)) => sidebar::scroll_to(offset),
-            Message::Window(window::Message::Resize(Resize::Start)) => {
-                self.resizing = true;
-                Task::none()
-            }
-            Message::Window(window::Message::Resize(Resize::Move(x))) => {
-                self.settings.room_list_width =
-                    (x - SPACE_BAR_WIDTH).clamp(MIN_ROOM_LIST_WIDTH, MAX_ROOM_LIST_WIDTH);
-                Task::none()
-            }
-            Message::Window(window::Message::Resize(Resize::End)) => {
-                self.resizing = false;
-                if let Some(file) = &self.settings_file
-                    && let Err(e) = self.settings.save(file)
-                {
-                    tracing::warn!("could not save settings: {e}");
-                }
-                Task::none()
-            }
-            Message::Start(start::Message::Restored(Ok(Shared(session))))
-            | Message::Start(start::Message::LoggedIn(Ok(Shared(session)))) => {
-                let mut main = Main::new(session.clone());
-                main.restore = self.view_file.as_deref().map(LastView::load);
-                self.screen = Screen::Main(Box::new(main));
-                let migrate = self.move_colours_to_account(&session);
-                let share = self.settings.share_presence;
-                let presence = presence::start(&session, share)
-                    .map(|m| Message::People(people::Message::Presence(m)));
-                let start = task::request(
-                    async move {
-                        session.start_sync().await;
-                        session.start_scheduler();
-                        let list = session.room_list().await?;
-                        let lists = session.room_lists(&list);
-                        let verified = session.is_device_verified().await?;
-                        Ok((Shared(Arc::new(lists)), verified))
-                    },
-                    |m| Message::Start(start::Message::Ready(m)),
-                );
-                // Not sharing, offline before syncing, whose requests would
-                // say online; sharing, sync need not wait.
-                let start = if share {
-                    Task::batch([presence, start])
-                } else {
-                    presence.chain(start)
-                };
-                Task::batch([start, migrate])
-            }
             Message::Sidebar(sidebar::Message::Colours(colours)) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.colours = colours;
@@ -954,65 +835,6 @@ impl App {
                     Err(e) => tracing::warn!("could not move room list colours: {e}"),
                 }
                 Task::none()
-            }
-            Message::Start(start::Message::Restored(Err(Shared(error)))) => {
-                let mut login = Login::default();
-                // Usually nobody is signed in yet. Without a keyring signing
-                // in would fail too, so say so before the user tries.
-                if let mtrx_core::Error::NoSecretStore(_) = *error {
-                    login.error = Some(error.to_string());
-                }
-                self.screen = Screen::Login(login);
-                Task::none()
-            }
-            Message::Start(start::Message::Login(message)) => {
-                let Screen::Login(login) = &mut self.screen else {
-                    return Task::none();
-                };
-                let (profile, homeserver) = (self.profile.clone(), login.homeserver.clone());
-                match login.update(message) {
-                    login::Action::None => Task::none(),
-                    login::Action::Password => {
-                        let (user, password) = (login.user.clone(), login.password.clone());
-                        login.password_sign_in(task::request(
-                            async move {
-                                Session::login(profile, &homeserver, &user, &password)
-                                    .await
-                                    .map(|s| Shared(Arc::new(s)))
-                            },
-                            |m| Message::Start(start::Message::LoggedIn(m)),
-                        ))
-                    }
-                    login::Action::Browser => login.browser_sign_in(task::request(
-                        async move {
-                            Session::login_oauth(profile, &homeserver, |url| {
-                                let _ = open::that_detached(url.as_str());
-                            })
-                            .await
-                            .map(|s| Shared(Arc::new(s)))
-                        },
-                        |m| Message::Start(start::Message::LoggedIn(m)),
-                    )),
-                }
-            }
-            Message::Start(start::Message::LoggedIn(Err(error))) => {
-                if let Screen::Login(login) = &mut self.screen {
-                    login.failed(error);
-                }
-                Task::none()
-            }
-            Message::Start(start::Message::Ready(result)) => {
-                let Screen::Main(main) = &mut self.screen else {
-                    return Task::none();
-                };
-                match result {
-                    Ok((Shared(lists), verified)) => {
-                        main.room_lists = Some(lists);
-                        main.verified = Some(verified);
-                    }
-                    Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
-                }
-                self.restore_view()
             }
             Message::Rooms(lists) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1486,27 +1308,6 @@ impl App {
                     _ => Task::none(),
                 }
             }
-            Message::Start(start::Message::SignInAgain) => {
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                let session = main.session.clone();
-                task::request(async move { session.forget().await }, |m| {
-                    Message::Start(start::Message::Forgotten(m))
-                })
-            }
-            Message::Start(start::Message::Forgotten(result)) => {
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                // Ready to log in as before.
-                let mut login = Login::default();
-                login.homeserver = main.own_user.server_name().to_string();
-                login.user = main.own_user.localpart().to_owned();
-                login.error = result.err();
-                self.screen = Screen::Login(login);
-                Task::none()
-            }
             Message::Account(account::Message::Reconnect) => {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
@@ -1787,7 +1588,7 @@ impl App {
                 let Screen::Main(main) = &self.screen else {
                     return Task::none();
                 };
-                let looking = self.focused
+                let looking = self.window.focused
                     && main
                         .pane
                         .room()
@@ -1820,40 +1621,6 @@ impl App {
                     None => Task::none(),
                 });
                 Task::batch([raise, self.update(Message::Pane(pane::Message::Open(room)))])
-            }
-            Message::Window(window::Message::Focused(focused)) => {
-                self.focused = focused;
-                let Screen::Main(main) = &self.screen else {
-                    return Task::none();
-                };
-                // The window was in use until now.
-                main.activity(mtrx_core::Activity::Input)
-            }
-            Message::Window(window::Message::Close(id)) => {
-                // What is being written is kept before the session ends.
-                let draft = match &self.screen {
-                    Screen::Main(main) => {
-                        (main.pane.room()).map(|room| keep_now(room.drafts.clone(), room.draft()))
-                    }
-                    _ => None,
-                }
-                .unwrap_or_else(Task::none);
-                // Others see us offline now, not once the server forgets us.
-                let offline = match &self.screen {
-                    Screen::Main(main) if !main.presences.unavailable() => {
-                        let session = main.session.clone();
-                        Task::future(async move {
-                            presence::go_offline(&session, mtrx_core::Activity::Background).await
-                        })
-                        .discard()
-                    }
-                    _ => Task::none(),
-                };
-                // iced drops the app only after its runtime has stopped, when
-                // the SDK's stores can no longer close: end the session (once
-                // it is offline), or a browser sign-in, now.
-                self.screen = Screen::Closing;
-                Task::batch([offline, draft]).chain(iced::window::close(id))
             }
             Message::People(people::Message::Presence(message)) => self.presence(message),
             Message::CloseNotice => {
@@ -1970,83 +1737,6 @@ impl App {
                     Task::none()
                 }
             },
-            Message::Window(window::Message::Resized(size)) => {
-                // Reported in layout units.
-                self.window = size * self.scale_factor();
-                self.pdf_resized()
-            }
-            Message::Window(window::Message::Opened(id, Some(displays), Some(position))) => {
-                // Left on a display since unplugged, the window opens on the
-                // main one instead, as the first time.
-                let Some(left) = self.placement.frame else {
-                    return Task::none();
-                };
-                if Frame::new(position, left.size()).reachable(&displays) {
-                    return Task::none();
-                }
-                let Some(frame) = Frame::fallback(&displays) else {
-                    return Task::none();
-                };
-                Task::batch([
-                    iced::window::maximize(id, false),
-                    iced::window::resize(id, frame.size() / self.scale_factor()),
-                    iced::window::move_to(id, frame.position()),
-                ])
-            }
-            Message::Window(window::Message::Opened(..)) => Task::none(),
-            // Not while closing hid it (macOS): where it is not shown.
-            Message::Window(window::Message::Moved(id)) => {
-                iced::window::mode(id).then(move |mode| {
-                    if mode == iced::window::Mode::Hidden {
-                        return Task::none();
-                    }
-                    iced::window::is_maximized(id).then(move |maximized| {
-                        iced::window::position(id).map(move |position| {
-                            Message::Window(window::Message::Placed {
-                                position,
-                                maximized,
-                                fullscreen: mode == iced::window::Mode::Fullscreen,
-                            })
-                        })
-                    })
-                })
-            }
-            Message::Window(window::Message::Placed {
-                position: Some(position),
-                maximized,
-                fullscreen,
-            }) => {
-                let frame = Frame::new(position, self.window);
-                if self.placement.follow(frame, maximized, fullscreen)
-                    && let Some(file) = &self.placement_file
-                {
-                    self.placement.save(file);
-                }
-                Task::none()
-            }
-            Message::Window(window::Message::Placed { position: None, .. }) => Task::none(),
-            Message::Window(window::Message::ScaleFactor(scale)) => {
-                self.scale = scale;
-                self.pdf_resized()
-            }
-            Message::Window(window::Message::Zoom(zoom)) => {
-                if let Screen::Main(main) = &mut self.screen
-                    && let Some(Modal::Pdf(pdf)) = &mut main.modal
-                {
-                    return pdf.update(pdf_viewer::Message::Zoom(match zoom {
-                        Zoom::In => pdf_viewer::Zoom::In,
-                        Zoom::Out => pdf_viewer::Zoom::Out,
-                        Zoom::Reset => pdf_viewer::Zoom::Fit,
-                    }));
-                }
-                self.settings.text_size = self.settings.text_size.zoom(zoom);
-                self.save_settings();
-                self.pdf_resized()
-            }
-            Message::Window(window::Message::Theme(mode)) => {
-                self.system_mode = mode;
-                Task::none()
-            }
             Message::Modal(modal::Message::OpenImage(file)) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
@@ -2753,26 +2443,6 @@ impl App {
         let version = (self.updater.available.as_ref()).map(|u| u.version.to_string());
         self.settings.updates.seen = version;
         self.save_settings();
-    }
-
-    /// Room list colours chosen before the account kept them, moved there
-    /// unless the account has colours already.
-    fn move_colours_to_account(&self, session: &Arc<Session>) -> Task<Message> {
-        let Some(legacy) = self.settings.legacy_colours() else {
-            return Task::none();
-        };
-        let session = session.clone();
-        task::request(
-            async move {
-                if session.room_list_colours() != RoomListColours::default() {
-                    return Ok(());
-                }
-                session
-                    .change_room_list_colours(|colours| *colours = legacy)
-                    .await
-            },
-            |m| Message::Sidebar(sidebar::Message::ColoursMoved(m)),
-        )
     }
 
     /// Saves the settings; the open panel says if that failed.
@@ -3537,6 +3207,17 @@ impl App {
         }
     }
 
+    /// The PDF viewer, while it shows.
+    fn pdf_viewer(&mut self) -> Option<&mut pdf_viewer::Viewer> {
+        match &mut self.screen {
+            Screen::Main(main) => match &mut main.modal {
+                Some(Modal::Pdf(pdf)) => Some(pdf),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The PDF viewer follows the window's size, the display's scale and
     /// the text size. (Math does too, by the keys of its pictures.)
     fn pdf_resized(&mut self) -> Task<Message> {
@@ -3589,24 +3270,6 @@ impl App {
             room,
         }
         .save(file);
-    }
-
-    /// The width of the open room, right of the room list.
-    fn room_header_width(&self) -> f32 {
-        self.viewport().width - SPACE_BAR_WIDTH - self.settings.room_list_width - RESIZE_HANDLE
-    }
-
-    fn math_params(&self) -> math::Params {
-        let theme = self.theme();
-        let palette = theme.extended_palette();
-        let max_width = self.room_header_width() - MESSAGE_INSET;
-        math::Params {
-            max_width: max_width.max(200.0),
-            scale: self.pixel_scale(),
-            text: palette.background.base.text,
-            link: palette.primary.base.color,
-            muted: style::muted(&theme),
-        }
     }
 
     /// Show a room's members anew where they are listed: beside the open
@@ -3875,18 +3538,7 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
-            iced::window::resize_events()
-                .map(|(_, size)| Message::Window(window::Message::Resized(size))),
-            iced::window::events().filter_map(|(id, event)| match event {
-                iced::window::Event::Moved(_) | iced::window::Event::Resized(_) => {
-                    Some(Message::Window(window::Message::Moved(id)))
-                }
-                _ => None,
-            }),
-            iced::window::close_requests().map(|m| Message::Window(window::Message::Close(m))),
-            iced::system::theme_changes().map(|m| Message::Window(window::Message::Theme(m))),
-            // Also on the sign-in screen.
-            iced::event::listen_with(window_keys),
+            self.window.subscription(),
             iced::time::every(update::TICK).map(|_| Message::Update(update::Message::Tick)),
         ];
         // Settings… and Check for Updates… in the app menu.
@@ -3921,17 +3573,6 @@ impl App {
                     iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => Some(
                         Message::Shown(room::Message::Select(selection::Message::End)),
                     ),
-                    _ => None,
-                }));
-            }
-            if self.resizing {
-                subscriptions.push(iced::event::listen_with(|event, _, _| match event {
-                    iced::Event::Mouse(mouse::Event::CursorMoved { position }) => Some(
-                        Message::Window(window::Message::Resize(Resize::Move(position.x))),
-                    ),
-                    iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                        Some(Message::Window(window::Message::Resize(Resize::End)))
-                    }
                     _ => None,
                 }));
             }
@@ -4116,7 +3757,7 @@ impl App {
         );
         let room_list = sidebar::room_list(sidebar::RoomListView {
             // As wide as a room's below its name.
-            topic_width: (self.room_header_width() * room::TOPIC_SHARE)
+            topic_width: (self.window.room_width(&self.settings) * room::TOPIC_SHARE)
                 .max(popover::MIN_SHARED_WIDTH),
             ..main.room_list_view(&self.settings)
         });
@@ -4178,7 +3819,7 @@ impl App {
                     own_user: &main.own_user,
                     theme: theme.clone(),
                     math: &self.math,
-                    params: self.math_params(),
+                    params: self.window.math_params(&self.settings),
                     avatars: &main.avatars,
                     colored_names: self.settings.colored_names,
                     call_services: &self.settings.call_services,
@@ -4200,7 +3841,7 @@ impl App {
         // The room list's edge, dragged to resize it.
         let handle = mouse_area(
             container(iced::widget::space())
-                .width(RESIZE_HANDLE)
+                .width(window::RESIZE_HANDLE)
                 .height(Length::Fill),
         )
         .interaction(mouse::Interaction::ResizingHorizontally)
@@ -4508,28 +4149,6 @@ async fn run_request(
     }
     .await;
     result.map_err(|e: mtrx_core::Error| e.to_string())
-}
-
-/// Keys on every screen, whatever is focused: ⌘+ ⌘− ⌘0 zoom (Ctrl on Windows
-/// and Linux), and Ctrl+W closes the window as its close button does. On
-/// macOS ⌘W is the Window menu's Close, which hides it (see [`closing`]).
-#[cfg_attr(target_os = "macos", allow(unused_variables))]
-fn window_keys(
-    event: iced::Event,
-    _status: iced::event::Status,
-    window: iced::window::Id,
-) -> Option<Message> {
-    use iced::keyboard;
-    match as_key(event) {
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-            #[cfg(not(target_os = "macos"))]
-            if key.as_ref() == keyboard::Key::Character("w") && modifiers.command() {
-                return Some(Message::Window(window::Message::Close(window)));
-            }
-            Zoom::from_key(&key, modifiers).map(|m| Message::Window(window::Message::Zoom(m)))
-        }
-        _ => None,
-    }
 }
 
 /// ⌘K / Ctrl+K focuses the room search, Esc closes what floats on top or

@@ -9,7 +9,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use iced::{Rectangle, Size};
+use iced::{Rectangle, Size, theme::Mode};
 use iced_test::simulator::Simulator;
 use mtrx_core::{
     Attachment, Connection, EventContent, Media, NewRoom, OwnedEventId, Profile, RoomKind,
@@ -23,7 +23,9 @@ use super::*;
 use crate::{
     fonts, mention,
     message_menu::MenuAt,
+    placement::{self, Frame},
     selection::{Point, Pos, Selection},
+    text_size::Zoom,
 };
 
 mod editing;
@@ -195,18 +197,17 @@ fn app(screen: Screen, mode: Mode) -> App {
             SecretStore::File,
         )
         .unwrap(),
-        focused: true,
         google: Arc::new(Google::new(&snapshot_dir(), SecretStore::File)),
         settings: Settings::default(),
         settings_file: None,
         view_file: None,
-        placement: Placement::default(),
-        placement_file: None,
-        resizing: false,
+        window: Window {
+            size: Size::new(1200.0, 800.0),
+            scale: 2.0,
+            system_mode: mode,
+            ..Window::new(Placement::default(), None)
+        },
         screen,
-        system_mode: mode,
-        window: Size::new(1200.0, 800.0),
-        scale: 2.0,
         math: Math::new(),
         badge: Badge::default(),
         updater: Updater::default(),
@@ -321,7 +322,7 @@ fn zoom_steps_the_text_size() {
     let _ = app.update(Message::Window(window::Message::Resized(Size::new(
         600.0, 400.0,
     ))));
-    assert_eq!(app.window, Size::new(900.0, 600.0));
+    assert_eq!(app.window.size, Size::new(900.0, 600.0));
     let _ = app.update(Message::Window(window::Message::Zoom(Zoom::Out)));
     assert_eq!(app.settings.text_size, TextSize::Larger);
     let _ = app.update(Message::Window(window::Message::Zoom(Zoom::Reset)));
@@ -409,8 +410,8 @@ fn window_placement_is_saved() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("window.json");
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
-    app.placement_file = Some(file.clone());
-    app.scale = 2.0;
+    app.window.placement_file = Some(file.clone());
+    app.window.scale = 2.0;
     app.settings.text_size = crate::text_size::TextSize::Default;
     let placed = |maximized| {
         Message::Window(window::Message::Placed {
@@ -514,7 +515,7 @@ fn window_left_off_screen_opens_on_the_main_display() {
     let monitor = Rectangle::new(iced::Point::new(1512.0, 0.0), Size::new(2560.0, 1415.0));
     let left = iced::Point::new(1800.0, 200.0);
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
-    app.placement.frame = Some(Frame::new(left, Size::new(1000.0, 700.0)));
+    app.window.placement.frame = Some(Frame::new(left, Size::new(1000.0, 700.0)));
     let id = iced::window::Id::unique();
 
     let both = app.update(Message::Window(window::Message::Opened(
@@ -563,8 +564,8 @@ fn command_w_closes_the_window() {
         }
         event
     };
-    assert!(window_keys(press(keyboard::Modifiers::empty()), Status::Ignored, id).is_none());
-    let close = window_keys(press(keyboard::Modifiers::COMMAND), Status::Captured, id);
+    assert!(window::keys(press(keyboard::Modifiers::empty()), Status::Ignored, id).is_none());
+    let close = window::keys(press(keyboard::Modifiers::COMMAND), Status::Captured, id);
     if cfg!(target_os = "macos") {
         assert!(close.is_none());
         return;

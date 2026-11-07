@@ -250,7 +250,7 @@ fn the_menus_actions_no_field_takes_go_to_the_app() {
         (ZoomOut, Zoom::Out),
         (ZoomReset, Zoom::Reset),
     ] {
-        let zoomed = window_keys(Event::StandardAction(action), Status::Captured, id);
+        let zoomed = window::keys(Event::StandardAction(action), Status::Captured, id);
         assert_eq!(
             format!("{zoomed:?}"),
             expected(Message::Window(window::Message::Zoom(zoom)))
