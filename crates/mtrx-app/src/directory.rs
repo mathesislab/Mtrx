@@ -332,15 +332,6 @@ impl SpaceRooms {
             .unwrap_or_default()
     }
 
-    /// Pictures of the listed rooms, with their size.
-    pub fn avatars(&self) -> impl Iterator<Item = (&mtrx_core::MxcUri, f32)> {
-        self.by_space
-            .values()
-            .filter_map(|l| l.rooms.as_ref())
-            .flatten()
-            .filter_map(|r| Some((r.avatar.as_deref()?, AVATAR)))
-    }
-
     /// Rooms of `spaces` not in `rooms` (not joined, nor invited) whose
     /// name contains `filter` (lower case), names starting with it first;
     /// each once.

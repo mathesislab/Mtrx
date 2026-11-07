@@ -21,10 +21,10 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Connection, Contact, Draft, DraftKeeper, Live, Media, MediaRef, Membership,
-    Notification, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
-    OwnedUserId, Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists,
-    RoomOrAliasId, RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session,
-    SpaceKey, Topic, Url,
+    Notification, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
+    Profile, RecoveryStep, RoomKind, RoomListColours, RoomListState, RoomLists, RoomOrAliasId,
+    RoomTag, RoomTimeline, ScheduledMessage, SecretStore, ServiceKind, Session, SpaceKey, Topic,
+    Url,
 };
 use mtrx_google::Google;
 
@@ -205,6 +205,8 @@ pub enum Message {
     /// Text size, or the PDF viewer's zoom while it is open.
     Zoom(Zoom),
     ThemeMode(Mode),
+    /// What a view asks for, such as a picture it shows.
+    Media(media::Message),
     AvatarLoaded(avatar::Key, Option<image::Handle>),
     PreviewLoaded(MediaRef, Option<media::Preview>),
     /// Show an image large.
@@ -585,33 +587,6 @@ impl Main {
         if let Some(room) = left.id() {
             self.popup.take_if(|popup| popup.of_room(room));
         }
-    }
-
-    /// Pictures of the spaces, listed rooms, and the open room's header and
-    /// timeline senders, with their sizes.
-    fn avatars_on_screen(&self, settings: &Settings) -> Vec<(OwnedMxcUri, f32)> {
-        let rooms = &self.lists.rooms;
-        let mut wanted = sidebar::avatars(&self.room_list_view(settings));
-        wanted.extend(self.card.as_ref().and_then(|c| c.avatar(rooms)));
-        if let Some(overview) = self.card.as_ref().and_then(|c| c.overview.as_ref()) {
-            wanted.extend(overview.avatars());
-            wanted.extend(self.space_rooms.avatars());
-        }
-        if let Some(Modal::Join(join)) = &self.modal {
-            wanted.extend(join.avatars());
-        }
-        if let Some(room) = self.pane.room() {
-            wanted.extend(room.avatars(
-                rooms.iter().find(|r| r.id == room.id),
-                &self.own_user,
-                self.show_members,
-                self.popup.as_ref(),
-            ));
-        }
-        wanted
-            .into_iter()
-            .map(|(mxc, size)| (mxc.to_owned(), size))
-            .collect()
     }
 
     fn room_list_view<'a>(&'a self, settings: &'a Settings) -> sidebar::RoomListView<'a> {
@@ -1123,7 +1098,7 @@ impl App {
                     }
                     Err(e) => main.report(format!("Could not load the rooms: {e}"), None),
                 }
-                Task::batch([self.load_avatars(), self.restore_view()])
+                self.restore_view()
             }
             Message::Rooms(lists) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1136,12 +1111,7 @@ impl App {
                     .map_or(Task::none(), |space| {
                         Task::done(Message::ShowSpace(space, overview::Tab::Rooms))
                     });
-                Task::batch([
-                    joined,
-                    self.load_pinned(),
-                    self.load_avatars(),
-                    self.restore_view(),
-                ])
+                Task::batch([joined, self.load_pinned(), self.restore_view()])
             }
             Message::SelectSpace(space) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1151,7 +1121,7 @@ impl App {
                 main.card = None;
                 main.restore = None;
                 main.arrange.escape();
-                self.load_avatars()
+                Task::none()
             }
             Message::Arrange(message) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -1165,7 +1135,7 @@ impl App {
                     popup: &mut main.popup,
                 };
                 let task = main.arrange.update(message, context);
-                Task::batch([task, self.load_avatars()])
+                task
             }
             Message::ArrangeFailed(e) => {
                 if let Screen::Main(main) = &mut self.screen {
@@ -1249,7 +1219,6 @@ impl App {
                             draft,
                             go_to,
                             self.render_math(),
-                            self.load_avatars(),
                             self.load_previews(),
                             self.load_call_service(&id),
                             self.load_pinned(),
@@ -1405,7 +1374,6 @@ impl App {
                 Task::batch([
                     remember.unwrap_or_else(Task::none),
                     self.join_action(action),
-                    self.load_avatars(),
                 ])
             }
             Message::ShowSpace(space, tab) => self.show_card(info::Target::Room(space), tab),
@@ -1523,7 +1491,7 @@ impl App {
                         overview_task(&overview_session, &mut main.space_rooms, &o.space, action)
                     }),
                 };
-                Task::batch([task, overview, self.load_avatars()])
+                Task::batch([task, overview])
             }
             Message::FavouritePerson(user) => {
                 let Screen::Main(main) = &self.screen else {
@@ -1665,13 +1633,13 @@ impl App {
                     Task::none()
                 };
                 main.filter = filter;
-                Task::batch([load, self.load_avatars()])
+                load
             }
             Message::SpaceRoomsLoaded(space, result) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.space_rooms.loaded(space, result);
                 }
-                self.load_avatars()
+                Task::none()
             }
             Message::JoinFound(room, via, knock) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2127,6 +2095,7 @@ impl App {
                 self.system_mode = mode;
                 self.render_math()
             }
+            Message::Media(message) => self.media(message),
             Message::AvatarLoaded(key, handle) => {
                 if let Screen::Main(main) = &mut self.screen {
                     main.avatars.insert(key, handle);
@@ -2283,7 +2252,6 @@ impl App {
                     read,
                     fill(room),
                     self.render_math(),
-                    self.load_avatars(),
                     self.load_previews(),
                 ])
             }
@@ -2298,11 +2266,7 @@ impl App {
                     Older::None => Task::none(),
                     Older::ShowMore => {
                         room.show_more();
-                        Task::batch([
-                            self.render_math(),
-                            self.load_avatars(),
-                            self.load_previews(),
-                        ])
+                        Task::batch([self.render_math(), self.load_previews()])
                     }
                     Older::Paginate => paginate(room),
                 }
@@ -2327,12 +2291,7 @@ impl App {
                         Task::none()
                     }
                 };
-                Task::batch([
-                    more,
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                Task::batch([more, self.render_math(), self.load_previews()])
             }
             room::Message::Composer(action) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2363,13 +2322,7 @@ impl App {
                 } else {
                     Task::none()
                 };
-                // The pictures of those offered.
-                let avatars = if room.completion.is_some() {
-                    self.load_avatars()
-                } else {
-                    Task::none()
-                };
-                Task::batch([members, typing, avatars])
+                Task::batch([members, typing])
             }
             room::Message::TypeInComposer(text) => {
                 if self.covered() {
@@ -2432,7 +2385,7 @@ impl App {
                 {
                     room.members_loaded(result);
                 }
-                self.load_avatars()
+                Task::none()
             }
             room::Message::Send => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2508,7 +2461,6 @@ impl App {
                 Task::batch([
                     room::scroll(scroll),
                     self.render_math(),
-                    self.load_avatars(),
                     self.load_previews(),
                 ])
             }
@@ -2638,7 +2590,6 @@ impl App {
                             fill(room),
                             mark_read(room),
                             self.render_math(),
-                            self.load_avatars(),
                             self.load_previews(),
                             self.load_call_service(&id),
                         ])
@@ -2686,12 +2637,7 @@ impl App {
                     // A new one replaces the one under way.
                     None => seek(room, event),
                 };
-                Task::batch([
-                    go,
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                Task::batch([go, self.render_math(), self.load_previews()])
             }
             room::Message::Sought(result) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -2724,13 +2670,7 @@ impl App {
                 {
                     go = go_to(room, row);
                 }
-                Task::batch([
-                    caught_up,
-                    go,
-                    self.render_math(),
-                    self.load_avatars(),
-                    self.load_previews(),
-                ])
+                Task::batch([caught_up, go, self.render_math(), self.load_previews()])
             }
             room::Message::Unmark(row) => {
                 if let Screen::Main(main) = &mut self.screen
@@ -3748,13 +3688,7 @@ impl App {
         }
         let scroll = room.show_found();
         // The match may be in a message not rendered before.
-        Task::batch([
-            focus,
-            scroll,
-            self.render_math(),
-            self.load_avatars(),
-            self.load_previews(),
-        ])
+        Task::batch([focus, scroll, self.render_math(), self.load_previews()])
     }
 
     fn later(&mut self, id: OwnedRoomId, message: send_later::Message) -> Task<Message> {
@@ -3966,7 +3900,6 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// Request the pictures on screen.
     /// Show a room's members anew where they are listed: beside the open
     /// room, or in its space's overview.
     fn refresh_members(&mut self, room: &OwnedRoomId) -> Task<Message> {
@@ -4185,22 +4118,20 @@ impl App {
             overview_task(&main.session, &mut main.space_rooms, &o.space, o.opened())
         });
         main.card = Some(card);
-        Task::batch([load, presence, overview, self.load_avatars()])
+        Task::batch([load, presence, overview])
     }
 
-    fn load_avatars(&mut self) -> Task<Message> {
+    /// Load what a view asks for, unless it is loaded or loading.
+    fn media(&mut self, message: media::Message) -> Task<Message> {
         let Screen::Main(main) = &mut self.screen else {
             return Task::none();
         };
-        let tasks: Vec<_> = main
-            .avatars_on_screen(&self.settings)
-            .into_iter()
-            .map(|(mxc, size)| {
+        match message {
+            media::Message::AvatarWanted(key) => {
                 main.avatars
-                    .request(&main.session, &mxc, size, Message::AvatarLoaded)
-            })
-            .collect();
-        Task::batch(tasks)
+                    .request(&main.session, key, Message::AvatarLoaded)
+            }
+        }
     }
 
     /// Request the previews of the open room's rendered images.

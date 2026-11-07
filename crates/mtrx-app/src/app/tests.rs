@@ -146,6 +146,34 @@ fn snapshot_at(app: &App, name: &str, cursor: Option<iced::Point>) {
     assert!(snapshot.matches_image(&path).unwrap());
 }
 
+/// Load what the window's view asks for, as the app would, until it asks
+/// for nothing more.
+async fn load_wanted(app: &mut App, session: &Session) {
+    loop {
+        let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+        let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
+            std::time::Instant::now(),
+        ))]);
+        let wanted: Vec<media::Message> = (ui.into_messages())
+            .filter_map(|message| match message {
+                Message::Media(wanted) => Some(wanted),
+                _ => None,
+            })
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let Screen::Main(main) = &mut app.screen else {
+            unreachable!("asked for outside the main screen")
+        };
+        for want in wanted {
+            match want {
+                media::Message::AvatarWanted(key) => main.avatars.load_now(session, key).await,
+            }
+        }
+    }
+}
+
 fn app(screen: Screen, mode: Mode) -> App {
     App {
         profile: Profile::new(
@@ -937,13 +965,11 @@ async fn main_screen_with_math() {
             );
         }
         main.pane = Pane::Open(open);
-        for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-            main.avatars.load_now(&alice, &mxc, size).await;
-        }
 
         let mut app = app(Screen::Main(Box::new(main)), mode);
         // Both name styles: plain (the default) in light, coloured in dark.
         app.settings.colored_names = mode == Mode::Dark;
+        load_wanted(&mut app, &alice).await;
         let params = app.math_params();
         if let Screen::Main(main) = &app.screen {
             for document in main.pane.room().unwrap().math_documents() {
@@ -988,9 +1014,7 @@ async fn main_screen_with_math() {
                 .map(|ev| ev.id.clone())
                 .unwrap();
             main.popup = Some(Popup::Readers(read));
-            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-                main.avatars.load_now(&alice, &mxc, size).await;
-            }
+            load_wanted(&mut app, &alice).await;
             snapshot(&app, "readers-light");
             // Everyone who reacted with the reaction of two, listed from its
             // count, instead of the readers.
@@ -1013,9 +1037,7 @@ async fn main_screen_with_math() {
                 row: reacted.0,
                 key: reacted.1,
             });
-            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-                main.avatars.load_now(&alice, &mxc, size).await;
-            }
+            load_wanted(&mut app, &alice).await;
             snapshot(&app, "reactors-light");
             let Screen::Main(main) = &mut app.screen else {
                 unreachable!()
@@ -2797,10 +2819,8 @@ async fn website_screenshots() {
             for document in main.pane.room().unwrap().math_documents() {
                 app.math.render_now(document, &params);
             }
-            for (mxc, size) in main.avatars_on_screen(&Default::default()) {
-                main.avatars.load_now(ana, &mxc, size).await;
-            }
         }
+        load_wanted(app, ana).await;
     }
 
     for (mode, name) in [

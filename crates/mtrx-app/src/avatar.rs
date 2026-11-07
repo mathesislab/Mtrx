@@ -17,8 +17,9 @@ use tokio::sync::Semaphore;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
-    fonts,
+    app, fonts, media,
     style::{MIN_CONTRAST, contrast, luminance},
+    want::wanting,
 };
 
 /// Element's colours for avatars without a picture and for display names.
@@ -74,37 +75,35 @@ impl Avatars {
     }
 
     /// Thumbnails have twice the logical size, for HiDPI screens.
-    pub fn key(mxc: &MxcUri, size: f32) -> Key {
+    fn key(mxc: &MxcUri, size: f32) -> Key {
         Key {
             mxc: mxc.to_owned(),
             pixels: (size * 2.0).round() as u32,
         }
     }
 
-    fn get(&self, mxc: &MxcUri, size: f32) -> Option<&image::Handle> {
-        match self.images.get(&Self::key(mxc, size))? {
-            Loaded::Image(handle) => Some(handle),
-            Loaded::Failed(_) => None,
-        }
+    /// Whether to download it: not loaded, nor loading, nor failed
+    /// recently.
+    fn wanted(&self, key: &Key) -> bool {
+        let loaded = match self.images.get(key) {
+            Some(Loaded::Image(_)) => true,
+            Some(Loaded::Failed(at)) => at.elapsed() < RETRY_AFTER,
+            None => false,
+        };
+        !loaded && !self.pending.contains(key)
     }
 
-    /// Start downloading unless it is cached, running, or failed recently.
+    /// Start downloading if [wanted](Self::wanted).
     pub fn request<M: Send + 'static>(
         &mut self,
         session: &Arc<Session>,
-        mxc: &MxcUri,
-        size: f32,
+        key: Key,
         done: fn(Key, Option<image::Handle>) -> M,
     ) -> Task<M> {
-        let key = Self::key(mxc, size);
-        let wanted = match self.images.get(&key) {
-            Some(Loaded::Image(_)) => false,
-            Some(Loaded::Failed(at)) => at.elapsed() >= RETRY_AFTER,
-            None => true,
-        };
-        if !wanted || !self.pending.insert(key.clone()) {
+        if !self.wanted(&key) {
             return Task::none();
         }
+        self.pending.insert(key.clone());
         let (session, downloads) = (session.clone(), self.downloads.clone());
         Task::perform(
             async move {
@@ -135,41 +134,51 @@ impl Avatars {
     }
 
     /// The picture if it is loaded, else the initial of `name` on the colour
-    /// of `id` (a user or room ID).
-    pub fn view<'a, M: 'a>(
+    /// of `id` (a user or room ID), asking for the picture.
+    pub fn view<'a>(
         &self,
         id: &str,
         name: &str,
         mxc: Option<&MxcUri>,
         size: f32,
         shape: Shape,
-    ) -> Element<'a, M> {
+    ) -> Element<'a, app::Message> {
         let radius = match shape {
             Shape::Circle => size / 2.0,
             Shape::RoundedSquare => size / 4.0,
         };
-        if let Some(handle) = mxc.and_then(|mxc| self.get(mxc, size)) {
+        let Some(key) = mxc.map(|mxc| Self::key(mxc, size)) else {
+            return initial_view(id, name, size, radius);
+        };
+        if let Some(Loaded::Image(handle)) = self.images.get(&key) {
             return image(handle.clone())
                 .width(size)
                 .height(size)
                 .border_radius(radius)
                 .into();
         }
-        let background = color(id);
-        container(
-            text(initial(name))
-                .size((size * 0.55).round())
-                .font(fonts::SEMIBOLD)
-                .color(Color::WHITE),
-        )
-        .center(size)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(background)),
-            border: Border::default().rounded(radius),
-            ..Default::default()
-        })
-        .into()
+        let want =
+            (self.wanted(&key)).then(|| app::Message::Media(media::Message::AvatarWanted(key)));
+        wanting(initial_view(id, name, size, radius), want)
     }
+}
+
+/// The initial of `name` on the colour of `id`.
+fn initial_view<'a, M: 'a>(id: &str, name: &str, size: f32, radius: f32) -> Element<'a, M> {
+    let background = color(id);
+    container(
+        text(initial(name))
+            .size((size * 0.55).round())
+            .font(fonts::SEMIBOLD)
+            .color(Color::WHITE),
+    )
+    .center(size)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(background)),
+        border: Border::default().rounded(radius),
+        ..Default::default()
+    })
+    .into()
 }
 
 /// Decode a thumbnail and crop it to a `pixels` square.
@@ -190,9 +199,8 @@ fn decode(bytes: &[u8], pixels: u32) -> Option<image::Handle> {
 #[cfg(test)]
 impl Avatars {
     /// Download and decode right away (tests).
-    pub async fn load_now(&mut self, session: &Session, mxc: &MxcUri, size: f32) {
-        let key = Self::key(mxc, size);
-        let bytes = session.thumbnail(mxc, key.pixels).await.unwrap();
+    pub async fn load_now(&mut self, session: &Session, key: Key) {
+        let bytes = session.thumbnail(&key.mxc, key.pixels).await.unwrap();
         let handle = decode(&bytes, key.pixels);
         assert!(handle.is_some(), "decoding failed");
         self.insert(key, handle);
@@ -257,6 +265,58 @@ fn initial(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The view asks for a picture until it is downloading, and again once
+    /// it failed long ago; asked twice, it downloads once.
+    #[test]
+    fn a_picture_is_wanted_until_it_downloads() {
+        use iced::Size;
+        use iced_test::simulator::Simulator;
+        use mtrx_core::{OwnedMxcUri, Profile, SecretStore, test_support::offline_session};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let profile = Profile::new("avatars", dir.path(), SecretStore::File).unwrap();
+        let session = Arc::new(runtime.block_on(offline_session(profile)).unwrap());
+        // As iced runs the app: a session is dropped in its runtime.
+        let _runtime = runtime.enter();
+
+        let mxc = OwnedMxcUri::from("mxc://example.org/ice");
+        let key = Avatars::key(&mxc, 32.0);
+        let asked = |avatars: &Avatars| -> Vec<app::Message> {
+            let view = avatars.view("@ana:example.org", "Ana", Some(&mxc), 32.0, Shape::Circle);
+            let mut ui = Simulator::with_size(fonts::settings(), Size::new(100.0, 100.0), view);
+            let _ = ui.simulate([iced::Event::Window(iced::window::Event::RedrawRequested(
+                Instant::now(),
+            ))]);
+            ui.into_messages().collect()
+        };
+        let request = |avatars: &mut Avatars| {
+            avatars
+                .request(&session, key.clone(), app::Message::AvatarLoaded)
+                .units()
+        };
+
+        let mut avatars = Avatars::new();
+        assert!(matches!(
+            &asked(&avatars)[..],
+            [app::Message::Media(media::Message::AvatarWanted(wanted))] if *wanted == key
+        ));
+        assert_eq!(request(&mut avatars), 1);
+        assert!(asked(&avatars).is_empty());
+        assert_eq!(request(&mut avatars), 0);
+
+        avatars.insert(key.clone(), None);
+        assert!(asked(&avatars).is_empty());
+        assert_eq!(request(&mut avatars), 0);
+
+        let long_ago = Instant::now() - RETRY_AFTER;
+        avatars.images.insert(key.clone(), Loaded::Failed(long_ago));
+        assert_eq!(asked(&avatars).len(), 1);
+        assert_eq!(request(&mut avatars), 1);
+        drop(avatars);
+        drop(session);
+    }
 
     #[test]
     fn hash_matches_element() {

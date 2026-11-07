@@ -13,9 +13,8 @@ use iced::{
     widget::{button, column, container, pick_list, row, space, stack, text, text_input, toggler},
 };
 use mtrx_core::{
-    CallService, History, JoinRule, Membership, MxcUri, NotifyMode, OwnedRoomId, OwnedUserId,
-    Permissions, RoomHandle, RoomKind, RoomLists, RoomSettings, RoomSummary, RoomTag, Topic, User,
-    UserInfo,
+    CallService, History, JoinRule, Membership, NotifyMode, OwnedRoomId, OwnedUserId, Permissions,
+    RoomHandle, RoomKind, RoomLists, RoomSettings, RoomSummary, RoomTag, Topic, User, UserInfo,
 };
 
 use crate::{
@@ -228,15 +227,6 @@ impl Card {
             Target::Room(id) => Some(id),
             Target::User(_) => None,
         }
-    }
-
-    /// The card's picture, with its size.
-    pub fn avatar<'a>(&'a self, rooms: &'a [RoomSummary]) -> Option<(&'a MxcUri, f32)> {
-        let mxc = match &self.target {
-            Target::User(user) => user.avatar.as_deref(),
-            Target::Room(id) => rooms.iter().find(|r| &r.id == id)?.avatar.as_deref(),
-        };
-        Some((mxc?, AVATAR))
     }
 
     /// The edited name and topic, if they differ from `room`'s.

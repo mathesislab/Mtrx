@@ -180,15 +180,6 @@ impl Overview {
             .collect()
     }
 
-    /// Pictures of the members, with their size (the rooms' are the
-    /// app's, with their lists).
-    pub fn avatars(&self) -> impl Iterator<Item = (&mtrx_core::MxcUri, f32)> {
-        self.members
-            .iter()
-            .filter_map(|m| m.as_ref().ok())
-            .flat_map(|m| crate::members::avatars(m))
-    }
-
     /// While the Rooms tab shows, a pill saying the rooms are being listed,
     /// or that the server didn't answer, to try again.
     pub fn status<'a>(&self, shown: info::Shown<'a>) -> Option<Element<'a, app::Message>> {

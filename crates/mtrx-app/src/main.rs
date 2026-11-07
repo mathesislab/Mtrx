@@ -67,6 +67,7 @@ mod text_size;
 mod tint;
 mod topic;
 mod update;
+mod want;
 #[cfg(windows)]
 mod windows;
 

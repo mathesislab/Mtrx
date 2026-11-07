@@ -13,9 +13,9 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, DirectoryRoom, Grouping, Layout, Membership, MxcUri, OwnedRoomId, OwnedUserId,
-    Rights, RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey,
-    Topic, UserId,
+    CallService, DirectoryRoom, Grouping, Layout, Membership, OwnedRoomId, OwnedUserId, Rights,
+    RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, Topic,
+    UserId,
 };
 
 use crate::{
@@ -178,26 +178,6 @@ pub fn go_to<'a>(view: &RoomListView<'a>, go: Go) -> Option<&'a RoomSummary> {
         (Go::Below, None) => 0,
     };
     rows.get(index).copied()
-}
-
-/// Pictures in the space bar and room list, with their sizes.
-pub fn avatars<'a>(view: &RoomListView<'a>) -> Vec<(&'a MxcUri, f32)> {
-    let spaces = (view.lists.top_level_spaces().into_iter())
-        .filter_map(|s| Some((s.avatar.as_deref()?, SPACE_AVATAR)));
-    let listed = listed(view)
-        .into_iter()
-        .filter(|r| view.room_pictures || r.kind != RoomKind::Room)
-        .filter_map(|r| Some((r.avatar.as_deref()?, ROOM_AVATAR)));
-    let filter = view.filter.trim().to_lowercase();
-    let unjoined = if filter.is_empty() {
-        Vec::new()
-    } else {
-        not_joined(view, &filter)
-    };
-    let unjoined = unjoined
-        .into_iter()
-        .filter_map(|r| Some((r.avatar.as_deref()?, directory::AVATAR)));
-    spaces.chain(listed).chain(unjoined).collect()
 }
 
 /// The people of the direct chats the room list shows, in its order,

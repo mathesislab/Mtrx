@@ -20,7 +20,7 @@ use iced::{
 };
 use mtrx_core::{
     CallService, Draft, DraftKeeper, Event, EventContent, EventKey, Media, Member, MessageKind,
-    MessageRow, MxcUri, OwnedEventId, OwnedRoomId, OwnedUserId, RoomHandle, RoomKind, RoomSummary,
+    MessageRow, OwnedEventId, OwnedRoomId, OwnedUserId, RoomHandle, RoomKind, RoomSummary,
     RoomTimeline, Row, ScheduledMessage, SendState, TimelineEntry, Topic, Upload, User, UserId,
 };
 
@@ -593,49 +593,6 @@ impl Room {
             EventContent::Message(m) if m.document.has_math() => Some(&m.document),
             _ => None,
         })
-    }
-
-    /// Pictures of the header and the rendered senders, with their sizes.
-    /// `members_shown`: with the member list's; `popup`: with those it
-    /// lists.
-    pub fn avatars<'a>(
-        &'a self,
-        summary: Option<&'a RoomSummary>,
-        own: &UserId,
-        members_shown: bool,
-        popup: Option<&'a Popup>,
-    ) -> impl Iterator<Item = (&'a MxcUri, f32)> {
-        let room = summary.and_then(|s| Some((s.avatar.as_deref()?, HEADER_AVATAR)));
-        let senders = self.visible_events().flat_map(move |event| {
-            let sender = (event.sender.avatar.as_deref()).map(|a| (a, SENDER_AVATAR));
-            let listed = matches!(popup, Some(Popup::Readers(row)) if *row == event.id);
-            let reactors = match popup {
-                Some(Popup::Reactors { row, key }) if *row == event.id => Some(key.as_str()),
-                _ => None,
-            };
-            sender
-                .into_iter()
-                .chain(actions::reader_avatars(event, listed))
-                .chain(actions::reactor_avatars(event, reactors))
-        });
-        let listed = match &self.member_list {
-            Some(Ok(list)) if members_shown => list.as_slice(),
-            _ => &[],
-        };
-        let members = members::avatars(listed);
-        let mention_room = summary.is_some_and(|s| s.rights.mention_room);
-        let candidates = self
-            .candidates(own, mention_room)
-            .into_iter()
-            .filter_map(|candidate| match candidate {
-                Candidate::Member { member, .. } => Some(member),
-                Candidate::Room => None,
-            });
-        let completed = members::avatars_of(candidates);
-        room.into_iter()
-            .chain(senders)
-            .chain(members)
-            .chain(completed)
     }
 
     /// Images of the rendered messages, for loading their previews.
