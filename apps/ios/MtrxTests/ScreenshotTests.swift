@@ -342,6 +342,34 @@ private enum Screens {
         drafts: ["!ann", "!reading", "!paper"], favourites: ["!ice"], lowPriority: ["!old"],
         categories: [TestCategory(space: "!polar", id: "papers", name: "Papers", rooms: ["!paper"])])
 
+    /// Bold, a mention, inline code and math, a list and a quote.
+    static var formatted: EventContent {
+        let bold = TextStyle(
+            bold: true, italic: false, strikethrough: false, underline: false, superscript: false,
+            subscript: false, spoiler: false)
+        let listed = { (marker: String, runs: [TextRun]) in
+            TextBlock(kind: .paragraph(runs: runs), quotes: 0, lists: 1, marker: marker)
+        }
+        return Make.text(
+            "Agenda for @Ann: ...",
+            text: [
+                Make.paragraph([
+                    .text(text: "Agenda", style: bold, link: nil),
+                    Make.plain(" for "),
+                    .mention(userId: "@ann:example.org", name: "Ann", style: .plain, you: false),
+                    Make.plain(", with "),
+                    .code(code: "melt.jl", style: .plain, link: nil),
+                    Make.plain(" and "),
+                    .math(formula: Formula(tex: "q = -k \\nabla T", display: false), link: nil),
+                    Make.plain(":"),
+                ]),
+                listed("1.", [Make.plain("the runs")]),
+                listed("2.", [Make.plain("the paper")]),
+                TextBlock(
+                    kind: .paragraph(runs: [Make.plain("Bring the plots.")]), quotes: 1, lists: 0, marker: nil),
+            ])
+    }
+
     static var timeline: [TimelineRow] {
         let start = now.addingTimeInterval(-3_600)
         func at(_ minutes: Double) -> Double { start.timeIntervalSince(Make.start) / 60 + minutes }
@@ -352,7 +380,16 @@ private enum Screens {
             Make.row(
                 "2",
                 Make.event(
-                    "ann", Make.text("Plots at https://example.org/runs"), at: at(1), eventId: "$2",
+                    "ann",
+                    Make.text(
+                        "Plots at https://example.org/runs",
+                        text: [
+                            Make.paragraph([
+                                Make.plain("Plots at "),
+                                Make.plain("https://example.org/runs", link: "https://example.org/runs"),
+                            ])
+                        ]),
+                    at: at(1), eventId: "$2",
                     readBy: [Make.user("bob")]),
                 firstInGroup: false),
             Make.row(
@@ -372,6 +409,13 @@ private enum Screens {
                     Make.text(
                         "Thanks, the plots at https://example.org/runs look right.",
                         edited: true,
+                        text: [
+                            Make.paragraph([
+                                Make.plain("Thanks, the plots at "),
+                                Make.plain("https://example.org/runs", link: "https://example.org/runs"),
+                                Make.plain(" look right."),
+                            ])
+                        ],
                         replyTo: ReplyQuote(
                             eventId: "$2", state: .loaded, sender: Make.user("ann"), kind: .text,
                             body: "Plots at https://example.org/runs")),
@@ -381,10 +425,7 @@ private enum Screens {
                 "n",
                 Make.event(
                     "me",
-                    .message(
-                        message: Message(
-                            kind: .notice, body: "Runs archived.", edited: false, media: nil, reactions: [],
-                            replyTo: nil, rawBody: "")),
+                    Make.text("Runs archived.", kind: .notice),
                     at: at(9), own: true, eventId: "$n"),
                 firstInGroup: false),
             Make.row(
@@ -392,6 +433,7 @@ private enum Screens {
                 firstInGroup: false),
             Make.row(
                 "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
+            Make.row("f", Make.event("bob", formatted, at: at(21), eventId: "$f"), firstInGroup: false),
             Make.row(
                 "p2",
                 Make.event(

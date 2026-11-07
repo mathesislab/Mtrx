@@ -1,8 +1,9 @@
 import MtrxFFI
 import SwiftUI
 
-/// The other person of a direct chat: their picture, name, presence and
-/// user ID (to copy), and inviting them to one of our spaces.
+/// The other person of a direct chat, or someone mentioned: their picture,
+/// name, presence and user ID (to copy), and inviting them to one of our
+/// spaces.
 struct PersonInfoView: View {
     @ObservedObject var model: PersonInfoModel
     @EnvironmentObject private var rooms: RoomListModel

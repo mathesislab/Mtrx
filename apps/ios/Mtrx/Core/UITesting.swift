@@ -42,6 +42,8 @@ enum UITesting {
     static let papers = "!papers:example.org"
     static let team = "!team:example.org"
     static let ann = "!ann:example.org"
+    /// The LaTeX of the Lab's displayed formula.
+    static let displayedTex = "\\frac{a}{b} = c"
 }
 
 /// The other person of the direct chats and messages.
@@ -234,8 +236,9 @@ private final class UITestDraftKeeper: DraftKeeper, @unchecked Sendable {
 }
 
 /// A room's messages: Ann's and ours, of one to seven lines, the last two
-/// not read yet; in the Lab "Message 0, a line of it." and on, the last one
-/// ours, to delete; elsewhere the room's name instead of "Message".
+/// not read yet; in the Lab "Message 0, a line of it." and on, then Ann's
+/// formatted message and her message with math, the last one ours, to
+/// delete; elsewhere the room's name instead of "Message".
 private final class UITestTimeline: Timeline, @unchecked Sendable {
     private let lock = NSLock()
     private var room = UITesting.lab
@@ -279,6 +282,12 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
             items.append(message("m\(i)", text, own: i % 3 == 0, at: start.addingTimeInterval(Double(i) * 60)))
         }
         if word == "Message" {
+            // Not among the tall newest of `-ui-testing-history`.
+            if !UITesting.history {
+                items.append(
+                    row("formatted", event(formatted, own: false, at: start.addingTimeInterval(1_860), id: "$formatted")))
+                items.append(row("math", event(math, own: false, at: start.addingTimeInterval(1_880), id: "$math")))
+            }
             items.append(message("mine", "Mine, to delete", own: true, at: start.addingTimeInterval(1_900)))
         }
         return items
@@ -286,12 +295,58 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
 
     private static func message(_ id: String, _ text: String, own: Bool, at: Date, sent: Bool = true) -> TimelineRow {
         let message = Message(
-            kind: .text, body: text, edited: false, media: nil, reactions: [], replyTo: nil, rawBody: text)
+            kind: .text, body: text, edited: false, media: nil, reactions: [], replyTo: nil, rawBody: text,
+            text: [paragraph([.text(text: text, style: .plain, link: nil)])])
+        return row(id, event(message, own: own, at: at, id: sent ? "$\(id)" : nil))
+    }
+
+    /// Ours or Ann's `message`, sent unless it has no event ID.
+    private static func event(_ message: Message, own: Bool, at: Date, id: String?) -> TimelineEvent {
         let sender = own ? User(userId: "@me:example.org", name: "Me", avatarUrl: nil, displayName: "Me") : annUser
-        let event = TimelineEvent(
-            eventId: sent ? "$\(id)" : nil, sender: sender, timestamp: at, own: own,
-            content: .message(message: message), sendState: sent ? .sent : .sending, editable: own)
-        return row(id, event)
+        return TimelineEvent(
+            eventId: id, sender: sender, timestamp: at, own: own,
+            content: .message(message: message), sendState: id != nil ? .sent : .sending, editable: own)
+    }
+
+    private static func paragraph(_ runs: [TextRun]) -> TextBlock {
+        TextBlock(kind: .paragraph(runs: runs), quotes: 0, lists: 0, marker: nil)
+    }
+
+    /// Bold, a link and inline code, then a list item.
+    private static var formatted: Message {
+        let bold = TextStyle(
+            bold: true, italic: false, strikethrough: false, underline: false, superscript: false,
+            subscript: false, spoiler: false)
+        return Message(
+            kind: .text, body: "Formatted: bold, a link and code\n- an item", edited: false, media: nil,
+            text: [
+                paragraph([
+                    .text(text: "Formatted: ", style: .plain, link: nil),
+                    .text(text: "bold", style: bold, link: nil),
+                    .text(text: ", a ", style: .plain, link: nil),
+                    .text(text: "link", style: .plain, link: "https://example.org"),
+                    .text(text: " and ", style: .plain, link: nil),
+                    .code(code: "code", style: .plain, link: nil),
+                ]),
+                TextBlock(
+                    kind: .paragraph(runs: [.text(text: "an item", style: .plain, link: nil)]), quotes: 0,
+                    lists: 1, marker: "•"),
+            ])
+    }
+
+    /// Inline math, then display math (`UITesting.displayedTex`).
+    private static var math: Message {
+        Message(
+            kind: .text, body: "Energy $E=mc^2$ and $$\(UITesting.displayedTex)$$", edited: false, media: nil,
+            text: [
+                paragraph([
+                    .text(text: "Energy ", style: .plain, link: nil),
+                    .math(formula: Formula(tex: "E=mc^2", display: false), link: nil),
+                ]),
+                TextBlock(
+                    kind: .math(formula: Formula(tex: UITesting.displayedTex, display: true)), quotes: 0, lists: 0,
+                    marker: nil),
+            ])
     }
 
     /// The row of `event`, a group of its own, with what the library offers

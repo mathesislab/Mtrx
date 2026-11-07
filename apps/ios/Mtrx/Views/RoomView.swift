@@ -152,7 +152,8 @@ struct RoomView: View {
             showReactors: { id, key in sheet = .reactors(itemId: id, key: key) },
             showReaders: { id in sheet = .readers(itemId: id) },
             unsent: { id in unsent = id },
-            open: { media, eventId in fetch(media, eventId: eventId) { preview = $0 } })
+            open: { media, eventId in fetch(media, eventId: eventId) { preview = $0 } },
+            showPerson: { userId, name in model.showPerson(userId: userId, name: name) })
     }
 
     /// Download a message's file (once), then hand it to `then`.

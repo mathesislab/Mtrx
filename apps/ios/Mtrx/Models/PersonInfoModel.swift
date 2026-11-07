@@ -2,10 +2,11 @@ import Foundation
 import MtrxFFI
 import UIKit
 
-/// The other person of a direct chat, in their info sheet: their name and
-/// picture (the chat's at once, then their profile's where set), copying
-/// their ID, and inviting them to one of our spaces. The calls run in tasks
-/// the model owns, so closing the sheet does not stop an invite.
+/// The other person of a direct chat, or someone mentioned, in their info
+/// sheet: their name and picture (the chat's or the mention's at once, then
+/// their profile's where set), copying their ID, and inviting them to one
+/// of our spaces. The calls run in tasks the model owns, so closing the
+/// sheet does not stop an invite.
 @MainActor
 final class PersonInfoModel: ObservableObject, Identifiable {
     /// How long "Copied" shows after copying the ID (nanoseconds).
@@ -35,17 +36,17 @@ final class PersonInfoModel: ObservableObject, Identifiable {
     /// The profile's load, the resets, and the invites.
     private let work = Work()
 
-    /// `room`: the direct chat, whose name and picture show until the
-    /// profile's arrive.
+    /// `name` and `avatarUrl` (a direct chat's, or a mention's name) show
+    /// until the profile's arrive.
     init(
-        session: Session, userId: String, room: RoomSummary,
+        session: Session, userId: String, name: String, avatarUrl: String?,
         pasteboard: @escaping @MainActor (String) -> Void = { UIPasteboard.general.string = $0 }
     ) {
         self.session = session
         self.userId = userId
         self.pasteboard = pasteboard
-        name = room.name
-        avatarUrl = room.avatarUrl
+        self.name = name
+        self.avatarUrl = avatarUrl
     }
 
     /// Fetch the profile: its name and picture replace the chat's where

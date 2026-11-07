@@ -80,6 +80,8 @@ struct RowActions {
     /// A message's file was tapped (with the message's event ID): show it
     /// once downloaded.
     let open: (Media, String?) -> Void
+    /// A mention was tapped: the person's sheet (user ID, name).
+    let showPerson: (String, String) -> Void
 }
 
 /// A message: in a bubble on the right if ours, else on the left with the
@@ -200,7 +202,7 @@ struct MessageView: View {
                         }
                         .onTapGesture { actions.open(media, event.eventId) }
                         .accessibilityAddTraits(.isButton)
-                    if message.body != media.filename && !message.body.isEmpty {
+                    if !message.text.isEmpty {
                         bubble(text(message), quote: nil, muted: message.kind == .notice)
                     }
                 }
@@ -225,16 +227,17 @@ struct MessageView: View {
         }
     }
 
-    private func text(_ message: Message) -> Text {
-        let text: Text
-        switch message.kind {
-        case .emote:
-            text = Text("\(event.sender.displayName) ").italic() + Text(Formatting.linked(message.body)).italic()
-        default:
-            text = Text(Formatting.linked(message.body))
-        }
-        guard message.edited else { return text }
-        return text + Text(" (edited)").font(.footnote).foregroundColor(muted)
+    /// Its text; a mention's link shows the person.
+    private func text(_ message: Message) -> some View {
+        MessageTextView(
+            blocks: message.text, edited: message.edited,
+            color: message.kind == .notice ? muted : .primary, muted: muted
+        )
+        .environment(\.openURL, OpenURLAction { url in
+            guard let person = MessageText.person(url) else { return .systemAction }
+            actions.showPerson(person.userId, person.name)
+            return .handled
+        })
     }
 
     /// Times, notices, and what stands for a message (deleted, not

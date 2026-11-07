@@ -206,10 +206,18 @@ final class TimelineModel: ObservableObject {
         !atBottom && !opening
     }
 
-    /// A direct chat's header was tapped: the other person's info sheet.
+    /// A direct chat's header was tapped: the other person's info sheet,
+    /// with the chat's name and picture until their profile's arrive.
     func showPersonInfo() {
-        guard let person, personInfo == nil else { return }
-        let info = PersonInfoModel(session: session, userId: person.userId, room: room)
+        guard let person else { return }
+        showPerson(userId: person.userId, name: room.name, avatarUrl: room.avatarUrl)
+    }
+
+    /// A mention was tapped: the person's info sheet, with the name it
+    /// shows until their profile's arrives.
+    func showPerson(userId: String, name: String, avatarUrl: String? = nil) {
+        guard personInfo == nil else { return }
+        let info = PersonInfoModel(session: session, userId: userId, name: name, avatarUrl: avatarUrl)
         info.load()
         personInfo = info
     }
