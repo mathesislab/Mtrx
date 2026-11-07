@@ -1,66 +1,43 @@
 //! Downloads: the files of messages the user asked for, to keep them or to
 //! open them in another app, with their progress.
 //!
-//! A download streams the file to a `.part` file next to where it goes, and
-//! renames it when complete. An encrypted file's ciphertext goes to the
-//! profile's cache first, and is decrypted from there (checking its hash),
-//! so no ciphertext lands in the destination folder. Nothing holds a whole
-//! file in memory, except a file the SDK's media store already holds.
+//! A download streams the file to where it goes ([`crate::fetch`]).
 //!
 //! The list is kept in the store, with the running downloads and the
 //! [`KEEP`] newest others. Downloads that were running when the app quit
 //! come back as failed, to retry.
 
 use std::{
-    borrow::Cow,
     collections::HashMap,
-    fs::File,
-    io::{BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime},
+    time::SystemTime,
 };
 
 use matrix_sdk::{
     Client,
-    media::{MediaFormat, MediaRequestParameters},
-    ruma::{
-        EventId, MxcUri, OwnedEventId, OwnedRoomId,
-        api::{
-            Metadata, OutgoingRequestExt,
-            auth_scheme::SendAccessToken,
-            client::{authenticated_media, media},
-        },
-        events::room::MediaSource,
-    },
+    ruma::{EventId, MxcUri, OwnedEventId, OwnedRoomId},
 };
-use matrix_sdk_crypto::{AttachmentDecryptor, MediaEncryptionInfo};
 use serde::{Deserialize, Serialize};
-use tokio::{io::AsyncWriteExt, sync::watch};
+use tokio::sync::watch;
 use tracing::warn;
 
-use crate::{AbortOnDrop, Error, Live, Media, MediaKind, MediaRef, Result, RoomHandle, Session};
+use crate::{
+    AbortOnDrop, Error, Live, Media, MediaKind, MediaRef, Result, RoomHandle, Session,
+    fetch::{Fetch, downloads_folder, fetch_file, part_path, safe_name, taken, unique_path},
+};
 
 /// Store key of the list.
 const STORE_KEY: &[u8] = b"mtrx.downloads";
 /// The finished, failed and cancelled downloads the list keeps, newest
 /// first; it keeps every running one too.
 const KEEP: usize = 20;
-/// Progress is reported at most this often (10 times a second).
-const STEP: Duration = Duration::from_millis(100);
-/// A server that sends nothing for this long has stopped.
-const STALL: Duration = Duration::from_secs(60);
-/// Bytes written to disk at once.
-const BUFFER: usize = 256 * 1024;
 
 const QUIT: &str = "Stopped when Mtrx quit";
 const GONE: &str = "Moved or deleted";
-const DAMAGED: &str = "The file is damaged";
-const UNREACHABLE: &str = "Couldn't reach the server";
-const STALLED: &str = "The server stopped sending";
 const NO_DOWNLOADS_FOLDER: &str = "There is no Downloads folder";
 
 pub type DownloadId = u64;
@@ -404,22 +381,6 @@ impl Places {
     }
 }
 
-/// The user's Downloads folder, else `~/Downloads`.
-#[cfg(not(any(target_os = "ios", target_os = "android")))]
-fn downloads_folder() -> Option<PathBuf> {
-    let dirs = directories::UserDirs::new()?;
-    Some(match dirs.download_dir() {
-        Some(folder) => folder.to_owned(),
-        None => dirs.home_dir().join("Downloads"),
-    })
-}
-
-/// The phones keep downloads in the cache.
-#[cfg(any(target_os = "ios", target_os = "android"))]
-fn downloads_folder() -> Option<PathBuf> {
-    None
-}
-
 /// What a download task needs.
 struct Job {
     id: DownloadId,
@@ -668,251 +629,18 @@ impl Shared {
 
     /// Get the file to its target; where it went.
     async fn fetch(&self, job: &Job) -> Result<PathBuf, String> {
-        if let Some(folder) = job.target.parent() {
-            tokio::fs::create_dir_all(folder)
-                .await
-                .map_err(write_failed)?;
-        }
-        let part = Part::new(part_path(&job.target));
-        if let Some(bytes) = self.stored(&job.source.file).await {
-            tokio::fs::write(part.path(), bytes)
-                .await
-                .map_err(write_failed)?;
-        } else {
-            match &job.source.file {
-                MediaSource::Plain(uri) => self.stream(job, uri, part.path()).await?,
-                MediaSource::Encrypted(file) => {
-                    let ciphertext = Part::new(self.places.ciphertext(job.id));
-                    if let Some(folder) = ciphertext.path().parent() {
-                        tokio::fs::create_dir_all(folder)
-                            .await
-                            .map_err(write_failed)?;
-                    }
-                    self.stream(job, &file.url, ciphertext.path()).await?;
-                    decrypt(ciphertext.path(), part.path(), (**file).clone().into()).await?;
-                }
-            }
-        }
-        place(part, &job.target, job.unique)
-    }
-
-    /// The file from the SDK's media store, if it has it (a viewer showed
-    /// it, say). Decrypted.
-    async fn stored(&self, source: &MediaSource) -> Option<Vec<u8>> {
-        let request = MediaRequestParameters {
-            source: source.clone(),
-            format: MediaFormat::File,
+        let fetch = Fetch {
+            source: &job.source.file,
+            size: job.size,
+            target: &job.target,
+            ciphertext: self.places.ciphertext(job.id),
+            unique: job.unique,
+            limit: None,
         };
-        let store = self.client.media_store().lock().await.ok()?;
-        store.get_media_content(&request).await.ok().flatten()
-    }
-
-    /// Download `uri` to `path`, reporting progress.
-    async fn stream(&self, job: &Job, uri: &MxcUri, path: &Path) -> Result<(), String> {
-        let mut response = self.response(uri).await?;
-        let total = response.content_length().or(job.size);
-        let file = tokio::fs::File::create(path).await.map_err(write_failed)?;
-        let mut file = tokio::io::BufWriter::with_capacity(BUFFER, file);
-        let mut received = 0;
-        self.progress(job.id, received, total);
-        let mut steps = Throttle::new(STEP, Instant::now());
-        while let Some(chunk) = tokio::time::timeout(STALL, response.chunk())
-            .await
-            .map_err(|_| STALLED)?
-            .map_err(|_| UNREACHABLE)?
-        {
-            file.write_all(&chunk).await.map_err(write_failed)?;
-            received += chunk.len() as u64;
-            if steps.due(Instant::now()) {
-                self.progress(job.id, received, total);
-            }
-        }
-        file.flush().await.map_err(write_failed)?;
-        self.progress(job.id, received, total);
-        Ok(())
-    }
-
-    /// The server's answer for `uri`'s content. An expired token is
-    /// refreshed once.
-    async fn response(&self, uri: &MxcUri) -> Result<reqwest::Response, String> {
-        let mut refreshed = false;
-        loop {
-            let request = content_request(&self.client, uri).await?;
-            let response =
-                (self.client.http_client().execute(request).await).map_err(|_| UNREACHABLE)?;
-            let status = response.status();
-            if status.is_success() {
-                return Ok(response);
-            }
-            if status == reqwest::StatusCode::UNAUTHORIZED
-                && !refreshed
-                && unknown_token(response).await
-            {
-                refreshed = true;
-                self.client
-                    .refresh_access_token()
-                    .await
-                    .map_err(|_| "The server no longer accepts this session".to_owned())?;
-                continue;
-            }
-            return Err(match status {
-                reqwest::StatusCode::NOT_FOUND => "The file is no longer on the server".into(),
-                status => format!("The server answered {status}"),
-            });
-        }
-    }
-}
-
-/// The request for `uri`'s content: authenticated if the server has it,
-/// as the SDK chooses.
-async fn content_request(client: &Client, uri: &MxcUri) -> Result<reqwest::Request, String> {
-    let versions = client.supported_versions().await.map_err(|_| UNREACHABLE)?;
-    let homeserver = client.homeserver().to_string();
-    let token = client.access_token();
-    let access = token
-        .as_deref()
-        .map_or(SendAccessToken::None, SendAccessToken::IfRequired);
-    let invalid = |e: &dyn std::fmt::Display| format!("Invalid file address: {e}");
-    let request = if authenticated_media::get_content::v1::Request::PATH_BUILDER
-        .is_supported(&versions)
-    {
-        let request = authenticated_media::get_content::v1::Request::from_uri(uri)
-            .map_err(|e| invalid(&e))?;
-        request.try_into_http_request::<Vec<u8>>(&homeserver, access, Cow::Owned(versions))
-    } else {
-        #[allow(deprecated)]
-        let request = media::get_content::v3::Request::from_url(uri).map_err(|e| invalid(&e))?;
-        request.try_into_http_request::<Vec<u8>>(&homeserver, access, Cow::Owned(versions))
-    };
-    let request = request.map_err(|e| invalid(&e))?;
-    let mut request = reqwest::Request::try_from(request).map_err(|e| invalid(&e))?;
-    // Instead of the client's timeout for the whole request: big files take
-    // long, and a stall is caught on its own.
-    *request.timeout_mut() = Some(Duration::from_secs(24 * 60 * 60));
-    Ok(request)
-}
-
-/// Whether a 401 says the access token expired.
-async fn unknown_token(response: reqwest::Response) -> bool {
-    let Ok(body) = response.bytes().await else {
-        return false;
-    };
-    serde_json::from_slice::<serde_json::Value>(&body)
-        .is_ok_and(|error| error["errcode"] == "M_UNKNOWN_TOKEN")
-}
-
-/// Decrypt the ciphertext at `from` to `to`, in a blocking thread. It stops
-/// if the download is cancelled (this future dropped).
-async fn decrypt(from: &Path, to: &Path, key: MediaEncryptionInfo) -> Result<(), String> {
-    let running = Arc::new(());
-    let still = Arc::downgrade(&running);
-    let (from, to) = (from.to_owned(), to.to_owned());
-    tokio::task::spawn_blocking(move || decrypt_file(&from, &to, key, || still.strong_count() > 0))
+        fetch_file(&self.client, fetch, |received, total| {
+            self.progress(job.id, received, total)
+        })
         .await
-        .map_err(|e| e.to_string())?
-}
-
-/// Decrypt the file at `from` to `to`, while `go_on`. Fails if its hash
-/// isn't the one sent.
-fn decrypt_file(
-    from: &Path,
-    to: &Path,
-    key: MediaEncryptionInfo,
-    go_on: impl Fn() -> bool,
-) -> Result<(), String> {
-    let mut input = BufReader::with_capacity(BUFFER, File::open(from).map_err(write_failed)?);
-    let mut decrypted = AttachmentDecryptor::new(&mut input, key).map_err(|_| DAMAGED)?;
-    let mut output = BufWriter::with_capacity(BUFFER, File::create(to).map_err(write_failed)?);
-    let mut buffer = vec![0; BUFFER];
-    loop {
-        if !go_on() {
-            return Err("Cancelled".into());
-        }
-        // The hash is checked at the end.
-        let read = decrypted.read(&mut buffer).map_err(|_| DAMAGED)?;
-        if read == 0 {
-            break;
-        }
-        output.write_all(&buffer[..read]).map_err(write_failed)?;
-    }
-    output.flush().map_err(write_failed)
-}
-
-/// Move the complete `part` to `target`; if `unique` and `target` was
-/// taken meanwhile, to a free name next to it.
-fn place(part: Part, target: &Path, unique: bool) -> Result<PathBuf, String> {
-    let target = match (unique, target.parent(), target.file_name()) {
-        (true, Some(folder), Some(name)) if target.exists() => {
-            unique_path(folder, &name.to_string_lossy(), taken)
-        }
-        _ => target.to_owned(),
-    };
-    std::fs::rename(part.path(), &target).map_err(write_failed)?;
-    part.keep();
-    Ok(target)
-}
-
-fn write_failed(e: std::io::Error) -> String {
-    format!("Couldn't write the file: {e}")
-}
-
-/// A file being written: deleted when dropped (the download failed or was
-/// cancelled), unless kept.
-struct Part(Option<PathBuf>);
-
-impl Part {
-    fn new(path: PathBuf) -> Self {
-        Self(Some(path))
-    }
-
-    fn path(&self) -> &Path {
-        self.0.as_deref().expect("present until kept")
-    }
-
-    fn keep(mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for Part {
-    fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
-/// `path` with `.part` added.
-fn part_path(path: &Path) -> PathBuf {
-    let mut part = path.as_os_str().to_owned();
-    part.push(".part");
-    part.into()
-}
-
-/// Whether a file is at `path`, or being downloaded there.
-fn taken(path: &Path) -> bool {
-    path.exists() || part_path(path).exists()
-}
-
-/// Reports at most once every `every`.
-struct Throttle {
-    every: Duration,
-    last: Instant,
-}
-
-impl Throttle {
-    /// The last report at `start`.
-    fn new(every: Duration, start: Instant) -> Self {
-        Self { every, last: start }
-    }
-
-    /// Whether to report at `now`.
-    fn due(&mut self, now: Instant) -> bool {
-        let due = now.duration_since(self.last) >= self.every;
-        if due {
-            self.last = now;
-        }
-        due
     }
 }
 
@@ -956,92 +684,6 @@ fn reopened(mut list: Vec<Download>, places: &Places) -> (Vec<Download>, bool) {
         changed = true;
     }
     (list, changed)
-}
-
-/// A file name from a sender, safe to save under: no folders, no leading
-/// dots, control or reserved characters, no names Windows reserves; with
-/// an extension from `mimetype` if it has none. "file" if nothing is left.
-pub(crate) fn safe_name(name: &str, mimetype: Option<&str>) -> String {
-    const MAX_LEN: usize = 200;
-    let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
-    let cleaned: String = last
-        .chars()
-        .map(|c| match c {
-            c if c.is_control() => '_',
-            '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
-            c => c,
-        })
-        .collect();
-    let trimmed = cleaned
-        .trim()
-        .trim_start_matches('.')
-        .trim_end_matches(['.', ' ']);
-    let mut name = if trimmed.is_empty() {
-        "file".to_owned()
-    } else {
-        trimmed.to_owned()
-    };
-    let (stem, extension) = split_name(&name);
-    let (reserved, has_extension) = (is_reserved(stem), extension.is_some());
-    if reserved {
-        name = format!("_{name}");
-    }
-    if !has_extension && let Some(extension) = mimetype.and_then(extension_of) {
-        name = format!("{name}.{extension}");
-    }
-    if name.len() > MAX_LEN {
-        let (stem, extension) = split_name(&name);
-        let extension = extension.map(|e| format!(".{e}")).unwrap_or_default();
-        let mut end = MAX_LEN.saturating_sub(extension.len()).min(stem.len());
-        while !stem.is_char_boundary(end) {
-            end -= 1;
-        }
-        name = format!("{}{extension}", &stem[..end]);
-    }
-    name
-}
-
-/// A file name's stem and extension: "report", "pdf".
-fn split_name(name: &str) -> (&str, Option<&str>) {
-    match name.rsplit_once('.') {
-        Some((stem, extension)) if !stem.is_empty() && !extension.is_empty() => {
-            (stem, Some(extension))
-        }
-        _ => (name, None),
-    }
-}
-
-/// Names Windows keeps for devices, with any extension.
-fn is_reserved(stem: &str) -> bool {
-    let stem = stem.to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit())
-}
-
-/// The usual extension of a MIME type: "pdf", "jpg".
-fn extension_of(mimetype: &str) -> Option<&'static str> {
-    let extensions = mime_guess::get_mime_extensions_str(mimetype)?;
-    let subtype = mimetype.split(['/', ';']).nth(1)?.trim();
-    (extensions.iter().find(|e| e.eq_ignore_ascii_case(subtype)))
-        .or_else(|| extensions.iter().find(|e| **e == "jpg"))
-        .or(extensions.first())
-        .copied()
-}
-
-/// `name` in `folder`, or "name (1).ext", "name (2).ext", ... if `taken`.
-fn unique_path(folder: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
-    let path = folder.join(name);
-    if !taken(&path) {
-        return path;
-    }
-    let (stem, extension) = split_name(name);
-    let extension = extension.map(|e| format!(".{e}")).unwrap_or_default();
-    (1..)
-        .map(|n| folder.join(format!("{stem} ({n}){extension}")))
-        .find(|path| !taken(path))
-        .expect("a free name")
 }
 
 /// A URI part as a folder name: letters, digits, `-`, `_` and `.` only.

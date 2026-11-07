@@ -17,6 +17,7 @@ mod echo;
 mod emoji;
 mod encryption;
 mod error;
+mod fetch;
 mod lists;
 mod live;
 mod media;

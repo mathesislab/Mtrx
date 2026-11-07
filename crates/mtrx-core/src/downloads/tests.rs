@@ -1,10 +1,19 @@
-use std::{fs, net::TcpListener};
+use std::{
+    fs,
+    io::{Read, Write},
+    net::TcpListener,
+    time::{Duration, Instant},
+};
 
-use matrix_sdk::{media::store::IgnoreMediaRetentionPolicy, ruma::owned_room_id};
-use matrix_sdk_crypto::AttachmentEncryptor;
+use matrix_sdk::{
+    media::{MediaFormat, MediaRequestParameters, store::IgnoreMediaRetentionPolicy},
+    ruma::{events::room::MediaSource, owned_room_id},
+};
+use matrix_sdk_crypto::{AttachmentEncryptor, MediaEncryptionInfo};
 use tempfile::TempDir;
 
 use super::*;
+use crate::fetch::{DAMAGED, STEP, Throttle, UNREACHABLE, decrypt_file};
 
 fn media(filename: &str, size: Option<u64>) -> Media {
     Media {
