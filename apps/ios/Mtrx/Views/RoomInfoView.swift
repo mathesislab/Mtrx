@@ -32,6 +32,7 @@ struct RoomInfoView: View {
         }
         .task { await model.load() }
         .infoErrors(model)
+        .opensRoomLinks()
     }
 }
 
@@ -168,18 +169,17 @@ struct InviteLeaveButtons: View {
     }
 }
 
-/// The topic and its links in a box, with Edit where we may change it.
+/// The topic, its calls and its links in a box, with Edit where we may
+/// change it.
 struct TopicSection: View {
     let room: RoomSummary
     @ObservedObject var model: RoomInfoModel
 
     var body: some View {
-        let topic = parseTopic(topic: room.topic ?? "")
+        let topic = room.topic
         Section {
             TopicText(topic: topic)
-            ForEach(Array(topic.links.enumerated()), id: \.offset) { _, link in
-                LinkButton(link: link)
-            }
+            TopicLinkButtons(topic: topic)
         } header: {
             HStack {
                 Text("Topic")

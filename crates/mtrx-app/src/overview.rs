@@ -215,7 +215,7 @@ impl Overview {
         )
     }
 
-    /// The space's topic and links    /// The tabs, above the scrolling content.
+    /// The tabs, above the scrolling content.
     pub fn tabs<'a>(&self) -> Element<'a, app::Message> {
         directory::tabs(
             &[
@@ -519,7 +519,7 @@ mod tests {
             id: id.clone(),
             alias: None,
             name: name.into(),
-            topic: None,
+            topic: Default::default(),
             avatar: None,
             members: 3,
             is_space: true,

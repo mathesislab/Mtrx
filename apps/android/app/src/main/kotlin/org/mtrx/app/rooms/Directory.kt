@@ -22,7 +22,7 @@ fun rowDetails(room: DirectoryRoom): String {
     } else {
         if (room.members == 1uL) "1 member" else "${room.members} members"
     }
-    val topic = room.topic?.lineSequence()?.map { it.trim() }?.firstOrNull { it.isNotEmpty() }
+    val topic = room.topic.firstLine
     return listOfNotNull(count, topic).joinToString(" · ")
 }
 
@@ -38,7 +38,7 @@ fun filtered(rooms: List<DirectoryRoom>, filter: String): List<DirectoryRoom> {
     val text = filter.trim()
     if (text.isEmpty()) return rooms
     return rooms.filter { room ->
-        listOfNotNull(room.name, room.alias, room.topic).any { it.contains(text, ignoreCase = true) }
+        listOfNotNull(room.name, room.alias, room.topic.text).any { it.contains(text, ignoreCase = true) }
     }
 }
 

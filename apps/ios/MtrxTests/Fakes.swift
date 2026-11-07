@@ -723,9 +723,26 @@ enum Make {
         return actions
     }
 
+    /// A topic as the library parses it, with its first line and preview as
+    /// the library makes them.
+    static func topic(_ text: String = "", calls: [RoomLink] = [], links: [RoomLink] = []) -> Topic {
+        let firstLine = text.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty }
+        let names = (calls + links).map(\.name)
+        return Topic(
+            text: text.trimmingCharacters(in: .whitespacesAndNewlines), calls: calls, links: links,
+            firstLine: firstLine, preview: firstLine ?? (names.isEmpty ? nil : names.joined(separator: " · ")))
+    }
+
+    /// A topic's call or link, named after its title, else `name`.
+    static func link(_ url: String, title: String? = nil, name: String? = nil, passcode: String? = nil) -> RoomLink {
+        RoomLink(title: title, url: url, passcode: passcode, name: title ?? name ?? url)
+    }
+
     static func room(
         _ id: String, kind: RoomKind = .room, membership: Membership = .joined, name: String? = nil, unread: UInt64 = 0,
-        directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil, topic: String? = nil,
+        directUser: String? = nil, lastActivity: Date? = nil, avatarUrl: String? = nil, topic: Topic = .none,
         pinned: [String] = [], alias: String? = nil, members: UInt64 = 2,
         mentions: UInt64 = 0, rights: Rights = Make.rights()
     ) -> RoomSummary {
@@ -836,7 +853,7 @@ enum Make {
 
     static func directoryRoom(
         _ id: String, name: String? = nil, joinRule: JoinRule = .public, membership: Membership? = nil,
-        space: Bool = false, members: UInt64 = 5, topic: String? = nil, role: Role? = nil, children: UInt64 = 0
+        space: Bool = false, members: UInt64 = 5, topic: Topic = .none, role: Role? = nil, children: UInt64 = 0
     ) -> DirectoryRoom {
         DirectoryRoom(
             id: id, alias: nil, name: name ?? id, topic: topic, avatarUrl: nil, members: members, isSpace: space,

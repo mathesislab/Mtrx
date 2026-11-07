@@ -351,3 +351,28 @@ Size: M. About +150 / −80 lines in core and the desktop, 80 in the FFI, 150 fo
 ## Decisions (2026-11-07)
 
 The user took all recommendations: 1a, 2a, 3a, 4a, 5a, 6a, 7a.
+
+## As built
+
+As designed, except:
+
+- **Core.** `typed_link_url` also reads "host:port/…" (a scheme with a dot) as a host, and refuses whitespace. `LinkDraft::is_blank` ignores a link's passcode. `Topic::preview` names the calls before the other links, as the FFI splits them.
+- **FFI.** `TryFrom<&Topic> for core::Topic` serves `RoomLists.new` in the apps' tests, which hands the topic back with core's names, `first_line` and `preview`.
+- **Desktop.**
+  - `topic::preview` stays as a three-line wrapper that adds "Add a topic" to `Topic::preview`: the room header and the space topic share it. `topic::of(room)` gives the listed topic, or an empty one for a room not listed yet.
+  - `Editor::topic` still re-parses its lines, so a link without a web address yet reads as text, as the raw toggle shows it. `Topic::from_drafts` serves the FFI's `compose_topic`.
+  - The panel and the room card show calls before links.
+- **iOS.**
+  - Every call button copies its passcode before opening: Join, the menu, the panel, Room info and the space chips. The `.opensRoomLinks()` modifier provides the action, shows the banner for about 0.7 s before the call opens, and announces it to VoiceOver.
+  - Edit links… opens the editor as a sheet of its own (`RoomSheet.editTopic`, with Cancel).
+  - In the editor a call or link is removed with the list's delete, not a minus button: edit mode is on for the handles anyway.
+  - Join also shows in a direct chat whose topic has a call.
+  - The header test checks `HeaderLinks`, the value the menu draws, since SwiftUI views can't be inspected.
+- **Android.**
+  - The same passcode copy everywhere, through `rememberRoomLinkOpener`, with the snackbar and the same short delay before the call opens.
+  - The handle drags at once (`detectDragGestures`), not after a long press. Rows swap as the dragged one passes a neighbour's middle, so rows of different heights work. Move up and Move down are accessibility actions.
+  - `LocalLinkUrl` gives the editor the library's `linkUrl`. The screenshots, which run without the library, give a fake. `RoomInfoModel` takes `composeTopic(text, links)`.
+  - `TopicDraft` keeps calls and links in two lists, each link with an id for the drag. The editor says "Links without a web address are left out.", as on iOS.
+  - A camera icon (`MtrxIcons.Videocam`) marks calls, as on iOS.
+  - The space overview shows its topic item only when there is text or a link.
+- **Tests.** The apps can't parse any more, so their fakes build parsed topics by hand: iOS `Make.topic`/`Make.link`, Android `topicOf`/`roomLink`.

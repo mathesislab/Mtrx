@@ -73,6 +73,7 @@ import uniffi.mtrx.LevelConfirmation
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
 import uniffi.mtrx.Rights
+import uniffi.mtrx.RoomLink
 import uniffi.mtrx.RoomSettings
 import uniffi.mtrx.Topic
 import uniffi.mtrx.levelConfirmation
@@ -122,6 +123,7 @@ fun RoomInfoContent(
     onOpenLink: (String) -> Unit,
 ) {
     val snackbar = remember { SnackbarHostState() }
+    val openRoomLink = rememberRoomLinkOpener(onOpenLink, snackbar)
     LaunchedEffect(error) {
         val message = error ?: return@LaunchedEffect
         snackbar.showSnackbar(message)
@@ -147,7 +149,7 @@ fun RoomInfoContent(
                 InfoHeader(header, settings, images, busy, actions, onLeave)
             }
             item(key = "topic") {
-                TopicBox(header.topic, header.rights.changeTopic, actions::setTopic, onOpenLink)
+                TopicBox(header.topic, header.rights.changeTopic, actions::setTopic, openRoomLink)
             }
             if (settings == null) {
                 item(key = "loading") { Loading() }
@@ -264,7 +266,7 @@ fun InviteDialog(name: String, onInvite: (String) -> Unit, onDismiss: () -> Unit
 
 /** The topic in a box, with Edit where we may; the editor in its place while editing. */
 @Composable
-fun TopicBox(topic: Topic, canEdit: Boolean, onSave: (Topic) -> Unit, onOpenLink: (String) -> Unit, initiallyEditing: Boolean = false) {
+fun TopicBox(topic: Topic, canEdit: Boolean, onSave: (TopicDraft) -> Unit, onOpenLink: (RoomLink) -> Unit, initiallyEditing: Boolean = false) {
     var editing by remember { mutableStateOf(initiallyEditing) }
     Surface(
         Modifier
@@ -288,7 +290,7 @@ fun TopicBox(topic: Topic, canEdit: Boolean, onSave: (Topic) -> Unit, onOpenLink
             Row(verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
                     Text("Topic", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (topic.text.isBlank() && topic.links.isEmpty()) {
+                    if (topic.text.isBlank() && !topic.hasLinks) {
                         Text(
                             if (canEdit) ADD_A_TOPIC else "No topic",
                             style = MaterialTheme.typography.bodyMedium,
@@ -299,7 +301,7 @@ fun TopicBox(topic: Topic, canEdit: Boolean, onSave: (Topic) -> Unit, onOpenLink
                 }
                 if (canEdit) TextButton(onClick = { editing = true }) { Text("Edit") }
             }
-            TopicLinks(topic.links, onOpen = onOpenLink)
+            TopicLinks(topic, onOpen = onOpenLink)
         }
     }
 }

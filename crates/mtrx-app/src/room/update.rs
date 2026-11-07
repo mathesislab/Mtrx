@@ -207,7 +207,7 @@ impl Room {
                     cx.popup
                         .take_if(|popup| matches!(popup, app::Popup::Calls(_)));
                 }
-                let listed = (cx.lists.room(&id)).and_then(|r| r.topic.as_deref());
+                let listed = topic::of(cx.lists.room(&id));
                 topic::update(
                     cx.session,
                     &mut self.topic,

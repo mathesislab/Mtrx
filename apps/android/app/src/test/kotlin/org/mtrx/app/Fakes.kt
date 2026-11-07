@@ -13,6 +13,7 @@ import org.mtrx.app.model.Logger
 import org.mtrx.app.model.NetworkMonitor
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PushStore
+import org.mtrx.app.rooms.NO_TOPIC
 import org.mtrx.app.rooms.SectionPrefs
 import org.mtrx.app.model.PusherDevice
 import org.mtrx.app.model.RoomNotifications
@@ -80,6 +81,7 @@ import uniffi.mtrx.ListSection
 import uniffi.mtrx.RoomLists
 import uniffi.mtrx.RoomListsListener
 import uniffi.mtrx.RoomSort as LibrarySort
+import uniffi.mtrx.RoomLink
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.RowContent
 import uniffi.mtrx.SectionChoice
@@ -89,6 +91,7 @@ import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.SendState
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
+import uniffi.mtrx.Topic
 import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineRow
@@ -682,6 +685,23 @@ fun member(
     manageable = upTo != null || remove || ban,
 )
 
+/** A topic as the library parses it, with its first line and preview as the library makes them. */
+fun topicOf(text: String = "", calls: List<RoomLink> = emptyList(), links: List<RoomLink> = emptyList()): Topic {
+    val firstLine = text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+    val names = (calls + links).map { it.name }
+    return Topic(
+        text = text.trim(),
+        calls = calls,
+        links = links,
+        firstLine = firstLine,
+        preview = firstLine ?: names.joinToString(" · ").ifEmpty { null },
+    )
+}
+
+/** A topic's call or link, named after its title, else [name]. */
+fun roomLink(url: String, title: String? = null, name: String? = null, passcode: String? = null) =
+    RoomLink(title = title, url = url, passcode = passcode, name = title ?: name ?: url)
+
 /** A listed room or space. */
 fun directoryRoom(
     id: String,
@@ -689,7 +709,7 @@ fun directoryRoom(
     joinRule: JoinRule = JoinRule.PUBLIC,
     membership: Membership? = null,
     members: Long = 3,
-    topic: String? = null,
+    topic: Topic = NO_TOPIC,
     space: Boolean = false,
     role: Role? = null,
 ): DirectoryRoom = DirectoryRoom(
@@ -787,7 +807,7 @@ fun summary(
     directUserId: String? = null,
     name: String = id.removePrefix("!").substringBefore(':'),
     lastActivity: Instant? = null,
-    topic: String? = null,
+    topic: Topic = NO_TOPIC,
     pinned: List<String> = emptyList(),
     mentions: Long = 0,
     rights: Rights = org.mtrx.app.rights(),

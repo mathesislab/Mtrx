@@ -129,7 +129,7 @@ mod tests {
             id: "!room:example.org".try_into().unwrap(),
             name: String::new(),
             avatar: None,
-            topic: None,
+            topic: Default::default(),
             kind,
             membership: mtrx_core::Membership::Joined,
             encrypted: false,

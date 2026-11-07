@@ -9,6 +9,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.BadgedBox
 import kotlinx.coroutines.flow.Flow
+import org.mtrx.app.rooms.HeaderLinks
+import org.mtrx.app.rooms.RoomLinksButton
+import org.mtrx.app.rooms.TopicDraft
+import org.mtrx.app.rooms.rememberRoomLinkOpener
 import org.mtrx.app.rooms.topicPreview
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -97,7 +101,6 @@ import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.Session
-import uniffi.mtrx.Topic
 
 /** Rows from the top this close load older events. */
 private const val LOAD_MARGIN = 5
@@ -240,7 +243,7 @@ fun TimelineContent(
     onOpenLink: (String) -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenSpace: (String) -> Unit,
-    onSaveTopic: (Topic) -> Unit,
+    onSaveTopic: (TopicDraft) -> Unit,
     onShowPinned: (Boolean) -> Unit,
     onErrorShown: () -> Unit,
     /** The panel of the rooms shared with a direct chat's person (their user ID). */
@@ -332,6 +335,7 @@ fun TimelineContent(
     }
 
     val openLink by rememberUpdatedState(onOpenLink)
+    val openRoomLink = rememberRoomLinkOpener(onOpenLink, snackbar)
     val handlers = remember(actions) {
         RowHandlers(
             hold = { row ->
@@ -386,6 +390,11 @@ fun TimelineContent(
                         }
                     },
                     actions = {
+                        // Join for the room's call, or the menu of its links.
+                        val links = remember(header.topic, state.canEditTopic) { HeaderLinks.of(header.topic, state.canEditTopic) }
+                        if (links != null) {
+                            RoomLinksButton(links, onOpen = openRoomLink, onEdit = { panel = TopicPanelMode.EDITING })
+                        }
                         val space = header.space
                         when {
                             person != null -> SharedRoomsButton(header.name, open = sharing, onClick = { sharing = !sharing })
@@ -462,13 +471,13 @@ fun TimelineContent(
                     canEdit = state.canEditTopic,
                     editing = mode == TopicPanelMode.EDITING,
                     onEdit = { panel = TopicPanelMode.EDITING },
-                    onSave = { topic ->
-                        onSaveTopic(topic)
+                    onSave = { draft ->
+                        onSaveTopic(draft)
                         panel = TopicPanelMode.SHOWING
                     },
                     onCancel = { panel = TopicPanelMode.SHOWING },
                     onClose = { panel = null },
-                    onOpenLink = onOpenLink,
+                    onOpenLink = openRoomLink,
                     onPinned = { eventId ->
                         panel = null
                         actions.goToOriginal(eventId)

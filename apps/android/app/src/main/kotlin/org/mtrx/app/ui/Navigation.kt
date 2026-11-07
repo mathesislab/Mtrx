@@ -52,7 +52,6 @@ import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.parseAddress
 import uniffi.mtrx.composeTopic
-import uniffi.mtrx.parseTopic
 
 /**
  * The screens of a signed-in session: the home (its tabs, with a room open
@@ -304,7 +303,7 @@ private fun RoomPane(
         }
         val userId = session.info.userId
         val presences by session.presence.presences.collectAsStateWithLifecycle()
-        val header = remember(room, userId, rooms) { roomHeader(roomId, room, userId, ::parseTopic, rooms.firstSpaceOf(roomId)) }
+        val header = remember(room, userId, rooms) { roomHeader(roomId, room, userId, rooms.firstSpaceOf(roomId)) }
         TimelineScreen(
             header,
             viewModel,
@@ -422,7 +421,7 @@ private fun infoHeader(roomId: String, room: uniffi.mtrx.RoomSummary?): RoomInfo
     roomId = roomId,
     name = room?.name ?: roomId,
     avatarUrl = room?.avatarUrl,
-    topic = room?.topic?.takeIf { it.isNotBlank() }?.let { parseTopic(it) } ?: org.mtrx.app.rooms.NO_TOPIC,
+    topic = room?.topic ?: org.mtrx.app.rooms.NO_TOPIC,
     space = room?.kind == RoomKind.SPACE,
     rights = room?.rights ?: org.mtrx.app.rooms.NO_RIGHTS,
 )

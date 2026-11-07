@@ -73,10 +73,159 @@ impl Topic {
         self.links.iter().filter(|l| l.is_call())
     }
 
+    /// The links that aren't calls, in their order.
+    pub fn others(&self) -> impl Iterator<Item = &RoomLink> {
+        self.links.iter().filter(|l| !l.is_call())
+    }
+
     /// The room's call, which the header joins.
     pub fn default_call(&self) -> Option<&RoomLink> {
         self.calls().next()
     }
+
+    /// No text and no links: no topic.
+    pub fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.links.is_empty()
+    }
+
+    /// The text's first non-blank line: list rows and directory entries.
+    pub fn first_line(&self) -> Option<&str> {
+        self.text.lines().map(str::trim).find(|l| !l.is_empty())
+    }
+
+    /// The text's first line, else the names of the calls and then the
+    /// other links (see [`RoomLink::name`]): under the room's name.
+    pub fn preview(&self, services: &[CallService]) -> Option<String> {
+        if let Some(first) = self.first_line() {
+            return Some(first.to_owned());
+        }
+        let names: Vec<String> = (self.calls().chain(self.others()))
+            .map(|l| l.name(services))
+            .collect();
+        (!names.is_empty()).then(|| names.join(" · "))
+    }
+
+    /// With the call (`calls`) or other link at `from` moved to `to` among
+    /// its kind; the calls come first. Unchanged if either is out of range.
+    pub fn moved(self, calls: bool, from: usize, to: usize) -> Topic {
+        let (mut call_links, mut others): (Vec<_>, Vec<_>) =
+            self.links.into_iter().partition(RoomLink::is_call);
+        let moving = if calls { &mut call_links } else { &mut others };
+        if from < moving.len() && to < moving.len() {
+            let link = moving.remove(from);
+            moving.insert(to, link);
+        }
+        Topic {
+            text: self.text,
+            links: call_links.into_iter().chain(others).collect(),
+        }
+    }
+
+    /// The topic of `text` and `links` as typed in an editor: the calls
+    /// first, each kind in its order; blank links left out, and those
+    /// without a web address too, counted in the second value.
+    pub fn from_drafts(text: &str, links: &[LinkDraft]) -> (Topic, usize) {
+        let typed: Vec<RoomLink> = (links.iter())
+            .filter(|d| !d.is_blank())
+            .filter_map(LinkDraft::link)
+            .collect();
+        let dropped = links.iter().filter(|d| !d.is_blank()).count() - typed.len();
+        let (calls, others): (Vec<_>, Vec<_>) = typed.into_iter().partition(RoomLink::is_call);
+        let topic = Topic {
+            text: text.trim().to_owned(),
+            links: calls.into_iter().chain(others).collect(),
+        };
+        (topic, dropped)
+    }
+}
+
+/// A call or link as typed in an editor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinkDraft {
+    pub call: bool,
+    pub title: String,
+    pub url: String,
+    /// A call's; ignored for a link.
+    pub passcode: String,
+}
+
+impl LinkDraft {
+    /// The link, if its address is a web address (see [`typed_link_url`]).
+    pub fn link(&self) -> Option<RoomLink> {
+        let some = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
+        Some(RoomLink {
+            kind: if self.call {
+                LinkKind::Call {
+                    passcode: some(&self.passcode),
+                }
+            } else {
+                LinkKind::Link
+            },
+            title: some(&self.title),
+            url: typed_link_url(&self.url)?,
+        })
+    }
+
+    /// Nothing typed in (a link's passcode doesn't count).
+    pub fn is_blank(&self) -> bool {
+        let passcode = if self.call {
+            self.passcode.as_str()
+        } else {
+            ""
+        };
+        [self.title.as_str(), passcode, self.url.as_str()]
+            .iter()
+            .all(|s| s.trim().is_empty())
+    }
+
+    /// Its line in the topic; as typed if it isn't a link yet, which then
+    /// reads as text.
+    pub fn line(&self) -> String {
+        match self.link() {
+            Some(link) => link.line(),
+            None => format!(
+                "[{}] {}",
+                if self.call { "call" } else { "link" },
+                self.url.trim()
+            ),
+        }
+    }
+}
+
+impl From<&RoomLink> for LinkDraft {
+    fn from(link: &RoomLink) -> Self {
+        Self {
+            call: link.is_call(),
+            title: link.title.clone().unwrap_or_default(),
+            url: link.url.to_string(),
+            passcode: link.passcode().unwrap_or_default().to_owned(),
+        }
+    }
+}
+
+/// A typed address as the topic keeps it: "https://" may be left out
+/// ("zoom.us/j/1"); http(s) with a host only. None if it isn't a web
+/// address.
+pub fn typed_link_url(text: &str) -> Option<Url> {
+    let text = text.trim();
+    if text.is_empty() || text.contains(char::is_whitespace) {
+        return None;
+    }
+    let with_https = || Url::parse(&format!("https://{text}")).ok();
+    let url = match Url::parse(text) {
+        // "zoom.us:443/j/1" reads as the scheme "zoom.us".
+        Ok(url) if url.scheme().contains('.') => with_https()?,
+        Ok(url) => url,
+        Err(_) if !text.contains("://") => with_https()?,
+        Err(_) => return None,
+    };
+    web_url(url)
+}
+
+/// `url` if it is a web address: http(s), with a host.
+fn web_url(url: Url) -> Option<Url> {
+    let host = url.host_str().is_some_and(|h| !h.is_empty());
+    (matches!(url.scheme(), "https" | "http") && host).then_some(url)
 }
 
 /// What changed from topic `old` to `new`, e.g. "added the link Paper
@@ -162,9 +311,7 @@ impl RoomLink {
         if url.contains(char::is_whitespace) {
             return None;
         }
-        let url = Url::parse(url)
-            .ok()
-            .filter(|u| matches!(u.scheme(), "https" | "http"))?;
+        let url = web_url(Url::parse(url).ok()?)?;
         let mut words = inside.split_whitespace();
         let keyword = words.next()?;
         let words: Vec<&str> = words.collect();
@@ -444,6 +591,113 @@ mod tests {
         );
         assert_eq!(topic_change(&StateEventType::RoomName, Some(&first)), None);
         assert_eq!(topic_change(&topic, None), None);
+    }
+
+    #[test]
+    fn takes_typed_web_addresses_only() {
+        let url = |text: &str| typed_link_url(text).map(String::from);
+        assert_eq!(url(" zoom.us/j/1 ").as_deref(), Some("https://zoom.us/j/1"));
+        assert_eq!(
+            url("zoom.us:443/j/1").as_deref(),
+            Some("https://zoom.us/j/1")
+        );
+        assert_eq!(
+            url("http://lab.org/call").as_deref(),
+            Some("http://lab.org/call")
+        );
+        for text in [
+            "",
+            "mailto:a@b.c",
+            "mailto:x",
+            "ftp://lab.org/x",
+            "https://",
+            "https:///",
+            "lab org",
+        ] {
+            assert_eq!(url(text), None, "{text}");
+        }
+        assert!(Topic::parse("[link] https://").links.is_empty(), "no host");
+    }
+
+    #[test]
+    fn makes_topics_from_drafts() {
+        let draft = |call, title: &str, url: &str| LinkDraft {
+            call,
+            title: title.into(),
+            url: url.into(),
+            passcode: if call { "42".into() } else { String::new() },
+        };
+        let (topic, dropped) = Topic::from_drafts(
+            " About. \n",
+            &[
+                draft(false, "Drive", "drive.google.com/x"),
+                draft(true, "", "zoom.us/j/1"),
+                LinkDraft::default(),
+                draft(false, "Mail", "mailto:a@b.c"),
+                draft(true, "Weekly", "https://meet.google.com/abc-defg-hij"),
+            ],
+        );
+        assert_eq!(dropped, 1, "the mail; the blank one left out");
+        assert_eq!(
+            topic.to_topic(),
+            "About.\n\
+             [call passcode 42] https://zoom.us/j/1\n\
+             [call Weekly passcode 42] https://meet.google.com/abc-defg-hij\n\
+             [link Drive] https://drive.google.com/x"
+        );
+        assert_eq!(
+            topic.links.iter().map(LinkDraft::from).collect::<Vec<_>>()[0],
+            LinkDraft {
+                url: "https://zoom.us/j/1".into(),
+                ..draft(true, "", "")
+            }
+        );
+        let mail = draft(false, "", "mailto:x");
+        assert_eq!(mail.link(), None);
+        assert_eq!(mail.line(), "[link] mailto:x", "as typed");
+    }
+
+    #[test]
+    fn previews_and_moves() {
+        let topic = Topic::parse(
+            "\n  About.\nMore.\n\
+             [link Draft] https://overleaf.com/a\n\
+             [call Weekly] https://zoom.us/j/1\n\
+             [call] https://meet.google.com/abc-defg-hij",
+        );
+        assert_eq!(topic.first_line(), Some("About."));
+        assert_eq!(topic.preview(&[]).as_deref(), Some("About."));
+        let links = Topic {
+            text: String::new(),
+            ..topic.clone()
+        };
+        assert_eq!(links.first_line(), None);
+        assert_eq!(
+            links.preview(&[]).as_deref(),
+            Some("Weekly · Google Meet · Draft"),
+            "calls first"
+        );
+        assert!(!links.is_empty() && Topic::parse(" \n").is_empty());
+        assert_eq!(Topic::default().preview(&[]), None);
+
+        let moved = topic.clone().moved(true, 1, 0);
+        assert_eq!(
+            moved.to_topic(),
+            "About.\nMore.\n\
+             [call] https://meet.google.com/abc-defg-hij\n\
+             [call Weekly] https://zoom.us/j/1\n\
+             [link Draft] https://overleaf.com/a"
+        );
+        assert_eq!(
+            moved.links[0].url.as_str(),
+            "https://meet.google.com/abc-defg-hij",
+            "calls first in the links too"
+        );
+        assert_eq!(
+            topic.clone().moved(false, 0, 3).to_topic(),
+            topic.to_topic(),
+            "out of range"
+        );
     }
 
     #[test]

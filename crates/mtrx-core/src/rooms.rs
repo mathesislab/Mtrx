@@ -34,7 +34,7 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use crate::{
-    Error, Live, Result, Rights, RoomHandle, RoomTag, Session, SpaceGraph, User,
+    Error, Live, Result, Rights, RoomHandle, RoomTag, Session, SpaceGraph, Topic, User,
     permissions::{self, Permissions, open_power_levels_raw},
     system_time,
 };
@@ -203,7 +203,8 @@ pub struct RoomSummary {
     pub name: String,
     /// The room's picture; for a DM without one, the other user's.
     pub avatar: Option<OwnedMxcUri>,
-    pub topic: Option<String>,
+    /// Parsed once here; empty without one.
+    pub topic: Topic,
     pub kind: RoomKind,
     pub membership: Membership,
     pub encrypted: bool,
@@ -364,7 +365,7 @@ async fn summarize(items: &Vector<RoomListItem>, cache: &mut RightsCache) -> Vec
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| room.room_id().to_string()),
             avatar,
-            topic: room.topic().filter(|t| !t.trim().is_empty()),
+            topic: Topic::parse(&room.topic().unwrap_or_default()),
             kind,
             membership,
             encrypted: room.encryption_state().is_encrypted(),
@@ -659,7 +660,7 @@ impl RoomHandle {
     pub async fn set_topic(&self, topic: &str) -> Result<()> {
         let echoes = &self.session.echoes;
         // As the room list has it.
-        let shown = Some(topic.to_owned()).filter(|t| !t.trim().is_empty());
+        let shown = Topic::parse(topic);
         echoes.set_topic(self.id(), shown.clone());
         let result = self.room.set_room_topic(topic).await;
         echoes.topic_answered(self.id(), &shown, result.is_ok(), Instant::now());

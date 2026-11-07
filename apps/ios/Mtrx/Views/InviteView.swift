@@ -42,7 +42,7 @@ struct InviteView: View {
             Text(what)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            if let topic = Topics.firstLine(room.topic) {
+            if let topic = room.topic.firstLine {
                 Text(topic)
                     .font(.callout)
                     .foregroundStyle(.secondary)

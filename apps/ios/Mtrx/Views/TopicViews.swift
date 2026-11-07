@@ -1,9 +1,9 @@
 import MtrxFFI
 import SwiftUI
 
-/// A room's topic panel: the topic's text in full, its links as buttons
-/// (opening them), the pinned messages (a tap goes to one), and Edit where
-/// we may change the topic.
+/// A room's topic panel: the topic's text in full, its calls and links as
+/// buttons (opening them), the pinned messages (a tap goes to one), and
+/// Edit where we may change the topic.
 struct TopicPanel: View {
     let topic: Topic
     let canEdit: Bool
@@ -30,11 +30,9 @@ struct TopicPanel: View {
                 Section {
                     TopicText(topic: topic)
                 }
-                if !topic.links.isEmpty {
+                if !topic.calls.isEmpty || !topic.links.isEmpty {
                     Section {
-                        ForEach(Array(topic.links.enumerated()), id: \.offset) { _, link in
-                            LinkButton(link: link)
-                        }
+                        TopicLinkButtons(topic: topic)
                     }
                 }
                 Section("Pinned messages") {
@@ -56,6 +54,7 @@ struct TopicPanel: View {
                 }
             }
         }
+        .opensRoomLinks()
         .presentationDetents([.medium, .large])
         .task { await pinned.load() }
     }
@@ -105,7 +104,7 @@ struct TopicText: View {
         if !topic.text.isEmpty {
             Text(Formatting.linked(topic.text))
                 .textSelection(.enabled)
-        } else if topic.links.isEmpty {
+        } else if topic.calls.isEmpty && topic.links.isEmpty {
             Text("No topic or links yet.")
                 .foregroundStyle(.secondary)
         } else {
@@ -114,22 +113,36 @@ struct TopicText: View {
     }
 }
 
-/// A topic's link: a call (camera) or a link, by its name, opening its
-/// address; a call's passcode beside it.
+/// A button for each of a topic's calls, then each of its other links: list
+/// rows.
+struct TopicLinkButtons: View {
+    let topic: Topic
+
+    var body: some View {
+        ForEach(Array(topic.calls.enumerated()), id: \.offset) { _, link in
+            LinkButton(link: link, call: true)
+        }
+        ForEach(Array(topic.links.enumerated()), id: \.offset) { _, link in
+            LinkButton(link: link, call: false)
+        }
+    }
+}
+
+/// A topic's call (camera) or link, by its name, opening its address; a
+/// call's passcode beside it.
 struct LinkButton: View {
     let link: RoomLink
-    @Environment(\.openURL) private var openURL
+    let call: Bool
+    @Environment(\.openRoomLink) private var open
 
     var body: some View {
         Button {
-            if let url = URL(string: link.url) {
-                openURL(url)
-            }
+            open(link)
         } label: {
             AdaptiveStack {
-                Label(link.name, systemImage: link.call ? "video" : "link")
+                Label(link.name, systemImage: call ? "video" : "link")
                 Spacer(minLength: 0)
-                if let passcode = link.passcode, !passcode.isEmpty {
+                if let passcode = link.passcode {
                     Text("Passcode \(passcode)")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -141,8 +154,194 @@ struct LinkButton: View {
     }
 }
 
-/// Editing a topic: its text, and its calls and links (title, address,
-/// passcode for calls). Saved, the editor closes.
+/// A space's calls, then its links, as small capsules in rows under its
+/// name, centred.
+struct LinkChips: View {
+    let topic: Topic
+    @Environment(\.openRoomLink) private var open
+
+    var body: some View {
+        FlowLayout(spacing: 6, centered: true) {
+            ForEach(Array(topic.calls.enumerated()), id: \.offset) { _, link in
+                chip(link, call: true)
+            }
+            ForEach(Array(topic.links.enumerated()), id: \.offset) { _, link in
+                chip(link, call: false)
+            }
+        }
+    }
+
+    private func chip(_ link: RoomLink, call: Bool) -> some View {
+        Button {
+            open(link)
+        } label: {
+            Label(link.name, systemImage: call ? "video" : "link")
+                .font(.footnote)
+                .lineLimit(1)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .accessibilityHint(link.passcode.map { "Copies the passcode \($0), then opens \(link.url)" } ?? link.url)
+    }
+}
+
+/// The room's calls and links at the right of its header: Join while it has
+/// a call (a tap joins the room's call, a long press shows the menu), else a
+/// link icon that opens the menu. The menu has the calls, then the links,
+/// each opening, then Edit links… where we may edit them.
+struct RoomLinksMenu: View {
+    let links: HeaderLinks
+    let editLinks: () -> Void
+    @Environment(\.openRoomLink) private var open
+
+    var body: some View {
+        if let call = links.join {
+            Menu {
+                entries
+            } label: {
+                Label("Join", systemImage: "video.fill")
+                    .labelStyle(.titleAndIcon)
+                    .font(.subheadline.weight(.semibold))
+            } primaryAction: {
+                open(call)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            .accessibilityLabel(links.joinLabel ?? "Join")
+            .accessibilityHint("Hold for the room's calls and links")
+        } else {
+            Menu {
+                entries
+            } label: {
+                Image(systemName: "link")
+            }
+            .accessibilityLabel("Links")
+        }
+    }
+
+    @ViewBuilder
+    private var entries: some View {
+        ForEach(links.groups, id: \.title) { group in
+            Section(group.title) {
+                ForEach(Array(group.links.enumerated()), id: \.offset) { _, link in
+                    Button {
+                        open(link)
+                    } label: {
+                        Label {
+                            Text(link.name)
+                            if let passcode = link.passcode {
+                                Text("Passcode \(passcode)")
+                            }
+                        } icon: {
+                            Image(systemName: group.call ? "video" : "link")
+                        }
+                    }
+                }
+            }
+        }
+        if links.canEdit {
+            Section {
+                Button(action: editLinks) {
+                    Label("Edit links…", systemImage: "pencil")
+                }
+            }
+        }
+    }
+}
+
+/// Opens a topic's call or link: a call's passcode is copied first, as the
+/// call's app opens on top and pasting is the easiest way in.
+struct RoomLinkAction {
+    let action: @MainActor (RoomLink) -> Void
+
+    @MainActor
+    func callAsFunction(_ link: RoomLink) {
+        action(link)
+    }
+}
+
+private struct RoomLinkActionKey: EnvironmentKey {
+    /// Without a word that the passcode was copied: see `opensRoomLinks`.
+    static let defaultValue = RoomLinkAction { @MainActor link in
+        guard let url = URL(string: link.url) else { return }
+        if let passcode = link.passcode {
+            UIPasteboard.general.string = passcode
+        }
+        UIApplication.shared.open(url)
+    }
+}
+
+extension EnvironmentValues {
+    var openRoomLink: RoomLinkAction {
+        get { self[RoomLinkActionKey.self] }
+        set { self[RoomLinkActionKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Its calls and links open here: a call with a passcode copies it
+    /// first, which a banner at the top says ("Passcode 123 copied") just
+    /// before the call opens.
+    func opensRoomLinks() -> some View {
+        modifier(OpensRoomLinks())
+    }
+}
+
+private struct OpensRoomLinks: ViewModifier {
+    @Environment(\.openURL) private var openURL
+    /// The passcode copied, while the banner shows.
+    @State private var copied: String?
+    /// The banner's number: only the last one's timer hides it.
+    @State private var shown = 0
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.openRoomLink, RoomLinkAction(action: open))
+            .overlay(alignment: .top) {
+                if let copied {
+                    Text("Passcode \(copied) copied")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .accessibilityAddTraits(.isStaticText)
+                }
+            }
+    }
+
+    @MainActor
+    private func open(_ link: RoomLink) {
+        guard let url = URL(string: link.url) else { return }
+        guard let passcode = link.passcode else {
+            openURL(url)
+            return
+        }
+        UIPasteboard.general.string = passcode
+        let message = "Passcode \(passcode) copied"
+        UIAccessibility.post(notification: .announcement, argument: message)
+        withAnimation(.easeOut(duration: 0.2)) { copied = passcode }
+        shown += 1
+        let number = shown
+        Task { @MainActor in
+            // Seen before the call's app opens on top.
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            openURL(url)
+            try? await Task.sleep(nanoseconds: 2_300_000_000)
+            if shown == number {
+                withAnimation(.easeIn(duration: 0.2)) { copied = nil }
+            }
+        }
+    }
+}
+
+/// Editing a topic: its text, its calls and its links (title, address,
+/// passcode for calls), each dragged by its handle to reorder and swiped or
+/// tapped away. The first call is the room's. Saved, the editor closes.
 struct TopicEditor: View {
     @State var draft: TopicDraft
     @ObservedObject var info: RoomInfoModel
@@ -155,8 +354,28 @@ struct TopicEditor: View {
                 TextField("What the room is about", text: $draft.text, axis: .vertical)
                     .lineLimit(3...10)
             }
-            links(calls: true)
-            links(calls: false)
+            if !draft.calls.isEmpty {
+                Section {
+                    ForEach($draft.calls) { $link in
+                        LinkFields(link: $link, call: true)
+                    }
+                    .onMove { draft.move(call: true, from: $0, to: $1) }
+                    .onDelete { draft.remove(call: true, at: $0) }
+                } header: {
+                    Text("Calls")
+                } footer: {
+                    Text("The first call is the room's: Join opens it.")
+                }
+            }
+            if !draft.links.isEmpty {
+                Section("Links") {
+                    ForEach($draft.links) { $link in
+                        LinkFields(link: $link, call: false)
+                    }
+                    .onMove { draft.move(call: false, from: $0, to: $1) }
+                    .onDelete { draft.remove(call: false, at: $0) }
+                }
+            }
             Section {
                 Button {
                     draft.add(call: true)
@@ -174,6 +393,8 @@ struct TopicEditor: View {
                 }
             }
         }
+        // The handles to drag by, always shown.
+        .environment(\.editMode, .constant(.active))
         .navigationTitle("Edit topic")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -182,21 +403,6 @@ struct TopicEditor: View {
                     ProgressView()
                 } else {
                     Button("Save") { save() }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func links(calls: Bool) -> some View {
-        if draft.links.contains(where: { $0.call == calls }) {
-            Section(calls ? "Calls" : "Links") {
-                ForEach($draft.links) { $link in
-                    if link.call == calls {
-                        LinkFields(link: $link) {
-                            draft.remove(link.id)
-                        }
-                    }
                 }
             }
         }
@@ -213,35 +419,48 @@ struct TopicEditor: View {
     }
 }
 
-/// A call's or link's fields: title, address, and a call's passcode.
+/// The topic editor on its own, from the header's Edit links…: with Cancel.
+struct TopicEditorSheet: View {
+    let topic: Topic
+    @ObservedObject var info: RoomInfoModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            TopicEditor(draft: TopicDraft(topic), info: info)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                }
+        }
+    }
+}
+
+/// A call's or link's fields: title, address (red while it isn't a web
+/// address), and a call's passcode.
 private struct LinkFields: View {
     @Binding var link: TopicDraft.Link
-    let remove: () -> Void
+    let call: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: link.call ? "video" : "link")
+            Image(systemName: call ? "video" : "link")
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
             VStack(spacing: 8) {
                 TextField("Title", text: $link.title)
-                TextField("https://…", text: $link.url)
+                TextField(call ? "https://zoom.us/j/123456789" : "https://…", text: $link.url)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .foregroundColor(link.url.isEmpty || link.valid ? nil : .red)
-                if link.call {
+                if call {
                     TextField("Passcode", text: $link.passcode)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
             }
-            Button(action: remove) {
-                Image(systemName: "minus.circle.fill")
-                    .foregroundColor(.red)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Remove")
         }
         .padding(.vertical, 2)
     }

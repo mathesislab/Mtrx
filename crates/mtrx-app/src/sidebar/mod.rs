@@ -14,8 +14,7 @@ use iced::{
 };
 use mtrx_core::{
     CallService, DirectoryRoom, Grouping, Layout, Membership, OwnedRoomId, OwnedUserId, Rights,
-    RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, Topic,
-    UserId,
+    RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, UserId,
 };
 
 use crate::{
@@ -389,9 +388,9 @@ fn space_topic<'a>(
 ) -> Element<'a, app::Message> {
     let panel = view.space_topic;
     let listed = (view.rooms().iter()).find(|r| &r.id == space);
-    let parsed = Topic::parse(listed.and_then(|r| r.topic.as_deref()).unwrap_or_default());
+    let topic = topic::of(listed);
     let can_edit = listed.is_some_and(|r| r.rights.change_topic);
-    let Some(preview) = topic::preview(&parsed, view.call_services, can_edit) else {
+    let Some(preview) = topic::preview(topic, view.call_services, can_edit) else {
         return top;
     };
     let message = {
@@ -427,7 +426,7 @@ fn space_topic<'a>(
     let shown = open.then(|| {
         container(
             scrollable(
-                container(panel.view(&parsed, view.call_services, can_edit, message.clone()))
+                container(panel.view(topic, view.call_services, can_edit, message.clone()))
                     .padding(14),
             )
             .height(Length::Shrink),
@@ -1764,7 +1763,7 @@ mod tests {
             id: id.try_into().unwrap(),
             name: id.into(),
             avatar: None,
-            topic: None,
+            topic: Default::default(),
             kind,
             membership: Membership::Joined,
             encrypted: false,
