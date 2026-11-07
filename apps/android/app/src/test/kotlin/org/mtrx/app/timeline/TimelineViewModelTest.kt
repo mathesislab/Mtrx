@@ -6,6 +6,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -24,7 +25,11 @@ import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
 import org.mtrx.app.textEvent
 import org.mtrx.app.user
+import uniffi.mtrx.Download
+import uniffi.mtrx.DownloadState
 import uniffi.mtrx.Draft
+import uniffi.mtrx.Media
+import uniffi.mtrx.MediaKind
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
@@ -89,6 +94,38 @@ class TimelineViewModelTest {
         assertTrue(viewModel.personInfo.value === model)
         viewModel.closePersonInfo()
         assertNull(viewModel.personInfo.value)
+    }
+
+    @Test
+    fun aFileDownloadsThenGoesToTheScreenAndAFailedOneGoesAgain() = runTest {
+        val viewModel = viewModel()
+        val requests = mutableListOf<FileRequest>()
+        backgroundScope.launch(Dispatchers.Main) { viewModel.files.collect { requests += it } }
+        val media = Media(
+            kind = MediaKind.FILE, filename = "melt.pdf", size = 2000u, mimetype = "application/pdf",
+            width = null, height = null, source = "source",
+        )
+        session.downloaded[1u] = "/cache/melt.pdf"
+        viewModel.file(media, "\$1", FileUse.OPEN)
+        assertEquals(listOf("download source"), session.downloadCalls)
+        assertEquals(listOf(FileRequest("/cache/melt.pdf", media, FileUse.OPEN)), requests)
+
+        // The newest download of each file, by its source.
+        val failed = Download(
+            id = 1u, fileName = "melt.pdf", kind = MediaKind.FILE, size = 2000u, source = "source",
+            roomId = room, roomName = "Ice", eventId = "\$1", state = DownloadState.Failed("The file is damaged"),
+            fraction = null, status = "Failed: The file is damaged",
+        )
+        val older = failed.copy(id = 0u, state = DownloadState.Cancelled)
+        session.downloadsListener!!.onUpdate(listOf(failed, older))
+        assertEquals(mapOf("source" to failed), viewModel.downloads.value)
+        // Shared again: retried, not started anew; not passed on until done.
+        session.downloaded.clear()
+        viewModel.file(media, "\$1", FileUse.SHARE)
+        assertEquals(listOf("download source", "retry 1"), session.downloadCalls)
+        assertEquals(1, requests.size)
+        viewModel.cancelDownload(1u)
+        assertEquals("cancel 1", session.downloadCalls.last())
     }
 
     @Test

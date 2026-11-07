@@ -1,5 +1,6 @@
 package org.mtrx.app.timeline
 
+import uniffi.mtrx.Media
 import uniffi.mtrx.Topic
 
 /**
@@ -48,4 +49,9 @@ interface TimelineActions {
     fun showPinned()
 
     fun hidePinned()
+
+    /** Download a message's file (once; a failed download again), then hand it on for [use] ([TimelineViewModel.files]). */
+    fun file(media: Media, eventId: String?, use: FileUse)
+
+    fun cancelDownload(id: ULong)
 }

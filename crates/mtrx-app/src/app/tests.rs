@@ -2215,7 +2215,12 @@ async fn media_messages() {
         &app(Screen::Main(main), Mode::Light),
         "composer-attachments",
     );
-    let mut viewer = Viewer::new(image);
+    let in_room = |media: Media| crate::downloads::File {
+        media,
+        room: room.clone(),
+        event: None,
+    };
+    let mut viewer = Viewer::new(in_room(image));
     viewer.load_now(&session).await;
     snapshot(
         &app(
@@ -2224,7 +2229,7 @@ async fn media_messages() {
         ),
         "image-viewer",
     );
-    let mut viewer = pdf_viewer::Viewer::new(pdf.clone(), Size::new(1200.0, 800.0), 2.0);
+    let mut viewer = pdf_viewer::Viewer::new(in_room(pdf.clone()), Size::new(1200.0, 800.0), 2.0);
     viewer.open_now(&session).await;
     snapshot(
         &app(
@@ -2233,7 +2238,7 @@ async fn media_messages() {
         ),
         "pdf-viewer",
     );
-    let mut viewer = pdf_viewer::Viewer::new(pdf, Size::new(1200.0, 800.0), 2.0);
+    let mut viewer = pdf_viewer::Viewer::new(in_room(pdf), Size::new(1200.0, 800.0), 2.0);
     viewer.set_zoom(0.5);
     viewer.open_now(&session).await;
     snapshot(

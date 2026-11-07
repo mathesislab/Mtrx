@@ -10,6 +10,7 @@ final class SessionModel: ObservableObject {
     let session: Session
     let images: ImageCache
     let presence: PresenceModel
+    let downloads: DownloadsModel
     let userId: String
     let deviceId: String
     let homeserver: String
@@ -84,6 +85,7 @@ final class SessionModel: ObservableObject {
         self.defaults = defaults
         images = ImageCache(session: session)
         presence = PresenceModel(session: session, defaults: defaults)
+        downloads = DownloadsModel(session: session)
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
@@ -109,6 +111,7 @@ final class SessionModel: ObservableObject {
         subscriptions.add(session.subscribeConnection(listener: connection), connection) { [weak self] in
             self?.connection = $0
         }
+        downloads.start()
         let encryption = Feed<EncryptionState>()
         subscriptions.add(session.subscribeEncryptionState(listener: encryption), encryption) { [weak self] in
             self?.encryption = $0

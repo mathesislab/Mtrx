@@ -53,6 +53,18 @@
             </intent-filter>
         </activity>
 
+        <!-- Hands messages' files, downloaded to the cache, to the apps that
+             open, share or save them. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- UnifiedPush (connector 3.x): the connector's receiver hands
              endpoints and pushes to this service. In the app's process, so
              MtrxApplication.onCreate runs first. -->

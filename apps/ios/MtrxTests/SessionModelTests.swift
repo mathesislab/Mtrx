@@ -14,6 +14,24 @@ final class SessionModelTests: XCTestCase {
         await eventually { self.session.roomListListener != nil }
     }
 
+    func testDownloadsFollowThePushedListAndFilesFindTheirs() async {
+        await eventually { self.session.downloadsListener != nil }
+        let download = Download(
+            id: 7, fileName: "melt.pdf", kind: .file, size: 2000, source: "source", roomId: "!a",
+            roomName: "Ice", eventId: "$e", state: .downloading(received: 1000, total: 2000),
+            fraction: 0.5, status: "1.0 of 2.0 kB")
+        session.downloadsListener?.onUpdate(downloads: [download])
+        await eventually { self.model.downloads.downloads == [download] }
+        let media = Media(
+            kind: .file, filename: "melt.pdf", size: 2000, mimetype: nil, width: nil, height: nil,
+            source: "source")
+        XCTAssertEqual(model.downloads.download(of: media)?.id, 7)
+        XCTAssertFalse(download.stopped)
+        var other = media
+        other.source = "other"
+        XCTAssertNil(model.downloads.download(of: other))
+    }
+
     func testBannerFollowsThePushedState() async {
         // The subscription's first state: no sync yet.
         await eventually { self.model.encryption == EncryptionState(deviceVerified: false, recovery: .unknown) }

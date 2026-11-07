@@ -1,6 +1,12 @@
 package org.mtrx.app.timeline
 
 import android.graphics.Bitmap
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.platform.LocalContext
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -146,6 +152,8 @@ import org.mtrx.app.ui.dayLabel
 import org.mtrx.app.ui.identityColor
 import org.mtrx.app.ui.linesHeight
 import org.mtrx.app.ui.timeOfDay
+import uniffi.mtrx.Download
+import uniffi.mtrx.DownloadState
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
@@ -182,6 +190,9 @@ private class RowHandlers(
     val openLink: (String) -> Unit,
     /** The send state of a message not sent yet was tapped. */
     val unsent: (String) -> Unit,
+    /** A message's file was tapped: open it once downloaded. */
+    val openFile: (EventRow) -> Unit,
+    val cancelDownload: (ULong) -> Unit,
 )
 
 /** What the room screen shows, from its model's flows. */
@@ -198,6 +209,8 @@ data class TimelineState(
     val pinned: List<EventRow>? = null,
     /** A direct chat's rooms shared with the person, by space, while their panel shows; null while loading. */
     val shared: List<RoomGroup>? = null,
+    /** Each message's file's newest download, by its source. */
+    val downloads: Map<String, Download> = emptyMap(),
 )
 
 /**
@@ -238,6 +251,7 @@ fun TimelineScreen(
     val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
     val pinned by viewModel.pinned.collectAsStateWithLifecycle()
     val sharedIds by viewModel.sharedRooms.collectAsStateWithLifecycle()
+    val downloads by viewModel.downloads.collectAsStateWithLifecycle()
     val shared = remember(sharedIds, rooms) { sharedIds?.let { roomGroups(rooms, among = it) } }
     // The app may be ended in the background: the draft is kept first.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
@@ -252,6 +266,7 @@ fun TimelineScreen(
         canEditTopic = header.rights.changeTopic,
         pinned = pinned,
         shared = shared,
+        downloads = downloads,
     )
     TimelineContent(
         header,
@@ -261,6 +276,7 @@ fun TimelineScreen(
         presence = header.person?.let { presences[it] },
         backCount = backCount,
         scrollTo = viewModel.scrollTo,
+        files = viewModel.files,
         onBack = onBack,
         onRoomInfo = onRoomInfo,
         onOpenLink = onOpenLink,
@@ -297,6 +313,8 @@ fun TimelineContent(
     onOpenLink: (String) -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenSpace: (String) -> Unit,
+    /** Downloaded files to open, share or save; none in the screenshots (no activity). */
+    files: Flow<FileRequest>? = null,
     topicOpen: Boolean = false,
     editingTopic: Boolean = false,
     sharedOpen: Boolean = false,
@@ -329,6 +347,9 @@ fun TimelineContent(
         snackbar.showSnackbar(message)
         actions.clearError()
     }
+
+    // Downloaded files: opened, shared or saved.
+    if (files != null) FileRequests(files) { message -> scope.launch { snackbar.showSnackbar(message) } }
 
     // The pinned messages, while the panel is open.
     val panelOpen = panel != null
@@ -397,6 +418,10 @@ fun TimelineContent(
             showReaders = { rowId -> overlay = Overlay.Readers(rowId) },
             openLink = { url -> openLink(url) },
             unsent = { rowId -> overlay = Overlay.Menu(rowId, unsent = true) },
+            openFile = { row ->
+                row.message?.media?.let { actions.file(it, row.event.eventId, FileUse.OPEN) }
+            },
+            cancelDownload = actions::cancelDownload,
         )
     }
 
@@ -486,7 +511,13 @@ fun TimelineContent(
             ) {
                 items(newestFirst, key = { it.id }, contentType = { it::class }) { row ->
                     when (row) {
-                        is EventRow -> EventBubble(row, images, state.highlighted == row.id, handlers)
+                        is EventRow -> EventBubble(
+                            row,
+                            images,
+                            state.highlighted == row.id,
+                            row.message?.media?.let { state.downloads[it.source] },
+                            handlers,
+                        )
                         is StateRow -> Notice(row.text)
                         is DayRow -> DayDivider(dayLabel(row.date, today))
                         is ReadMarkerRow -> ReadMarker()
@@ -534,9 +565,15 @@ fun TimelineContent(
             if (row == null || menu.isEmpty()) {
                 LaunchedEffect(shown) { overlay = null }
             } else {
+                val media = row.message?.media.takeIf { !shown.unsent }
                 MessageMenu(
                     row = row,
                     actions = menu,
+                    hasFile = media != null,
+                    onFile = { use ->
+                        overlay = null
+                        media?.let { actions.file(it, row.event.eventId, use) }
+                    },
                     onDismiss = dismiss,
                     onReact = { key ->
                         overlay = null
@@ -805,7 +842,7 @@ private fun Composer(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, handlers: RowHandlers) {
+private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, download: Download?, handlers: RowHandlers) {
     val event = row.event
     val own = event.own
     val name = event.sender.displayName
@@ -862,7 +899,10 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
                         contentColor = colors.content,
                         modifier = Modifier
                             .clip(bubbleShape)
-                            .combinedClickable(onClick = {}, onLongClick = { handlers.hold(row) }),
+                            .combinedClickable(
+                                onClick = { handlers.openFile(row) },
+                                onLongClick = { handlers.hold(row) },
+                            ),
                     ) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             row.quote?.let { QuoteBlock(it, colors.secondary, handlers.goTo) }
@@ -873,8 +913,11 @@ private fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, han
                                 images,
                                 row.undecryptableText,
                                 colors,
+                                download,
                                 onOpenLink = handlers.openLink,
                                 onHold = { handlers.hold(row) },
+                                onCancelDownload = handlers.cancelDownload,
+                                onOpenFile = { handlers.openFile(row) },
                             )
                             Text(
                                 timeOfDay(event.timestamp),
@@ -1068,8 +1111,11 @@ private fun MessageBody(
     images: Images,
     undecryptableText: String,
     colors: BubbleColors,
+    download: Download?,
     onOpenLink: (String) -> Unit,
     onHold: () -> Unit,
+    onCancelDownload: (ULong) -> Unit,
+    onOpenFile: () -> Unit,
 ) {
     val secondary = colors.secondary
     // Its links, and "(edited)", muted, after the text.
@@ -1087,10 +1133,13 @@ private fun MessageBody(
             val media = message.media
             when {
                 media != null && (media.kind == MediaKind.IMAGE || media.kind == MediaKind.VIDEO) -> {
-                    MediaPreview(media, images)
+                    Box(contentAlignment = Alignment.Center) {
+                        MediaPreview(media, images)
+                        DownloadProgress(download, onCancelDownload, onOpenFile)
+                    }
                     messageText(message)?.let { LinkedText(text(it), onOpenLink, onHold, Modifier.padding(top = 6.dp)) }
                 }
-                media != null -> Text("${media.filename}${fileSize(media)}", fontStyle = FontStyle.Italic)
+                media != null -> FileRow(media, download, secondary, onCancelDownload, onOpenFile)
                 message.kind == MessageKind.EMOTE -> LinkedText(text("* $name ${message.body}"), onOpenLink, onHold, fontStyle = FontStyle.Italic)
                 message.kind == MessageKind.NOTICE -> LinkedText(text(message.body), onOpenLink, onHold, color = secondary)
                 else -> LinkedText(text(message.body), onOpenLink, onHold)
@@ -1190,12 +1239,108 @@ private fun MediaPreview(media: Media, images: Images) {
     }
 }
 
+/**
+ * Hands [files] to other apps: opened, shared, or saved to Downloads (on
+ * API 26–28 where the user picks); [say] what came of it.
+ */
+@Composable
+private fun FileRequests(files: Flow<FileRequest>, say: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var saving by remember { mutableStateOf<FileRequest?>(null) }
+    val createDocument = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
+        val request = saving ?: return@rememberLauncherForActivityResult
+        saving = null
+        if (target != null) {
+            scope.launch { say(if (copyFile(context, request, target)) "Saved" else "Couldn't save the file") }
+        }
+    }
+    LaunchedEffect(files) {
+        files.collect { request ->
+            when (request.use) {
+                FileUse.OPEN -> if (!openFile(context, request)) say("No app can open this file")
+                FileUse.SHARE -> shareFile(context, request)
+                FileUse.SAVE -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    scope.launch { say(if (saveToDownloads(context, request)) "Saved to Downloads" else "Couldn't save the file") }
+                } else {
+                    saving = request
+                    createDocument.launch(request.media.filename)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A file that is not an image or video: its name, and its size or how its
+ * download goes, with a bar while it runs; cancel while it runs, retry once
+ * it failed.
+ */
+@Composable
+private fun FileRow(media: Media, download: Download?, secondary: Color, onCancel: (ULong) -> Unit, onRetry: () -> Unit) {
+    val running = download != null && download.state is DownloadState.Downloading
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.weight(1f, fill = false)) {
+            Text(media.filename, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            // The library's line while it runs or after it failed; else the size.
+            val line = if (download != null && (running || download.stopped)) download.status else fileSize(media)
+            if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.bodySmall, color = secondary)
+            if (download != null && running) {
+                val fraction = download.fraction
+                val bar = Modifier.padding(top = 4.dp).width(160.dp)
+                if (fraction != null) LinearProgressIndicator(progress = { fraction }, modifier = bar) else LinearProgressIndicator(bar)
+            }
+        }
+        if (download != null && running) {
+            IconButton(onClick = { onCancel(download.id) }) {
+                Icon(Icons.Filled.Close, contentDescription = "Cancel the download")
+            }
+        } else if (download != null && download.stopped) {
+            IconButton(onClick = onRetry) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Try again")
+            }
+        }
+    }
+}
+
+/** Over an image or video: a ring while it downloads (tap to cancel), retry once it failed. */
+@Composable
+private fun DownloadProgress(download: Download?, onCancel: (ULong) -> Unit, onRetry: () -> Unit) {
+    if (download == null) return
+    val background = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
+    when {
+        download.state is DownloadState.Downloading -> Box(
+            Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(background)
+                .clickable(onClickLabel = "Cancel the download") { onCancel(download.id) },
+            contentAlignment = Alignment.Center,
+        ) {
+            val fraction = download.fraction
+            if (fraction != null) CircularProgressIndicator(progress = { fraction }) else CircularProgressIndicator()
+            Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+        }
+        download.stopped -> Box(
+            Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(background)
+                .clickable(onClickLabel = "Try again", onClick = onRetry),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Refresh, contentDescription = "Couldn't download")
+        }
+    }
+}
+
+/** A file's size, e.g. "1.2 MB"; empty if unknown. */
 private fun fileSize(media: Media): String {
     val bytes = media.size?.toLong() ?: return ""
     return when {
-        bytes >= 1_000_000 -> " (%.1f MB)".format(bytes / 1_000_000.0)
-        bytes >= 1_000 -> " (${bytes / 1_000} kB)"
-        else -> " ($bytes B)"
+        bytes >= 1_000_000 -> "%.1f MB".format(bytes / 1_000_000.0)
+        bytes >= 1_000 -> "${bytes / 1_000} kB"
+        else -> "$bytes B"
     }
 }
 

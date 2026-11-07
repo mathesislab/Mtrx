@@ -11,6 +11,7 @@ mod calls;
 mod categories;
 mod connection;
 mod directory;
+mod downloads;
 mod drafts;
 mod echo;
 mod emoji;
@@ -49,6 +50,7 @@ pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
 pub use directory::{DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, parse_address};
+pub use downloads::{Download, DownloadId, DownloadState, SaveTo, human_size};
 pub use drafts::{DRAFT_PAUSE, Draft, DraftKeeper};
 pub use encryption::{
     DeviceInfo, EncryptionState, RecoveryStatus, RecoveryStep, Verification, VerificationEmoji,

@@ -71,6 +71,10 @@ extension Feed: VerificationRequestListener where Value == Verification {
     func onRequest(verification: Verification) { send(verification) }
 }
 
+extension Feed: DownloadsListener where Value == [Download] {
+    func onUpdate(downloads: [Download]) { send(downloads) }
+}
+
 /// A model's subscriptions and the tasks consuming them, cancelled together
 /// (also when the model goes away).
 @MainActor

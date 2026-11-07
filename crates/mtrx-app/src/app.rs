@@ -36,7 +36,9 @@ use crate::{
     calls,
     clipboard::{self, Copied, Field, Pasted},
     dialog::{self, Dialog},
-    directory, edit_menu, emoji,
+    directory,
+    downloads::{self, Downloads},
+    edit_menu, emoji,
     find::{self, Find},
     hint::{Position, hint},
     info, join,
@@ -206,22 +208,21 @@ pub enum Message {
     AvatarLoaded(avatar::Key, Option<image::Handle>),
     PreviewLoaded(MediaRef, Option<media::Preview>),
     /// Show an image large.
-    OpenImage(Media),
+    OpenImage(downloads::File),
     CloseImage,
     /// Open or close the menu of the image in the viewer.
     ViewerMenu(bool),
     /// The whole image for the viewer.
     ImageLoaded(MediaRef, Result<media::Picture, String>),
-    /// A PDF in the viewer was loaded, with its first page drawn.
-    OpenPdf(Media),
+    /// Show a PDF large.
+    OpenPdf(downloads::File),
     Pdf(pdf_viewer::Message),
-    /// Ask where to save a message's file, then save it.
-    SaveMedia(Media, media::Origin),
     /// Put a message's image on the clipboard.
     CopyImage(Media, media::Origin),
-    /// Saving or copying a file finished, or failed: shown where it was
-    /// asked from.
+    /// Copying an image finished, or failed: shown where it was asked
+    /// from.
     MediaDone(media::Origin, Result<(), String>),
+    Downloads(downloads::Message),
     Arrange(arrange::Message),
     ArrangeFailed(String),
     /// Show who someone is or what a room is.
@@ -353,6 +354,9 @@ struct Main {
     restore: Option<LastView>,
     /// Others' presence, for the people shown.
     presences: Presences,
+    downloads: Downloads,
+    /// A message to show once its room opens ("Go to message").
+    go_to: Option<(OwnedRoomId, OwnedEventId)>,
 }
 
 /// What the room pane shows.
@@ -543,6 +547,8 @@ impl Main {
             out_of_view: Default::default(),
             restore: None,
             presences: Presences::default(),
+            downloads: Downloads::default(),
+            go_to: None,
             now: SystemTime::now(),
             session,
             avatars: Avatars::new(),
@@ -1174,6 +1180,7 @@ impl App {
                 main.card = None;
                 // Chosen now: last time's view is no longer wanted.
                 main.restore = None;
+                main.go_to.take_if(|(room, _)| *room != id);
                 if main.pane.open(&id).is_some() {
                     return Task::none();
                 }
@@ -1229,11 +1236,18 @@ impl App {
                                 room::Message::DraftLoaded(d).to(&room_id)
                             });
                         main.set_pane(Pane::Open(room));
+                        let go_to = match main.go_to.take() {
+                            Some((room, event)) if room == id => {
+                                Task::done(room::Message::GoTo(event).to(&id))
+                            }
+                            _ => Task::none(),
+                        };
                         Task::batch([
                             paginate,
                             read,
                             members,
                             draft,
+                            go_to,
                             self.render_math(),
                             self.load_avatars(),
                             self.load_previews(),
@@ -2125,11 +2139,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::OpenImage(media) => {
+            Message::OpenImage(file) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                let viewer = Viewer::new(media);
+                let viewer = Viewer::new(file);
                 let load = viewer.load(main.session.clone());
                 main.modal = Some(Modal::Image(viewer));
                 load
@@ -2149,8 +2163,8 @@ impl App {
                 }
                 Task::none()
             }
-            Message::OpenPdf(media) => {
-                let viewer = pdf_viewer::Viewer::new(media, self.viewport(), self.pixel_scale());
+            Message::OpenPdf(file) => {
+                let viewer = pdf_viewer::Viewer::new(file, self.viewport(), self.pixel_scale());
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
@@ -2165,14 +2179,40 @@ impl App {
                 },
                 _ => Task::none(),
             },
-            Message::SaveMedia(file, from) => {
+            Message::Downloads(message) => {
                 let Screen::Main(main) = &mut self.screen else {
                     return Task::none();
                 };
-                close_menu(main, &from);
-                Task::perform(media::save(main.session.clone(), file), move |result| {
-                    Message::MediaDone(from.clone(), result)
-                })
+                match message {
+                    downloads::Message::GoTo(id, event) => {
+                        main.downloads.close();
+                        if main.pane.open(&id).is_some() {
+                            return Task::done(room::Message::GoTo(event).to(&id));
+                        }
+                        let open = self.update(Message::OpenRoom(id.clone()));
+                        if let Screen::Main(main) = &mut self.screen {
+                            main.go_to = Some((id, event));
+                        }
+                        open
+                    }
+                    downloads::Message::Report(problem) => {
+                        main.report(problem, None);
+                        Task::none()
+                    }
+                    message => {
+                        // Chosen in a message's menu, or the viewer's.
+                        if let downloads::Message::SaveAs(_) = &message {
+                            main.popup
+                                .take_if(|popup| matches!(popup, Popup::MessageMenu { .. }));
+                            if let Some(Modal::Image(viewer)) = &mut main.modal {
+                                viewer.menu = false;
+                            }
+                        }
+                        main.downloads
+                            .update(&main.session, message)
+                            .map(Message::Downloads)
+                    }
+                }
             }
             Message::CopyImage(file, from) => {
                 let Screen::Main(main) = &mut self.screen else {
@@ -4321,6 +4361,7 @@ impl App {
                 }
                 subscriptions.push(media::dropped_files());
             }
+            subscriptions.push(downloads::subscription(&main.session).map(Message::Downloads));
         }
         Subscription::batch(subscriptions)
     }
@@ -4397,6 +4438,9 @@ impl App {
                 _ => None,
             },
             self.updater.unseen(&self.settings.updates),
+            main.downloads
+                .view()
+                .map(|view| view.map(Message::Downloads)),
         );
         let room_list = sidebar::room_list(sidebar::RoomListView {
             // As wide as a room's below its name.

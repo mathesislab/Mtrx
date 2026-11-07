@@ -245,7 +245,7 @@ fn reveal_in_downloads(file: &File, data: &[u8]) -> Result<(), String> {
         .ok_or("No Downloads folder.")?;
     let zip = downloads.join(&file.name);
     std::fs::write(&zip, data).map_err(|e| e.to_string())?;
-    let _ = Command::new("open").arg("-R").arg(&zip).status();
+    let _ = crate::files::show_in_folder(&zip);
     Err(format!(
         "Mtrx cannot replace itself where it is; the update is in Downloads: {}",
         file.name

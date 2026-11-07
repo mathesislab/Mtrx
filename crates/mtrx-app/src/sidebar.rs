@@ -227,6 +227,7 @@ pub fn space_bar<'a>(
     avatars: &Avatars,
     menu: Option<&SpaceMenu>,
     update: bool,
+    downloads: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let entry = |icon: Element<'a, Message>, title: String, target: Option<OwnedRoomId>, unread| {
         let is_selected = selected == target.as_ref();
@@ -329,11 +330,14 @@ pub fn space_bar<'a>(
     } else {
         "Settings"
     };
+    let mut bottom = column![].spacing(4).padding([8, 0]);
+    if let Some(downloads) = downloads {
+        bottom = bottom.push(container(downloads).center_x(Length::Fill));
+    }
+    bottom = bottom.push(container(with_tooltip(settings, tip.into())).center_x(Length::Fill));
     container(column![
         scrollable(bar.spacing(4).width(Length::Fill).padding([8, 0])).height(Length::Fill),
-        container(with_tooltip(settings, tip.into()))
-            .center_x(Length::Fill)
-            .padding([8, 0]),
+        bottom,
     ])
     .width(SPACE_BAR_WIDTH)
     .height(Length::Fill)

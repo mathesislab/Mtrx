@@ -21,14 +21,15 @@ use mtrx_core::{
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use mtrx_ffi::{
-    ConnectionListener, ConnectionState, EncryptionState, EncryptionStateListener, EventContent,
-    JoinAction, JoinRule, MediaKind, Membership, Message, MessageKind, Mtrx, MtrxError,
-    Notification, Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState,
-    PusherInfo, QuoteState, Reaction, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote,
-    RoomKind, RoomLists, RoomListsListener, RoomSettings, RoomSettingsListener, RoomSort,
-    RowContent, SecretBackend, SecretError, SectionLayout, SendState, Session, SpaceKey,
-    TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, User, Verification,
-    VerificationListener, VerificationRequestListener, VerificationState,
+    ConnectionListener, ConnectionState, Download, DownloadState, DownloadsListener,
+    EncryptionState, EncryptionStateListener, EventContent, JoinAction, JoinRule, MediaKind,
+    Membership, Message, MessageKind, Mtrx, MtrxError, Notification, Presence, PresenceActivity,
+    PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction,
+    RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists,
+    RoomListsListener, RoomSettings, RoomSettingsListener, RoomSort, RowContent, SecretBackend,
+    SecretError, SectionLayout, SendState, Session, SpaceKey, TimelineEvent, TimelineRow,
+    TimelineRowsListener, TypingListener, User, Verification, VerificationListener,
+    VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -70,6 +71,12 @@ impl<T> Forward<T> {
 impl RoomListsListener for Forward<Arc<RoomLists>> {
     fn on_update(&self, lists: Arc<RoomLists>) {
         self.send(lists);
+    }
+}
+
+impl DownloadsListener for Forward<Vec<Download>> {
+    fn on_update(&self, downloads: Vec<Download>) {
+        self.send(downloads);
     }
 }
 
@@ -266,7 +273,29 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
         })
         .unwrap();
     assert_eq!(media.kind, MediaKind::Image);
-    assert_eq!(block_on(session.media_preview(media)).unwrap(), image);
+    assert_eq!(
+        block_on(session.media_preview(media.clone())).unwrap(),
+        image
+    );
+    // Downloaded to the cache, with its download in the list.
+    let (downloads, download_updates) = forward();
+    let _downloads_handle = session.subscribe_downloads(downloads);
+    let room = session.room(room_id.clone()).unwrap();
+    let id = room.download(media.clone(), None).unwrap();
+    let path = block_on(session.download_finished(id)).unwrap();
+    assert!(path.starts_with(&*cache.path().to_string_lossy()));
+    assert!(path.ends_with("dot.png"));
+    assert_eq!(std::fs::read(&path).unwrap(), image);
+    let list = wait_for("the download, done", &download_updates, |list| {
+        list.iter()
+            .any(|d| d.id == id && matches!(d.state, DownloadState::Done { .. }))
+    });
+    let download = list.iter().find(|d| d.id == id).unwrap();
+    assert_eq!(download.source, media.source);
+    assert_eq!(download.kind, MediaKind::Image);
+    assert_eq!(download.room_name, "FFI");
+    // A second time: the same.
+    assert_eq!(room.download(media, None).unwrap(), id);
 
     block_on(timeline.send_text("hello **world**".into())).unwrap();
     let items = wait_for("our message, sent", &item_updates, |items| {

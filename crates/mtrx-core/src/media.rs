@@ -27,7 +27,7 @@ const THUMBNAIL_SIZE: (u32, u32) = (800, 600);
 /// to another language (the mobile apps).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaRef {
-    file: MediaSource,
+    pub(crate) file: MediaSource,
     thumbnail: Option<MediaSource>,
 }
 

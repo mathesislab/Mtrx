@@ -1,6 +1,7 @@
 //! Files in messages: images inline, with previews downloaded in the
 //! background and cached; cards for other files, opening PDFs once checked
-//! that they can be read; the image viewer; saving and sending files.
+//! that they can be read, and other files in their app; the image viewer;
+//! sending files.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -16,21 +17,23 @@ use iced::{
     },
     window,
 };
-use mtrx_core::{Attachment, Media, MediaKind, MediaRef, OwnedRoomId, Session};
+use mtrx_core::{
+    Attachment, Media, MediaKind, MediaRef, OwnedEventId, OwnedRoomId, Session, human_size,
+};
 use tokio::sync::Semaphore;
 
 use crate::{
     app::Message,
     clipboard,
     context_menu::context_menu,
+    downloads::{self, File},
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint},
     icons, message_menu, pdf, room, style,
 };
 
-/// Where saving or copying a file was asked from, to show there how it
-/// went.
+/// Where copying an image was asked from, to show there how it went.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Origin {
     /// The image or PDF viewer.
@@ -250,23 +253,28 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
 }
 
 /// A message's file: an image (a placeholder until loaded), else a card;
-/// a PDF's card opens the viewer once known to be readable. `body` shows
-/// below it if it is a caption rather than the filename.
-/// A message's file in `room`; an image has a download button beside it
-/// while the message is `hovered`.
+/// a PDF's card opens the viewer once known to be readable, other cards the
+/// file in its app. `body` shows below it if it is a caption rather than
+/// the filename. The file is in `room`, in message `event`; an image has a
+/// download button beside it while the message is `hovered`.
 pub fn view<'a>(
     room: &OwnedRoomId,
+    event: Option<&OwnedEventId>,
     media: &'a Media,
     body: &'a str,
     previews: &Previews,
     hovered: bool,
 ) -> Element<'a, Message> {
-    let from = Origin::Room(room.clone());
+    let file = File {
+        media: media.clone(),
+        room: room.clone(),
+        event: event.cloned(),
+    };
     let content = match media.kind {
         MediaKind::Image if !previews.failed(&media.source) => {
-            let picture = inline_image(media, previews.ready(&media.source));
+            let picture = inline_image(&file, previews.ready(&media.source));
             if hovered {
-                row![picture, save_button(media, from)]
+                row![picture, download_button(&file)]
                     .spacing(8)
                     .align_y(Alignment::End)
                     .into()
@@ -274,23 +282,16 @@ pub fn view<'a>(
                 picture
             }
         }
-        _ if pdf::is_pdf(media) => {
-            if !previewed(media) {
-                card(media, from, None, Some("Too large to preview here"))
-            } else {
-                match previews.readable(&media.source) {
-                    Some(true) => card(media, from, Some(Message::OpenPdf(media.clone())), None),
-                    Some(false) => card(
-                        media,
-                        from,
-                        None,
-                        Some("Preview not available for this document"),
-                    ),
-                    None => card(media, from, None, None),
-                }
+        _ if pdf::is_pdf(media) => match (previewed(media), previews.readable(&media.source)) {
+            (false, _) => open_card(file, Some("Too large to preview here")),
+            (true, Some(true)) => {
+                let open = Message::OpenPdf(file.clone());
+                card(&file, open, "Open in the viewer", None)
             }
-        }
-        _ => card(media, from, None, None),
+            (true, Some(false)) => open_card(file, Some("Preview not available for this document")),
+            (true, None) => open_card(file, None),
+        },
+        _ => open_card(file, None),
     };
     if body == media.filename {
         content
@@ -300,8 +301,8 @@ pub fn view<'a>(
 }
 
 /// An image in the timeline; clicking it opens the viewer.
-fn inline_image<'a>(media: &'a Media, picture: Option<&Picture>) -> Element<'a, Message> {
-    let size = dimensions(media, picture).map_or(PLACEHOLDER, |(w, h)| fit(w, h, MAX_INLINE));
+fn inline_image<'a>(file: &File, picture: Option<&Picture>) -> Element<'a, Message> {
+    let size = dimensions(&file.media, picture).map_or(PLACEHOLDER, |(w, h)| fit(w, h, MAX_INLINE));
     let content: Element<'a, Message> = match picture {
         Some(picture) => image(picture.handle.clone())
             .width(size.width)
@@ -311,7 +312,7 @@ fn inline_image<'a>(media: &'a Media, picture: Option<&Picture>) -> Element<'a, 
         None => placeholder(size),
     };
     mouse_area(content)
-        .on_press(Message::OpenImage(media.clone()))
+        .on_press(Message::OpenImage(file.clone()))
         .interaction(mouse::Interaction::Pointer)
         .into()
 }
@@ -324,14 +325,21 @@ fn placeholder<'a>(size: Size) -> Element<'a, Message> {
         .into()
 }
 
+/// A card that opens the file in its app (downloading it first).
+fn open_card<'a>(file: File, note: Option<&'a str>) -> Element<'a, Message> {
+    let open = Message::Downloads(downloads::Message::OpenFile(file.clone()));
+    card(&file, open, "Open in its app", note)
+}
+
 /// A file: icon, name, size and type (and `note`), and a download
-/// button; clicking it sends `open` if given.
+/// button; clicking it sends `open`, which `tip` explains.
 fn card<'a>(
-    media: &'a Media,
-    from: Origin,
-    open: Option<Message>,
+    file: &File,
+    open: Message,
+    tip: &'a str,
     note: Option<&'a str>,
 ) -> Element<'a, Message> {
+    let media = &file.media;
     let mut details = match media.size {
         Some(size) => format!("{} · {}", human_size(size), kind_label(media)),
         None => kind_label(media),
@@ -344,35 +352,31 @@ fn card<'a>(
             .center(32)
             .style(style::call_icon),
         column![
-            ellipsis(&media.filename).font(fonts::SEMIBOLD).size(14),
+            ellipsis(media.filename.clone())
+                .font(fonts::SEMIBOLD)
+                .size(14),
             text(details).size(12).style(text::secondary),
         ]
         .spacing(1)
         .width(Length::Fill),
-        save_button(media, from),
+        download_button(file),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
-    let card: Element<'a, Message> = match open {
-        Some(open) => hint(
-            button(content)
-                .padding([8, 10])
-                .width(Length::Fill)
-                .style(style::card_button)
-                .on_press(open),
-            "Open in the viewer",
-            Position::Top,
-        ),
-        None => container(content)
+    let card = hint(
+        button(content)
             .padding([8, 10])
-            .style(style::card)
-            .into(),
-    };
+            .width(Length::Fill)
+            .style(style::card_button)
+            .on_press(open),
+        tip,
+        Position::Top,
+    );
     container(card).max_width(460).into()
 }
 
-/// Saves the file, saying how it went where asked `from`.
-pub fn save_button<'a>(media: &Media, from: Origin) -> Element<'a, Message> {
+/// Downloads the file to the Downloads folder.
+pub fn download_button<'a>(file: &File) -> Element<'a, Message> {
     hint(
         button(icons::download(18.0, |theme| {
             theme
@@ -384,8 +388,10 @@ pub fn save_button<'a>(media: &Media, from: Origin) -> Element<'a, Message> {
         }))
         .padding([6, 8])
         .style(style::secondary_button)
-        .on_press(Message::SaveMedia(media.clone(), from)),
-        "Save to your computer",
+        .on_press(Message::Downloads(downloads::Message::Download(
+            file.clone(),
+        ))),
+        "Download to your Downloads folder",
         Position::Top,
     )
 }
@@ -418,32 +424,14 @@ fn extension_label(name: &Path) -> String {
         .map_or_else(|| "File".into(), str::to_uppercase)
 }
 
-/// A file size in decimal units, e.g. "2.4 MB".
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["kB", "MB", "GB", "TB"];
-    if bytes < 1000 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64 / 1000.0;
-    let mut unit = 0;
-    while value >= 999.95 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if value < 99.95 {
-        format!("{value:.1} {}", UNITS[unit])
-    } else {
-        format!("{value:.0} {}", UNITS[unit])
-    }
-}
-
 fn on_primary(theme: &Theme) -> iced::Color {
     theme.extended_palette().primary.base.text
 }
 
 /// An image shown large over the window.
 pub struct Viewer {
-    pub media: Media,
+    /// The image, and where it was sent.
+    pub file: File,
     /// The whole image, once loaded; until then the preview shows.
     full: Option<Picture>,
     pub error: Option<String>,
@@ -452,9 +440,9 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    pub fn new(media: Media) -> Self {
+    pub fn new(file: File) -> Self {
         Self {
-            media,
+            file,
             full: None,
             error: None,
             menu: false,
@@ -463,7 +451,7 @@ impl Viewer {
 
     /// Download and decode the whole image.
     pub fn load(&self, session: Arc<Session>) -> Task<Message> {
-        let media = self.media.source.clone();
+        let media = self.file.media.source.clone();
         Task::perform(
             {
                 let media = media.clone();
@@ -485,7 +473,7 @@ impl Viewer {
 
     /// The whole image of `media` was loaded, or not.
     pub fn loaded(&mut self, media: &MediaRef, result: Result<Picture, String>) {
-        if *media != self.media.source {
+        if *media != self.file.media.source {
             return;
         }
         match result {
@@ -497,14 +485,17 @@ impl Viewer {
     /// The image as large as fits (at most its own size), with its name,
     /// Save and Close below. Clicking around it closes it.
     pub fn view<'a>(&'a self, previews: &'a Previews) -> Element<'a, Message> {
-        let picture = self.full.as_ref().or(previews.ready(&self.media.source));
+        let picture = self
+            .full
+            .as_ref()
+            .or(previews.ready(&self.file.media.source));
         let content = responsive(move |available| {
             let bounds = Size::new(
                 available.width,
                 (available.height - VIEWER_BAR - 8.0).max(0.0),
             );
-            let size =
-                dimensions(&self.media, picture).map_or(PLACEHOLDER, |(w, h)| fit(w, h, bounds));
+            let size = dimensions(&self.file.media, picture)
+                .map_or(PLACEHOLDER, |(w, h)| fit(w, h, bounds));
             let shown: Element<'a, Message> = match picture {
                 Some(picture) => image(picture.handle.clone())
                     .width(size.width)
@@ -513,9 +504,9 @@ impl Viewer {
                     .into(),
                 None => placeholder(size),
             };
-            let menu = self.menu.then(|| {
-                message_menu::view(message_menu::media_items(&self.media, Origin::Viewer))
-            });
+            let menu = self
+                .menu
+                .then(|| message_menu::view(message_menu::media_items(&self.file, Origin::Viewer)));
             let shown = context_menu(shown, menu, Message::ViewerMenu(true))
                 .on_dismiss(Message::ViewerMenu(false));
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);
@@ -538,7 +529,7 @@ impl Viewer {
 
     fn bar<'a>(&'a self, width: f32) -> Element<'a, Message> {
         let mut name = column![
-            ellipsis(&self.media.filename)
+            ellipsis(&self.file.media.filename)
                 .font(fonts::SEMIBOLD)
                 .size(14)
         ]
@@ -549,7 +540,7 @@ impl Viewer {
         container(
             row![
                 name,
-                save_button(&self.media, Origin::Viewer),
+                download_button(&self.file),
                 frame::close_button(Message::CloseImage),
             ]
             .spacing(8)
@@ -567,7 +558,10 @@ impl Viewer {
 impl Viewer {
     /// Load the whole image right away (tests).
     pub async fn load_now(&mut self, session: &Session) {
-        let bytes = session.media_content(&self.media.source).await.unwrap();
+        let bytes = session
+            .media_content(&self.file.media.source)
+            .await
+            .unwrap();
         self.full = decode(&bytes, MAX_FULL, MAX_FULL);
         assert!(self.full.is_some(), "decoding failed");
     }
@@ -586,25 +580,6 @@ pub async fn copy_image(session: Arc<Session>, media: Media) -> Result<(), Strin
     })
     .await
     .map_err(|e| e.to_string())?
-}
-
-/// Ask where to save a message's file, then download it there. Cancelling
-/// is fine.
-pub async fn save(session: Arc<Session>, media: Media) -> Result<(), String> {
-    let Some(file) = rfd::AsyncFileDialog::new()
-        .set_file_name(&media.filename)
-        .save_file()
-        .await
-    else {
-        return Ok(());
-    };
-    let bytes = session
-        .media_content(&media.source)
-        .await
-        .map_err(|e| format!("Could not download {}: {e}", media.filename))?;
-    file.write(&bytes)
-        .await
-        .map_err(|e| format!("Could not save {}: {e}", file.file_name()))
 }
 
 /// A file attached to the message being written, sent after its text.
@@ -745,17 +720,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn sizes() {
-        assert_eq!(human_size(0), "0 B");
-        assert_eq!(human_size(999), "999 B");
-        assert_eq!(human_size(1000), "1.0 kB");
-        assert_eq!(human_size(2_400_000), "2.4 MB");
-        assert_eq!(human_size(99_960), "100 kB");
-        assert_eq!(human_size(999_960), "1.0 MB");
-        assert_eq!(human_size(345_000_000), "345 MB");
-    }
-
     /// The messages sent by right-clicking `view` at `at`.
     fn right_click(view: Element<'_, Message>, at: (f32, f32)) -> Vec<Message> {
         let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), view);
@@ -778,15 +742,10 @@ mod tests {
             source: MediaRef::plain("mxc://example.org/a"),
         };
         let previews = Previews::new();
+        let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
         // In the timeline, the image leaves the click to its message's menu.
         let inline = context_menu(
-            view(
-                &"!room:example.org".try_into().unwrap(),
-                &media,
-                &media.filename,
-                &previews,
-                false,
-            ),
+            view(&room, None, &media, &media.filename, &previews, false),
             None,
             Message::CloseImage,
         );
@@ -795,7 +754,11 @@ mod tests {
             [Message::CloseImage]
         ));
         // Shown large, it has a menu of its own, not around it.
-        let mut viewer = Viewer::new(media.clone());
+        let mut viewer = Viewer::new(File {
+            media: media.clone(),
+            room,
+            event: None,
+        });
         assert!(right_click(viewer.view(&previews), (100.0, 100.0)).is_empty());
         let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
             fonts::INTER,

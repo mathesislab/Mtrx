@@ -20,8 +20,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.describe
+import uniffi.mtrx.Download
+import uniffi.mtrx.DownloadsListener
 import uniffi.mtrx.Draft
 import uniffi.mtrx.DraftKeeper
+import uniffi.mtrx.Media
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
@@ -103,6 +106,21 @@ class TimelineViewModel(
     /** The pinned messages, while the topic panel shows them; null while loading. */
     private val _pinned = MutableStateFlow<List<EventRow>?>(null)
     val pinned: StateFlow<List<EventRow>?> = _pinned.asStateFlow()
+
+    /** Each message's file's newest download, by its source. */
+    private val _downloads = MutableStateFlow<Map<String, Download>>(emptyMap())
+    val downloads: StateFlow<Map<String, Download>> = _downloads.asStateFlow()
+
+    /** Files downloaded for the screen to open, share or save. */
+    private val _files = MutableSharedFlow<FileRequest>(extraBufferCapacity = 4)
+    val files: SharedFlow<FileRequest> = _files.asSharedFlow()
+
+    private val downloadsSubscription: TaskHandle = session.subscribeDownloads(object : DownloadsListener {
+        // On a library thread.
+        override fun onUpdate(downloads: List<Download>) {
+            _downloads.value = downloadsBySource(downloads)
+        }
+    })
 
     private var pinnedTimeline: Timeline? = null
     private var pinnedSubscription: TaskHandle? = null
@@ -215,6 +233,34 @@ class TimelineViewModel(
         pinnedTimeline?.close()
         pinnedTimeline = null
         _pinned.value = null
+    }
+
+    override fun file(media: Media, eventId: String?, use: FileUse) {
+        actions.launch {
+            val stopped = _downloads.value[media.source]?.takeIf { it.stopped }
+            val id = try {
+                if (stopped != null) {
+                    session.retryDownload(stopped.id)
+                    stopped.id
+                } else {
+                    session.room(roomId).use { it.download(media, eventId) }
+                }
+            } catch (e: MtrxException) {
+                _error.value = describe(e)
+                return@launch
+            }
+            val path = try {
+                session.downloadFinished(id)
+            } catch (e: MtrxException) {
+                // Failed or cancelled: its message says so.
+                return@launch
+            }
+            _files.emit(FileRequest(path, media, use))
+        }
+    }
+
+    override fun cancelDownload(id: ULong) {
+        session.cancelDownload(id)
     }
 
     /** The list is scrolled (nearly) to its top: load older events while it is. */
@@ -527,7 +573,7 @@ class TimelineViewModel(
     override fun onCleared() {
         keepDraft()
         hidePinned()
-        for (handle in listOfNotNull(subscription, typingSubscription)) {
+        for (handle in listOfNotNull(subscription, typingSubscription, downloadsSubscription)) {
             handle.cancel()
             handle.close()
         }

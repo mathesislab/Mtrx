@@ -89,6 +89,10 @@ private final class UITestSession: Session, @unchecked Sendable {
         UITestHandle(noHandle: .init())
     }
 
+    override func subscribeDownloads(listener: DownloadsListener) -> TaskHandle {
+        UITestHandle(noHandle: .init())
+    }
+
     override func subscribeRoomLists(listener: RoomListsListener) async throws -> TaskHandle {
         let lists = lock.withLock {
             self.listener = listener

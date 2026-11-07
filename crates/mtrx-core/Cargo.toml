@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 # Helpers for tests against the local Synapse.
-test-support = ["dep:hmac", "dep:sha1", "dep:reqwest"]
+test-support = ["dep:hmac", "dep:sha1"]
 
 [dependencies]
 mtrx-format.workspace = true
@@ -17,7 +17,7 @@ matrix-sdk-crypto.workspace = true
 eyeball-im.workspace = true
 imbl.workspace = true
 futures-util.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "io-util"] }
 tokio-stream.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,8 +30,9 @@ mime_guess = "2.0.5"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 hmac = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
-# With JSON, which matrix-sdk's leaves out.
-reqwest = { workspace = true, optional = true }
+# Downloads, streamed through the SDK's client (`Client::http_client`); the
+# same version and TLS backend. With JSON, which matrix-sdk's leaves out.
+reqwest.workspace = true
 
 # The OS keyring; iOS and Android apps supply their own (`SecretStore::Custom`).
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]

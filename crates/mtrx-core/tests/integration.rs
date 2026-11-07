@@ -19,10 +19,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Activity, Attachment, CallService, Connection, DirectoryKind, Draft, EventContent, History,
-    JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom, NotifyMode,
-    Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights, Role, RoomKind,
-    SecretStore, Session, TimelineEntry, VerificationState,
+    Activity, Attachment, CallService, Connection, DirectoryKind, DownloadState, Draft,
+    EventContent, History, JoinAction, JoinRule, Membership, MembershipChange, MessageAction,
+    NewRoom, NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights,
+    Role, RoomKind, SaveTo, SecretStore, Session, TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -1597,6 +1597,90 @@ fn find_media<'a>(entries: &'a [TimelineEntry], filename: &str) -> Option<&'a mt
         },
         _ => None,
     })
+}
+
+/// A plain and an encrypted file, downloaded by someone else: streamed with
+/// rising progress, and decrypted; to a file, and to the cache.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn downloads() -> Result<()> {
+    let (_, alice) = new_user("dl").await?;
+    let (_, bob) = new_user("dl").await?;
+    let data: Vec<u8> = (0..3_000_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let dir = TempDir::new()?;
+    for encrypted in [false, true] {
+        let name = format!("downloads {encrypted}");
+        let room = alice
+            .session
+            .create_room(NewRoom {
+                name: Some(name.clone()),
+                encrypted,
+                invite: vec![bob.session.user_id()],
+                ..Default::default()
+            })
+            .await?;
+        join_synced(&bob, &room, &name).await?;
+        let alice_timeline = alice.session.timeline(&room).await?;
+        wait_for("bob joined", alice_timeline.updates(), |entries| {
+            entries.iter().any(
+                |e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()),
+            )
+        })
+        .await?;
+        let attachment = Attachment {
+            filename: "melt.bin".into(),
+            mimetype: "application/octet-stream".into(),
+            bytes: data.clone(),
+        };
+        let pending = alice_timeline.send("", vec![attachment], None).await?;
+        timeout("sent", pending.sent()).await??;
+
+        let bob_timeline = bob.session.timeline(&room).await?;
+        let entries = wait_for("bob sees the file", bob_timeline.updates(), |e| {
+            find_media(e, "melt.bin").is_some()
+        })
+        .await?;
+        let media = find_media(&entries, "melt.bin").unwrap().clone();
+        let target = dir.path().join(format!("melt-{encrypted}.bin"));
+        let id = bob
+            .session
+            .room(&room)?
+            .download(&media, None, SaveTo::File(target.clone()));
+        let downloads = bob.session.downloads();
+        let seen = tokio::spawn({
+            let mut updates = downloads.updates();
+            async move {
+                let mut received = Vec::new();
+                while let Some(list) = updates.next().await {
+                    match list.iter().find(|d| d.id == id).map(|d| &d.state) {
+                        Some(DownloadState::Downloading { received: r, .. }) => received.push(*r),
+                        _ => break,
+                    }
+                }
+                received
+            }
+        });
+        assert_eq!(
+            timeout("downloaded", bob.session.finished(id)).await??,
+            target
+        );
+        assert!(std::fs::read(&target)? == data, "encrypted: {encrypted}");
+        let received = timeout("progress", seen).await??;
+        assert!(received.is_sorted(), "{received:?}");
+        let download = downloads.get().into_iter().find(|d| d.id == id).unwrap();
+        assert_eq!(download.room_name, name);
+        assert_eq!(download.size, Some(data.len() as u64));
+
+        // To the cache: once.
+        let room = bob.session.room(&room)?;
+        let cached = room.download(&media, None, SaveTo::Cache);
+        let path = timeout("cached", bob.session.finished(cached)).await??;
+        assert!(path.starts_with(bob.session.profile().cache_dir()));
+        assert!(path.ends_with("melt.bin"));
+        assert!(std::fs::read(&path)? == data);
+        assert_eq!(room.download(&media, None, SaveTo::Cache), cached);
+    }
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -3,11 +3,12 @@
 //! image; or, right-clicking a link in it, the link's.
 
 use iced::Element;
-use mtrx_core::{EventContent, Media, MediaKind, MessageAction, MessageRow, OwnedRoomId};
+use mtrx_core::{EventContent, MediaKind, MessageAction, MessageRow, OwnedRoomId};
 
 use crate::{
     actions::{self, act},
     app, context_menu,
+    downloads::{self, File},
     media::Origin,
     message, pins,
     selection::Pos,
@@ -61,7 +62,12 @@ pub fn items(
         }
     }
     if let Some(media) = &message.media {
-        items.extend(media_items(media, Origin::Room(room.clone())));
+        let file = File {
+            media: media.clone(),
+            room: room.clone(),
+            event: row.event.event_id.clone(),
+        };
+        items.extend(media_items(&file, Origin::Room(room.clone())));
     }
     if math_shown {
         items.push((
@@ -77,22 +83,18 @@ pub fn items(
 }
 
 /// What the menu offers for a message's file, also where an image is shown
-/// large (`from`): copying an image, and saving the file as it was sent.
-pub fn media_items(media: &Media, from: Origin) -> Vec<(String, app::Message)> {
+/// large (`from`): copying an image, and saving the file somewhere asked.
+pub fn media_items(file: &File, from: Origin) -> Vec<(String, app::Message)> {
     let mut items = Vec::new();
-    if media.kind == MediaKind::Image {
+    if file.media.kind == MediaKind::Image {
         items.push((
             "Copy image".to_owned(),
-            app::Message::CopyImage(media.clone(), from.clone()),
+            app::Message::CopyImage(file.media.clone(), from),
         ));
     }
-    let save = match media.kind {
-        MediaKind::Image => "Save image…",
-        _ => "Save…",
-    };
     items.push((
-        save.to_owned(),
-        app::Message::SaveMedia(media.clone(), from),
+        "Save as…".to_owned(),
+        app::Message::Downloads(downloads::Message::SaveAs(file.clone())),
     ));
     items
 }
@@ -209,18 +211,21 @@ mod tests {
             act_of(&super::items(&room(), &text, false, true)[0].1),
             Some(actions::Message::CopySelection)
         ));
-        // A file can be saved; an image also copied. Their names are their
-        // text.
+        // A file can be saved somewhere asked; an image also copied. Their
+        // names are their text.
         let mut file = message(MessageKind::File, "report.pdf");
         file.media = Some(media("report.pdf", MediaKind::File));
-        assert_eq!(
-            labels(&super::items(&room(), &row(file.clone()), false, false)),
-            ["Copy", "Pin", "Save…"]
-        );
+        let items = super::items(&room(), &row(file.clone()), false, false);
+        assert_eq!(labels(&items), ["Copy", "Pin", "Save as…"]);
+        assert!(matches!(
+            &items[2].1,
+            app::Message::Downloads(downloads::Message::SaveAs(saved))
+                if saved.media.filename == "report.pdf" && saved.room == room()
+        ));
         file.media = Some(media("ice.png", MediaKind::Image));
         assert_eq!(
             labels(&super::items(&room(), &row(file), false, false)),
-            ["Copy", "Pin", "Copy image", "Save image…"]
+            ["Copy", "Pin", "Copy image", "Save as…"]
         );
     }
 

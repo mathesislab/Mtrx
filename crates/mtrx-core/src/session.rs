@@ -54,6 +54,7 @@ pub struct Session {
     /// Enqueues messages, see [`crate::timeline::send_message`].
     pub(crate) outbox: Arc<crate::timeline::Outbox>,
     pub(crate) schedule: Arc<Schedule>,
+    pub(crate) downloads: crate::downloads::Downloads,
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
@@ -198,6 +199,11 @@ impl Session {
         let colours = crate::account_data::Synced::load(client.clone()).await;
         let directory_servers = crate::account_data::Synced::load(client.clone()).await;
         let drafts = crate::drafts::Drafts::load(&client).await;
+        let downloads = crate::downloads::Downloads::load(
+            client.clone(),
+            crate::downloads::Places::new(profile.cache_dir()),
+        )
+        .await;
         let presence_keeper = crate::presence::Keeper::new(client.clone());
         let spaces = crate::space_graph::follow(client.clone()).await;
         Ok(Self {
@@ -207,6 +213,7 @@ impl Session {
             room_keys: Default::default(),
             outbox,
             schedule,
+            downloads,
             scheduler: Default::default(),
             notifications,
             _notifier: notifier,

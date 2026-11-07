@@ -27,6 +27,7 @@ import org.mtrx.app.rooms.RoomInfoActions
 import org.mtrx.app.rooms.RoomInfoHeader
 import org.mtrx.app.summary
 import org.mtrx.app.user
+import org.mtrx.app.timeline.FileUse
 import org.mtrx.app.timeline.TimelineActions
 import uniffi.mtrx.Badges
 import uniffi.mtrx.Banned
@@ -35,6 +36,7 @@ import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Membership
 import uniffi.mtrx.Message
+import uniffi.mtrx.Media
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.QuoteState
@@ -308,6 +310,8 @@ object NoTimelineActions : TimelineActions {
     override fun setPinned(eventId: String, pin: Boolean) {}
     override fun showPinned() {}
     override fun hidePinned() {}
+    override fun file(media: Media, eventId: String?, use: FileUse) {}
+    override fun cancelDownload(id: ULong) {}
 }
 
 object NoRoomInfoActions : RoomInfoActions {

@@ -11,6 +11,8 @@ struct MessageMenu: View {
     let react: (String) -> Void
     /// After the sheet closed.
     let choose: (MessageAction) -> Void
+    /// Share the message's file, if it has one.
+    var share: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -25,6 +27,10 @@ struct MessageMenu: View {
                         Divider().padding(.leading, 52)
                     }
                     button(entry)
+                }
+                if let share {
+                    Divider().padding(.leading, 52)
+                    row(symbol: "square.and.arrow.up", title: "Share…", action: share)
                 }
             }
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
@@ -85,16 +91,22 @@ struct MessageMenu: View {
     }
 
     private func button(_ entry: MessageAction) -> some View {
-        Button(role: entry == .delete ? .destructive : nil) {
+        row(symbol: entry.symbol, title: entry.title, destructive: entry == .delete) {
             choose(entry)
-        } label: {
+        }
+    }
+
+    private func row(
+        symbol: String, title: String, destructive: Bool = false, action: @escaping () -> Void
+    ) -> some View {
+        Button(role: destructive ? .destructive : nil, action: action) {
             HStack(spacing: 16) {
-                Image(systemName: entry.symbol)
+                Image(systemName: symbol)
                     .frame(width: 20)
-                Text(entry.title)
+                Text(title)
                 Spacer()
             }
-            .foregroundColor(entry == .delete ? .red : .primary)
+            .foregroundColor(destructive ? .red : .primary)
             .padding(.horizontal, 16)
             .frame(minHeight: 48)
             .contentShape(Rectangle())

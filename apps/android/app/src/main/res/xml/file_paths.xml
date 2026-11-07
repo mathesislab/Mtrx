@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the FileProvider shares: messages' files downloaded to the
+     profile's cache (the library's downloads). -->
+<paths>
+    <cache-path name="media" path="profiles/default/media/" />
+</paths>

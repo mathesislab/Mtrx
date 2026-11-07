@@ -50,13 +50,16 @@ import uniffi.mtrx.User
 
 /**
  * Holding a message: the common reactions (ours marked) and "+" for the
- * full picker, then the other [actions] (the row's).
+ * full picker, then the other [actions] (the row's); with a file
+ * ([hasFile]), Share… and Save to Downloads ([onFile]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MessageMenu(
     row: EventRow,
     actions: List<MessageAction>,
+    hasFile: Boolean,
+    onFile: (FileUse) -> Unit,
     onDismiss: () -> Unit,
     onReact: (String) -> Unit,
     onMoreReactions: () -> Unit,
@@ -98,6 +101,10 @@ fun MessageMenu(
                 },
                 modifier = Modifier.clickable { onAction(action) },
             )
+        }
+        if (hasFile) {
+            ListItem(headlineContent = { Text("Share…") }, modifier = Modifier.clickable { onFile(FileUse.SHARE) })
+            ListItem(headlineContent = { Text("Save to Downloads") }, modifier = Modifier.clickable { onFile(FileUse.SAVE) })
         }
     }
 }

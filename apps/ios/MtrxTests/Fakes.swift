@@ -279,6 +279,13 @@ final class FakeSession: Session, @unchecked Sendable {
         return FakeTaskHandle(noHandle: .init())
     }
 
+    var downloadsListener: DownloadsListener?
+
+    override func subscribeDownloads(listener: DownloadsListener) -> TaskHandle {
+        downloadsListener = listener
+        return FakeTaskHandle(noHandle: .init())
+    }
+
     override func subscribeEncryptionState(listener: EncryptionStateListener) -> TaskHandle {
         encryptionListener = listener
         listener.onUpdate(state: encryption)

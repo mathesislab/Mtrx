@@ -1,4 +1,5 @@
 import MtrxFFI
+import QuickLook
 import SwiftUI
 
 /// A room: its header (name and topic line), its timeline, newest at the
@@ -13,6 +14,7 @@ struct RoomView: View {
     @EnvironmentObject private var images: ImageCache
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
+    @EnvironmentObject private var downloads: DownloadsModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var sheet: RoomSheet?
     @State private var showsInfo = false
@@ -25,6 +27,12 @@ struct RoomView: View {
     @State private var showsShared = false
     /// Chosen in a message's menu (on which item), done once it closed.
     @State private var chosen: (action: MessageAction, itemId: String)?
+    /// Share… was chosen in a message's menu (on which item).
+    @State private var sharing: String?
+    /// A downloaded file shown in QuickLook.
+    @State private var preview: URL?
+    /// A downloaded file being shared.
+    @State private var shared: URL?
 
     init(
         room: RoomSummary, model: @autoclosure @escaping () -> TimelineModel,
@@ -92,6 +100,9 @@ struct RoomView: View {
             RoomSheetView(sheet: sheet, room: room, model: model, info: info, topic: topic) { action, id in
                 chosen = (action, id)
                 self.sheet = nil
+            } share: { id in
+                sharing = id
+                self.sheet = nil
             }
                 .environmentObject(images)
                 .environmentObject(session)
@@ -119,6 +130,12 @@ struct RoomView: View {
                 }
             }
         }
+        .quickLookPreview($preview)
+        .sheet(isPresented: isSharing) {
+            if let shared {
+                ShareSheet(url: shared)
+            }
+        }
         .alert("Something went wrong", isPresented: hasError) {
             Button("OK") { model.error = nil }
         } message: {
@@ -139,7 +156,23 @@ struct RoomView: View {
             goTo: { quote in Task { await model.goTo(eventId: quote.eventId) } },
             showReactors: { id, key in sheet = .reactors(itemId: id, key: key) },
             showReaders: { id in sheet = .readers(itemId: id) },
-            unsent: { id in unsent = id })
+            unsent: { id in unsent = id },
+            open: { media, eventId in fetch(media, eventId: eventId) { preview = $0 } })
+    }
+
+    /// Download a message's file (once), then hand it to `then`. A failed
+    /// download says so on the message.
+    private func fetch(_ media: Media, eventId: String?, then: @escaping (URL) -> Void) {
+        do {
+            let id = try downloads.start(media, roomId: room.id, eventId: eventId)
+            Task {
+                if let url = await downloads.finished(id) {
+                    then(url)
+                }
+            }
+        } catch {
+            model.error = errorMessage(error)
+        }
     }
 
     /// A held message's menu, if anything applies to it.
@@ -152,6 +185,12 @@ struct RoomView: View {
     /// What was chosen in a message's menu, the menu closed: a sheet or
     /// dialog it opens can show.
     private func performChosen() {
+        if let sharing {
+            self.sharing = nil
+            if let row = model.messageRow(sharing), let media = row.message?.media {
+                fetch(media, eventId: row.event.eventId) { shared = $0 }
+            }
+        }
         guard let chosen else { return }
         self.chosen = nil
         perform(chosen.action, on: chosen.itemId)
@@ -173,6 +212,10 @@ struct RoomView: View {
         case .retry: model.retry(id)
         case .unsend: model.unsend(id)
         }
+    }
+
+    private var isSharing: Binding<Bool> {
+        Binding(get: { shared != nil }, set: { if !$0 { shared = nil } })
     }
 
     private var isUnsent: Binding<Bool> {
@@ -368,17 +411,19 @@ private struct RoomSheetView: View {
     let topic: Topic
     /// An entry of a message's menu was chosen (item ID).
     let choose: (MessageAction, String) -> Void
+    /// Share… was chosen in a message's menu (item ID).
+    let share: (String) -> Void
     @EnvironmentObject private var session: SessionModel
 
     var body: some View {
         switch sheet {
         case .menu(let itemId):
             if let row = model.messageRow(itemId) {
-                MessageMenu(row: row, entries: row.actions) { key in
-                    model.react(itemId, key: key)
-                } choose: { action in
-                    choose(action, itemId)
-                }
+                MessageMenu(
+                    row: row, entries: row.actions,
+                    react: { key in model.react(itemId, key: key) },
+                    choose: { action in choose(action, itemId) },
+                    share: row.message?.media == nil ? nil : { share(itemId) })
             }
         case .reactors(let itemId, let key):
             let reaction = model.messageRow(itemId)?.reactions.first { $0.key == key }

@@ -14,14 +14,15 @@ use iced::{
         scrollable::Viewport, space, text,
     },
 };
-use mtrx_core::{Media, Session};
+use mtrx_core::Session;
 
 use crate::{
     app,
+    downloads::File,
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint, shortcut},
-    media::{Origin, save_button},
+    media::download_button,
     pdf::Document,
     style,
 };
@@ -63,7 +64,8 @@ struct Drawn {
 }
 
 pub struct Viewer {
-    pub media: Media,
+    /// The PDF, and where it was sent.
+    pub file: File,
     document: Option<Arc<Document>>,
     pub error: Option<String>,
     /// Logical pixels per point; `None` fits the width.
@@ -88,9 +90,9 @@ fn message(message: Message) -> app::Message {
 
 impl Viewer {
     /// For a window of `window` logical pixels at `scale`.
-    pub fn new(media: Media, window: Size, scale: f32) -> Self {
+    pub fn new(file: File, window: Size, scale: f32) -> Self {
         Self {
-            media,
+            file,
             document: None,
             error: None,
             zoom: None,
@@ -104,7 +106,7 @@ impl Viewer {
 
     /// Download and read the PDF.
     pub fn open(&self, session: Arc<Session>) -> Task<app::Message> {
-        let source = self.media.source.clone();
+        let source = self.file.media.source.clone();
         Task::perform(
             async move {
                 let bytes = session
@@ -341,7 +343,7 @@ impl Viewer {
     /// The name, page, zoom, download and Close.
     fn bar(&self) -> Element<'_, app::Message> {
         let mut bar = row![
-            ellipsis(&self.media.filename)
+            ellipsis(&self.file.media.filename)
                 .font(fonts::SEMIBOLD)
                 .size(14)
                 .width(Length::Fill)
@@ -393,7 +395,7 @@ impl Viewer {
                 .push(fit);
         }
         container(
-            bar.push(save_button(&self.media, Origin::Viewer))
+            bar.push(download_button(&self.file))
                 .push(frame::close_button(app::Message::CloseImage)),
         )
         .padding(Padding::from([0, 12]))
@@ -416,7 +418,10 @@ fn area(window: Size) -> Size {
 impl Viewer {
     /// Read the PDF and draw the pages in view right away (tests).
     pub async fn open_now(&mut self, session: &Session) {
-        let bytes = session.media_content(&self.media.source).await.unwrap();
+        let bytes = session
+            .media_content(&self.file.media.source)
+            .await
+            .unwrap();
         let document = Arc::new(Document::open(bytes).expect("a PDF"));
         let scale = self.current_zoom_for(&document) * self.scale;
         for page in 0..document.pages.len() {
@@ -447,7 +452,7 @@ impl Viewer {
 mod tests {
     use super::*;
     use crate::pdf;
-    use mtrx_core::MediaRef;
+    use mtrx_core::{Media, MediaRef};
 
     fn viewer(pages: usize) -> Viewer {
         let media = Media {
@@ -459,7 +464,12 @@ mod tests {
             height: None,
             source: MediaRef::plain("mxc://example.org/a"),
         };
-        let mut viewer = Viewer::new(media, Size::new(800.0, 700.0), 2.0);
+        let file = File {
+            media,
+            room: "!room:example.org".try_into().unwrap(),
+            event: None,
+        };
+        let mut viewer = Viewer::new(file, Size::new(800.0, 700.0), 2.0);
         let mut document = Document::open(pdf::sample()).unwrap();
         document.pages = vec![Size::new(300.0, 400.0); pages];
         viewer.document = Some(Arc::new(document));
