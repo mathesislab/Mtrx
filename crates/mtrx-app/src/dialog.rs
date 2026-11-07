@@ -5,8 +5,7 @@
 use std::time::{Duration, Instant};
 
 use iced::{
-    Alignment, Element, Length,
-    task::Handle,
+    Alignment, Element, Length, Task,
     widget::{
         TextInput, button, checkbox, column, container, row, space, text, text_input, toggler,
     },
@@ -22,6 +21,7 @@ use crate::{
     fonts, frame,
     hint::{Position, hint},
     spelling, style,
+    task::Owned,
 };
 
 /// Which dialog is open.
@@ -184,8 +184,9 @@ pub struct Dialog {
     /// Invited people who co-own the new room, where the server offers it.
     co_owners: Vec<OwnedUserId>,
     owners_offered: bool,
-    /// The running user search; replaced by each new query.
-    pub search: Option<Handle>,
+    /// The user search, replaced by each new query, and whether the
+    /// server gives new rooms co-owners.
+    tasks: Owned,
     /// The request running, and when it was sent.
     busy: Option<(RequestId, Instant)>,
     /// Refreshed by the app's tick, for the elapsed time.
@@ -216,14 +217,23 @@ impl Dialog {
             rooms: Vec::new(),
             co_owners: Vec::new(),
             owners_offered: false,
-            search: None,
+            tasks: Owned::default(),
             busy: None,
             now: Instant::now(),
             error: None,
         }
     }
 
-    /// The dialog picks people.
+    /// Search the user directory with `search`.
+    pub fn search_users<M: Send + 'static>(&mut self, search: Task<M>) -> Task<M> {
+        self.tasks.run("search", search)
+    }
+
+    /// Ask whether the server gives new rooms co-owners, with `ask`.
+    pub fn offer_owners<M: Send + 'static>(&mut self, ask: Task<M>) -> Task<M> {
+        self.tasks.run("owners", ask)
+    }
+
     /// It creates a room or space, which may get co-owners.
     pub fn creates_room(&self) -> bool {
         matches!(self.kind, Kind::NewRoom { .. } | Kind::NewSpace)
@@ -441,9 +451,7 @@ impl Dialog {
             Message::Moderated(v) => self.moderated = v,
             Message::Query(query) => {
                 self.query = query.clone();
-                if let Some(search) = self.search.take() {
-                    search.abort();
-                }
+                self.tasks.cancel(&"search");
                 self.directory.clear();
                 if self.picks_people() && query.trim().trim_start_matches('@').len() >= 2 {
                     return Action::Search(query.trim().to_owned());

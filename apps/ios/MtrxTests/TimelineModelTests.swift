@@ -27,7 +27,7 @@ final class TimelineModelTests: XCTestCase {
 
     func testSendsTheDraft() async {
         model.draft = "  Hello  "
-        await model.send()
+        await model.send()?.value
         XCTAssertEqual(session.fakeTimeline.sent, ["Hello"])
         XCTAssertEqual(model.draft, "")
     }
@@ -35,19 +35,19 @@ final class TimelineModelTests: XCTestCase {
     func testKeepsTheDraftWhenSendingFails() async {
         session.fakeTimeline.sendError = MtrxError.Other(reason: "No connection")
         model.draft = "Hello"
-        await model.send()
+        await model.send()?.value
         XCTAssertEqual(model.draft, "Hello")
         XCTAssertEqual(model.error, "No connection")
     }
 
     func testLoadsOlderWhileTheTopIsVisible() async {
         session.fakeTimeline.pages = [false, false, true]
-        await model.setTopVisible(true)
+        await model.setTopVisible(true)?.value
         XCTAssertEqual(session.fakeTimeline.paginations, 3)
         XCTAssertTrue(model.reachedStart)
         XCTAssertFalse(model.loadingOlder)
         // At the start: nothing more to load.
-        await model.loadOlder()
+        await model.loadOlder()?.value
         XCTAssertEqual(session.fakeTimeline.paginations, 3)
     }
 
@@ -93,7 +93,7 @@ final class TimelineModelTests: XCTestCase {
         model.startReply(to: "b")
         XCTAssertEqual(model.compose, .reply(ComposeTarget(itemId: "b", eventId: "$b", sender: "Bob", preview: "Lunch?")))
         model.draft = "Sure"
-        await model.send()
+        await model.send()?.value
         XCTAssertEqual(timeline.replies.map(\.itemId), ["b"])
         XCTAssertEqual(timeline.replies.map(\.text), ["Sure"])
         XCTAssertEqual(timeline.sent, [])
@@ -108,7 +108,7 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertEqual(model.compose?.target.itemId, "o")
         XCTAssertEqual(model.draft, "Hello *world*")
         model.draft = "Hello *everyone*"
-        await model.send()
+        await model.send()?.value
         XCTAssertEqual(timeline.edits.map(\.itemId), ["o"])
         XCTAssertEqual(timeline.edits.map(\.text), ["Hello *everyone*"])
         XCTAssertNil(model.compose)
@@ -142,7 +142,7 @@ final class TimelineModelTests: XCTestCase {
         timeline.sendError = MtrxError.InvalidInput(reason: "no message `b` in the timeline")
         model.startReply(to: "b")
         model.draft = "Sure"
-        await model.send()
+        await model.send()?.value
         XCTAssertEqual(model.compose?.target.itemId, "b")
         XCTAssertEqual(model.draft, "Sure")
         XCTAssertEqual(model.error, "no message `b` in the timeline")
@@ -156,7 +156,7 @@ final class TimelineModelTests: XCTestCase {
         model.draft = ""
         await eventually { self.timeline.typing == [true, true, false] }
         model.draft = "Hello"
-        await model.send()
+        await model.send()?.value
         await eventually { self.timeline.typing.last == false && self.timeline.typing.count == 5 }
     }
 
@@ -183,10 +183,10 @@ final class TimelineModelTests: XCTestCase {
 
     func testActionsTakeTheRowsId() async {
         await show([bobsMessage, ourMessage])
-        await model.react("b", key: "👍").value
-        await model.delete("o").value
-        await model.retry("o").value
-        await model.unsend("o").value
+        await model.react("b", key: "👍")?.value
+        await model.delete("o")?.value
+        await model.retry("o")?.value
+        await model.unsend("o")?.value
         XCTAssertEqual(timeline.reactions.map(\.itemId), ["b"])
         XCTAssertEqual(timeline.reactions.map(\.key), ["👍"])
         XCTAssertEqual(timeline.deleted, ["o"])
@@ -199,7 +199,7 @@ final class TimelineModelTests: XCTestCase {
         await show([bobsMessage])
         timeline.found = ["$b": "b"]
         timeline.unsentDraft = Draft(text: "**Sure**", replyTo: "$b")
-        await model.unsend("u").value
+        await model.unsend("u")?.value
         XCTAssertEqual(model.draft, "**Sure**")
         await eventually { self.model.compose?.target.itemId == "b" }
     }
@@ -209,19 +209,19 @@ final class TimelineModelTests: XCTestCase {
         timeline.found = ["$b": "b"]
         model.draft = "Half written  \n"
         timeline.unsentDraft = Draft(text: "Sure", replyTo: "$b")
-        await model.unsend("u").value
+        await model.unsend("u")?.value
         XCTAssertEqual(model.draft, "Half written\n\nSure")
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertNil(model.compose)
         // A file: nothing comes back.
         timeline.unsentDraft = nil
-        await model.unsend("f").value
+        await model.unsend("f")?.value
         XCTAssertEqual(model.draft, "Half written\n\nSure")
     }
 
     func testAFailedActionShowsWhy() async {
         timeline.actionError = MtrxError.InvalidInput(reason: "no message `gone` in the timeline")
-        await model.react("gone", key: "👍").value
+        await model.react("gone", key: "👍")?.value
         XCTAssertEqual(model.error, "no message `gone` in the timeline")
     }
 
@@ -240,7 +240,7 @@ final class TimelineModelTests: XCTestCase {
 
     func testGoesToAQuotedMessageShown() async {
         await show([ourMessage, reply])
-        await model.goTo(eventId: "$o")
+        await model.goTo(eventId: "$o")?.value
         XCTAssertEqual(model.scrollTarget?.rowId, "o")
         XCTAssertEqual(model.highlighted, "o")
         XCTAssertEqual(timeline.seeks, [])
@@ -253,7 +253,7 @@ final class TimelineModelTests: XCTestCase {
         timeline.onSeek = { [timeline, ourMessage, reply] _ in
             timeline.listener?.onUpdate(rows: [ourMessage, reply])
         }
-        await model.goTo(eventId: "$o")
+        await model.goTo(eventId: "$o")?.value
         await eventually { self.model.scrollTarget?.rowId == "o" }
         XCTAssertEqual(model.highlighted, "o")
         XCTAssertEqual(timeline.seeks, ["$o"])
@@ -264,7 +264,7 @@ final class TimelineModelTests: XCTestCase {
     func testScrollsOnceTheRowsHaveTheMessageFound() async {
         await show([reply])
         timeline.found = ["$o": "o"]
-        await model.goTo(eventId: "$o")
+        await model.goTo(eventId: "$o")?.value
         XCTAssertNil(model.scrollTarget)
         timeline.listener?.onUpdate(rows: [ourMessage, reply])
         await eventually { self.model.scrollTarget?.rowId == "o" }
@@ -273,7 +273,7 @@ final class TimelineModelTests: XCTestCase {
 
     func testQuotedMessageNotFound() async {
         await show([start, reply])
-        await model.goTo(eventId: "$o")
+        await model.goTo(eventId: "$o")?.value
         XCTAssertEqual(model.error, "The original message was not found in the room's history")
         XCTAssertFalse(model.seeking)
         XCTAssertNil(model.scrollTarget)

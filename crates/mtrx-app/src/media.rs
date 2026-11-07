@@ -32,6 +32,7 @@ use crate::{
     icons, math,
     menu::{self, Width},
     message_menu, pdf, room, style,
+    task::Owned,
     want::wanting,
 };
 
@@ -465,6 +466,8 @@ pub struct Viewer {
     /// The whole image, once loaded; until then the preview shows.
     full: Option<Picture>,
     pub error: Option<String>,
+    /// The whole image, loading.
+    loading: Owned,
 }
 
 impl Viewer {
@@ -473,13 +476,14 @@ impl Viewer {
             file,
             full: None,
             error: None,
+            loading: Owned::default(),
         }
     }
 
     /// Download and decode the whole image.
-    pub fn load(&self, session: Arc<Session>) -> Task<app::Message> {
+    pub fn load(&mut self, session: Arc<Session>) -> Task<app::Message> {
         let media = self.file.media.source.clone();
-        Task::perform(
+        let load = Task::perform(
             {
                 let media = media.clone();
                 async move {
@@ -494,8 +498,9 @@ impl Viewer {
                         .ok_or_else(|| "not an image we can show".to_owned())
                 }
             },
-            move |result| app::Message::ImageLoaded(media.clone(), result),
-        )
+            move |result| app::Message::ImageLoaded(media, result),
+        );
+        self.loading.run("image", load)
     }
 
     /// The whole image of `media` was loaded, or not.

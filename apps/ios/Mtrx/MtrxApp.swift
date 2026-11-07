@@ -9,7 +9,7 @@ struct MtrxApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(app)
-                .task { await app.start() }
+                .task { app.start() }
                 .onAppear { app.scenePhaseChanged(scenePhase) }
                 .onChange(of: scenePhase) { app.scenePhaseChanged($0) }
         }

@@ -27,7 +27,8 @@ final class PresenceModel: ObservableObject {
     /// The users to read: the direct chats' people (nil before the first
     /// loaded room list).
     private var users: Set<String>?
-    private var subscription: Subscriptions?
+    /// The subscription for `users`, while reading.
+    private var reading: Work?
     /// The last call telling the library what the app does.
     private var lastCall: Task<Void, Never>?
 
@@ -76,8 +77,8 @@ final class PresenceModel: ObservableObject {
 
     /// Subscribe for `users`, then end the subscription before.
     private func subscribe() {
-        let previous = subscription
-        subscription = nil
+        let previous = reading
+        reading = nil
         defer { previous?.cancelAll() }
         guard let users, !users.isEmpty else {
             presences = [:]
@@ -86,14 +87,14 @@ final class PresenceModel: ObservableObject {
         let feed = Feed<PresenceUpdate>()
         do {
             let handle = try session.subscribePresence(userIds: users.sorted(), listener: feed)
-            let subscription = Subscriptions()
-            subscription.add(handle, feed) { [weak self] update in
+            let reading = Work()
+            reading.follow(handle, feed) { [weak self] update in
                 switch update {
                 case .presences(let presences): self?.presences = presences
                 case .unavailable: self?.hide()
                 }
             }
-            self.subscription = subscription
+            self.reading = reading
         } catch {
             failed(error, "Subscribing to presence")
         }
@@ -109,8 +110,8 @@ final class PresenceModel: ObservableObject {
     }
 
     private func stopReading() {
-        subscription?.cancelAll()
-        subscription = nil
+        reading?.cancelAll()
+        reading = nil
     }
 
     private func failed(_ error: Error, _ doing: String) {

@@ -5,8 +5,7 @@
 use std::{collections::HashSet, fmt};
 
 use iced::{
-    Alignment, Element, Length,
-    task::Handle,
+    Alignment, Element, Length, Task,
     widget::{button, column, container, pick_list, row, text, text_input},
 };
 use mtrx_core::{
@@ -14,7 +13,7 @@ use mtrx_core::{
     RoomLists, parse_address,
 };
 
-use crate::{app, avatar::Avatars, directory, frame, style};
+use crate::{app, avatar::Avatars, directory, frame, style, task::Owned};
 
 const WIDTH: f32 = 560.0;
 
@@ -101,8 +100,8 @@ pub struct Join {
     preview: Option<(String, Option<Result<DirectoryRoom, String>>)>,
     /// Joining or asking to join, by the ID or address used.
     busy: HashSet<String>,
-    /// The running search or preview; replaced by each new one.
-    pub request: Option<Handle>,
+    /// The search or preview, replaced by each new one.
+    browsing: Owned,
 }
 
 impl Join {
@@ -129,10 +128,16 @@ impl Join {
             error: None,
             preview: None,
             busy: HashSet::new(),
-            request: None,
+            browsing: Owned::default(),
         };
         let action = join.find();
         (join, action)
+    }
+
+    /// Search the directory or preview a room with `browse`, instead of
+    /// what was.
+    pub fn browse<M: Send + 'static>(&mut self, browse: Task<M>) -> Task<M> {
+        self.browsing.run("browse", browse)
     }
 
     /// The server browsed: `None` for ours.

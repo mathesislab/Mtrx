@@ -106,8 +106,7 @@ struct NewRoomView: View {
     }
 
     private func create() {
-        Task {
-            guard let id = await model.create() else { return }
+        model.create { id in
             dismiss()
             home.open(id, kind: model.space ? .space : .room)
         }

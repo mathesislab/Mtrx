@@ -25,6 +25,7 @@ use crate::{
     media::download_button,
     pdf::Document,
     style,
+    task::Owned,
 };
 
 /// The pages' scrollable.
@@ -77,6 +78,8 @@ pub struct Viewer {
     scale: f32,
     drawn: HashMap<usize, Drawn>,
     drawing: HashSet<(usize, u32)>,
+    /// The PDF, loading.
+    opening: Owned,
 }
 
 /// A zoom as a key: hundredths.
@@ -101,13 +104,14 @@ impl Viewer {
             scale,
             drawn: HashMap::new(),
             drawing: HashSet::new(),
+            opening: Owned::default(),
         }
     }
 
     /// Download and read the PDF.
-    pub fn open(&self, session: Arc<Session>) -> Task<app::Message> {
+    pub fn open(&mut self, session: Arc<Session>) -> Task<app::Message> {
         let source = self.file.media.source.clone();
-        Task::perform(
+        let open = Task::perform(
             async move {
                 let bytes = session
                     .media_content(&source)
@@ -121,7 +125,8 @@ impl Viewer {
                     .ok_or_else(|| "it is not a PDF we can read".to_owned())
             },
             |result| message(Message::Opened(result)),
-        )
+        );
+        self.opening.run("document", open)
     }
 
     pub fn resized(&mut self, window: Size, scale: f32) -> Task<app::Message> {

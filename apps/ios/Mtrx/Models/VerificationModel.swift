@@ -17,8 +17,8 @@ final class VerificationModel: ObservableObject, Identifiable {
     @Published private(set) var error: String?
 
     private let verification: Verification
-    private let subscriptions = Subscriptions()
-    private var task: Task<Void, Never>?
+    /// The subscription, and the answers sent.
+    private let work = Work()
 
     init(verification: Verification, incoming: Bool) {
         self.verification = verification
@@ -26,7 +26,7 @@ final class VerificationModel: ObservableObject, Identifiable {
         asking = incoming
         state = verification.state()
         let feed = Feed<VerificationState>()
-        subscriptions.add(verification.subscribe(listener: feed), feed) { [weak self] in
+        work.follow(verification.subscribe(listener: feed), feed) { [weak self] in
             self?.state = $0
         }
     }
@@ -74,14 +74,11 @@ final class VerificationModel: ObservableObject, Identifiable {
         busy = true
         error = nil
         let verification = self.verification
-        task = Task {
-            do {
-                try await send(verification)
-            } catch {
-                self.error = errorMessage(error)
-            }
-            busy = false
-            task = nil
+        work.request {
+            defer { self.busy = false }
+            try await send(verification)
+        } failed: { message in
+            self.error = message
         }
     }
 }

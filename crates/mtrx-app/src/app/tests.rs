@@ -467,16 +467,19 @@ fn quitting_ends_the_session() {
 }
 
 /// Closing the window cancels a browser sign-in.
-#[test]
-fn closing_the_window_cancels_a_browser_sign_in() {
+#[tokio::test]
+async fn closing_the_window_cancels_a_browser_sign_in() {
     let mut app = app(Screen::Login(Login::default()), Mode::Light);
-    let (_sign_in, handle) = Task::<Message>::none().abortable();
     let Screen::Login(login) = &mut app.screen else {
         unreachable!()
     };
-    login.browser_started(handle.clone());
+    let signed_in = Message::LoggedIn(Err("signed in".into()));
+    let sign_in = login.browser_sign_in(Task::perform(
+        tokio::time::sleep(Duration::from_millis(10)),
+        move |()| signed_in,
+    ));
     let _ = app.update(Message::CloseWindow(window::Id::unique()));
-    assert!(handle.is_aborted());
+    assert!(messages_of(sign_in).await.is_empty());
 }
 
 /// A window left on a display since unplugged opens on the main display,
@@ -1727,7 +1730,9 @@ async fn room_management_screens() {
     snapshot(
         &main_with(&|main| {
             let room = main.pane.room_mut().unwrap();
-            room.seek = Some(Task::<Message>::none().abortable().1);
+            let _ = room
+                .tasks
+                .run(Load::Seek, Task::<Message>::future(std::future::pending()));
         }),
         "status-seeking",
     );
@@ -1823,7 +1828,7 @@ async fn room_management_screens() {
     let open = main.pane.room().unwrap();
     assert_eq!(open.id, other);
     assert!(main.show_members);
-    assert!(open.loading_members && open.member_list.is_none());
+    assert!(open.tasks.running(&Load::Members) && open.member_list.is_none());
     snapshot(&app, "members-switched");
 
     let bob_info = session.user_info(&bob.user_id()).await.unwrap();
@@ -1950,7 +1955,8 @@ async fn room_management_screens() {
                 overview::Tab::Rooms,
             );
             main.space_rooms.loaded(space.clone(), Ok(children.clone()));
-            main.space_rooms.start(&space);
+            let _ = (main.space_rooms)
+                .list(&space, |_| Task::<Message>::future(std::future::pending()));
             main.card = Some(card);
         }),
         "space-overview-updating",
@@ -3488,4 +3494,54 @@ async fn scheduled_in_a_room_left_clears_its_draft() {
     let drafts = alice.rooms_with_drafts_updates().get();
     assert!(!drafts.contains(&a), "{drafts:?}");
     assert_eq!(open_room(&mut app).id, b);
+}
+
+/// What a room loads ends when it closes; what it asked of the server runs
+/// to its end: a message scheduled there is scheduled, and a failure's
+/// result is dropped, not shown in the room open since.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn loads_end_with_their_room_and_requests_run_on() {
+    let dir = TempDir::new().unwrap();
+    let (_, alice) = user("owned", &dir).await;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let a = alice.create_room(new_room("a")).await.unwrap();
+    let b = alice.create_room(new_room("b")).await.unwrap();
+    let timeline = Arc::new(alice.timeline(&a).await.unwrap());
+    let alice = Arc::new(alice);
+    let mut main = Main::new(alice.clone());
+    main.verified = Some(true);
+    let mut open = Room::new(alice.room(&a).unwrap(), timeline, alice.draft_keeper(&a));
+    open.composer.set_text("Later, in a");
+    main.pane = Pane::Open(open);
+    let mut app = app(Screen::Main(Box::new(main)), Mode::Light);
+
+    let members = load_members(open_room(&mut app));
+    assert!(open_room(&mut app).tasks.running(&Load::Members));
+    let in_an_hour = SystemTime::now() + Duration::from_secs(3600);
+    let later = send_later::Message::At(in_an_hour);
+    let scheduled = app.update(room::Message::Later(later).to(&a));
+    for message in messages_of(app.update(Message::OpenRoom(b.clone()))).await {
+        let _ = app.update(message);
+    }
+    assert_eq!(open_room(&mut app).id, b);
+
+    assert!(
+        messages_of(members).await.is_empty(),
+        "loaded after a closed"
+    );
+    for message in messages_of(scheduled).await {
+        let _ = messages_of(app.update(message)).await;
+    }
+    let _ = app.update(room::Message::Sent(Err("Not sent".into())).to(&a));
+    let scheduled: Vec<_> = (alice.scheduled().into_iter())
+        .map(|m| (m.room_id, m.text))
+        .collect();
+    assert_eq!(scheduled, [(a.clone(), "Later, in a".to_owned())]);
+    let open = open_room(&mut app);
+    assert_eq!(open.id, b);
+    assert_eq!(open.error, None);
 }

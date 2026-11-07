@@ -24,8 +24,8 @@ final class RoomInfoModel: ObservableObject {
     private let room: Result<Room, Error>
     /// For the spaces the room is in.
     private let session: Session
-    /// The settings' subscription, once started.
-    private let subscriptions = Subscriptions()
+    /// The settings' subscription, once started, and the changes.
+    private let work = Work()
     private var following = false
 
     init(session: Session, roomId: String, userId: String) {
@@ -48,7 +48,7 @@ final class RoomInfoModel: ObservableObject {
         do {
             let room = try self.room.get()
             let feed = Feed<RoomSettings>()
-            subscriptions.add(room.subscribeSettings(listener: feed), feed) { [weak self] settings in
+            work.follow(room.subscribeSettings(listener: feed), feed) { [weak self] settings in
                 self?.settings = settings
             }
         } catch {
@@ -67,9 +67,10 @@ final class RoomInfoModel: ObservableObject {
     // MARK: Settings
 
     /// Save `topic` (as `composeTopic` makes it): the room list shows it at
-    /// once. Returns whether saved.
-    func setTopic(_ topic: String) async -> Bool {
-        await call { try await $0.setTopic(topic: topic) }
+    /// once. `then` says whether it was saved.
+    @discardableResult
+    func setTopic(_ topic: String, then: @escaping @MainActor (Bool) -> Void = { _ in }) -> Task<Void, Never> {
+        change({ try await $0.setTopic(topic: topic) }, then: then)
     }
 
     @discardableResult
@@ -144,57 +145,58 @@ final class RoomInfoModel: ObservableObject {
     /// Give someone (or ourselves) a power level.
     @discardableResult
     func setLevel(_ level: Int64, of user: String) -> Task<Void, Never> {
-        Task {
-            if await call({ try await $0.setLevel(userId: user, level: level) }) {
-                await loadMembers()
-            }
-        }
+        changeMembers { try await $0.setLevel(userId: user, level: level) }
     }
 
     /// Remove someone, or ban them; they see `reason`.
     @discardableResult
     func remove(_ user: String, reason: String, ban: Bool) -> Task<Void, Never> {
         let reason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Task {
-            if await call({
-                try await $0.remove(userId: user, ban: ban, reason: reason.isEmpty ? nil : reason)
-            }) {
-                await loadMembers()
-            }
+        return changeMembers {
+            try await $0.remove(userId: user, ban: ban, reason: reason.isEmpty ? nil : reason)
         }
     }
 
-    /// Invite someone by user ID. Returns whether invited.
-    func invite(_ user: String) async -> Bool {
+    /// Invite someone by user ID. `then` says whether invited.
+    @discardableResult
+    func invite(_ user: String, then: @escaping @MainActor (Bool) -> Void = { _ in }) -> Task<Void, Never> {
         let user = user.trimmingCharacters(in: .whitespaces)
-        let invited = await call { try await $0.invite(userId: user) }
-        if invited {
-            await loadMembers()
-        }
-        return invited
+        return changeMembers({ try await $0.invite(userId: user) }, then: then)
     }
 
-    /// Leave the room or space. Returns whether left.
-    func leave() async -> Bool {
-        await call { try await $0.leave() }
+    /// Leave the room or space. `then` says whether left.
+    @discardableResult
+    func leave(then: @escaping @MainActor (Bool) -> Void = { _ in }) -> Task<Void, Never> {
+        change({ try await $0.leave() }, then: then)
     }
 
-    // MARK: Calls
+    // MARK: Requests
 
-    /// Make a change, which the settings (or the room list) show at once.
-    private func change(_ call: @escaping (Room) async throws -> Void) -> Task<Void, Never> {
-        Task { _ = await self.call(call) }
-    }
-
-    /// Run `call` on the room; a failure shows as `error`. Returns whether
-    /// it succeeded.
-    private func call(_ call: (Room) async throws -> Void) async -> Bool {
-        do {
+    /// Make a change, which the settings (or the room list) show at once; a
+    /// failure shows as `error`. `then` says whether it was made.
+    private func change(
+        _ call: @escaping @MainActor (Room) async throws -> Void,
+        then: @escaping @MainActor (Bool) -> Void = { _ in }
+    ) -> Task<Void, Never> {
+        let room = self.room
+        return work.request {
             try await call(room.get())
-            return true
-        } catch {
-            self.error = errorMessage(error)
-            return false
+            then(true)
+        } failed: { message in
+            self.error = message
+            then(false)
         }
+    }
+
+    /// Change the members, then read them again.
+    private func changeMembers(
+        _ call: @escaping @MainActor (Room) async throws -> Void,
+        then: @escaping @MainActor (Bool) -> Void = { _ in }
+    ) -> Task<Void, Never> {
+        change(
+            {
+                try await call($0)
+                await self.loadMembers()
+            }, then: then)
     }
 }

@@ -56,6 +56,8 @@ class JoiningModel: ObservableObject {
     @Published var error: String?
 
     let session: Session
+    /// Its loads and requests.
+    let work = Work()
 
     init(session: Session) {
         self.session = session
@@ -66,23 +68,21 @@ class JoiningModel: ObservableObject {
         busy.contains(room.id)
     }
 
-    /// Join `room`, or ask to (rooms that take requests). Returns the room's
-    /// ID once joined (nil if asked or failed).
+    /// Join `room`, or ask to (rooms that take requests).
     @discardableResult
-    func join(_ room: DirectoryRoom) async -> String? {
+    func join(_ room: DirectoryRoom) -> Task<Void, Never>? {
         guard !busy.contains(room.id) else { return nil }
         busy.insert(room.id)
-        defer { busy.remove(room.id) }
-        let address = room.alias ?? room.id
-        do {
+        let (session, address) = (self.session, room.alias ?? room.id)
+        return work.request {
+            defer { self.busy.remove(room.id) }
             if room.joinRule == .knock {
                 _ = try await session.knock(room: address, via: room.via)
-                return nil
+            } else {
+                _ = try await session.join(room: address, via: room.via)
             }
-            return try await session.join(room: address, via: room.via)
-        } catch {
-            self.error = errorMessage(error)
-            return nil
+        } failed: { message in
+            self.error = message
         }
     }
 }
@@ -121,17 +121,22 @@ final class SpaceOverviewModel: JoiningModel {
         }
     }
 
-    /// Read the list (again).
-    func load() async {
-        guard !updating else { return }
+    /// Read the list (again), unless being read.
+    @discardableResult
+    func load() -> Task<Void, Never>? {
+        guard !updating else { return nil }
         updating = true
         failed = false
-        defer { updating = false }
-        do {
-            rooms = try await session.spaceChildren(spaceId: spaceId)
-            unknown = false
-        } catch {
-            failed = true
+        let (session, spaceId) = (self.session, self.spaceId)
+        return work.load("rooms") { [weak self] in
+            do {
+                let rooms = try await session.spaceChildren(spaceId: spaceId)
+                self?.rooms = rooms
+                self?.unknown = false
+            } catch {
+                self?.failed = true
+            }
+            self?.updating = false
         }
     }
 }
@@ -159,7 +164,6 @@ final class JoinModel: JoiningModel {
 
     /// Our server's name.
     let ownServer: String
-    private var search: Task<Void, Never>?
 
     init(session: Session, ownServer: String) {
         self.ownServer = ownServer
@@ -176,13 +180,12 @@ final class JoinModel: JoiningModel {
 
     /// Search again, after a pause for more typing.
     func searchSoon(delay: UInt64 = 300_000_000) {
-        search?.cancel()
-        search = Task {
+        work.load("search") { [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: delay)
                 guard !Task.isCancelled else { return }
             }
-            await self.run()
+            await self?.run()
         }
     }
 
@@ -221,16 +224,20 @@ final class JoinModel: JoiningModel {
     }
 
     /// The next page of results.
-    func more() async {
-        guard let next, !searching else { return }
+    @discardableResult
+    func more() -> Task<Void, Never>? {
+        guard let next, !searching else { return nil }
         searching = true
-        defer { searching = false }
-        do {
-            let page = try await session.publicRooms(server: server, query: query, kind: kind, page: next)
-            results += page.rooms
-            self.next = page.next
-        } catch {
-            message = errorMessage(error)
+        let (session, server, query, kind) = (self.session, self.server, self.query, self.kind)
+        return work.load("more") { [weak self] in
+            do {
+                let page = try await session.publicRooms(server: server, query: query, kind: kind, page: next)
+                self?.results += page.rooms
+                self?.next = page.next
+            } catch {
+                self?.message = errorMessage(error)
+            }
+            self?.searching = false
         }
     }
 
@@ -274,6 +281,7 @@ final class NewRoomModel: ObservableObject {
     @Published var error: String?
 
     private let session: Session
+    private let work = Work()
 
     init(session: Session, space: Bool, parent: (id: String, name: String)? = nil) {
         self.session = session
@@ -328,21 +336,24 @@ final class NewRoomModel: ObservableObject {
         !name.trimmingCharacters(in: .whitespaces).isEmpty && !creating
     }
 
-    /// Make it; its room ID, or nil on failure (`error`).
-    func create() async -> String? {
+    /// Make it, then hand its room ID to `created`; a failure shows as
+    /// `error`.
+    @discardableResult
+    func create(then created: @escaping @MainActor (String) -> Void = { _ in }) -> Task<Void, Never>? {
         guard canCreate else { return nil }
         creating = true
-        defer { creating = false }
         let new = NewRoom(
             name: name.trimmingCharacters(in: .whitespaces), topic: topic, space: space,
             encrypted: encrypted && !space, moderated: moderated, invite: invited,
             coOwners: offersOwners ? invited.filter(coOwners.contains) : [], parent: parent?.id)
-        do {
-            return try await session.createRoom(new: new)
-        } catch {
-            let what = space ? "space" : "room"
-            self.error = "Could not create the \(what) “\(new.name)”: \(errorMessage(error) ?? "")"
-            return nil
+        let session = self.session
+        return work.request {
+            defer { self.creating = false }
+            let id = try await session.createRoom(new: new)
+            created(id)
+        } failed: { message in
+            let what = self.space ? "space" : "room"
+            self.error = "Could not create the \(what) “\(new.name)”: \(message)"
         }
     }
 }

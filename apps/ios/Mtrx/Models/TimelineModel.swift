@@ -56,9 +56,10 @@ final class TimelineModel: ObservableObject {
     private let session: Session
     private let room: RoomSummary
     private var timeline: Timeline?
-    private let subscriptions = Subscriptions()
+    /// Its rows' subscription, loads and requests.
+    private let work = Work()
     /// Who types, while the room is on screen.
-    private let typingSubscription = Subscriptions()
+    private let typingWork = Work()
     private var watchingTyping = false
     /// The top of the list (the oldest row) is on screen.
     private var topVisible = false
@@ -103,7 +104,7 @@ final class TimelineModel: ObservableObject {
             let timeline = try await session.timeline(roomId: roomId)
             self.timeline = timeline
             let feed = Feed<[TimelineRow]>()
-            subscriptions.add(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
+            work.follow(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
                 self?.apply(rows)
             }
             if let eventId = restoringReply {
@@ -112,7 +113,7 @@ final class TimelineModel: ObservableObject {
             opening = false
             watchTyping()
             if topVisible {
-                await loadOlder()
+                await loadOlder()?.value
             }
         } catch {
             opening = false
@@ -139,7 +140,7 @@ final class TimelineModel: ObservableObject {
         if visible {
             watchTyping()
         } else {
-            typingSubscription.cancelAll()
+            typingWork.cancelAll()
             watchingTyping = false
             typing = []
             setTyping(false)
@@ -150,28 +151,35 @@ final class TimelineModel: ObservableObject {
     }
 
     /// The oldest row is on screen (or not): load older ones while it is.
-    func setTopVisible(_ visible: Bool) async {
+    @discardableResult
+    func setTopVisible(_ visible: Bool) -> Task<Void, Never>? {
         topVisible = visible
-        if visible {
-            await loadOlder()
-        }
+        return visible ? loadOlder() : nil
     }
 
     /// Load older messages until the top of the list is off screen or the
     /// room's start is reached.
-    func loadOlder() async {
-        guard timeline != nil, !loadingOlder, !reachedStart else { return }
+    @discardableResult
+    func loadOlder() -> Task<Void, Never>? {
+        guard let timeline, !loadingOlder, !reachedStart else { return nil }
         loadingOlder = true
-        defer { loadingOlder = false }
-        do {
-            while let timeline, topVisible && !reachedStart {
-                if try await timeline.paginateBack(events: Self.page) {
-                    reachedStart = true
+        return work.load("older") { [weak self] in
+            do {
+                while self?.wantsOlder == true {
+                    if try await timeline.paginateBack(events: Self.page) {
+                        self?.reachedStart = true
+                    }
                 }
+            } catch {
+                self?.error = errorMessage(error)
             }
-        } catch {
-            self.error = errorMessage(error)
+            self?.loadingOlder = false
         }
+    }
+
+    /// The top of the list is on screen, the room's start not reached.
+    private var wantsOlder: Bool {
+        topVisible && !reachedStart && !Task.isCancelled
     }
 
     /// The timeline is scrolled `distance` points up from its bottom
@@ -211,9 +219,10 @@ final class TimelineModel: ObservableObject {
     /// Send the draft: a new message, a reply or an edit, as `compose`
     /// says. It shows in the timeline at once, and is sent in the
     /// background.
-    func send() async {
+    @discardableResult
+    func send() -> Task<Void, Never>? {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let timeline, !text.isEmpty else { return }
+        guard let timeline, !text.isEmpty else { return nil }
         let compose = self.compose
         // Its message not found: sent as a new one.
         restoringReply = nil
@@ -225,7 +234,7 @@ final class TimelineModel: ObservableObject {
         let drafts = self.drafts
         Task { await drafts.flush() }
         let left = draft
-        do {
+        return work.request {
             switch compose {
             case nil:
                 try await timeline.sendText(text: text)
@@ -234,16 +243,16 @@ final class TimelineModel: ObservableObject {
             case .edit(let target):
                 try await timeline.edit(itemId: target.itemId, text: text)
             }
-        } catch {
+        } failed: { message in
             // Back as it was, unless something else was begun meanwhile.
-            if self.compose == nil && draft == left {
+            if self.compose == nil && self.draft == left {
                 if case .edit = compose {
-                    savedDraft = left
+                    self.savedDraft = left
                 }
-                draft = text
+                self.draft = text
                 self.compose = compose
             }
-            self.error = errorMessage(error)
+            self.error = message
         }
     }
 
@@ -298,14 +307,13 @@ final class TimelineModel: ObservableObject {
     /// Answer the restored draft's message once the library has it (it
     /// loads nothing for it).
     private func waitForReply(_ eventId: String, in timeline: Timeline) {
-        subscriptions.add(
-            Task { [weak self] in
-                guard let row = try? await timeline.itemOf(eventId: eventId),
-                    let self, restoringReply == eventId
-                else { return }
-                replyRow = row
-                answerReply()
-            })
+        work.load("reply") { [weak self] in
+            guard let row = try? await timeline.itemOf(eventId: eventId),
+                let self, restoringReply == eventId
+            else { return }
+            replyRow = row
+            answerReply()
+        }
     }
 
     /// Reply to the restored draft's message, once its row is among the
@@ -344,7 +352,7 @@ final class TimelineModel: ObservableObject {
         guard visible, !watchingTyping, let timeline else { return }
         watchingTyping = true
         let feed = Feed<[String]>()
-        typingSubscription.add(timeline.subscribeTyping(listener: feed), feed) { [weak self] names in
+        typingWork.follow(timeline.subscribeTyping(listener: feed), feed) { [weak self] names in
             self?.typing = names
         }
     }
@@ -365,50 +373,50 @@ final class TimelineModel: ObservableObject {
     /// Add our reaction `key` to row `itemId`'s message, or remove it: the
     /// library's rows show it at once.
     @discardableResult
-    func react(_ itemId: String, key: String) -> Task<Void, Never> {
-        act { try await $0.react(itemId: itemId, key: key) }
+    func react(_ itemId: String, key: String) -> Task<Void, Never>? {
+        guard let timeline else { return nil }
+        return work.request({ try await timeline.react(itemId: itemId, key: key) }, failed: failed)
     }
 
     /// Pin row `itemId`'s message (`pin`), or unpin it.
     @discardableResult
-    func setPinned(_ itemId: String, pin: Bool) -> Task<Void, Never> {
-        guard let eventId = messageRow(itemId)?.event.eventId else { return Task {} }
+    func setPinned(_ itemId: String, pin: Bool) -> Task<Void, Never>? {
+        guard let eventId = messageRow(itemId)?.event.eventId else { return nil }
         let (session, roomId) = (self.session, self.roomId)
-        return Task {
-            do {
-                try await session.room(roomId: roomId).setPinned(eventId: eventId, pin: pin)
-            } catch {
-                self.error = errorMessage(error)
-            }
-        }
+        return work.request(
+            { try await session.room(roomId: roomId).setPinned(eventId: eventId, pin: pin) }, failed: failed)
     }
 
     /// Delete row `itemId`'s message (ours) for everyone.
     @discardableResult
-    func delete(_ itemId: String) -> Task<Void, Never> {
-        act { try await $0.delete(itemId: itemId) }
+    func delete(_ itemId: String) -> Task<Void, Never>? {
+        guard let timeline else { return nil }
+        return work.request({ try await timeline.delete(itemId: itemId) }, failed: failed)
     }
 
     /// Send row `itemId`'s refused message again.
     @discardableResult
-    func retry(_ itemId: String) -> Task<Void, Never> {
-        act { try await $0.retry(itemId: itemId) }
+    func retry(_ itemId: String) -> Task<Void, Never>? {
+        guard let timeline else { return nil }
+        return work.request({ try await timeline.retry(itemId: itemId) }, failed: failed)
     }
 
     /// Take row `itemId`'s message, not sent yet, out of the send queue:
     /// its text comes back in the composer (`putBack`).
     @discardableResult
-    func unsend(_ itemId: String) -> Task<Void, Never> {
-        guard let timeline else { return Task {} }
-        return Task {
-            do {
+    func unsend(_ itemId: String) -> Task<Void, Never>? {
+        guard let timeline else { return nil }
+        return work.request(
+            {
                 if let unsent = try await timeline.unsend(itemId: itemId) {
                     self.putBack(unsent)
                 }
-            } catch {
-                self.error = errorMessage(error)
-            }
-        }
+            }, failed: failed)
+    }
+
+    /// A request failed: say why.
+    private func failed(_ message: String) {
+        error = message
     }
 
     /// Put `unsent`'s text in the composer: after what is written and a
@@ -439,19 +447,6 @@ final class TimelineModel: ObservableObject {
         return written.isEmpty ? text : written + "\n\n" + text
     }
 
-    /// Run `action` in a task of the model's (leaving the room does not
-    /// cancel it); a failure shows as `error`.
-    private func act(_ action: @escaping (Timeline) async throws -> Void) -> Task<Void, Never> {
-        guard let timeline else { return Task {} }
-        return Task {
-            do {
-                try await action(timeline)
-            } catch {
-                self.error = errorMessage(error)
-            }
-        }
-    }
-
     func messageRow(_ itemId: String) -> MessageRow? {
         rows.first { $0.id == itemId }?.messageRow
     }
@@ -465,24 +460,27 @@ final class TimelineModel: ObservableObject {
 
     /// Scroll to the message with `eventId` and mark it, once the library
     /// loaded the older events it is in. A second call is ignored while
-    /// one is under way.
-    func goTo(eventId: String) async {
-        guard let timeline else { return }
+    /// one is under way. Returns the search, if one starts.
+    @discardableResult
+    func goTo(eventId: String) -> Task<Void, Never>? {
+        guard let timeline else { return nil }
         if let row = eventRow(eventId) {
             show(row.id)
-            return
+            return nil
         }
-        guard !seeking else { return }
+        guard !seeking else { return nil }
         seeking = true
-        defer { seeking = false }
-        do {
-            let row = try await timeline.seek(eventId: eventId)
-            // The rows may not have it yet.
-            if !show(row) {
-                revealing = row
+        return work.load("seek") { [weak self] in
+            do {
+                let row = try await timeline.seek(eventId: eventId)
+                // The rows may not have it yet.
+                if let self, !show(row) {
+                    revealing = row
+                }
+            } catch {
+                self?.error = errorMessage(error)
             }
-        } catch {
-            self.error = errorMessage(error)
+            self?.seeking = false
         }
     }
 

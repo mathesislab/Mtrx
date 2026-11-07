@@ -23,6 +23,7 @@ final class RoomListModel: ObservableObject {
     var failed: @MainActor (String) -> Void = { _ in }
 
     private let session: Session
+    private let work = Work()
 
     init(session: Session) {
         self.session = session
@@ -74,14 +75,6 @@ final class RoomListModel: ObservableObject {
     @discardableResult
     func setNotesAtTop(_ on: Bool) -> Task<Void, Never> {
         let session = self.session
-        return Task {
-            do {
-                try await session.setNotesAtTop(on: on)
-            } catch {
-                if let message = errorMessage(error) {
-                    failed(message)
-                }
-            }
-        }
+        return work.request({ try await session.setNotesAtTop(on: on) }, failed: { self.failed($0) })
     }
 }

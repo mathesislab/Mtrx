@@ -118,7 +118,7 @@ final class TimelineChangesTests: XCTestCase {
         session.drafts[roomId] = Draft(text: "Sure", replyTo: "$gone")
         let back = await reopen()
         XCTAssertNil(back.compose)
-        await back.send()
+        await back.send()?.value
         XCTAssertEqual(timeline.sent, ["Sure"])
         XCTAssertEqual(timeline.replies.count, 0)
         await eventually { self.session.drafts[self.roomId] == nil }
@@ -128,7 +128,7 @@ final class TimelineChangesTests: XCTestCase {
         model.draft = "Hello"
         model.setVisible(false)
         await eventually { self.session.drafts[self.roomId] == Draft(text: "Hello") }
-        await model.send()
+        await model.send()?.value
         await eventually { self.session.drafts[self.roomId] == nil }
         let back = await reopen()
         XCTAssertEqual(back.draft, "")
@@ -153,16 +153,16 @@ final class TimelineChangesTests: XCTestCase {
     func testPinsAndUnpinsByEventId() async {
         await show([bobsMessage(actions: [.react, .reply, .copy, .selectText, .pin])])
         XCTAssertEqual(model.messageRow("b")?.actions.last, .pin)
-        await model.setPinned("b", pin: true).value
+        await model.setPinned("b", pin: true)?.value
         XCTAssertEqual(session.changes, ["pin $b true"])
-        await model.setPinned("b", pin: false).value
+        await model.setPinned("b", pin: false)?.value
         XCTAssertEqual(session.changes, ["pin $b true", "pin $b false"])
     }
 
     func testAFailedPinSaysWhy() async {
         await show([bobsMessage(actions: [.react, .reply, .copy, .selectText, .pin])])
         session.changeError = MtrxError.Other(reason: "Not allowed")
-        await model.setPinned("b", pin: true).value
+        await model.setPinned("b", pin: true)?.value
         XCTAssertEqual(model.error, "Not allowed")
     }
 }

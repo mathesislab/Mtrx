@@ -30,7 +30,9 @@ use crate::{
     presence::{self, Presences},
     selectable::text::selectable_text,
     settings::{self, Preference},
-    sidebar, spelling, style, topic,
+    sidebar, spelling, style,
+    task::Owned,
+    topic,
 };
 
 /// The picture in the card's header.
@@ -182,6 +184,17 @@ pub struct Card {
     editing_topic: bool,
     /// The address's name, as edited.
     address: String,
+    /// What it loads, which ends when it closes.
+    pub tasks: Owned<Load>,
+}
+
+/// What a card loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Load {
+    /// The person's details.
+    User,
+    /// A space's members.
+    Members,
 }
 
 impl Card {
@@ -206,6 +219,7 @@ impl Card {
             error: None,
             opened: None,
             copied: None,
+            tasks: Owned::default(),
         }
     }
 

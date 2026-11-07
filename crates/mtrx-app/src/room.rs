@@ -11,7 +11,7 @@ use std::{
 use iced::{
     Alignment, Element, Length, Padding, Rectangle, Task, Theme, Vector,
     advanced::widget::{Id, Operation, operation},
-    mouse, task,
+    mouse,
     widget::{
         button, column, container, image, mouse_area, row, rule, scrollable, scrollable::Viewport,
         space, span, stack, text,
@@ -57,6 +57,7 @@ use crate::{
         self, GUTTER_SPACING, HEADER_AVATAR, MESSAGE_PADDING, SENDER_AVATAR, TEXT_MARGIN,
         TIMELINE_PADDING, TOOLBAR_HEIGHT,
     },
+    task::Owned,
     topic,
     want::wanting,
 };
@@ -183,8 +184,6 @@ pub struct Room {
     pub drafts: Arc<DraftKeeper>,
     /// The message a restored draft answers, until it is loaded.
     pub pending_reply: Option<OwnedEventId>,
-    /// Waits for the message a restored draft answers.
-    _reply_wait: Option<task::Handle>,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
     /// Our messages being sent.
@@ -198,15 +197,10 @@ pub struct Room {
     /// The members once loaded, or why loading failed: for the member list
     /// and mentions.
     pub member_list: Option<Result<Vec<Member>, String>>,
-    /// The members are being loaded.
-    pub loading_members: bool,
     /// What `@` may mention, see [`mention::texts`].
     pub mentions: Arc<[String]>,
     /// How many of the newest rows are rendered.
     shown: usize,
-    pub paginating: bool,
-    /// A new timeline is being loaded (⌘R).
-    pub reloading: bool,
     /// Shown in the status pill until dismissed.
     pub error: Option<String>,
     /// Files of messages being sent, uploading, and since when.
@@ -216,8 +210,27 @@ pub struct Room {
     hovered: Option<String>,
     /// [`Event::id`] of the message just gone to, e.g. a reply's original.
     pub marked: Option<String>,
-    /// Loads older events to find the message gone to; dropping it stops.
-    pub seek: Option<task::Handle>,
+    /// What it loads, which ends when it closes.
+    pub tasks: Owned<Load>,
+}
+
+/// What a room loads, one of each kind at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Load {
+    Members,
+    /// The pinned messages' timeline.
+    Pinned,
+    /// Its space's call service.
+    CallService,
+    Draft,
+    /// A new timeline (⌘R).
+    Reload,
+    /// Older events.
+    Paginate,
+    /// Older events until the message gone to.
+    Seek,
+    /// The message a restored draft answers.
+    ReplyWait,
 }
 
 /// What scrolling to the top should do.
@@ -245,7 +258,6 @@ impl Room {
             find: None,
             typing: Vec::new(),
             member_list: None,
-            loading_members: false,
             mentions: Default::default(),
             id,
             handle,
@@ -254,17 +266,14 @@ impl Room {
             composer: MessageField::new(Field::Composer, ""),
             drafts: Arc::new(drafts),
             pending_reply: None,
-            _reply_wait: None,
             attachments: Vec::new(),
             shown: WINDOW,
-            paginating: false,
-            reloading: false,
             error: None,
             uploads: Vec::new(),
             uploading_since: None,
             hovered: None,
             marked: None,
-            seek: None,
+            tasks: Owned::default(),
         }
     }
 
@@ -285,7 +294,7 @@ impl Room {
             Older::None
         } else if self.shown < self.rows.len() {
             Older::ShowMore
-        } else if !self.paginating && !self.at_start() {
+        } else if !self.tasks.running(&Load::Paginate) && !self.at_start() {
             Older::Paginate
         } else {
             Older::None
@@ -385,7 +394,7 @@ impl Room {
     /// loaded yet.
     pub fn wants_members(&self) -> bool {
         self.member_list.is_none()
-            && !self.loading_members
+            && !self.tasks.running(&Load::Members)
             && self.fields().any(|field| field.completion().is_some())
     }
 
@@ -396,7 +405,6 @@ impl Room {
 
     /// The members were loaded, or not.
     pub fn members_loaded(&mut self, result: Result<Vec<Member>, String>) {
-        self.loading_members = false;
         self.member_list = Some(result.inspect(|members| {
             self.mentions = mention::texts(members);
         }));
@@ -449,7 +457,7 @@ impl Room {
         };
         self.pending_reply = Some(event_id.clone());
         let (id, timeline) = (self.id.clone(), self.timeline.clone());
-        let (wait, handle) = Task::perform(
+        let wait = Task::perform(
             async move {
                 let item = timeline.item_of(&event_id).await;
                 let entries = timeline.current();
@@ -464,10 +472,8 @@ impl Room {
                 Target::of(event, event.sender.display_name(), preview)
             },
             move |target| Message::ReplyFound(target).to(&id),
-        )
-        .abortable();
-        self._reply_wait = Some(handle.abort_on_drop());
-        wait
+        );
+        self.tasks.run(Load::ReplyWait, wait)
     }
 
     /// Answer `target`, the message a restored draft answers, unless
@@ -488,11 +494,10 @@ impl Room {
         self.sending = Sending::already(&self.rows);
         self.timeline = timeline;
         self.shown = WINDOW;
-        self.paginating = false;
-        self.reloading = false;
         self.error = None;
-        // Its rows are new.
-        self.seek = None;
+        // Its rows are new: what loads into the old timeline stops.
+        self.tasks.cancel(&Load::Paginate);
+        self.tasks.cancel(&Load::Seek);
         self.find_again();
     }
 
@@ -556,7 +561,7 @@ impl Room {
 
     /// Too few rows are loaded to fill the view.
     pub fn wants_older(&self) -> bool {
-        !self.paginating && !self.at_start() && self.rows.len() < FILL
+        !self.tasks.running(&Load::Paginate) && !self.at_start() && self.rows.len() < FILL
     }
 
     pub fn show_more(&mut self) {
@@ -792,7 +797,7 @@ impl Room {
         if let Some(error) = &self.error {
             return Some(Status::Problem(error.clone()));
         }
-        if self.seek.is_some() {
+        if self.tasks.running(&Load::Seek) {
             let back_to = self.events().next().map(|event| event.timestamp);
             return Some(Status::Seeking { back_to });
         }
@@ -900,9 +905,10 @@ impl Room {
 
         let mut timeline = column![].padding([8.0, TIMELINE_PADDING]);
         let all_shown = self.shown >= self.rows.len();
-        if self.reloading {
+        let paginating = self.tasks.running(&Load::Paginate);
+        if self.tasks.running(&Load::Reload) {
             timeline = timeline.push(notice("Reloading…"));
-        } else if !(self.at_start() && all_shown) && (self.paginating || !all_shown) {
+        } else if !(self.at_start() && all_shown) && (paginating || !all_shown) {
             timeline = timeline.push(notice("Loading…"));
         }
         for (row, parts) in rows.iter().zip(&parts) {

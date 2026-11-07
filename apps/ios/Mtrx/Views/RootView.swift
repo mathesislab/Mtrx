@@ -25,7 +25,7 @@ struct RootView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Button("Try again") {
-                    Task { await app.start() }
+                    app.start()
                 }
                 .buttonStyle(.borderedProminent)
             }

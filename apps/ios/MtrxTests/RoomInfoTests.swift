@@ -42,15 +42,17 @@ final class RoomInfoModelTests: XCTestCase {
 
     /// The library's room list shows it at once.
     func testATopicIsSaved() async {
-        let saved = await model.setTopic("New")
-        XCTAssertTrue(saved)
+        var saved: Bool?
+        await model.setTopic("New") { saved = $0 }.value
+        XCTAssertEqual(saved, true)
         XCTAssertEqual(session.changes, ["topic New"])
     }
 
     func testAnUnsavedTopicSaysWhy() async {
         session.changeError = MtrxError.Other(reason: "Not allowed")
-        let saved = await model.setTopic("New")
-        XCTAssertFalse(saved)
+        var saved: Bool?
+        await model.setTopic("New") { saved = $0 }.value
+        XCTAssertEqual(saved, false)
         XCTAssertEqual(model.error, "Not allowed")
     }
 
@@ -70,8 +72,9 @@ final class RoomInfoModelTests: XCTestCase {
         await model.setLevel(50, of: "@bob:example.org").value
         await model.remove("@bob:example.org", reason: "  ", ban: false).value
         await model.remove("@cy:example.org", reason: "Spam", ban: true).value
-        let invited = await model.invite(" @dee:example.org ")
-        XCTAssertTrue(invited)
+        var invited: Bool?
+        await model.invite(" @dee:example.org ") { invited = $0 }.value
+        XCTAssertEqual(invited, true)
         XCTAssertEqual(
             session.changes,
             ["level @bob:example.org 50", "remove @bob:example.org -", "ban @cy:example.org Spam"])

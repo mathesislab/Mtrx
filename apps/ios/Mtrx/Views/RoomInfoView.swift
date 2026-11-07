@@ -155,8 +155,8 @@ struct InviteLeaveButtons: View {
         }
         .confirmationDialog("Leave \(room.name)?", isPresented: $leaving, titleVisibility: .visible) {
             Button("Leave", role: .destructive) {
-                Task {
-                    if await model.leave() {
+                model.leave { gone in
+                    if gone {
                         home.left(room.id)
                         left()
                     }
@@ -488,8 +488,8 @@ struct InviteSheet: View {
         let id = person.trimmingCharacters(in: .whitespaces)
         guard NewRoomModel.isUserId(id), !sending else { return }
         sending = true
-        Task {
-            if await model.invite(id) {
+        model.invite(id) { done in
+            if done {
                 invited.append(id)
                 person = ""
             }

@@ -65,6 +65,7 @@ mod sidebar;
 mod spelling;
 mod status;
 mod style;
+mod task;
 mod text_size;
 mod tint;
 mod topic;

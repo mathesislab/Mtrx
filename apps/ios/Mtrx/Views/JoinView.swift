@@ -50,7 +50,7 @@ struct JoinView: View {
                     }
                     if model.next != nil {
                         Button("More") {
-                            Task { await model.more() }
+                            model.more()
                         }
                         .disabled(model.searching)
                     }
@@ -136,7 +136,7 @@ struct JoinView: View {
         guard !model.isBusy(room) else { return }
         switch rooms.button(for: room).action {
         case .join, .askToJoin:
-            Task { await model.join(room) }
+            model.join(room)
         case .open:
             dismiss()
             home.open(room.id, kind: room.isSpace ? .space : .room)

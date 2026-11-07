@@ -20,6 +20,8 @@ final class AppModel: ObservableObject {
     private let browser: BrowserSignIn
     /// The app is in the foreground (sync runs).
     private var foreground = false
+    /// Opening the saved session, signing out.
+    private let work = Work()
 
     init(core: Mtrx, browser: BrowserSignIn) {
         self.core = core
@@ -55,20 +57,26 @@ final class AppModel: ObservableObject {
     }
 
     /// Open the saved session, or ask to sign in.
-    func start() async {
+    @discardableResult
+    func start() -> Task<Void, Never>? {
         switch phase {
         case .starting, .failed: break
-        case .signedIn, .signedOut: return
+        case .signedIn, .signedOut: return nil
         }
         phase = .starting
-        do {
-            if let session = try await core.restore() {
-                signedIn(session)
-            } else {
-                showSignIn()
+        let core = self.core
+        return work.load("start") { [weak self] in
+            do {
+                let session = try await core.restore()
+                guard let self else { return }
+                if let session {
+                    signedIn(session)
+                } else {
+                    showSignIn()
+                }
+            } catch {
+                self?.phase = .failed(errorMessage(error) ?? "Could not open the account.")
             }
-        } catch {
-            phase = .failed(errorMessage(error) ?? "Could not open the account.")
         }
     }
 
@@ -83,26 +91,28 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func signOut() async {
-        guard case .signedIn(let model) = phase, !signingOut else { return }
+    @discardableResult
+    func signOut() -> Task<Void, Never>? {
+        guard case .signedIn(let model) = phase, !signingOut else { return nil }
         signingOut = true
-        defer { signingOut = false }
-        do {
+        return work.request {
+            defer { self.signingOut = false }
             try await model.logout()
-            showSignIn()
-        } catch {
-            model.error = errorMessage(error)
+            self.showSignIn()
+        } failed: { message in
+            model.error = message
         }
     }
 
     /// The server no longer accepts the session: delete it, to sign in again.
-    func forgetSession() async {
-        guard case .signedIn(let model) = phase else { return }
-        do {
+    @discardableResult
+    func forgetSession() -> Task<Void, Never>? {
+        guard case .signedIn(let model) = phase else { return nil }
+        return work.request {
             try await model.forget()
-            showSignIn()
-        } catch {
-            showSignIn(error: errorMessage(error))
+            self.showSignIn()
+        } failed: { message in
+            self.showSignIn(error: message)
         }
     }
 
