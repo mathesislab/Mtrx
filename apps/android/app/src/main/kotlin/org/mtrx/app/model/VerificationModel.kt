@@ -17,9 +17,9 @@ import uniffi.mtrx.VerificationState
  * verification screen: one we ask for ([request]) or one we received and
  * accept ([accept]). Holds the [Verification] and its subscription, which
  * must live until it ends (dropping them stops following the protocol), so
- * it belongs to the [Account], not to a screen; calls run in [scope]
- * (the account's). Methods are called on the main thread; [close] when
- * done.
+ * it belongs to the [SignedInSession], not to a screen; calls run in
+ * [scope] (the account's, so that the cancel at [close] still goes out).
+ * Methods are called on the main thread; [close] when done.
  */
 class VerificationModel private constructor(
     /** We asked (the other device accepts) rather than accepted. */

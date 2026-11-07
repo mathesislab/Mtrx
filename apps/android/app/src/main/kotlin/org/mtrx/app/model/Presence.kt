@@ -78,14 +78,14 @@ class SharePresence(private val store: SharePresenceStore, private val scope: Co
 /**
  * A session's presence: the people of the direct chats in [rooms] (their
  * presences in [presences], read while the app is in the foreground), and
- * ours, which the library sets from what the app does (as the `Account`
- * tells it here) while [sharing] is on. Once the server does not share
- * presence ([available] false), all of it is hidden and nothing more is
- * read or told. The `Account` calls [foreground] and [background] around
- * sync, [signOut] before logging out, [sharingChanged] for the switch,
- * [input] for touches and keys, and [close] at sign-out. Used on
- * [parent]'s (main) thread; listener callbacks hop there. What goes wrong
- * goes to [log].
+ * ours, which the library sets from what the app does (as it is told
+ * here) while [sharing] is on. Once the server does not share presence
+ * ([available] false), all of it is hidden and nothing more is read or
+ * told. The [SignedInSession] calls [foreground] and [background] around
+ * sync and [close] when it closes; the [Account] calls [signOut] before
+ * logging out and [sharingChanged] for the switch; touches and keys call
+ * [input]. Used on [parent]'s (main) thread; listener callbacks hop there.
+ * What goes wrong goes to [log].
  */
 @OptIn(FlowPreview::class)
 class PresenceModel(

@@ -23,8 +23,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.mtrx.app.model.Account
-import org.mtrx.app.model.AccountState
 import org.mtrx.app.model.PushRegistration
+import org.mtrx.app.model.SignedInSession
 import org.mtrx.app.rooms.InviteContent
 import org.mtrx.app.rooms.JoinActions
 import org.mtrx.app.rooms.JoinContent
@@ -43,7 +43,6 @@ import org.mtrx.app.rooms.SpaceOverviewContent
 import org.mtrx.app.rooms.SpaceOverviewModel
 import org.mtrx.app.settings.AskNotificationPermissionOnce
 import org.mtrx.app.settings.RecoveryScreen
-import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.VerificationRequestDialog
 import org.mtrx.app.settings.VerificationScreen
 import org.mtrx.app.timeline.TimelineScreen
@@ -73,12 +72,10 @@ private const val VERIFICATION = "settings/verification"
  * request from another device, over any of them.
  */
 @Composable
-fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: AccountState.SignedIn) {
+fun SignedInNavigation(account: Account, session: SignedInSession, push: PushRegistration) {
     val nav = rememberNavController()
     val home = rememberSaveable(saver = HomeNav.Saver) { HomeNav() }
-    val session = signedIn.session
-    val info = remember(session) { SessionInfo(session.userId(), session.homeserver(), session.deviceId()) }
-    val rooms by account.rooms.collectAsStateWithLifecycle()
+    val rooms by session.rooms.collectAsStateWithLifecycle()
     val uriHandler = LocalUriHandler.current
     val openLink: (String) -> Unit = { url ->
         try {
@@ -94,21 +91,21 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
         home.open(roomId, rooms.room(roomId))
         nav.popBackStack(HOME, inclusive = false)
     }
-    // The verification screen shows the account's verification of the moment:
+    // The verification screen shows the session's verification of the moment:
     // a new one replaces a finished one still on screen.
     val openVerification = {
         nav.navigate(VERIFICATION) { popUpTo(VERIFICATION) { inclusive = true } }
     }
     AskNotificationPermissionOnce(push)
 
-    val request by account.verificationRequest.collectAsStateWithLifecycle()
+    val request by session.verificationRequest.collectAsStateWithLifecycle()
     if (request != null) {
         VerificationRequestDialog(
             onAccept = {
-                account.acceptVerificationRequest()
+                session.acceptVerificationRequest()
                 openVerification()
             },
-            onDecline = { account.declineVerificationRequest() },
+            onDecline = { session.declineVerificationRequest() },
         )
     }
 
@@ -116,10 +113,8 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
         composable(HOME) {
             HomeScreen(
                 account,
+                session,
                 push,
-                info,
-                signedIn.images,
-                signedIn.presence,
                 home,
                 HomeRoutes(
                     openOverview = { nav.navigate("space/${Uri.encode(it)}") },
@@ -129,35 +124,35 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
                 ),
                 onEnterRecoveryKey = { nav.navigate(RECOVERY) },
                 onVerify = {
-                    account.verifyWithAnotherDevice()
+                    session.verifyWithAnotherDevice()
                     openVerification()
                 },
                 roomPane = { roomId, backCount, onBack, openSpace ->
-                    RoomPane(account, signedIn, info, rooms, roomId, backCount, onBack, openLink, openRoom, openSpace) {
+                    RoomPane(account, session, rooms, roomId, backCount, onBack, openLink, openRoom, openSpace) {
                         nav.navigate("info/${Uri.encode(roomId)}")
                     }
                 },
             )
         }
         composable(RECOVERY) {
-            RecoveryScreen(account, onBack = { nav.popBackStack() }, onDone = { nav.popBackStack() })
+            RecoveryScreen(session, onBack = { nav.popBackStack() }, onDone = { nav.popBackStack() })
         }
         composable(VERIFICATION) {
-            VerificationScreen(account, onClose = { nav.popBackStack() })
+            VerificationScreen(session, onClose = { nav.popBackStack() })
         }
         composable(INFO, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
             val roomId = entry.arguments?.getString("roomId") ?: return@composable
-            val model: RoomInfoModel = viewModel { RoomInfoModel(roomId, session, ::composeTopic) }
-            InfoScreen(account, signedIn, info, rooms, model, nav, openLink)
+            val model: RoomInfoModel = viewModel { RoomInfoModel(roomId, session.session, ::composeTopic) }
+            InfoScreen(session, rooms, model, nav, openLink)
         }
         composable(SPACE, arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
             val spaceId = entry.arguments?.getString("roomId") ?: return@composable
-            val model: RoomInfoModel = viewModel { RoomInfoModel(spaceId, session, ::composeTopic) }
-            val overview: SpaceOverviewModel = viewModel { SpaceOverviewModel(spaceId, session) }
-            OverviewScreen(account, signedIn, info, rooms, model, overview, nav, openLink, openRoom)
+            val model: RoomInfoModel = viewModel { RoomInfoModel(spaceId, session.session, ::composeTopic) }
+            val overview: SpaceOverviewModel = viewModel { SpaceOverviewModel(spaceId, session.session) }
+            OverviewScreen(session, rooms, model, overview, nav, openLink, openRoom)
         }
         composable(JOIN) {
-            val model: JoinModel = viewModel { JoinModel(session, ::parseAddress) }
+            val model: JoinModel = viewModel { JoinModel(session.session, ::parseAddress) }
             val server by model.server.collectAsStateWithLifecycle()
             val query by model.query.collectAsStateWithLifecycle()
             val kind by model.kind.collectAsStateWithLifecycle()
@@ -166,7 +161,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
             val error by model.error.collectAsStateWithLifecycle()
             JoinContent(
                 JoinState(
-                    ownServer = org.mtrx.app.rooms.serverOf(info.userId),
+                    ownServer = org.mtrx.app.rooms.serverOf(session.info.userId),
                     servers = model.servers,
                     server = server,
                     query = query,
@@ -176,7 +171,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
                     buttonOf = buttonOf(rooms),
                     error = error,
                 ),
-                signedIn.images,
+                session.images,
                 JoinActions(
                     setServer = model::setServer,
                     setQuery = model::setQuery,
@@ -201,7 +196,7 @@ fun SignedInNavigation(account: Account, push: PushRegistration, signedIn: Accou
         ) { entry ->
             val space = entry.arguments?.getBoolean("space") ?: false
             val parent = entry.arguments?.getString("parent")?.ifEmpty { null }
-            val model: NewRoomModel = viewModel { NewRoomModel(session, space, parent) }
+            val model: NewRoomModel = viewModel { NewRoomModel(session.session, space, parent) }
             val form by model.form.collectAsStateWithLifecycle()
             val offersOwners by model.offersOwners.collectAsStateWithLifecycle()
             val creating by model.creating.collectAsStateWithLifecycle()
@@ -274,8 +269,7 @@ private fun names(rooms: RoomListsInterface): Map<String, String> = rooms.rooms(
 @Composable
 private fun RoomPane(
     account: Account,
-    signedIn: AccountState.SignedIn,
-    info: SessionInfo,
+    session: SignedInSession,
     rooms: RoomListsInterface,
     roomId: String,
     backCount: Long,
@@ -290,15 +284,15 @@ private fun RoomPane(
         var busy by remember(roomId) { mutableStateOf(false) }
         InviteContent(
             room,
-            signedIn.images,
+            session.images,
             busy,
             onAccept = {
                 busy = true
-                account.accept(roomId, room.name) { busy = false }
+                session.accept(roomId, room.name) { busy = false }
             },
             onDecline = {
                 busy = true
-                account.leave(roomId, room.name) { left ->
+                session.leave(roomId, room.name) { left ->
                     busy = false
                     if (left) onBack()
                 }
@@ -318,9 +312,9 @@ private fun RoomPane(
         val viewModel: TimelineViewModel = viewModel(viewModelStoreOwner = owner) {
             TimelineViewModel(
                 roomId,
-                signedIn.session,
+                session.session,
                 onRead = { account.roomRead(roomId) },
-                onInput = account::input,
+                onInput = session.presence::input,
             )
         }
         // Its notifications go, and pushes for it post none while it shows.
@@ -328,16 +322,17 @@ private fun RoomPane(
             account.roomOpened(roomId)
             onDispose { account.roomClosed(roomId) }
         }
-        val presences by signedIn.presence.presences.collectAsStateWithLifecycle()
-        val header = remember(room, info.userId, rooms) { roomHeader(roomId, room, info.userId, ::parseTopic, rooms.firstSpaceOf(roomId)) }
+        val userId = session.info.userId
+        val presences by session.presence.presences.collectAsStateWithLifecycle()
+        val header = remember(room, userId, rooms) { roomHeader(roomId, room, userId, ::parseTopic, rooms.firstSpaceOf(roomId)) }
         TimelineScreen(
             header,
             viewModel,
-            signedIn.images,
+            session.images,
             spaces = remember(rooms) { rooms.topLevelSpaces().filter { it.rights.invite } },
             rooms = rooms,
             presences = presences,
-            refreshPresence = signedIn.presence::refresh,
+            refreshPresence = session.presence::refresh,
             backCount = backCount,
             onBack = onBack,
             onRoomInfo = onRoomInfo,
@@ -351,9 +346,7 @@ private fun RoomPane(
 /** Room info of a room, from its name; leaving goes back to the home. */
 @Composable
 private fun InfoScreen(
-    account: Account,
-    signedIn: AccountState.SignedIn,
-    info: SessionInfo,
+    session: SignedInSession,
     rooms: RoomListsInterface,
     model: RoomInfoModel,
     nav: NavHostController,
@@ -372,9 +365,9 @@ private fun InfoScreen(
         members,
         busy,
         error,
-        info.userId,
+        session.info.userId,
         names(rooms),
-        signedIn.images,
+        session.images,
         model,
         onBack = { nav.popBackStack() },
         onLeave = { leaving = true },
@@ -383,7 +376,7 @@ private fun InfoScreen(
     if (leaving) {
         LeaveDialog(header.name, onLeave = {
             leaving = false
-            account.leave(model.roomId, header.name) { left -> if (left) nav.popBackStack(HOME, inclusive = false) }
+            session.leave(model.roomId, header.name) { left -> if (left) nav.popBackStack(HOME, inclusive = false) }
         }, onDismiss = { leaving = false })
     }
 }
@@ -391,9 +384,7 @@ private fun InfoScreen(
 /** A space's overview, from its name on the Spaces tab. */
 @Composable
 private fun OverviewScreen(
-    account: Account,
-    signedIn: AccountState.SignedIn,
-    info: SessionInfo,
+    session: SignedInSession,
     rooms: RoomListsInterface,
     model: RoomInfoModel,
     overview: SpaceOverviewModel,
@@ -420,9 +411,9 @@ private fun OverviewScreen(
         members,
         busy,
         infoError ?: overviewError,
-        info.userId,
+        session.info.userId,
         names(rooms),
-        signedIn.images,
+        session.images,
         rowActions(overview::join, overview::knock, nav, openRoom, overview::refresh),
         object : org.mtrx.app.rooms.RoomInfoActions by model {
             override fun clearError() {
@@ -437,7 +428,7 @@ private fun OverviewScreen(
     if (leaving) {
         LeaveDialog(header.name, onLeave = {
             leaving = false
-            account.leave(model.roomId, header.name) { left -> if (left) nav.popBackStack(HOME, inclusive = false) }
+            session.leave(model.roomId, header.name) { left -> if (left) nav.popBackStack(HOME, inclusive = false) }
         }, onDismiss = { leaving = false })
     }
 }

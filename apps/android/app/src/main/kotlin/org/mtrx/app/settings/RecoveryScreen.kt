@@ -41,31 +41,31 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.first
-import org.mtrx.app.model.Account
 import org.mtrx.app.model.INVALID_RECOVERY_KEY
 import org.mtrx.app.model.Recovery
+import org.mtrx.app.model.SignedInSession
 import uniffi.mtrx.RecoveryStep
 
 /**
  * Unlock encryption with the recovery key. The recovery runs in the
- * [Account]: leaving the screen does not stop it, and coming back shows it.
- * Done goes back ([onDone]).
+ * [SignedInSession]: leaving the screen does not stop it, and coming back
+ * shows it. Done goes back ([onDone]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RecoveryScreen(account: Account, onBack: () -> Unit, onDone: () -> Unit) {
-    val recovery by account.recovery.collectAsStateWithLifecycle()
+fun RecoveryScreen(session: SignedInSession, onBack: () -> Unit, onDone: () -> Unit) {
+    val recovery by session.recovery.collectAsStateWithLifecycle()
     // Not saved with the screen's state: the key is a secret.
     var key by remember { mutableStateOf("") }
     val running = recovery is Recovery.Running
     val invalidKey = recovery == Recovery.InvalidKey
 
     val currentOnDone by rememberUpdatedState(onDone)
-    LaunchedEffect(account) {
+    LaunchedEffect(session) {
         // A previous attempt's result is not this one's (one still running is).
-        account.resetRecovery()
-        account.recovery.first { it == Recovery.Done }
-        account.resetRecovery()
+        session.resetRecovery()
+        session.recovery.first { it == Recovery.Done }
+        session.resetRecovery()
         currentOnDone()
     }
 
@@ -99,7 +99,7 @@ fun RecoveryScreen(account: Account, onBack: () -> Unit, onDone: () -> Unit) {
                 onValueChange = {
                     key = it
                     // Corrected: the error was about the previous key.
-                    if (invalidKey) account.resetRecovery()
+                    if (invalidKey) session.resetRecovery()
                 },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Recovery key") },
@@ -119,7 +119,7 @@ fun RecoveryScreen(account: Account, onBack: () -> Unit, onDone: () -> Unit) {
                 ),
             )
             Button(
-                onClick = { account.recover(key.trim()) },
+                onClick = { session.recover(key.trim()) },
                 enabled = key.isNotBlank() && !running,
                 modifier = Modifier.align(Alignment.End),
             ) { Text("Recover") }
