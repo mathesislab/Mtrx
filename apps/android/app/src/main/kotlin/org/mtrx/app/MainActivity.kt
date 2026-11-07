@@ -83,7 +83,7 @@ private fun MtrxApp(account: Account, push: PushRegistration) {
         }
         // A new navigation (and new screens) for each session.
         is AccountState.SignedIn -> key(current.session) {
-            SignedInNavigation(account, push, current)
+            SignedInNavigation(account, current.session, push)
         }
     }
 }

@@ -16,7 +16,7 @@ fun showsEncryptionBanner(state: EncryptionState?): Boolean =
         state.recovery != RecoveryStatus.UNKNOWN &&
         (!state.deviceVerified || state.recovery == RecoveryStatus.INCOMPLETE)
 
-/** A recovery with the recovery key ([Account.recover]). */
+/** A recovery with the recovery key ([SignedInSession.recover]). */
 sealed interface Recovery {
     data object Idle : Recovery
 

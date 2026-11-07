@@ -23,6 +23,7 @@ import org.mtrx.app.SpacesFixture.TEAM
 import org.mtrx.app.SpacesFixture.WITH_BOB
 import org.mtrx.app.SpacesFixture.room
 import org.mtrx.app.listSection
+import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
 import org.mtrx.app.timeline.roomHeader
 import org.mtrx.app.ui.HomeNav
@@ -131,7 +132,7 @@ class RoomsTabTest {
         val account = testAccount(FakeMtrx(restored = session), scope())
         account.start()
         session.drafts[LAB] = Draft("half a thought", null)
-        account.leave(LAB, "lab")
+        account.signedIn.leave(LAB, "lab")
         assertEquals(listOf("leave $LAB"), session.roomCalls)
         assertEquals(Draft("half a thought", null), session.drafts[LAB])
     }
@@ -139,13 +140,16 @@ class RoomsTabTest {
     @Test
     fun signingOutForgetsTheDrafts() = runTest {
         val session = FakeSession()
-        val account = testAccount(FakeMtrx(restored = session), scope())
+        val mtrx = FakeMtrx(restored = session)
+        val account = testAccount(mtrx, scope())
         account.start()
         session.roomListListener!!.onUpdate(SpacesFixture.lists(drafts = listOf(LAB)))
-        assertEquals(listOf(LAB), account.rooms.value.drafts())
+        assertEquals(listOf(LAB), account.signedIn.rooms.value.drafts())
         account.signOut()
-        // The drafts were in the session's store, gone with it.
+        // The drafts were in the session's store, gone with it: the next session has none.
         assertTrue(session.loggedOut)
-        assertEquals(emptyList<String>(), account.rooms.value.drafts())
+        mtrx.loginSession = FakeSession()
+        account.login("example.org", "me", "secret")
+        assertEquals(emptyList<String>(), account.signedIn.rooms.value.drafts())
     }
 }

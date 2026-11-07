@@ -57,10 +57,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.LocalDate
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.Account
-import org.mtrx.app.model.Images
-import org.mtrx.app.model.PresenceModel
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.RoomSort
+import org.mtrx.app.model.SignedInSession
 import org.mtrx.app.model.directPerson
 import org.mtrx.app.model.saved
 import org.mtrx.app.model.showsEncryptionBanner
@@ -69,7 +68,6 @@ import org.mtrx.app.rooms.foldedGroups
 import org.mtrx.app.rooms.name
 import org.mtrx.app.rooms.roomGroups
 import org.mtrx.app.rooms.shownRoom
-import org.mtrx.app.settings.SessionInfo
 import org.mtrx.app.settings.SettingsContent
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.RoomSummary
@@ -98,24 +96,23 @@ class HomeRoutes(
 @Composable
 fun HomeScreen(
     account: Account,
+    session: SignedInSession,
     push: PushRegistration,
-    info: SessionInfo,
-    images: Images,
-    presence: PresenceModel,
     nav: HomeNav,
     routes: HomeRoutes,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
     roomPane: @Composable (roomId: String, backCount: Long, onBack: () -> Unit, openSpace: (String) -> Unit) -> Unit,
 ) {
-    val list by account.rooms.collectAsStateWithLifecycle()
-    val presences by presence.presences.collectAsStateWithLifecycle()
-    val connection by account.connection.collectAsStateWithLifecycle()
-    val encryption by account.encryption.collectAsStateWithLifecycle()
-    val selected by account.spaceSelection.selected.collectAsStateWithLifecycle()
+    val images = session.images
+    val list by session.rooms.collectAsStateWithLifecycle()
+    val presences by session.presence.presences.collectAsStateWithLifecycle()
+    val connection by session.connection.collectAsStateWithLifecycle()
+    val encryption by session.encryption.collectAsStateWithLifecycle()
+    val selected by session.spaceSelection.selected.collectAsStateWithLifecycle()
     val sort by account.roomSort.sort.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
-    LaunchedEffect(account) { account.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(session) { session.messages.collect { snackbar.showSnackbar(it) } }
     val today = remember(list) { LocalDate.now() }
     val sectionPrefs by account.sections.prefs.collectAsStateWithLifecycle()
     val notes = remember(list) { list.notes() }
@@ -153,7 +150,7 @@ fun HomeScreen(
     val openSpace: (String) -> Unit = { id ->
         val entry = SpaceKey.Space(id)
         nav.tab = HomeTab.Spaces
-        if (entry == selected) scope.launch { pager.animateScrollToPage(1) } else account.spaceSelection.select(entry)
+        if (entry == selected) scope.launch { pager.animateScrollToPage(1) } else session.spaceSelection.select(entry)
     }
 
     // A new selection (tapped, or restored at start) shows its rooms; none
@@ -259,7 +256,7 @@ fun HomeScreen(
                     images,
                     today,
                     onOpenRoom = open,
-                    presenceOf = { directPerson(it, info.userId)?.let { person -> presences[person] } },
+                    presenceOf = { directPerson(it, session.info.userId)?.let { person -> presences[person] } },
                     spaces = chatSpaces,
                     drafts = drafts,
                     state = chatsList,
@@ -271,7 +268,7 @@ fun HomeScreen(
                         if (entry == selected) {
                             scope.launch { pager.animateScrollToPage(1) }
                         } else {
-                            account.spaceSelection.select(entry)
+                            session.spaceSelection.select(entry)
                         }
                     })
                 } else {
@@ -303,7 +300,7 @@ fun HomeScreen(
                     state = roomsList,
                 )
             }
-            HomeTab.Settings -> SettingsContent(account, push, presence, info, onEnterRecoveryKey, onVerify)
+            HomeTab.Settings -> SettingsContent(account, session, push, onEnterRecoveryKey, onVerify)
         }
     }
 }

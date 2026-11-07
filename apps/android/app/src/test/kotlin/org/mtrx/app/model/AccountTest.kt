@@ -18,6 +18,7 @@ import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeSortStore
 import org.mtrx.app.FakeSpaceStore
 import org.mtrx.app.pushRegistration
+import org.mtrx.app.signedIn
 import org.mtrx.app.summary
 import org.mtrx.app.testAccount
 import uniffi.mtrx.MtrxException
@@ -51,9 +52,10 @@ class AccountTest {
         val session = FakeSession()
         val account = testAccount(FakeMtrx(restored = session), CoroutineScope(UnconfinedTestDispatcher(testScheduler)), FakeSpaceStore(), FakeSortStore())
         account.start()
-        assertFalse(account.rooms.value.loaded())
+        val rooms = account.signedIn.rooms
+        assertFalse(rooms.value.loaded())
         session.roomListListener!!.onUpdate(FakeRoomLists())
-        assertTrue(account.rooms.value.loaded())
+        assertTrue(rooms.value.loaded())
     }
 
     @Test

@@ -13,6 +13,7 @@ import org.mtrx.app.FakeMtrx
 import org.mtrx.app.FakeSectionStore
 import org.mtrx.app.FakeSession
 import org.mtrx.app.model.HOME_SAVED
+import org.mtrx.app.signedIn
 import org.mtrx.app.testAccount
 import uniffi.mtrx.SectionLayout
 
@@ -65,11 +66,11 @@ class SectionsTest {
     }
 
     @Test
-    fun theSettingsSwitchAsksTheAccount() = runTest {
+    fun theSettingsSwitchAsksTheSession() = runTest {
         val session = FakeSession()
         val account = testAccount(FakeMtrx(restored = session), scope())
         account.start()
-        account.setNotesAtTop(false)
+        account.signedIn.setNotesAtTop(false)
         assertEquals(listOf("notes at top false"), session.roomCalls)
     }
 }
