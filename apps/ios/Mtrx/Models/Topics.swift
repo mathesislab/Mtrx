@@ -107,7 +107,7 @@ final class PinnedModel: ObservableObject {
 
     private let session: Session
     private let roomId: String
-    private let subscriptions = Subscriptions()
+    private let work = Work()
     private var timeline: Timeline?
 
     init(session: Session, roomId: String) {
@@ -121,7 +121,7 @@ final class PinnedModel: ObservableObject {
             let timeline = try await session.pinnedTimeline(roomId: roomId)
             self.timeline = timeline
             let feed = Feed<[TimelineRow]>()
-            subscriptions.add(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
+            work.follow(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
                 self?.apply(rows)
             }
         } catch {

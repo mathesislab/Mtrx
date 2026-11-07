@@ -92,18 +92,18 @@ struct InviteView: View {
     private func answer(_ answer: Answer) {
         answering = answer
         error = nil
-        Task {
-            do {
-                switch answer {
-                case .accept: try await session.accept(room)
-                case .decline: try await session.decline(room)
-                }
-                // A sheet closes; pushed, a declined room leaves its path.
-                home.invite = nil
-            } catch {
-                self.error = errorMessage(error)
-            }
+        let done: @MainActor () -> Void = {
+            // A sheet closes; pushed, a declined room leaves its path.
+            home.invite = nil
             answering = nil
+        }
+        let failed: @MainActor (String) -> Void = { message in
+            error = message
+            answering = nil
+        }
+        switch answer {
+        case .accept: session.accept(room, done: done, failed: failed)
+        case .decline: session.decline(room, done: done, failed: failed)
         }
     }
 }

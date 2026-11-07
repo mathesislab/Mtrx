@@ -11,7 +11,8 @@ final class DownloadsModel: ObservableObject {
     @Published private(set) var downloads: [Download] = []
 
     private let session: Session
-    private let subscriptions = Subscriptions()
+    /// The downloads' subscription, and waiting for files.
+    private let work = Work()
 
     init(session: Session) {
         self.session = session
@@ -19,8 +20,19 @@ final class DownloadsModel: ObservableObject {
 
     func start() {
         let feed = Feed<[Download]>()
-        subscriptions.add(session.subscribeDownloads(listener: feed), feed) { [weak self] in
+        work.follow(session.subscribeDownloads(listener: feed), feed) { [weak self] in
             self?.downloads = $0
+        }
+    }
+
+    /// Download a message's file in `roomId` (once), then hand it to
+    /// `then`. A failed download says so on the message.
+    func fetch(_ media: Media, roomId: String, eventId: String?, then: @escaping @MainActor (URL) -> Void) throws {
+        let id = try start(media, roomId: roomId, eventId: eventId)
+        work.load("file \(id)") { [weak self] in
+            if let url = await self?.finished(id) {
+                then(url)
+            }
         }
     }
 

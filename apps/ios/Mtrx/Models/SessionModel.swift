@@ -24,7 +24,8 @@ final class SessionModel: ObservableObject {
     @Published private(set) var connection: ConnectionState = .online
     @Published var error: String?
 
-    private let subscriptions = Subscriptions()
+    /// Its subscriptions and requests.
+    private let work = Work()
     /// The app is in the foreground: sync runs.
     private var foreground = false
     /// Sync has started once.
@@ -52,29 +53,29 @@ final class SessionModel: ObservableObject {
     /// its recovery is `unknown` until sync has run.
     func start() {
         let connection = Feed<ConnectionState>()
-        subscriptions.add(session.subscribeConnection(listener: connection), connection) { [weak self] in
+        work.follow(session.subscribeConnection(listener: connection), connection) { [weak self] in
             self?.connection = $0
         }
         downloads.start()
         let state = Feed<EncryptionState>()
-        subscriptions.add(session.subscribeEncryptionState(listener: state), state) { [weak self] in
+        work.follow(session.subscribeEncryptionState(listener: state), state) { [weak self] in
             self?.encryption.apply($0)
         }
         let roomLists = Feed<RoomLists>()
         let session = self.session
-        subscriptions.add(Task { [weak self] in
+        work.load("room lists") { [weak self] in
             do {
                 let handle = try await session.subscribeRoomLists(listener: roomLists)
-                self?.subscriptions.add(handle, roomLists) { [weak self] lists in
+                self?.work.follow(handle, roomLists) { [weak self] lists in
                     self?.apply(lists)
                 }
             } catch {
                 self?.error = errorMessage(error)
             }
-        })
+        }
         // Requests arrive while sync runs.
         let requests = Feed<Verification>(keepingAll: true)
-        subscriptions.add(session.subscribeVerificationRequests(listener: requests), requests) { [weak self] in
+        work.follow(session.subscribeVerificationRequests(listener: requests), requests) { [weak self] in
             self?.encryption.received($0)
         }
     }
@@ -121,21 +122,38 @@ final class SessionModel: ObservableObject {
         userId.split(separator: ":", maxSplits: 1).last.map(String.init) ?? homeserver
     }
 
-    /// Accept an invite: join, then open what we joined.
-    func accept(_ room: RoomSummary) async throws {
-        _ = try await session.join(room: room.id, via: [])
-        home.open(room.id)
+    /// Accept an invite: join, then open what we joined, and say `done`;
+    /// a failure goes to `failed`.
+    @discardableResult
+    func accept(
+        _ room: RoomSummary, done: @escaping @MainActor () -> Void = {},
+        failed: @escaping @MainActor (String) -> Void
+    ) -> Task<Void, Never> {
+        let session = self.session
+        return work.request({
+            _ = try await session.join(room: room.id, via: [])
+            self.home.open(room.id)
+            done()
+        }, failed: failed)
     }
 
-    /// Decline an invite.
-    func decline(_ room: RoomSummary) async throws {
-        try await session.room(roomId: room.id).leave()
-        home.left(room.id)
+    /// Decline an invite, and say `done`; a failure goes to `failed`.
+    @discardableResult
+    func decline(
+        _ room: RoomSummary, done: @escaping @MainActor () -> Void = {},
+        failed: @escaping @MainActor (String) -> Void
+    ) -> Task<Void, Never> {
+        let session = self.session
+        return work.request({
+            try await session.room(roomId: room.id).leave()
+            self.home.left(room.id)
+            done()
+        }, failed: failed)
     }
 
     /// Sign out on the server and delete the account's data here.
     func logout() async throws {
-        subscriptions.cancelAll()
+        work.cancelAll()
         encryption.closeVerification()
         await presence.signOut()?.value
         try await session.logout()
@@ -144,7 +162,7 @@ final class SessionModel: ObservableObject {
 
     /// Delete the data of a session the server no longer accepts.
     func forget() async throws {
-        subscriptions.cancelAll()
+        work.cancelAll()
         encryption.closeVerification()
         // The server no longer accepts the session: nothing to set.
         presence.forget()

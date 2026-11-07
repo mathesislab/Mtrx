@@ -49,7 +49,7 @@ struct RoomView: View {
             TypingLine(text: TimelineModel.typingLine(model.typing))
             Divider()
             Composer(draft: $model.draft, compose: model.compose, cancel: model.cancelCompose) {
-                Task { await model.send() }
+                model.send()
             }
         }
         .navigationTitle(room.name)
@@ -148,23 +148,17 @@ struct RoomView: View {
             hold: openMenu,
             perform: perform,
             react: { id, key in model.react(id, key: key) },
-            goTo: { quote in Task { await model.goTo(eventId: quote.eventId) } },
+            goTo: { quote in model.goTo(eventId: quote.eventId) },
             showReactors: { id, key in sheet = .reactors(itemId: id, key: key) },
             showReaders: { id in sheet = .readers(itemId: id) },
             unsent: { id in unsent = id },
             open: { media, eventId in fetch(media, eventId: eventId) { preview = $0 } })
     }
 
-    /// Download a message's file (once), then hand it to `then`. A failed
-    /// download says so on the message.
-    private func fetch(_ media: Media, eventId: String?, then: @escaping (URL) -> Void) {
+    /// Download a message's file (once), then hand it to `then`.
+    private func fetch(_ media: Media, eventId: String?, then: @escaping @MainActor (URL) -> Void) {
         do {
-            let id = try downloads.start(media, roomId: room.id, eventId: eventId)
-            Task {
-                if let url = await downloads.finished(id) {
-                    then(url)
-                }
-            }
+            try downloads.fetch(media, roomId: room.id, eventId: eventId, then: then)
         } catch {
             model.error = errorMessage(error)
         }
@@ -445,7 +439,7 @@ private struct RoomSheetView: View {
                 topic: topic, canEdit: room.rights.changeTopic, info: info,
                 pinned: PinnedModel(session: session.session, roomId: room.id)
             ) { eventId in
-                Task { await model.goTo(eventId: eventId) }
+                model.goTo(eventId: eventId)
             }
         }
     }
@@ -557,8 +551,8 @@ struct TimelineList: View {
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
         }
-        .onAppear { Task { await model.setTopVisible(true) } }
-        .onDisappear { Task { await model.setTopVisible(false) } }
+        .onAppear { model.setTopVisible(true) }
+        .onDisappear { model.setTopVisible(false) }
     }
 
     /// Below the newest row, the very end of the timeline, to scroll to;

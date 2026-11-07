@@ -87,20 +87,20 @@ final class NavigationTests: XCTestCase {
         XCTAssertNil(model.home.selectedSpace)
     }
 
-    func testAcceptingAnInviteOpensTheRoom() async throws {
+    func testAcceptingAnInviteOpensTheRoom() async {
         let model = await launch()
         await send(Make.roomsBySpace(), to: model)
-        try await model.accept(Make.room("!party", membership: .invited))
+        await model.accept(Make.room("!party", membership: .invited), failed: { XCTFail($0) }).value
         XCTAssertEqual(session.changes, ["join !party"])
         XCTAssertEqual(model.home.tab, .rooms)
         XCTAssertEqual(model.home.roomsPath, ["!party"])
     }
 
-    func testDecliningAnInviteLeavesIt() async throws {
+    func testDecliningAnInviteLeavesIt() async {
         let model = await launch()
         await send(Make.roomsBySpace(), to: model)
         model.home.open("!party")
-        try await model.decline(Make.room("!party", membership: .invited))
+        await model.decline(Make.room("!party", membership: .invited), failed: { XCTFail($0) }).value
         XCTAssertEqual(session.changes, ["leave !party"])
         XCTAssertEqual(model.home.roomsPath, [])
     }

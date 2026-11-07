@@ -48,7 +48,7 @@ final class SpaceOverviewModelTests: XCTestCase {
         let model = SpaceOverviewModel(session: session, spaceId: "!team")
         XCTAssertEqual(model.rooms.map(\.id), ["!old"])
         XCTAssertFalse(model.unknown)
-        await model.load()
+        await model.load()?.value
         XCTAssertEqual(model.rooms.map(\.id), ["!lab", "!deep"])
         model.filter = "de"
         XCTAssertEqual(model.shown.map(\.id), ["!deep"])
@@ -58,7 +58,7 @@ final class SpaceOverviewModelTests: XCTestCase {
         session.children = .success([Make.directoryRoom("!lab")])
         let model = SpaceOverviewModel(session: session, spaceId: "!team")
         XCTAssertTrue(model.unknown)
-        await model.load()
+        await model.load()?.value
         XCTAssertFalse(model.unknown)
         XCTAssertEqual(model.rooms.map(\.id), ["!lab"])
     }
@@ -67,7 +67,7 @@ final class SpaceOverviewModelTests: XCTestCase {
         session.listed["!team"] = [Make.directoryRoom("!old")]
         session.children = .failure(MtrxError.Other(reason: "timed out"))
         let model = SpaceOverviewModel(session: session, spaceId: "!team")
-        await model.load()
+        await model.load()?.value
         XCTAssertTrue(model.failed)
         XCTAssertEqual(model.rooms.map(\.id), ["!old"])
     }
@@ -79,20 +79,21 @@ final class SpaceOverviewModelTests: XCTestCase {
         let door = Make.directoryRoom("!door", joinRule: .knock)
         session.children = .success([lab, door])
         let model = SpaceOverviewModel(session: session, spaceId: "!team")
-        await model.load()
-        let joined = await model.join(lab)
-        XCTAssertEqual(joined, "!lab")
-        let asked = await model.join(door)
-        XCTAssertNil(asked)
+        await model.load()?.value
+        let joining = model.join(lab)
+        XCTAssertTrue(model.isBusy(lab))
+        await joining?.value
+        XCTAssertFalse(model.isBusy(lab))
+        await model.join(door)?.value
         XCTAssertEqual(session.changes, ["join !lab", "knock !door"])
         XCTAssertFalse(model.isBusy(door))
+        XCTAssertNil(model.error)
     }
 
     func testAFailedJoinSaysWhy() async {
         session.changeError = MtrxError.Other(reason: "Not allowed")
         let model = SpaceOverviewModel(session: session, spaceId: "!team")
-        let joined = await model.join(Make.directoryRoom("!lab"))
-        XCTAssertNil(joined)
+        await model.join(Make.directoryRoom("!lab"))?.value
         XCTAssertEqual(model.error, "Not allowed")
         XCTAssertFalse(model.isBusy(Make.directoryRoom("!lab")))
     }
@@ -171,8 +172,10 @@ final class NewRoomModelTests: XCTestCase {
         model.person = "not an id"
         XCTAssertFalse(model.personValid)
         model.setCoOwner("@bob:example.org", true)
-        let id = await model.create()
+        var id: String?
+        await model.create { id = $0 }?.value
         XCTAssertEqual(id, "!new:example.org")
+        XCTAssertFalse(model.creating)
         XCTAssertEqual(
             session.created,
             [
@@ -191,7 +194,7 @@ final class NewRoomModelTests: XCTestCase {
         model.person = "@ann:example.org"
         model.addPerson()
         model.setCoOwner("@ann:example.org", true)
-        _ = await model.create()
+        await model.create()?.value
         XCTAssertEqual(session.created.first?.coOwners, [])
         XCTAssertEqual(session.created.first?.encrypted, false)
         XCTAssertEqual(session.created.first?.space, true)
@@ -201,8 +204,10 @@ final class NewRoomModelTests: XCTestCase {
         session.changeError = MtrxError.Other(reason: "Too many rooms")
         let model = NewRoomModel(session: session, space: false)
         model.name = "Lab"
-        let id = await model.create()
+        var id: String?
+        await model.create { id = $0 }?.value
         XCTAssertNil(id)
+        XCTAssertFalse(model.creating)
         XCTAssertEqual(model.error, "Could not create the room “Lab”: Too many rooms")
     }
 

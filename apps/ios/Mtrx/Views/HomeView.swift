@@ -46,7 +46,7 @@ struct HomeView: View {
         }
         .alert("Signed out", isPresented: signedOutElsewhere) {
             Button("Sign in again") {
-                Task { await app.forgetSession() }
+                app.forgetSession()
             }
         } message: {
             Text("The server no longer accepts this session, e.g. because it was signed out on another device.")

@@ -30,9 +30,10 @@ final class PersonInfoModel: ObservableObject, Identifiable {
 
     private let session: Session
     private let pasteboard: @MainActor (String) -> Void
-    private var profile: Task<Void, Never>?
-    private var copiedReset: Task<Void, Never>?
-    private var confirmationReset: Task<Void, Never>?
+    /// The profile was asked for.
+    private var loading = false
+    /// The profile's load, the resets, and the invites.
+    private let work = Work()
 
     /// `room`: the direct chat, whose name and picture show until the
     /// profile's arrive.
@@ -50,10 +51,11 @@ final class PersonInfoModel: ObservableObject, Identifiable {
     /// Fetch the profile: its name and picture replace the chat's where
     /// set. A failure keeps the chat's, without a message.
     func load() {
-        guard profile == nil else { return }
+        guard !loading else { return }
+        loading = true
         let (session, userId) = (self.session, self.userId)
-        profile = Task {
-            guard let profile = try? await session.userProfile(userId: userId) else { return }
+        work.load("profile") { [weak self] in
+            guard let profile = try? await session.userProfile(userId: userId), let self else { return }
             if let name = profile.name, !name.isEmpty {
                 self.name = name
             }
@@ -66,11 +68,10 @@ final class PersonInfoModel: ObservableObject, Identifiable {
     func copyId() {
         pasteboard(userId)
         copied = true
-        copiedReset?.cancel()
-        copiedReset = Task {
+        work.load("copied") { [weak self] in
             try? await Task.sleep(nanoseconds: Self.copiedTime)
             guard !Task.isCancelled else { return }
-            copied = false
+            self?.copied = false
         }
     }
 
@@ -82,25 +83,22 @@ final class PersonInfoModel: ObservableObject, Identifiable {
         inviting = space.id
         inviteError = nil
         let (session, userId) = (self.session, self.userId)
-        Task {
-            do {
-                try await session.room(roomId: space.id).invite(userId: userId)
-                choosingSpace = false
-                confirm("Invited to \(space.name).")
-            } catch {
-                inviteError = errorMessage(error)
-            }
-            inviting = nil
+        work.request {
+            defer { self.inviting = nil }
+            try await session.room(roomId: space.id).invite(userId: userId)
+            self.choosingSpace = false
+            self.confirm("Invited to \(space.name).")
+        } failed: { message in
+            self.inviteError = message
         }
     }
 
     private func confirm(_ text: String) {
         confirmation = text
-        confirmationReset?.cancel()
-        confirmationReset = Task {
+        work.load("confirmation") { [weak self] in
             try? await Task.sleep(nanoseconds: Self.confirmationTime)
             guard !Task.isCancelled else { return }
-            confirmation = nil
+            self?.confirmation = nil
         }
     }
 }

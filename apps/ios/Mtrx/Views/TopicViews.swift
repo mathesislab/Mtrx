@@ -204,8 +204,8 @@ struct TopicEditor: View {
 
     private func save() {
         saving = true
-        Task {
-            if await info.setTopic(draft.topic) {
+        info.setTopic(draft.topic) { saved in
+            if saved {
                 dismiss()
             }
             saving = false

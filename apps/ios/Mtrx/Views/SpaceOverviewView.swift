@@ -102,7 +102,7 @@ struct SpaceOverviewPage: View {
                 UpdatePill(model: overview, server: session.serverName)
             }
         }
-        .task { await overview.load() }
+        .task { overview.load() }
         .task { await info.load() }
         .infoErrors(info)
         .alert(
@@ -156,7 +156,7 @@ private struct UpdatePill: View {
                 .pill()
             } else if model.failed {
                 Button {
-                    Task { await model.load() }
+                    model.load()
                 } label: {
                     Text("\(server) didn't answer · ").foregroundColor(.secondary) + Text("Try again")
                 }
@@ -198,7 +198,7 @@ private struct SpaceRoomsSection: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Try again") {
-                        Task { await model.load() }
+                        model.load()
                     }
                 }
             }
@@ -227,7 +227,7 @@ private struct SpaceRoomsSection: View {
         guard !model.isBusy(room) else { return }
         switch rooms.button(for: room).action {
         case .join, .askToJoin:
-            Task { await model.join(room) }
+            model.join(room)
         case .open:
             open(room)
         case .invited:

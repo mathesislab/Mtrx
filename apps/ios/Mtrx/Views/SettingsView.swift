@@ -40,7 +40,7 @@ struct SettingsView: View {
             }
             .confirmationDialog("Sign out of \(session.userId)?", isPresented: $confirmSignOut, titleVisibility: .visible) {
                 Button("Sign out", role: .destructive) {
-                    Task { await app.signOut() }
+                    app.signOut()
                 }
             } message: {
                 Text("The account's messages and keys on this device are deleted.")

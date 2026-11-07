@@ -462,6 +462,13 @@ final class Work {
   - Not owned: opening a room (its result is still checked against `Pane::Opening`), timers (the sending clock, the mark on a message gone to), and the session-wide caches (avatars, previews, math, contacts, frequent emoji).
   - Errors that are not core's keep their own text: Google, call links, the dialog's requests, recovery's progress. `background` takes core results; work that cannot fail stays `Task::future(..).discard()`.
   - `room_left` stays, for requests' results (7a).
+- iOS:
+  - `load` returns its task too, for tests and `.task {}` to wait for. `request` calls `failed` only when there is something to say (not when the user cancelled).
+  - Where a view needs the outcome, the method takes a callback and still returns its task: `RoomInfoModel.{setTopic, invite, leave}` take `then: (Bool) -> Void`, `NewRoomModel.create` a `then: (String) -> Void` (the new room, on success), `SessionModel.{accept, decline}` `done` and `failed` (item 7 had them `async throws`).
+  - `JoiningModel.join` no longer returns the room joined: nothing used it.
+  - `RoomInfoModel` keeps a private `change` (and `changeMembers`, which reads the members again), now a `work.request` on the room, shared by its 15 setters.
+  - `PresenceModel` holds one `Work` per presence subscription, to swap it whole. `DownloadsModel.fetch` waits for a file in a load keyed by the download; it lasts the session, as the view's task did.
+  - Unchanged: the single tasks of `SignInModel`, `RecoveryModel` and `EncryptionModel` (cancelled by their own state), `ImageCache`, and work that needs no answer (marking read, typing, keeping the draft, the highlight timer, the presence calls, starting and stopping sync).
 
 **Deleted**
 - Desktop: `Room.seek`, `Room._reply_wait`, `Room.loading_members`, `Room.paginating` (→ `tasks.running`), the handle fields in `login`, `dialog`, `join` and `settings`, the 39 error mappings, `room_left`'s drop path for loads.
