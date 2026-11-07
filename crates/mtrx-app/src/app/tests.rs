@@ -111,12 +111,16 @@ fn snapshot(app: &App, name: &str) {
     snapshot_at(app, name, None);
 }
 
+/// One renderer at a time: renderers made and drawing at once in parallel
+/// tests crashed on Windows CI (software Direct3D) and Linux CI.
+fn rendering() -> std::sync::MutexGuard<'static, ()> {
+    static RENDERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RENDERING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A snapshot with the cursor at `cursor`, e.g. for a hint.
 fn snapshot_at(app: &App, name: &str, cursor: Option<iced::Point>) {
-    // One at a time: renderers drawing at once in parallel tests crashed
-    // on Windows CI (software Direct3D).
-    static RENDERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _rendering = RENDERING.lock().unwrap_or_else(|e| e.into_inner());
+    let _rendering = rendering();
     // Snapshots are for looking at, not regression baselines: always rewrite.
     // iced_test appends the renderer name, e.g. `login-wgpu.png`.
     let path = snapshot_dir().join(name);
@@ -150,16 +154,20 @@ fn snapshot_at(app: &App, name: &str, cursor: Option<iced::Point>) {
 /// for nothing more.
 async fn load_wanted(app: &mut App, session: &Session) {
     loop {
-        let mut ui = Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
-        let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
-            std::time::Instant::now(),
-        ))]);
-        let wanted: Vec<media::Message> = (ui.into_messages())
-            .filter_map(|message| match message {
-                Message::Media(wanted) => Some(wanted),
-                _ => None,
-            })
-            .collect();
+        let wanted: Vec<media::Message> = {
+            let _rendering = rendering();
+            let mut ui =
+                Simulator::with_size(fonts::settings(), Size::new(1200.0, 800.0), app.view());
+            let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
+                std::time::Instant::now(),
+            ))]);
+            (ui.into_messages())
+                .filter_map(|message| match message {
+                    Message::Media(wanted) => Some(wanted),
+                    _ => None,
+                })
+                .collect()
+        };
         if wanted.is_empty() {
             return;
         }
