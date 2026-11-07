@@ -50,11 +50,12 @@ iced_graphics = "0.14.0"
 whatlang = "0.18.0"
 
 # The unread count on the Dock icon; the app's light or dark appearance;
-# the displays, to open the window on one; the menu bar; spell checking.
+# the displays, to open the window on one; the menu bar; spell checking;
+# waking from sleep.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSDockTile", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSScreen", "NSSpellChecker", "NSTextFinder", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSRange", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSApplication", "NSDockTile", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSScreen", "NSSpellChecker", "NSTextFinder", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSNotification", "NSRange", "NSString"] }
 
 # The unread count on the taskbar button; the monitors, to open the window
 # on one; spell checking.

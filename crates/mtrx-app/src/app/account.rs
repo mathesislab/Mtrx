@@ -27,7 +27,7 @@ pub enum Message {
     Recovered(Result<bool, String>),
     /// The server became reachable or not.
     Connection(Connection),
-    /// Try the server now.
+    /// Try the server now if it was unreachable.
     Reconnect,
     Scheduled(Vec<ScheduledMessage>),
     /// Refreshes times shown relative to now.
