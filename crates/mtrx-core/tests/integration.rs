@@ -2758,13 +2758,54 @@ async fn export_a_space() -> Result<()> {
     Ok(())
 }
 
-/// Messages from before a device existed can't be decrypted on it without
-/// a key backup: marked and counted. The limits keep the newest.
+/// Post an encrypted event of a session no device has, as `user` (with
+/// a token of its own): no one can decrypt it.
+async fn send_undecryptable(user: &str, room: &mtrx_core::OwnedRoomId) -> Result<()> {
+    let http = reqwest::Client::new();
+    let login = serde_json::json!({
+        "type": "m.login.password",
+        "identifier": { "type": "m.id.user", "user": user },
+        "password": PASSWORD,
+    });
+    let response: serde_json::Value = (http
+        .post(format!("{}/_matrix/client/v3/login", homeserver())))
+    .json(&login)
+    .send()
+    .await?
+    .json()
+    .await?;
+    let token = response["access_token"].as_str().context("a token")?;
+    let content = serde_json::json!({
+        "algorithm": "m.megolm.v1.aes-sha2",
+        "ciphertext": "AwgAEhA2bm90IGEgcmVhbCBtZXNzYWdl",
+        "sender_key": "fake+sender+key+00000000000000000000000000",
+        "device_id": "NOBODY",
+        "session_id": "a+session+no+one+has+00000000000000000000000",
+    });
+    let url = format!(
+        "{}/_matrix/client/v3/rooms/{room}/send/m.room.encrypted/{}",
+        homeserver(),
+        unique_name("txn")
+    );
+    let sent = http
+        .put(url)
+        .bearer_auth(token)
+        .json(&content)
+        .send()
+        .await?;
+    if !sent.status().is_success() {
+        bail!("sending failed: {}", sent.text().await?);
+    }
+    Ok(())
+}
+
+/// An event no device can decrypt is marked and counted. The limits keep
+/// the newest messages.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn export_limits_and_undecryptable_messages() -> Result<()> {
-    let (name, alice) = new_user("exportutd").await?;
-    let room = alice
+    let (name, bob) = new_user("exportutd").await?;
+    let room = bob
         .session
         .create_room(NewRoom {
             name: Some("vault".into()),
@@ -2772,19 +2813,11 @@ async fn export_limits_and_undecryptable_messages() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    let timeline = alice.session.timeline(&room).await?;
-    send_text(&timeline, "Before the new device").await?;
-    // A new device, unverified and without a backup: it can't read what
-    // was sent before it, but what it sends.
-    let bob = login(&name).await?;
-    let list = bob.session.room_list().await?;
-    wait_for("room synced", list.updates(), |s| {
-        s.rooms.iter().any(|r| r.id == room && r.name == "vault")
-    })
-    .await?;
+    let timeline = bob.session.timeline(&room).await?;
+    send_text(&timeline, "First").await?;
+    send_undecryptable(&name, &room).await?;
     let since = SystemTime::now();
-    let new_timeline = bob.session.timeline(&room).await?;
-    send_text(&new_timeline, "After the new device").await?;
+    send_text(&timeline, "Last").await?;
 
     let dir = TempDir::new()?;
     let export = |range| {
@@ -2808,17 +2841,20 @@ async fn export_limits_and_undecryptable_messages() -> Result<()> {
     };
     assert_eq!(summary.undecryptable, 1, "{text}");
     assert!(text.contains("[Unable to decrypt this message"), "{text}");
-    assert!(text.contains(": After the new device"), "{text}");
-    assert!(read(&all.index)?.contains("vault (vault/messages.txt): 2 messages"));
+    assert!(
+        text.contains(": First") && text.contains(": Last"),
+        "{text}"
+    );
+    assert!(read(&all.index)?.contains("vault (vault/messages.txt): 3 messages"));
 
     let (_, text) = export(ExportRange::Last(1)).await?;
     assert!(
-        text.contains(": After the new device") && !text.contains("Unable to decrypt"),
+        text.contains(": Last") && !text.contains("Unable to decrypt") && !text.contains(": First"),
         "{text}"
     );
     let (_, text) = export(ExportRange::Since(since)).await?;
     assert!(
-        text.contains(": After the new device") && !text.contains("Unable to decrypt"),
+        text.contains(": Last") && !text.contains("Unable to decrypt") && !text.contains(": First"),
         "{text}"
     );
     Ok(())
