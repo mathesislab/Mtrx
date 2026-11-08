@@ -13,8 +13,9 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, DirectoryRoom, Grouping, Layout, Membership, OwnedRoomId, OwnedUserId, Rights,
-    RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey, UserId,
+    CallService, DirectoryRoom, Grouping, JoinRule, Layout, Membership, OwnedRoomId, OwnedUserId,
+    Rights, RoomKind, RoomLists, RoomSummary, RoomTag, ScheduledMessage, Section, Sort, SpaceKey,
+    UserId,
 };
 
 use crate::{
@@ -1432,9 +1433,9 @@ impl<'a> RoomListView<'a> {
         } else {
             fonts::INTER
         };
-        // People keep their pictures; rooms show # unless pictures are on.
-        // Who can join shows where it matters: the directory and a space's
-        // rooms.
+        // People keep their pictures; rooms show # if open (anyone or a
+        // space's members can join), else a lock, unless pictures are on.
+        // The directory and a space's rooms tell the rules apart.
         let avatar = if self.room_pictures || room.kind != RoomKind::Room {
             let picture = self.avatars.view(
                 room.id.as_str(),
@@ -1453,7 +1454,10 @@ impl<'a> RoomListView<'a> {
                 tint.color(theme)
             })
         } else {
-            let symbol = icons::hash(16.0, faint);
+            let symbol = match room.join_rule {
+                JoinRule::Public | JoinRule::SpaceMembers => icons::hash(16.0, faint),
+                JoinRule::Invite | JoinRule::Knock => icons::lock(14.0, faint),
+            };
             container(symbol).center(ROOM_AVATAR).into()
         };
         let name = ellipsis(&room.name).size(14).font(font);
@@ -1769,7 +1773,7 @@ mod tests {
             kind,
             membership: Membership::Joined,
             encrypted: false,
-            join_rule: mtrx_core::JoinRule::Invite,
+            join_rule: JoinRule::Invite,
             unread_messages: 0,
             unread_mentions: 0,
             unread_notifications: 0,
