@@ -321,6 +321,8 @@ Differences from the design above.
 
 **CI**
 - The iOS and Android workflows have a Sizes step: the app binary and the device library (iOS), each ABI's library as built and stripped, and the APK (Android), in the job summary.
+- Typst added 30–34 MB per stripped Android library at `opt-level = 3` (arm64 57.2 → 87.5 MB). `[profile.mobile]` now has `opt-level = "z"`: arm64 59.2 MB, x86_64 71.3 MB (from 68.7 MB without math). Accepted on 2026-11-08; native LaTeX libraries (SwiftMath, AndroidMath) were set aside.
+- No `strip = true` in the profile: uniffi's library mode reads its metadata symbols from the built library. Gradle and Xcode archives strip it when packaging. The iOS Sizes figure is the unstripped simulator binary, so it grows with `opt-level = "z"` (114.9 → 129.3 MB) and doesn't say what ships.
 
 **iOS**
 - Formulas have their own cache in `ImageCache` (`FormulaKey`, `TypesetFormula` with its descent in points, 16 MB), and formulas the library cannot read are remembered.
