@@ -32,7 +32,7 @@ async fn put(
     let file = update
         .file
         .ok_or("The release has no file for this installation.")?;
-    let data = download(&file.url, Some(steps)).await?;
+    let data = download(&file.download, Some(steps)).await?;
     let signature = file
         .signature
         .as_deref()
@@ -46,10 +46,12 @@ async fn put(
         .map_err(|e| e.to_string())?
 }
 
-/// The file at `url`, telling `steps` how much has come, if given.
+/// The asset at `url` (GitHub's API), telling `steps` how much has come, if
+/// given.
 async fn download(url: &str, mut steps: Option<&mut Sender<Message>>) -> Result<Vec<u8>, String> {
     let failed = |e: reqwest::Error| format!("Could not download the update: {e}");
-    let mut response = reqwest::get(url)
+    let mut response = super::github(url, "application/octet-stream")
+        .send()
         .await
         .and_then(|response| response.error_for_status())
         .map_err(failed)?;
@@ -362,6 +364,7 @@ mod tests {
         let file = File {
             name: "Mtrx-macos-arm64.zip".into(),
             url: String::new(),
+            download: String::new(),
             signature: None,
         };
         unpack_and_swap(&app, &staging, &file, &std::fs::read(&zip).unwrap()).unwrap();

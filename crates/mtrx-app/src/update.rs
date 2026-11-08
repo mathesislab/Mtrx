@@ -100,8 +100,13 @@ impl Update {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct File {
     pub name: String,
+    /// Its page for a browser.
     pub url: String,
-    /// Where its signature is (`cargo xtask sign`), if the release has it.
+    /// Where the app downloads it: GitHub's API, which still answers when
+    /// the browser links don't (504s on 8 Nov 2026).
+    pub download: String,
+    /// Where its signature downloads from (`cargo xtask sign`), if the
+    /// release has it.
     pub signature: Option<String>,
 }
 
@@ -121,6 +126,8 @@ struct Release {
 #[derive(Debug, Deserialize)]
 struct Asset {
     name: String,
+    /// The asset in the API: its file, asked for as `application/octet-stream`.
+    url: String,
     browser_download_url: String,
 }
 
@@ -143,14 +150,13 @@ fn newest(
             version,
             page: release.html_url.clone(),
             file: install.file_name().and_then(|name| {
-                let url = |name: &str| {
-                    let asset = release.assets.iter().find(|a| a.name == name)?;
-                    Some(asset.browser_download_url.clone())
-                };
+                let asset = |name: &str| release.assets.iter().find(|a| a.name == name);
+                let file = asset(name)?;
                 Some(File {
                     name: name.to_owned(),
-                    url: url(name)?,
-                    signature: url(&format!("{name}.sig")),
+                    url: file.browser_download_url.clone(),
+                    download: file.url.clone(),
+                    signature: asset(&format!("{name}.sig")).map(|a| a.url.clone()),
                 })
             }),
             install: install.clone(),
@@ -167,16 +173,21 @@ pub fn current() -> Version {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version is semver")
 }
 
-/// Ask GitHub for a version newer than this one on `channel`.
-async fn check(channel: Channel) -> Result<Option<Update>, String> {
-    let releases: Vec<Release> = reqwest::Client::new()
-        .get(RELEASES)
+/// A GET of `url` in GitHub's API, answered as `accept`.
+fn github(url: &str, accept: &str) -> reqwest::RequestBuilder {
+    reqwest::Client::new()
+        .get(url)
         // GitHub's API refuses requests without one.
         .header(
             reqwest::header::USER_AGENT,
             concat!("Mtrx/", env!("CARGO_PKG_VERSION")),
         )
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header(reqwest::header::ACCEPT, accept)
+}
+
+/// Ask GitHub for a version newer than this one on `channel`.
+async fn check(channel: Channel) -> Result<Option<Update>, String> {
+    let releases: Vec<Release> = github(RELEASES, "application/vnd.github+json")
         .send()
         .await
         .and_then(|response| response.error_for_status())
@@ -417,6 +428,7 @@ mod tests {
                 .iter()
                 .map(|name| Asset {
                     name: (*name).into(),
+                    url: format!("https://api.example.org/{tag}/{name}"),
                     browser_download_url: format!("https://example.org/{tag}/{name}"),
                 })
                 .collect(),
@@ -445,7 +457,8 @@ mod tests {
             Some(File {
                 name: zip.into(),
                 url: format!("https://example.org/v0.4.1/{zip}"),
-                signature: Some(format!("https://example.org/v0.4.1/{zip}.sig")),
+                download: format!("https://api.example.org/v0.4.1/{zip}"),
+                signature: Some(format!("https://api.example.org/v0.4.1/{zip}.sig")),
             })
         );
         assert_eq!(stable.install, mac);
