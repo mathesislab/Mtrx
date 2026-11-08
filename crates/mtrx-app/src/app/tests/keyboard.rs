@@ -946,11 +946,13 @@ async fn esc_closes_a_downloads_menu_then_the_list() {
         downloads::Message::OpenList,
     )));
     ui.update(Message::Media(media::Message::Downloads(
-        downloads::Message::Menu(Some(1)),
+        downloads::Message::Menu(Some(downloads::Row::Download(1))),
     )));
     assert!(matches!(
         ui.main().popup,
-        Some(Popup::Downloads { menu: Some(1) })
+        Some(Popup::Downloads {
+            menu: Some(downloads::Row::Download(1))
+        })
     ));
     esc(&mut ui);
     assert!(matches!(
@@ -978,6 +980,44 @@ async fn esc_closes_a_downloads_menu_then_the_list() {
         downloads::Message::Updated(Vec::new()),
     )));
     assert!(ui.main().popup.is_none());
+}
+
+/// The export dialog opens over the window, closing the popup; ⌘↩ starts
+/// the export, which then shows in the downloads list, and Esc cancels.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn the_export_dialog_starts_an_export() {
+    let (mut ui, _dir) = room_with("exportdialog", &["Calving"]).await;
+    let room = ui.room().id.clone();
+    let open = Message::Modal(modal::Message::OpenExport(
+        crate::export::Target::Room(room.clone()),
+        "Calving room".into(),
+    ));
+    ui.update(Message::Sidebar(sidebar::Message::AddMenu));
+    ui.update(open.clone());
+    assert!(matches!(
+        ui.main().modal.shown,
+        Some(modal::Shown::Export(_))
+    ));
+    assert!(ui.main().popup.is_none());
+    ui.press(Key::Named(Named::Escape), Modifiers::empty());
+    assert!(ui.main().modal.shown.is_none());
+
+    ui.update(open);
+    let folder = tempfile::TempDir::new().unwrap();
+    ui.update(Message::Modal(modal::Message::Export(
+        crate::export::Message::Folder(folder.path().to_owned()),
+    )));
+    ui.press(Key::Named(Named::Enter), Modifiers::COMMAND);
+    assert!(ui.main().modal.shown.is_none(), "started");
+    let session = ui.main().session.clone();
+    let exports = session.exports().get();
+    assert_eq!(exports.len(), 1);
+    assert!(exports[0].folder.starts_with(folder.path()));
+    ui.update(Message::Media(media::Message::Downloads(
+        downloads::Message::Exports(exports),
+    )));
+    assert!(ui.main().media.downloads.view(false, None).is_some());
 }
 
 /// One popup at a time in the whole window: one opened replaces another,

@@ -5,7 +5,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, Datelike, Local, Months, NaiveDate, NaiveTime, TimeZone, Timelike};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone, Timelike};
 use iced::{
     Alignment, Background, Border, Element, Length, Task, Theme,
     widget::{
@@ -17,6 +17,7 @@ use mtrx_core::{OwnedRoomId, ScheduledMessage, describe_send_time, parse_send_ti
 use crate::{
     actions::{Compose, Editing, InlineEdit},
     app::{self, Cx, Popup},
+    calendar::{self, first_of_month},
     fonts, message_field,
     popover::{Edge, Side, popover},
     room::{self, Room},
@@ -30,7 +31,6 @@ const MINUTE_STEP: u32 = 5;
 /// Height of a wheel entry, and how many show.
 const WHEEL_ROW: f32 = 26.0;
 const WHEEL_ROWS: f32 = 7.0;
-const DAY_CELL: f32 = 32.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -112,13 +112,9 @@ impl Picker {
         let today = DateTime::<Local>::from(now).date_naive();
         match message {
             Message::Month(by) => {
-                let month = if *by < 0 {
-                    self.month
-                        .checked_sub_months(Months::new(by.unsigned_abs()))
-                } else {
-                    self.month.checked_add_months(Months::new(*by as u32))
-                };
-                if let Some(month) = month.filter(|m| *m >= first_of_month(today)) {
+                if let Some(month) =
+                    calendar::turn(self.month, *by).filter(|m| *m >= first_of_month(today))
+                {
                     self.month = month;
                 }
             }
@@ -143,67 +139,17 @@ impl Picker {
 
     /// A month of days, Monday first; past days are disabled.
     fn calendar<'a>(&self, room: &OwnedRoomId, today: NaiveDate) -> Element<'a, app::Message> {
-        let nav = |label: &'static str, by: i32, enabled: bool| {
-            button(text(label).size(14))
-                .padding([0, 8])
-                .style(style::text_button)
-                .on_press_maybe(enabled.then(|| later(room, Message::Month(by))))
-        };
-        let header = row![
-            nav("‹", -1, self.month > first_of_month(today)),
-            text(self.month.format("%B %Y").to_string())
-                .size(13)
-                .font(fonts::SEMIBOLD)
-                .width(Length::Fill)
-                .center(),
-            nav("›", 1, true),
-        ]
-        .align_y(Alignment::Center);
-        let weekdays = row(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(|day| {
-            text(day)
-                .size(11)
-                .style(text::secondary)
-                .width(DAY_CELL)
-                .center()
-                .into()
-        }));
-        let mut weeks = column![header, weekdays].spacing(2).width(DAY_CELL * 7.0);
-        let lead = self.month.weekday().num_days_from_monday();
-        let mut day = self.month - chrono::Days::new(lead.into());
-        while day.month() == self.month.month() || day < self.month {
-            let mut week = row![];
-            for _ in 0..7 {
-                week = week.push(if day.month() == self.month.month() {
-                    self.day_button(room, day, today)
-                } else {
-                    space().width(DAY_CELL).into()
-                });
-                day = day.succ_opt().unwrap_or(day);
-            }
-            weeks = weeks.push(week);
-        }
-        weeks.into()
-    }
-
-    fn day_button<'a>(
-        &self,
-        room: &OwnedRoomId,
-        day: NaiveDate,
-        today: NaiveDate,
-    ) -> Element<'a, app::Message> {
-        let label = text(day.day().to_string()).size(12).center();
-        let label = if day == today {
-            label.font(fonts::SEMIBOLD)
-        } else {
-            label
-        };
-        let selected = day == self.date;
-        button(label.width(Length::Fill))
-            .width(DAY_CELL)
-            .padding([4, 0])
-            .style(move |theme, status| style::wheel_item(theme, status, selected))
-            .on_press_maybe((day >= today).then(|| later(room, Message::Day(day))))
-            .into()
+        calendar::view(
+            self.month,
+            self.date,
+            today,
+            |day| day >= today,
+            |by| {
+                (by > 0 || self.month > first_of_month(today))
+                    .then(|| later(room, Message::Month(by)))
+            },
+            |day| later(room, Message::Day(day)),
+        )
     }
 
     /// A scrolling column of hours or minutes; past ones are disabled.
@@ -247,10 +193,6 @@ fn next_hour(now: DateTime<Local>) -> DateTime<Local> {
         .from_local_datetime(&hour.date_naive().and_time(start))
         .earliest()
         .unwrap_or(hour)
-}
-
-fn first_of_month(date: NaiveDate) -> NaiveDate {
-    date.with_day(1).unwrap_or(date)
 }
 
 /// A room's scheduled messages, earliest first, as of `now`.

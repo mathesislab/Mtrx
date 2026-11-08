@@ -184,7 +184,9 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-pub(crate) fn escape(text: &str, attribute: bool) -> String {
+/// `text` safe in HTML: `&`, `<` and `>` escaped, and `"` too in an
+/// `attribute` (in double quotes).
+pub fn escape(text: &str, attribute: bool) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {

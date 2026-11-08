@@ -1,5 +1,5 @@
 //! What shows over the whole window, above the card: Settings, a dialog,
-//! joining, or an image or PDF shown large.
+//! joining, exporting, or an image or PDF shown large.
 
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
@@ -10,7 +10,7 @@ use super::{Cx, Popup, pane, people, start};
 use crate::{
     app, arrange,
     dialog::{self, Dialog},
-    directory, downloads, join,
+    directory, downloads, export, join,
     media::{self, Viewer},
     pdf_viewer, presence,
     settings::{self, Settings},
@@ -25,6 +25,9 @@ pub enum Message {
     Settings(settings::Message),
     OpenDialog(dialog::Kind),
     Dialog(dialog::Message),
+    /// Export a room's or a space's chats, called `.1`.
+    OpenExport(export::Target, String),
+    Export(export::Message),
     /// Join a space or room from elsewhere.
     OpenJoin,
     Join(join::Message),
@@ -65,6 +68,8 @@ pub enum Shown {
     Dialog(Dialog),
     /// Joining a space or room from elsewhere.
     Join(join::Join),
+    /// Exporting chats.
+    Export(export::Dialog),
     /// An image shown large.
     Image(Viewer),
     /// A PDF shown large.
@@ -98,6 +103,7 @@ impl Modal {
         match self.shown.as_ref()? {
             Shown::Dialog(_) => Some(Task::done(to(Message::Dialog(dialog::Message::Cancel)))),
             Shown::Join(_) => Some(Task::done(to(Message::Join(join::Message::Close)))),
+            Shown::Export(_) => Some(Task::done(to(Message::Export(export::Message::Cancel)))),
             _ => {
                 self.shown = None;
                 Some(Task::none())
@@ -161,6 +167,19 @@ impl Modal {
                 Task::batch([stop, contacts, owners])
             }
             Message::Dialog(message) => self.dialog(message, cx),
+            Message::OpenExport(target, title) => {
+                cx.cover();
+                self.shown = Some(Shown::Export(export::Dialog::new(
+                    target,
+                    title,
+                    cx.lists,
+                    export::today(),
+                )));
+                Task::done(app::Message::Sidebar(sidebar::Message::Arrange(
+                    arrange::Message::Stop,
+                )))
+            }
+            Message::Export(message) => self.export(message, cx),
             Message::OpenJoin => {
                 cx.cover();
                 cx.close_card();
@@ -477,6 +496,34 @@ impl Modal {
                     _ => Task::none(),
                 };
                 Task::batch([request_done(opened), show])
+            }
+        }
+    }
+
+    fn export(&mut self, message: export::Message, cx: &mut Cx<'_>) -> Task<app::Message> {
+        let Some(Shown::Export(dialog)) = &mut self.shown else {
+            return Task::none();
+        };
+        match dialog.update(message, export::today()) {
+            export::Action::None => Task::none(),
+            export::Action::Close => {
+                self.shown = None;
+                Task::none()
+            }
+            export::Action::PickFolder => Task::perform(
+                async {
+                    let folder = rfd::AsyncFileDialog::new().pick_folder().await;
+                    folder.map(|folder| folder.path().to_owned())
+                },
+                |folder| folder.map(|folder| to(Message::Export(export::Message::Folder(folder)))),
+            )
+            .and_then(Task::done),
+            export::Action::Export(request) => {
+                match cx.session.export(request) {
+                    Ok(_) => self.shown = None,
+                    Err(e) => dialog.failed(e.to_string()),
+                }
+                Task::none()
             }
         }
     }

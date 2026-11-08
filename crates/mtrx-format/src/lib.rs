@@ -19,7 +19,7 @@ mod render;
 mod text;
 
 pub use document::{Block, Document, Inline, Style};
-pub use markdown::{Formatted, Mention, MentionTarget, find_mentions, markdown_to_matrix};
+pub use markdown::{Formatted, Mention, MentionTarget, escape, find_mentions, markdown_to_matrix};
 #[cfg(feature = "render")]
 pub use render::{FormulaImage, Image, Piece, RenderError, RenderStyle, Renderer};
 pub use text::{BlockKind, Formula, Run, TextBlock, TextStyle};

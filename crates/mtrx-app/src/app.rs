@@ -31,8 +31,8 @@ use iced::{
     widget::{button, column, container, mouse_area, opaque, row, stack, text},
 };
 use mtrx_core::{
-    Connection, DownloadId, Live, OwnedRoomId, OwnedUserId, Profile, RoomKind, RoomListState,
-    RoomLists, SecretStore, Session,
+    Connection, Live, OwnedRoomId, OwnedUserId, Profile, RoomKind, RoomListState, RoomLists,
+    SecretStore, Session,
 };
 use mtrx_google::Google;
 
@@ -43,7 +43,7 @@ use crate::{
     calls,
     dialog::{self},
     downloads::{self},
-    edit_menu, emoji,
+    edit_menu, emoji, export,
     find::{self},
     info, join,
     last_view::LastView,
@@ -237,8 +237,8 @@ pub enum Popup {
     CardAddToSpace,
     /// The image's in the viewer.
     Viewer,
-    /// The downloads list, and a download's menu in it.
-    Downloads { menu: Option<DownloadId> },
+    /// The list of downloads and exports, and a row's menu in it.
+    Downloads { menu: Option<downloads::Row> },
 }
 
 impl Popup {
@@ -273,7 +273,7 @@ impl Popup {
         matches!(self, Popup::FieldMenu(f, _) | Popup::FieldEmoji(f, _) if *f == field)
     }
 
-    /// Esc closes what is open inside it, if anything: a download's menu,
+    /// Esc closes what is open inside it, if anything: a row's menu,
     /// leaving the list. False if nothing was.
     fn escape(&mut self) -> bool {
         match self {
@@ -651,6 +651,9 @@ impl Main {
         let submit = match (&self.modal.shown, &self.card) {
             (Some(modal::Shown::Dialog(_)), _) => Some(Message::Modal(modal::Message::Dialog(
                 dialog::Message::Submit,
+            ))),
+            (Some(modal::Shown::Export(_)), _) => Some(Message::Modal(modal::Message::Export(
+                export::Message::Submit,
             ))),
             (Some(_), _) => None,
             (None, card) => card
@@ -1163,6 +1166,10 @@ impl App {
                 downloads::subscription(&main.session)
                     .map(|m| Message::Media(media::Message::Downloads(m))),
             );
+            subscriptions.push(
+                downloads::exports_subscription(&main.session)
+                    .map(|m| Message::Media(media::Message::Downloads(m))),
+            );
         }
         Subscription::batch(subscriptions)
     }
@@ -1216,6 +1223,11 @@ impl App {
                     Some(modal::Shown::Dialog(dialog)) => panel(
                         dialog.view(&main.lists, &main.sidebar.arrange, &self.settings.room_list),
                         Message::Modal(modal::Message::Dialog(dialog::Message::Cancel)),
+                        false,
+                    ),
+                    Some(modal::Shown::Export(dialog)) => panel(
+                        dialog.view(export::today()),
+                        Message::Modal(modal::Message::Export(export::Message::Cancel)),
                         false,
                     ),
                     Some(modal::Shown::Join(join)) => panel(

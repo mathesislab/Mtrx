@@ -15,7 +15,7 @@ use crate::{
     app,
     dialog::Kind,
     directory::{self, SpaceRooms},
-    frame,
+    export, frame,
     hint::{Position, hint},
     icons, info, style,
 };
@@ -288,6 +288,17 @@ impl Overview {
                 Position::Bottom,
             ));
         }
+        tools = tools.push(hint(
+            button(text("Export…").size(13))
+                .padding([5, 10])
+                .style(style::secondary_button)
+                .on_press(app::Message::Modal(app::modal::Message::OpenExport(
+                    export::Target::Space(space.id.clone()),
+                    space.name.clone(),
+                ))),
+            "Export the chats of this space's rooms",
+            Position::Bottom,
+        ));
         let mut list = column![].spacing(2);
         for line in self.lines(shown.space_rooms, shown.lists) {
             list = list.push(self.line(line, shown));
