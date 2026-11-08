@@ -55,6 +55,7 @@ pub struct Session {
     pub(crate) outbox: Arc<crate::timeline::Outbox>,
     pub(crate) schedule: Arc<Schedule>,
     pub(crate) downloads: crate::downloads::Downloads,
+    pub(crate) exports: crate::export::Exports,
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
@@ -204,6 +205,7 @@ impl Session {
             crate::downloads::Places::new(profile.cache_dir()),
         )
         .await;
+        let exports = crate::export::Exports::new(profile.cache_dir());
         let presence_keeper = crate::presence::Keeper::new(client.clone());
         let spaces = crate::space_graph::follow(client.clone()).await;
         Ok(Self {
@@ -214,6 +216,7 @@ impl Session {
             outbox,
             schedule,
             downloads,
+            exports,
             scheduler: Default::default(),
             notifications,
             _notifier: notifier,

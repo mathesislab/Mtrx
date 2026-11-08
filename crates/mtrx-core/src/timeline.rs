@@ -1468,7 +1468,7 @@ fn message_kind(msgtype: &MessageType) -> MessageKind {
     }
 }
 
-fn media(msgtype: &MessageType) -> Option<Media> {
+pub(crate) fn media(msgtype: &MessageType) -> Option<Media> {
     let media = |kind, filename: &str, source: &MediaSource, thumbnail| Media {
         kind,
         filename: filename.to_owned(),
@@ -1535,7 +1535,7 @@ fn media(msgtype: &MessageType) -> Option<Media> {
     })
 }
 
-fn html_body(msgtype: &MessageType) -> Option<&str> {
+pub(crate) fn html_body(msgtype: &MessageType) -> Option<&str> {
     let formatted = match msgtype {
         MessageType::Text(c) => c.formatted.as_ref(),
         MessageType::Notice(c) => c.formatted.as_ref(),

@@ -25,7 +25,7 @@ use crate::{
     dialog::Kind,
     directory,
     ellipsis::{ellipsis, followed_by},
-    fonts,
+    export, fonts,
     hint::{Position, hint, shortcut},
     icons, info,
     menu::{self, Entry, Item, Width},
@@ -1003,6 +1003,13 @@ fn room_entries(
             room: Some(room.id.clone()),
         })),
     ));
+    items.push(Item::new(
+        "Export chat…",
+        app::Message::Modal(app::modal::Message::OpenExport(
+            export::Target::Room(room.id.clone()),
+            room.name.clone(),
+        )),
+    ));
     items.into_iter().map(Entry::Item).collect()
 }
 
@@ -1120,6 +1127,13 @@ fn space_entries(
         Item::new(
             "Space settings…",
             info::show_space(space.clone(), overview::Tab::Settings),
+        ),
+        Item::new(
+            "Export chats…",
+            app::Message::Modal(app::modal::Message::OpenExport(
+                export::Target::Space(space.clone()),
+                name.clone(),
+            )),
         ),
         Item::new(
             "Leave the space…",
@@ -2061,6 +2075,44 @@ mod tests {
         // On AZERTY ⌘ and the key of 1 gives "&".
         let one = Physical::Code(Code::Digit1);
         assert_eq!(go(digit("&"), one, Modifiers::COMMAND), Some(Go::Row(0)));
+    }
+
+    /// A space's menu exports its chats; a room's, the room's.
+    #[test]
+    fn menus_offer_exporting() {
+        let choice = |entries: Vec<Entry<'static, app::Message>>, label: &str| {
+            entries.into_iter().find_map(|entry| match entry {
+                Entry::Item(item) if item.label == label => item.on_choose,
+                _ => None,
+            })
+        };
+        let chosen = choice(space_entries(space(), "Ice".into(), false), "Export chats…");
+        assert!(
+            matches!(
+                &chosen,
+                Some(app::Message::Modal(app::modal::Message::OpenExport(
+                    export::Target::Space(id),
+                    title,
+                ))) if *id == space() && title == "Ice"
+            ),
+            "{chosen:?}"
+        );
+        let inside = room("!inside:x", RoomKind::Room);
+        let grouping = Grouping::default();
+        let chosen = choice(
+            room_entries(&inside, Some(&space()), &Layout::default(), &grouping),
+            "Export chat…",
+        );
+        assert!(
+            matches!(
+                &chosen,
+                Some(app::Message::Modal(app::modal::Message::OpenExport(
+                    export::Target::Room(id),
+                    _,
+                ))) if *id == inside.id
+            ),
+            "{chosen:?}"
+        );
     }
 
     #[test]
