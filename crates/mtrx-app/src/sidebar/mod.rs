@@ -1432,7 +1432,9 @@ impl<'a> RoomListView<'a> {
         } else {
             fonts::INTER
         };
-        // People keep their pictures; rooms may show whether they are open.
+        // People keep their pictures; rooms show # unless pictures are on.
+        // Who can join shows where it matters: the directory and a space's
+        // rooms.
         let avatar = if self.room_pictures || room.kind != RoomKind::Room {
             let picture = self.avatars.view(
                 room.id.as_str(),
@@ -1451,7 +1453,7 @@ impl<'a> RoomListView<'a> {
                 tint.color(theme)
             })
         } else {
-            let symbol = directory::join_rule_icon(room.join_rule, 14.0, faint);
+            let symbol = icons::hash(16.0, faint);
             container(symbol).center(ROOM_AVATAR).into()
         };
         let name = ellipsis(&room.name).size(14).font(font);
