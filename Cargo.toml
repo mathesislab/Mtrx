@@ -59,6 +59,7 @@ opt-level = 2
 inherits = "release"
 lto = true
 codegen-units = 1
+opt-level = "z"
 
 # mitex 0.2.4 ignores a custom command spec when writing output; patched copy.
 [patch.crates-io]

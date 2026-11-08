@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use mtrx_core::{self as core, OwnedEventId, RoomTimeline};
+use mtrx_core::{self as core, OwnedEventId, RoomTimeline, UserId};
 
 use crate::{
     Draft, MtrxError, TaskHandle, TimelineRow,
@@ -56,9 +56,9 @@ impl Timeline {
     }
 }
 
-/// The rows as the apps get them.
-fn timeline_rows(rows: Arc<Vec<core::Row>>) -> Vec<TimelineRow> {
-    rows.iter().map(TimelineRow::from).collect()
+/// The rows as the apps get them, shown to us, `own`.
+fn timeline_rows(rows: &[core::Row], own: &UserId) -> Vec<TimelineRow> {
+    rows.iter().map(|row| TimelineRow::new(row, own)).collect()
 }
 
 #[uniffi::export]
@@ -70,8 +70,9 @@ impl Timeline {
     /// Call `listener` with the rows, now and on every change. Ends when the
     /// timeline is dropped.
     pub fn subscribe_rows(&self, listener: Arc<dyn TimelineRowsListener>) -> Arc<TaskHandle> {
-        follow(self.inner.rows(), timeline_rows, move |rows| {
-            listener.on_update(rows)
+        let own = self.inner.own_user_id().to_owned();
+        follow(self.inner.rows(), std::convert::identity, move |rows| {
+            listener.on_update(timeline_rows(&rows, &own))
         })
     }
 

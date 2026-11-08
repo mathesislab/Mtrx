@@ -1,10 +1,10 @@
 import XCTest
 
 /// The app with made-up messages (`-ui-testing`), in the Lab room, as a
-/// finger uses it: deleting one of our messages through its menu, sending,
-/// and messages arriving; a room opening at its newest message; a chat's
-/// shared rooms; a room opened over another; folding the Rooms tab's
-/// groups. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
+/// finger uses it: formatted text and math shown, deleting one of our
+/// messages through its menu, sending, and messages arriving; a room
+/// opening at its newest message; a chat's shared rooms; a room opened over
+/// another; folding the Rooms tab's groups. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
 final class RoomUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -45,6 +45,23 @@ final class RoomUITests: XCTestCase {
         let deleted = app.staticTexts["Message deleted"].waitForExistence(timeout: 5)
         snap("ui-deleted")
         XCTAssertTrue(deleted, "The message was not deleted")
+    }
+
+    /// Ann's formatted message shows its text and list item; her displayed
+    /// formula is typeset: an element labelled with its LaTeX, no longer
+    /// shown as `$$…$$`.
+    @MainActor
+    func testFormattedTextAndMathShow() {
+        openLab()
+        let formatted = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Formatted: ")).firstMatch
+        XCTAssertTrue(formatted.waitForExistence(timeout: 5), "The formatted message is not shown")
+        XCTAssertTrue(app.staticTexts["an item"].exists, "Its list item is not shown")
+        let tex = #"\frac{a}{b} = c"#
+        let displayed = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", tex)).firstMatch
+        let typeset = displayed.waitForExistence(timeout: 15)
+        snap("ui-formatted")
+        XCTAssertTrue(typeset, "The displayed formula is not typeset")
+        XCTAssertFalse(app.staticTexts["$$\(tex)$$"].exists, "The formula shows as LaTeX")
     }
 
     @MainActor

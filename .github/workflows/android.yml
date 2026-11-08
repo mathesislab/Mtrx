@@ -68,6 +68,23 @@ jobs:
         run: |
           mkdir -p target/mobile
           cp apps/android/app/build/outputs/apk/debug/app-debug.apk target/mobile/Mtrx-android-debug.apk
+      - name: Sizes
+        if: env.WARM != 'true'
+        # Each ABI's library (as built, and stripped) and the APK, in bytes,
+        # in the job's summary: what a change adds.
+        run: |
+          strip="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          {
+            echo "| File | Bytes |"
+            echo "|---|---:|"
+            for abi in arm64-v8a x86_64; do
+              lib=apps/android/mtrx-ffi/src/main/jniLibs/$abi/libmtrx_ffi.so
+              "$strip" -o "$RUNNER_TEMP/stripped.so" "$lib"
+              echo "| $abi/libmtrx_ffi.so | $(stat -c %s "$lib") |"
+              echo "| $abi/libmtrx_ffi.so, stripped | $(stat -c %s "$RUNNER_TEMP/stripped.so") |"
+            done
+            echo "| Mtrx-android-debug.apk | $(stat -c %s target/mobile/Mtrx-android-debug.apk) |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: env.WARM != 'true'
         with:

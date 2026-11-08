@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 mtrx-core.workspace = true
-mtrx-format = { workspace = true, features = ["render"] }
+mtrx-format = { workspace = true, features = ["typst-fonts"] }
 mtrx-google.workspace = true
 iced = { version = "0.14.0", features = ["tokio", "image", "svg", "canvas", "advanced"] }
 tokio.workspace = true

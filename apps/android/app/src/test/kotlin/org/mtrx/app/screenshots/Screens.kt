@@ -13,10 +13,13 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import org.mtrx.app.FakeRoomLists
 import org.mtrx.app.FakeSession
+import org.mtrx.app.PLAIN
 import org.mtrx.app.directoryRoom
 import org.mtrx.app.listSection
 import org.mtrx.app.member
 import org.mtrx.app.messageRow
+import org.mtrx.app.paragraph
+import org.mtrx.app.plain
 import org.mtrx.app.model.Images
 import org.mtrx.app.rights
 import org.mtrx.app.roomSettings
@@ -30,18 +33,22 @@ import org.mtrx.app.rooms.TopicDraft
 import org.mtrx.app.roomLink
 import org.mtrx.app.topicOf
 import org.mtrx.app.summary
+import org.mtrx.app.textMessage
 import org.mtrx.app.user
 import org.mtrx.app.timeline.FileUse
+import org.mtrx.app.timeline.PersonCard
 import org.mtrx.app.timeline.TimelineActions
 import uniffi.mtrx.Badges
 import uniffi.mtrx.Banned
+import uniffi.mtrx.BlockKind
 import uniffi.mtrx.EventContent
+import uniffi.mtrx.Formula
 import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Membership
-import uniffi.mtrx.Message
 import uniffi.mtrx.Media
 import uniffi.mtrx.MessageKind
+import uniffi.mtrx.MtrxException
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Permissions
@@ -54,15 +61,18 @@ import uniffi.mtrx.SpaceLink
 import uniffi.mtrx.SectionChoice
 import uniffi.mtrx.SpaceEntry
 import uniffi.mtrx.SpaceKey
+import uniffi.mtrx.TextBlock
+import uniffi.mtrx.TextRun
 import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.User
 
 // Fake data for the screenshot tests: a team working on ice sheets. No
-// call reaches the native library (Images never loads without a picture).
+// call reaches the native library (Images never loads without a picture,
+// and formulas show as their LaTeX).
 
-/** Avatars and previews, never loaded: the fakes have no pictures. */
-val images = Images(FakeSession())
+/** Avatars and previews, never loaded: the fakes have no pictures; no formula is typeset. */
+val images = Images(FakeSession()) { _, _ -> throw MtrxException.Other("no native library in JVM tests") }
 
 val today: LocalDate = LocalDate.of(2026, 10, 28)
 
@@ -177,15 +187,33 @@ fun say(
     readBy: List<User> = emptyList(),
     replyTo: ReplyQuote? = null,
     first: Boolean = true,
+    text: List<TextBlock> = listOf(paragraph(plain(body))),
 ): TimelineRow = event(
     id,
     sender,
     name,
     time,
     own,
-    EventContent.Message(Message(kind = MessageKind.TEXT, body = body, edited = false, media = null, reactions = reactions, replyTo = replyTo)),
+    EventContent.Message(textMessage(body, text, reactions = reactions, replyTo = replyTo)),
     readBy,
     first,
+)
+
+/** Bold, a mention, inline code and math (shown as LaTeX here), a list and a quote. */
+val formatted = listOf(
+    paragraph(
+        TextRun.Text("Agenda", PLAIN.copy(bold = true), null),
+        plain(" for "),
+        TextRun.Mention(ME, "Me", PLAIN, you = true),
+        plain(", with "),
+        TextRun.Code("melt.jl", PLAIN, null),
+        plain(" and "),
+        TextRun.Math(Formula("q = -k \\nabla T", display = false), null),
+        plain(":"),
+    ),
+    TextBlock(BlockKind.Paragraph(listOf(plain("the runs"))), quotes = 0u, lists = 1u, marker = "1."),
+    TextBlock(BlockKind.Paragraph(listOf(plain("the paper"))), quotes = 0u, lists = 1u, marker = "2."),
+    TextBlock(BlockKind.Paragraph(listOf(plain("Bring the plots."))), quotes = 1u, lists = 0u, marker = null),
 )
 
 /** The row of an event with [content] by [sender] ([name]) at [time]. */
@@ -230,8 +258,29 @@ val conversation = listOf(
         "Nice! Can you put the plots in https://drive.example.org/ice before the call?",
         at(9, 40),
         reactions = listOf(Reaction(key = "👍", count = 2uL, byUs = true, senders = emptyList())),
+        text = listOf(
+            paragraph(
+                plain("Nice! Can you put the plots in "),
+                plain("https://drive.example.org/ice", link = "https://drive.example.org/ice"),
+                plain(" before the call?"),
+            ),
+        ),
     ),
-    say("4", ME, "Me", "I'll add them to the paper draft too: www.overleaf.com/project/ice", at(10, 2), own = true),
+    say(
+        "4",
+        ME,
+        "Me",
+        "I'll add them to the paper draft too: www.overleaf.com/project/ice",
+        at(10, 2),
+        own = true,
+        text = listOf(
+            paragraph(
+                plain("I'll add them to the paper draft too: "),
+                plain("www.overleaf.com/project/ice", link = "https://www.overleaf.com/project/ice"),
+            ),
+        ),
+    ),
+    say("f", bob, "Bob Berg", "Agenda for Me, with melt.jl and \$q = -k \\nabla T\$: …", at(10, 20), text = formatted),
     say("5", ana, "Ana Alves", "Done, they're in the Figures folder.", at(10, 30)),
     // Ours: a reply with a reaction, and a deleted one.
     say(
@@ -309,7 +358,7 @@ object NoTimelineActions : TimelineActions {
     override fun retry(itemId: String) {}
     override fun unsend(itemId: String) {}
     override fun goToOriginal(eventId: String) {}
-    override fun showPersonInfo(userId: String) {}
+    override fun showPersonInfo(person: PersonCard) {}
     override fun setPinned(eventId: String, pin: Boolean) {}
     override fun file(media: Media, eventId: String?, use: FileUse) {}
     override fun cancelDownload(id: ULong) {}

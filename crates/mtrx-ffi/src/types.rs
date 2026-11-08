@@ -3,7 +3,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mtrx_core as core;
+use mtrx_core::{self as core, UserId};
+
+use crate::TextBlock;
 
 /// Whether the server is reachable and still accepts the session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -444,7 +446,8 @@ pub enum EventContent {
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct Message {
     pub kind: MessageKind,
-    /// The text, without formatting. Math keeps its LaTeX source.
+    /// The text, without formatting. Math keeps its LaTeX source. For
+    /// copying, selecting and screen readers; draw `text`.
     pub body: String,
     pub edited: bool,
     /// The file of an image, video, audio or file message.
@@ -459,6 +462,10 @@ pub struct Message {
     /// An edit starts from it.
     #[uniffi(default)]
     pub raw_body: String,
+    /// What its text shows, formatted. Empty for a file without a caption.
+    /// An emote starts with the sender's name, and all its runs are italic.
+    #[uniffi(default)]
+    pub text: Vec<TextBlock>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -513,8 +520,9 @@ pub enum MembershipChange {
     Other,
 }
 
-impl From<&core::Row> for TimelineRow {
-    fn from(row: &core::Row) -> Self {
+impl TimelineRow {
+    /// `row` as shown to us, `own`.
+    pub(crate) fn new(row: &core::Row, own: &UserId) -> Self {
         let (id, content) = match row {
             core::Row::Start => ("start".into(), RowContent::Start),
             core::Row::Day(date) => (
@@ -534,7 +542,7 @@ impl From<&core::Row> for TimelineRow {
             core::Row::Message(row) => (
                 row.event.id.clone(),
                 RowContent::Message {
-                    event: TimelineEvent::from(&row.event),
+                    event: TimelineEvent::new(&row.event, own),
                     first_in_group: row.first_in_group,
                     show_sender: row.show_sender,
                     avatar_column: row.avatar_column,
@@ -568,14 +576,15 @@ impl From<core::MessageAction> for MessageAction {
     }
 }
 
-impl From<&core::Event> for TimelineEvent {
-    fn from(event: &core::Event) -> Self {
+impl TimelineEvent {
+    /// `event` as shown to us, `own`.
+    pub(crate) fn new(event: &core::Event, own: &UserId) -> Self {
         Self {
             event_id: event.event_id.as_ref().map(ToString::to_string),
             sender: User::from(&event.sender),
             timestamp: event.timestamp,
             own: event.own,
-            content: EventContent::from(&event.content),
+            content: EventContent::new(&event.content, &event.sender, own),
             send_state: match &event.send_state {
                 core::SendState::Sent => SendState::Sent,
                 core::SendState::Sending => SendState::Sending,
@@ -620,11 +629,12 @@ impl From<&core::Reply> for ReplyQuote {
     }
 }
 
-impl From<&core::EventContent> for EventContent {
-    fn from(content: &core::EventContent) -> Self {
+impl EventContent {
+    /// `content` from `sender`, as shown to us, `own`.
+    fn new(content: &core::EventContent, sender: &core::User, own: &UserId) -> Self {
         match content {
             core::EventContent::Message(message) => Self::Message {
-                message: Message::from(message),
+                message: Message::new(message, sender, own),
             },
             core::EventContent::Redacted => Self::Redacted,
             core::EventContent::UnableToDecrypt => Self::UnableToDecrypt,
@@ -653,8 +663,9 @@ impl From<&core::EventContent> for EventContent {
     }
 }
 
-impl From<&core::Message> for Message {
-    fn from(message: &core::Message) -> Self {
+impl Message {
+    /// `message` from `sender`, as shown to us, `own`.
+    fn new(message: &core::Message, sender: &core::User, own: &UserId) -> Self {
         Self {
             kind: message_kind(message.kind),
             body: message.document.to_plain_text(),
@@ -663,6 +674,7 @@ impl From<&core::Message> for Message {
             reactions: message.reactions.iter().map(Reaction::from).collect(),
             reply_to: message.in_reply_to.as_ref().map(ReplyQuote::from),
             raw_body: message.body.clone(),
+            text: crate::text::message_text(message, sender, own),
         }
     }
 }
@@ -753,10 +765,17 @@ mod tests {
 
     use mtrx_format::Document;
 
+    use crate::{BlockKind, TextRun, TextStyle};
+
     use super::*;
 
     fn at(seconds: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(seconds)
+    }
+
+    /// Us: Alice.
+    fn own() -> core::OwnedUserId {
+        "@alice:example.org".try_into().unwrap()
     }
 
     fn event(id: &str, content: core::EventContent) -> core::Event {
@@ -785,7 +804,7 @@ mod tests {
         undecryptable.utd_cause = Some(core::UtdCause::SentBeforeWeJoined);
         let causes: Vec<_> = [undecryptable, event("b", core::EventContent::Redacted)]
             .iter()
-            .map(TimelineEvent::from)
+            .map(|event| TimelineEvent::new(event, &own()))
             .map(|event| (event.content, event.utd_cause))
             .collect();
         assert_eq!(
@@ -858,7 +877,10 @@ mod tests {
             core::Row::Day(at(2 * 86_400)),
             core::Row::Message(message),
         ];
-        let rows: Vec<_> = rows.iter().map(TimelineRow::from).collect();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|row| TimelineRow::new(row, &own()))
+            .collect();
         let ids: Vec<_> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -893,10 +915,10 @@ mod tests {
 
     #[test]
     fn events_carry_plain_ids_and_text() {
-        let event = TimelineEvent::from(&event(
-            "a",
-            message(Document::from_html("<b>bold</b> text"), None),
-        ));
+        let event = TimelineEvent::new(
+            &event("a", message(Document::from_html("<b>bold</b> text"), None)),
+            &own(),
+        );
         assert_eq!(event.sender.user_id, "@alice:example.org");
         assert_eq!(event.sender.display_name, "Alice");
         assert_eq!(
@@ -916,9 +938,132 @@ mod tests {
                     reactions: Vec::new(),
                     reply_to: None,
                     raw_body: "**raw** body".into(),
+                    text: vec![TextBlock {
+                        kind: BlockKind::Paragraph {
+                            runs: vec![
+                                TextRun::Text {
+                                    text: "bold".into(),
+                                    style: TextStyle {
+                                        bold: true,
+                                        ..TextStyle::default()
+                                    },
+                                    link: None,
+                                },
+                                plain(" text"),
+                            ]
+                        },
+                        quotes: 0,
+                        lists: 0,
+                        marker: None,
+                    }],
                 }
             }
         );
+    }
+
+    fn plain(text: &str) -> TextRun {
+        TextRun::Text {
+            text: text.into(),
+            style: TextStyle::default(),
+            link: None,
+        }
+    }
+
+    /// The runs of a message's only paragraph.
+    fn runs(content: core::EventContent, sender: &core::User) -> Vec<TextRun> {
+        let EventContent::Message { message } = EventContent::new(&content, sender, &own()) else {
+            panic!("not a message");
+        };
+        match message.text.as_slice() {
+            [
+                TextBlock {
+                    kind: BlockKind::Paragraph { runs },
+                    ..
+                },
+            ] => runs.clone(),
+            text => panic!("not one paragraph: {text:?}"),
+        }
+    }
+
+    #[test]
+    fn mentions_of_us_are_marked() {
+        let alice = event("a", core::EventContent::Redacted).sender;
+        let document = Document::from_html(
+            r#"<a href="https://matrix.to/#/@alice:example.org">Alice</a> and <a href="https://matrix.to/#/@bob:example.org">Bob</a>"#,
+        );
+        let mention = |user_id: &str, name: &str, you| TextRun::Mention {
+            user_id: user_id.into(),
+            name: name.into(),
+            style: TextStyle::default(),
+            you,
+        };
+        assert_eq!(
+            runs(message(document, None), &alice),
+            [
+                mention("@alice:example.org", "Alice", true),
+                plain(" and "),
+                mention("@bob:example.org", "Bob", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_emote_starts_with_its_sender_all_italic() {
+        let alice = event("a", core::EventContent::Redacted).sender;
+        let core::EventContent::Message(mut emote) =
+            message(Document::from_html("waves at <code>you</code>"), None)
+        else {
+            unreachable!()
+        };
+        emote.kind = core::MessageKind::Emote;
+        let italic = TextStyle {
+            italic: true,
+            ..TextStyle::default()
+        };
+        assert_eq!(
+            runs(core::EventContent::Message(emote), &alice),
+            [
+                TextRun::Text {
+                    text: "Alice waves at ".into(),
+                    style: italic,
+                    link: None,
+                },
+                TextRun::Code {
+                    code: "you".into(),
+                    style: italic,
+                    link: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_shows_text_only_with_a_caption() {
+        let alice = event("a", core::EventContent::Redacted).sender;
+        let file = core::Media {
+            kind: core::MediaKind::Image,
+            filename: "ice.png".into(),
+            size: None,
+            mimetype: None,
+            width: None,
+            height: None,
+            source: core::MediaRef::plain("mxc://example.org/ice"),
+        };
+        let text = |body: &str| {
+            let content = core::EventContent::Message(core::Message {
+                body: body.into(),
+                ..match message(Document::from_plain(body), Some(file.clone())) {
+                    core::EventContent::Message(message) => message,
+                    _ => unreachable!(),
+                }
+            });
+            match EventContent::new(&content, &alice, &own()) {
+                EventContent::Message { message } => message.text,
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(text("ice.png"), []);
+        assert_eq!(text("The ice sheet").len(), 1);
     }
 
     #[test]
@@ -949,7 +1094,7 @@ mod tests {
         }];
         m.in_reply_to = Some(reply(Some("ice.png"), false));
 
-        let converted = TimelineEvent::from(&event);
+        let converted = TimelineEvent::new(&event, &own());
         assert!(!converted.editable);
         let bob_user = |name: Option<&str>| User {
             user_id: "@bob:example.org".into(),

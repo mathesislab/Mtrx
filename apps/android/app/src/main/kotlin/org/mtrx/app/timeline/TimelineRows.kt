@@ -80,11 +80,8 @@ val MessageAction.label: String
         MessageAction.UNSEND -> "Cancel and put back"
     }
 
-/** A message's text; an image's or file's body is its name unless it has a caption. */
-fun messageText(message: Message): String? {
-    val media = message.media
-    return message.body.takeIf { it.isNotBlank() && (media == null || it != media.filename) }
-}
+/** A message's text, plain, if it shows any (a file's only with a caption). */
+fun messageText(message: Message): String? = message.body.takeIf { message.text.isNotEmpty() && it.isNotBlank() }
 
 /** The emoji offered first for a reaction. */
 val COMMON_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🎉")

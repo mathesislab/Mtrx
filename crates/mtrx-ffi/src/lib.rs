@@ -18,6 +18,7 @@ mod drafts;
 mod encryption;
 mod error;
 mod manage;
+mod math;
 mod presence;
 mod push;
 mod room;
@@ -26,6 +27,7 @@ mod rooms;
 mod runtime;
 mod secrets;
 mod session;
+mod text;
 mod timeline;
 mod types;
 
@@ -43,6 +45,7 @@ pub use manage::{
     NotifyMode, Permissions, PermissionsChoice, Rights, Role, RoomSettings, SpaceLink,
     level_confirmation, typed_level,
 };
+pub use math::{FormulaImage, typeset_formula};
 pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,
     presence_line,
@@ -60,6 +63,7 @@ pub use rooms::{
 pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
 pub use session::{ConnectionListener, Session};
+pub use text::{BlockKind, Formula, TextBlock, TextRun, TextStyle};
 pub use timeline::{Timeline, TimelineRowsListener, TypingListener};
 pub use types::*;
 

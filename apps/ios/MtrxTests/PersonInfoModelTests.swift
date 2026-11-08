@@ -16,7 +16,7 @@ final class PersonInfoModelTests: XCTestCase {
     }
 
     private func makeModel() -> PersonInfoModel {
-        PersonInfoModel(session: session, userId: "@bob:example.org", room: chat) { [unowned self] in
+        PersonInfoModel(session: session, userId: "@bob:example.org", name: chat.name, avatarUrl: chat.avatarUrl) { [unowned self] in
             self.copied.append($0)
         }
     }
@@ -113,6 +113,16 @@ final class PersonInfoModelTests: XCTestCase {
         XCTAssertEqual(timeline.personInfo?.userId, "@bob:example.org")
         // The profile is asked for as it opens.
         await eventually { timeline.personInfo?.name == "Bob Builder" }
+    }
+
+    func testAMentionOpensThePersonsSheet() async {
+        let timeline = TimelineModel(session: session, room: Make.room("!lab", name: "Lab"))
+        session.profile = .success(
+            User(userId: "@ann:example.org", name: "Ann Lee", avatarUrl: nil, displayName: "Ann Lee"))
+        timeline.showPerson(userId: "@ann:example.org", name: "Ann")
+        XCTAssertEqual(timeline.personInfo?.userId, "@ann:example.org")
+        XCTAssertEqual(timeline.personInfo?.name, "Ann")
+        await eventually { timeline.personInfo?.name == "Ann Lee" }
     }
 
     func testNoPersonInTheNotesToSelfOrARoom() {

@@ -171,12 +171,8 @@ fn actions(event: &Event, context: &RowContext) -> Vec<MessageAction> {
         if sent.is_some() {
             actions.extend([MessageAction::React, MessageAction::Reply]);
         }
-        // A file's body is its name unless captioned.
-        let text = match &message.media {
-            Some(media) => message.body != media.filename,
-            None => !message.document.to_plain_text().is_empty(),
-        };
-        if text {
+        let text = message.text();
+        if text.is_some_and(|text| !text.to_plain_text().is_empty()) {
             actions.extend([MessageAction::Copy, MessageAction::SelectText]);
         }
     }

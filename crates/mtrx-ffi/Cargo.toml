@@ -18,7 +18,10 @@ name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
 [dependencies]
-mtrx-core.workspace = true
+# Formulas typeset for the apps.
+mtrx-core = { workspace = true, features = ["math"] }
+# Messages flattened for native text.
+mtrx-format.workspace = true
 uniffi = { version = "0.32.2", features = ["cli"] }
 tokio.workspace = true
 futures-util.workspace = true
@@ -35,7 +38,6 @@ rustls-platform-verifier = "0.7.1"
 
 [dev-dependencies]
 mtrx-core = { path = "../mtrx-core", features = ["test-support"] }
-mtrx-format.workspace = true
 tempfile.workspace = true
 futures-executor = "0.3"
 # A well-formed recovery key that is not the account's.

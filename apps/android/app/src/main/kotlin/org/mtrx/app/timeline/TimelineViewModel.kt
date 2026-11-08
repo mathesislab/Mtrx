@@ -414,11 +414,11 @@ class TimelineViewModel(
         }
     }
 
-    /** The name or avatar of a direct chat's header was tapped: the sheet about [userId]. */
-    override fun showPersonInfo(userId: String) {
-        if (_personInfo.value?.userId == userId) return
+    /** A direct chat's header or a mention was tapped: the sheet about [person]. */
+    override fun showPersonInfo(person: PersonCard) {
+        if (_personInfo.value?.userId == person.userId) return
         _personInfo.value?.close()
-        _personInfo.value = PersonInfoModel(userId, session, viewModelScope, actions)
+        _personInfo.value = PersonInfoModel(person, session, viewModelScope, actions)
     }
 
     fun closePersonInfo() {

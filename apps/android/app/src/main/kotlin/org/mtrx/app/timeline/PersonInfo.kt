@@ -16,29 +16,30 @@ import uniffi.mtrx.User
 data class PersonCard(val userId: String, val name: String, val avatarUrl: String?)
 
 /**
- * The person [userId] of the direct chat [header]: the profile's name and
- * avatar where set, otherwise the chat's (also while the profile loads, or
- * when it could not).
+ * The person [shown]: the profile's name and avatar where set, otherwise
+ * [shown]'s (also while the profile loads, or when it could not).
  */
-fun personCard(userId: String, header: RoomHeader, profile: User?): PersonCard = PersonCard(
-    userId = userId,
-    name = profile?.name?.takeIf { it.isNotBlank() } ?: header.name,
-    avatarUrl = profile?.avatarUrl ?: header.avatarUrl,
+fun personCard(shown: PersonCard, profile: User?): PersonCard = PersonCard(
+    userId = shown.userId,
+    name = profile?.name?.takeIf { it.isNotBlank() } ?: shown.name,
+    avatarUrl = profile?.avatarUrl ?: shown.avatarUrl,
 )
 
 /**
- * The info sheet about a direct chat's person [userId]: their profile, and
- * inviting them to one of our spaces. The profile loads in [scope] (the
+ * The info sheet about a person, [shown] as a direct chat's header or a
+ * mention shows them: their profile, and inviting them to one of our spaces. The profile loads in [scope] (the
  * room's); invites run in [actions], which leaving the room does not
  * cancel. Methods are called on the main thread; [close] when the sheet is.
  */
 class PersonInfoModel(
-    val userId: String,
+    val shown: PersonCard,
     private val session: Session,
     scope: CoroutineScope,
     private val actions: CoroutineScope,
 ) {
-    /** Null while loading, and after a failure (the chat's name and avatar stay). */
+    val userId: String get() = shown.userId
+
+    /** Null while loading, and after a failure ([shown]'s name and avatar stay). */
     private val _profile = MutableStateFlow<User?>(null)
     val profile: StateFlow<User?> = _profile.asStateFlow()
 

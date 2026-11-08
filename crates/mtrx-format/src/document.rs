@@ -104,11 +104,13 @@ impl Document {
         Self { blocks }.linkified()
     }
 
-    /// Bare URLs in text become links, as most clients show them.
+    /// Bare web addresses in text become links, as most clients show them:
+    /// `http://` and `https://` URLs, and `www.` addresses (opened over
+    /// https).
     fn linkified(mut self) -> Self {
         let finder = {
             let mut finder = LinkFinder::new();
-            finder.kinds(&[LinkKind::Url]);
+            finder.kinds(&[LinkKind::Url]).url_must_have_scheme(false);
             finder
         };
         for_each_inlines(&mut self.blocks, &mut |inlines| linkify(inlines, &finder));
@@ -333,15 +335,27 @@ fn linkify(inlines: &mut Vec<Inline>, finder: &LinkFinder) {
     for inline in inlines.drain(..) {
         match inline {
             Inline::Text(text) => {
+                // Text and links; what was found but is no web address is
+                // text, joined to the text around it.
+                let mut text_at = None;
                 for span in finder.spans(&text) {
-                    let piece = span.as_str().to_owned();
-                    out.push(match span.kind() {
-                        Some(LinkKind::Url) => Inline::Link {
-                            url: piece.clone(),
-                            content: vec![Inline::Text(piece)],
+                    let piece = span.as_str();
+                    match span.kind().and_then(|_| web_address(piece)) {
+                        Some(url) => {
+                            text_at = None;
+                            out.push(Inline::Link {
+                                url,
+                                content: vec![Inline::Text(piece.to_owned())],
+                            });
+                        }
+                        None => match text_at.and_then(|at| out.get_mut(at)) {
+                            Some(Inline::Text(before)) => before.push_str(piece),
+                            _ => {
+                                text_at = Some(out.len());
+                                out.push(Inline::Text(piece.to_owned()));
+                            }
                         },
-                        _ => Inline::Text(piece),
-                    });
+                    }
                 }
             }
             Inline::Styled { style, mut content } => {
@@ -352,6 +366,24 @@ fn linkify(inlines: &mut Vec<Inline>, finder: &LinkFinder) {
         }
     }
     *inlines = out;
+}
+
+/// The URL a bare address found in text opens, if it is a web address:
+/// `http://` or `https://` (any case), or `www.` (over https). Others, such
+/// as `example.org` or `ftp://…`, stay text.
+fn web_address(found: &str) -> Option<String> {
+    let starts = |prefix: &str| {
+        found
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    };
+    if starts("http://") || starts("https://") {
+        Some(found.to_owned())
+    } else if starts("www.") {
+        Some(format!("https://{found}"))
+    } else {
+        None
+    }
 }
 
 /// Turns the HTML tree into blocks. Inline content outside any block element

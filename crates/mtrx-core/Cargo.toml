@@ -8,6 +8,9 @@ license.workspace = true
 [features]
 # Helpers for tests against the local Synapse.
 test-support = ["dep:hmac", "dep:sha1"]
+# Formulas typeset one at a time, for the phones (`typeset`): Typst and its
+# math font.
+math = ["mtrx-format/math-font"]
 
 [dependencies]
 mtrx-format.workspace = true

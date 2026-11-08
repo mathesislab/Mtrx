@@ -649,14 +649,25 @@ enum Make {
             content: content, sendState: state, editable: editable, readBy: readBy)
     }
 
+    /// A text message; its `text` one paragraph of `body` unless given.
     static func text(
         _ body: String, edited: Bool = false, reactions: [Reaction] = [], replyTo: ReplyQuote? = nil,
-        rawBody: String = ""
+        rawBody: String = "", text: [TextBlock]? = nil, kind: MessageKind = .text
     ) -> EventContent {
         .message(
             message: Message(
-                kind: .text, body: body, edited: edited, media: nil, reactions: reactions, replyTo: replyTo,
-                rawBody: rawBody))
+                kind: kind, body: body, edited: edited, media: nil, reactions: reactions, replyTo: replyTo,
+                rawBody: rawBody, text: text ?? [paragraph([plain(body)])]))
+    }
+
+    /// A paragraph of `runs`, outside quotes and lists.
+    static func paragraph(_ runs: [TextRun]) -> TextBlock {
+        TextBlock(kind: .paragraph(runs: runs), quotes: 0, lists: 0, marker: nil)
+    }
+
+    /// Text without style, optionally a link.
+    static func plain(_ text: String, link: String? = nil) -> TextRun {
+        .text(text: text, style: .plain, link: link)
     }
 
     /// With its dot and line, as the library sends them.

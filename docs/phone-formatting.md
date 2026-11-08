@@ -302,3 +302,35 @@ Size: M. About 350 lines of format/core/FFI plus tests, 250 per phone. No deskto
 ## Decisions (2026-11-07)
 
 The user took all recommendations: 1a, 2a, 3a, 4a, 5b, 6a, 7a, 8a, 9a. The manifest changes (features in `mtrx-format` and core, `mtrx-format` as a normal dependency of `mtrx-ffi`, the vendored math font) are approved with them.
+
+## As built
+
+Differences from the design above.
+
+**Format and core**
+- The math font is under the GUST Font License (LPPL), not the OFL, as typst-assets' NOTICE says. Its text is in `fonts/NewCMMath-LICENSE.txt`.
+- Linkify: only `http://`, `https://` and `www.` addresses become links. `example.org`, `ftp://…` and other schemes stay text, as Android's `LinksTest` had it (the desktop too).
+- A formula's baseline comes from an empty `box` before it, whose marker sits on the line's baseline. A bare marker at a paragraph's start is moved before the paragraph by Typst. The image is cropped to its ink rows, keeping the baseline row; the page margin is 0.1 em for antialiasing and ink beyond the glyphs' advances. `RenderError::TooLarge` is new.
+- `core::Message::text()` holds the caption rule. Core's Copy / Select text use it too, so a file whose caption is empty no longer offers Copy. Typesetting errors are `core::Error::Formula`.
+- An item whose first block is a nested list, or an empty item, has its marker on an empty line of its own.
+- Emote: the sender's name joins the first run if that is plain italic text; if the text starts with no top-level paragraph, the name gets one of its own.
+
+**FFI**
+- The records are in `ffi/text.rs`, `typeset_formula` and `FormulaImage` in `ffi/math.rs`.
+- `timeline_rows` converts in the listener: `follow` takes a function pointer, which cannot hold `own`.
+
+**CI**
+- The iOS and Android workflows have a Sizes step: the app binary and the device library (iOS), each ABI's library as built and stripped, and the APK (Android), in the job summary.
+
+**iOS**
+- Formulas have their own cache in `ImageCache` (`FormulaKey`, `TypesetFormula` with its descent in points, 16 MB), and formulas the library cannot read are remembered.
+- Spoilers: a tap on the message's text shows all its spoilers. VoiceOver reads hidden ones.
+- Display math, centred, and a rule widen the bubble to the full width. Display math's fallback is `$$tex$$`. A formula image inside a link does not carry the link (its fallback does).
+- `PersonInfoModel` takes a name and picture instead of the room, so a mention opens it too.
+- `Formatting.linked` stays: the topic views still use it.
+
+**Android**
+- `PersonInfoModel` carries the `PersonCard` it shows until the profile loads; `TimelineActions.showPersonInfo(PersonCard)` replaces the user ID, and the sheet no longer reads the room's header.
+- `Images` takes the typesetter as a parameter (the library's by default), so the JVM screenshot tests show formulas as their LaTeX without loading the native library. Formulas have their own 16 MB `LruCache`.
+- Spoilers: a hidden spoiler is a link annotation; a tap shows all the message's spoilers. One inside a link is not tapped apart (links do not nest).
+- Quote bars are drawn behind the block, so no intrinsic measurement is needed (display math measures its width).

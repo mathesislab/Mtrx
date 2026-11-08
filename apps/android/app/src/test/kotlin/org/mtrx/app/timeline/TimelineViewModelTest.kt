@@ -70,12 +70,12 @@ class TimelineViewModelTest {
     fun personInfoOpensOnceAndCloses() = runTest {
         session.profile = User(userId = "@bob:x", name = "Bob", avatarUrl = null, displayName = "Bob")
         val viewModel = viewModel()
-        viewModel.showPersonInfo("@bob:x")
+        viewModel.showPersonInfo(PersonCard("@bob:x", "Bob", null))
         val model = viewModel.personInfo.value!!
         assertEquals("@bob:x", model.userId)
         assertEquals("Bob", model.profile.value?.name)
         // Tapped again while open: the same sheet.
-        viewModel.showPersonInfo("@bob:x")
+        viewModel.showPersonInfo(PersonCard("@bob:x", "Bob", null))
         assertTrue(viewModel.personInfo.value === model)
         viewModel.closePersonInfo()
         assertNull(viewModel.personInfo.value)
