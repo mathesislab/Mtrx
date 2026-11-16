@@ -2,6 +2,7 @@ package org.mtrx.app.timeline
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.time.Duration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.describe
+import uniffi.mtrx.DisappearingModeListener
 import uniffi.mtrx.Download
 import uniffi.mtrx.DownloadsListener
 import uniffi.mtrx.Draft
@@ -54,6 +56,11 @@ import uniffi.mtrx.TypingListener
  * every change (saved once typing stops), saved at once when the room is
  * left or the app stops ([keepDraft]), cleared on send; during an edit,
  * the text from before it.
+ *
+ * Texts and replies sent disappear as [disappearAfterRead] says: the
+ * room's mode, followed (also changed on our other devices), until one is
+ * chosen in the composer ([chooseDisappear]), which holds until the room
+ * is left. Edits keep their message's.
  */
 class TimelineViewModel(
     private val roomId: String,
@@ -102,6 +109,13 @@ class TimelineViewModel(
     private val _files = MutableSharedFlow<FileRequest>(extraBufferCapacity = 4)
     val files: SharedFlow<FileRequest> = _files.asSharedFlow()
 
+    /** What is sent disappears this long after everyone has read it; null: not. */
+    private val _disappearAfterRead = MutableStateFlow<Duration?>(null)
+    val disappearAfterRead: StateFlow<Duration?> = _disappearAfterRead.asStateFlow()
+
+    /** Chosen in the composer: the room's mode no longer applies while the room shows. */
+    private var disappearChosen = false
+
     private val downloadsSubscription: TaskHandle = session.subscribeDownloads(object : DownloadsListener {
         // On a library thread.
         override fun onUpdate(downloads: List<Download>) {
@@ -112,6 +126,7 @@ class TimelineViewModel(
     private var timeline: Timeline? = null
     private var subscription: TaskHandle? = null
     private var typingSubscription: TaskHandle? = null
+    private var disappearingSubscription: TaskHandle? = null
     private var nearTop = false
     private var paginating = false
     private var atStart = false
@@ -139,6 +154,8 @@ class TimelineViewModel(
         viewModelScope.launch { restoreDraft() }
         viewModelScope.launch {
             try {
+                // First: known by the time the timeline is open to send.
+                disappearingSubscription = followDisappearingMode()
                 val opened = session.timeline(roomId)
                 timeline = opened
                 timelineOpened.complete(opened)
@@ -160,6 +177,22 @@ class TimelineViewModel(
                 _error.value = describe(e)
             }
         }
+    }
+
+    /** The room's mode, now and after every change, into [disappearAfterRead] until one is chosen here. */
+    private fun followDisappearingMode(): TaskHandle = session.room(roomId).use { room ->
+        room.subscribeDisappearingMode(object : DisappearingModeListener {
+            // On a library thread: applied on the main thread, as choices are, so none is overwritten.
+            override fun onUpdate(afterRead: Duration?) {
+                viewModelScope.launch { if (!disappearChosen) _disappearAfterRead.value = afterRead }
+            }
+        })
+    }
+
+    /** What is sent from now on disappears [afterRead] after everyone has read it (null: not), until the room is left. */
+    override fun chooseDisappear(afterRead: Duration?) {
+        disappearChosen = true
+        _disappearAfterRead.value = afterRead
     }
 
     /** Pin or unpin the message with [eventId]. */
@@ -368,12 +401,17 @@ class TimelineViewModel(
         drafts.changed(currentDraft())
     }
 
-    /** Send the draft, as a reply or an edit if one is under way; false if there is nothing to send. */
+    /**
+     * Send the draft, as a reply or an edit if one is under way, a new
+     * message or reply disappearing as [disappearAfterRead] says; false if
+     * there is nothing to send.
+     */
     override fun send(): Boolean {
         val current = timeline ?: return false
         val text = _draft.value
         if (text.isBlank()) return false
         val mode = _composing.value
+        val afterRead = _disappearAfterRead.value
         pendingReply = null
         _composing.value = null
         _draft.value = (mode as? Composing.Editing)?.draft ?: ""
@@ -384,8 +422,8 @@ class TimelineViewModel(
         actions.launch {
             try {
                 when (mode) {
-                    null -> current.sendText(text)
-                    is Composing.Replying -> current.reply(mode.itemId, text)
+                    null -> current.sendText(text, afterRead)
+                    is Composing.Replying -> current.reply(mode.itemId, text, afterRead)
                     is Composing.Editing -> current.edit(mode.itemId, text)
                 }
             } catch (e: MtrxException) {
@@ -497,7 +535,7 @@ class TimelineViewModel(
 
     override fun onCleared() {
         keepDraft()
-        for (handle in listOfNotNull(subscription, typingSubscription, downloadsSubscription)) {
+        for (handle in listOfNotNull(subscription, typingSubscription, disappearingSubscription, downloadsSubscription)) {
             handle.cancel()
             handle.close()
         }

@@ -1,5 +1,6 @@
 package org.mtrx.app
 
+import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,9 @@ import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.DirectoryPage
 import uniffi.mtrx.DirectoryRoom
+import uniffi.mtrx.DisappearChoice
+import uniffi.mtrx.DisappearingLimitListener
+import uniffi.mtrx.DisappearingModeListener
 import uniffi.mtrx.History
 import uniffi.mtrx.HistoryChoice
 import uniffi.mtrx.JoinAction
@@ -35,6 +39,7 @@ import uniffi.mtrx.JoinButton
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.JoinRuleChoice
 import uniffi.mtrx.LevelChoice
+import uniffi.mtrx.LimitChoice
 import uniffi.mtrx.Manage
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
@@ -405,6 +410,52 @@ class FakeSession : Session(NoHandle) {
 
     override fun room(roomId: String): Room = FakeRoom(this, roomId)
 
+    /** Our mode of disappearing messages by room (none: off), and each room's listeners with their handles. */
+    val disappearingModes = mutableMapOf<String, Duration>()
+    val modeSubscriptions = mutableListOf<Triple<String, DisappearingModeListener, FakeHandle>>()
+
+    /** The library reports [roomId]'s new mode to its listeners not cancelled. */
+    fun pushDisappearingMode(roomId: String, afterRead: Duration?) {
+        if (afterRead == null) disappearingModes.remove(roomId) else disappearingModes[roomId] = afterRead
+        for ((room, listener, handle) in modeSubscriptions.toList()) {
+            if (room == roomId && !handle.cancelled) listener.onUpdate(afterRead)
+        }
+    }
+
+    /**
+     * How long after sending ours disappear at the latest: 1 day unless
+     * changed, as the library's; told to each subscription on every change.
+     */
+    var limit: Duration = Duration.ofDays(1)
+        set(value) {
+            field = value
+            for ((listener, handle) in limitSubscriptions.toList()) {
+                if (!handle.cancelled) listener.onUpdate(value)
+            }
+        }
+    val limitSubscriptions = mutableListOf<Pair<DisappearingLimitListener, FakeHandle>>()
+
+    override fun disappearingLimit(): Duration = limit
+
+    override fun subscribeDisappearingLimit(listener: DisappearingLimitListener): TaskHandle {
+        val handle = FakeHandle().also { handles += it }
+        limitSubscriptions += listener to handle
+        listener.onUpdate(limit)
+        return handle
+    }
+
+    /** As the library: shown at once, then [call] ("limit PT6H"); a failed one goes back. */
+    override suspend fun setDisappearingLimit(atMost: Duration) {
+        val before = limit
+        limit = atMost
+        try {
+            call("limit $atMost")
+        } catch (e: MtrxException) {
+            limit = before
+            throw e
+        }
+    }
+
     override suspend fun pinnedTimeline(roomId: String): Timeline {
         pinnedOpened++
         return pinnedRoomTimeline
@@ -506,6 +557,24 @@ class FakeRoom(private val session: FakeSession, private val roomId: String) : R
 
     override suspend fun setNotify(mode: NotifyMode) = session.changeSettings("notify $mode") { it.copy(notify = mode) }
 
+    // As the library: the mode now, then after each change.
+    override fun subscribeDisappearingMode(listener: DisappearingModeListener): TaskHandle {
+        listener.onUpdate(session.disappearingModes[roomId])
+        return FakeHandle().also { session.modeSubscriptions += Triple(roomId, listener, it) }
+    }
+
+    /** As the library: shown at once, then [FakeSession.call] ("disappearing !a:x PT5M"); a failed one goes back. */
+    override suspend fun setDisappearingMode(afterRead: Duration?) {
+        val before = session.disappearingModes[roomId]
+        session.pushDisappearingMode(roomId, afterRead)
+        try {
+            session.call("disappearing $roomId $afterRead")
+        } catch (e: MtrxException) {
+            session.pushDisappearingMode(roomId, before)
+            throw e
+        }
+    }
+
     override suspend fun setJoinRule(rule: JoinRule) =
         session.changeSettings("join rule $rule") { it.copy(joinRule = rule, joinRuleFact = ruleFact(rule)) }
 
@@ -568,6 +637,23 @@ fun ruleFact(rule: JoinRule): String = when (rule) {
     JoinRule.SPACE_MEMBERS -> "Private: space members can join"
     JoinRule.PUBLIC -> "Public: anyone can join"
 }
+
+/** The composer's and a room's choices of disappearing, as the library words them (`disappearChoices`). */
+val DISAPPEAR_CHOICES: List<DisappearChoice> = listOf(DisappearChoice(null, "Off", "Off")) +
+    listOf(
+        Duration.ofMinutes(1) to "1 minute",
+        Duration.ofMinutes(5) to "5 minutes",
+        Duration.ofHours(1) to "1 hour",
+        Duration.ofDays(1) to "1 day",
+    ).map { (afterRead, words) -> DisappearChoice(afterRead, words, "$words after read") }
+
+/** The limits Settings offers, as the library words them (`disappearingLimitChoices`). */
+val LIMIT_CHOICES: List<LimitChoice> = listOf(
+    LimitChoice(Duration.ofHours(1), "1 hour"),
+    LimitChoice(Duration.ofHours(6), "6 hours"),
+    LimitChoice(Duration.ofDays(1), "1 day"),
+    LimitChoice(Duration.ofDays(7), "7 days"),
+)
 
 /** A listed room's button with our [membership] of it, as the library gives it. */
 fun joinButton(room: DirectoryRoom, membership: Membership? = room.membership): JoinButton {
@@ -957,13 +1043,20 @@ class FakeTimeline : Timeline(NoHandle) {
         record()
     }
 
-    override suspend fun sendText(text: String) {
+    /** How each text and reply sent disappears (null: not), in order. */
+    val disappearing = mutableListOf<Duration?>()
+
+    override suspend fun sendText(text: String, disappearAfterRead: Duration?) {
         gate?.await()
         sendError?.let { throw it }
         sent += text
+        disappearing += disappearAfterRead
     }
 
-    override suspend fun reply(itemId: String, text: String) = action { replies += itemId to text }
+    override suspend fun reply(itemId: String, text: String, disappearAfterRead: Duration?) = action {
+        replies += itemId to text
+        disappearing += disappearAfterRead
+    }
 
     override suspend fun edit(itemId: String, text: String) = action { edits += itemId to text }
 

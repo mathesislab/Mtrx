@@ -1,5 +1,6 @@
 package org.mtrx.app.timeline
 
+import java.time.Duration
 import uniffi.mtrx.Media
 
 /**
@@ -19,6 +20,9 @@ interface TimelineActions {
     fun startEdit(itemId: String)
 
     fun cancelComposing()
+
+    /** What is sent from now on disappears [afterRead] after everyone has read it; null: not. */
+    fun chooseDisappear(afterRead: Duration?)
 
     /** False if there is nothing to send. */
     fun send(): Boolean

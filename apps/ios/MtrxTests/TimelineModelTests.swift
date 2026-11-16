@@ -148,6 +148,55 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertEqual(model.error, "no message `b` in the timeline")
     }
 
+    // MARK: Disappearing
+
+    func testWhatIsSentFollowsTheRoomsModeUntilOneIsChosen() async {
+        XCTAssertNil(model.disappearAfterRead)
+        session.disappearingMode = 300
+        await eventually { self.model.disappearAfterRead == 300 }
+        model.draft = "Gone soon"
+        await model.send()?.value
+        model.chooseDisappear(nil)
+        XCTAssertNil(model.disappearAfterRead)
+        // Changed on another device: the choice holds.
+        session.disappearingMode = 60
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertNil(model.disappearAfterRead)
+        model.draft = "Kept"
+        await model.send()?.value
+        XCTAssertEqual(timeline.sent, ["Gone soon", "Kept"])
+        XCTAssertEqual(timeline.disappearing, [300, nil])
+    }
+
+    func testARoomOpenedAgainStartsAtItsMode() async {
+        session.disappearingMode = 300
+        model.chooseDisappear(3_600)
+        let again = TimelineModel(session: session, room: Make.room("!room:example.org"))
+        await again.open()
+        await eventually { again.disappearAfterRead == 300 }
+    }
+
+    func testAReplyDisappearsAsChosenAndAnEditTakesNoChoice() async {
+        await show([bobsMessage, ourMessage])
+        model.chooseDisappear(3_600)
+        model.startReply(to: "b")
+        model.draft = "Sure"
+        await model.send()?.value
+        model.startEdit("o")
+        model.draft = "Hello *everyone*"
+        await model.send()?.value
+        XCTAssertEqual(timeline.replies.map(\.text), ["Sure"])
+        XCTAssertEqual(timeline.edits.map(\.text), ["Hello *everyone*"])
+        XCTAssertEqual(timeline.disappearing, [3_600])
+    }
+
+    func testTheHourglassSaysWhatIsSent() {
+        XCTAssertEqual(disappearWords(afterRead: nil), "Disappearing messages: off")
+        XCTAssertEqual(disappearWords(afterRead: 300), "Disappears 5 minutes after everyone has read it")
+        XCTAssertEqual(Disappearing.choices.first?.label, "Off")
+        XCTAssertNil(Disappearing.choices.first?.afterRead)
+    }
+
     // MARK: Typing
 
     func testTellsWhetherWeType() async {

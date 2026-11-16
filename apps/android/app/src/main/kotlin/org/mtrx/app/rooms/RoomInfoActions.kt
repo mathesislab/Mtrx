@@ -1,5 +1,6 @@
 package org.mtrx.app.rooms
 
+import java.time.Duration
 import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.NotifyMode
@@ -16,6 +17,9 @@ interface RoomInfoActions {
     fun setTopic(draft: TopicDraft)
 
     fun setNotify(mode: NotifyMode)
+
+    /** Our messages here disappear [afterRead] after everyone has read them; null: not. */
+    fun setDisappearingMode(afterRead: Duration?)
 
     fun setJoinRule(rule: JoinRule)
 

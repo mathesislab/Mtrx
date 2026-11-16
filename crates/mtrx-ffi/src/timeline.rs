@@ -1,6 +1,6 @@
 //! A room's live timeline, and sending.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use mtrx_core::{self as core, OwnedEventId, RoomTimeline, UserId};
 
@@ -30,17 +30,29 @@ pub trait TypingListener: Send + Sync {
 #[derive(uniffi::Object)]
 pub struct Timeline {
     inner: InRuntime<Arc<RoomTimeline>>,
+    /// Its account, for the limit of disappearing messages.
+    session: InRuntime<Arc<core::Session>>,
 }
 
 impl Timeline {
-    pub(crate) fn new(timeline: RoomTimeline) -> Arc<Self> {
+    pub(crate) fn new(timeline: RoomTimeline, session: Arc<core::Session>) -> Arc<Self> {
         Arc::new(Self {
             inner: InRuntime::new(Arc::new(timeline)),
+            session: InRuntime::new(session),
         })
     }
 
     fn core(&self) -> Arc<RoomTimeline> {
         Arc::clone(&self.inner)
+    }
+
+    /// How what is sent disappears: `after_read`, with the account's limit.
+    fn disappear(&self, after_read: Option<Duration>) -> Option<core::Disappear> {
+        let at_most = self.session.disappearing_limit().at_most;
+        after_read.map(|after_read| core::Disappear {
+            after_read,
+            at_most,
+        })
     }
 
     /// The event of row `item_id` (`TimelineRow.id`), now in the timeline.
@@ -106,27 +118,40 @@ impl Timeline {
 
     /// Send a message written in Markdown. It shows in the timeline at once,
     /// as [`crate::SendState::Sending`], and is sent in the background, also
-    /// later if the server is unreachable now.
-    pub async fn send_text(&self, text: String) -> Result<(), MtrxError> {
-        let timeline = self.core();
+    /// later if the server is unreachable now. With `disappear_after_read`,
+    /// it is deleted for everyone this long after all others have read it,
+    /// at the latest after the limit (`Session.disappearingLimit`).
+    pub async fn send_text(
+        &self,
+        text: String,
+        disappear_after_read: Option<Duration>,
+    ) -> Result<(), MtrxError> {
+        let (timeline, disappear) = (self.core(), self.disappear(disappear_after_read));
         run(async move {
-            timeline.send_markdown(&text, None).await?;
+            timeline.send(&text, Vec::new(), None, disappear).await?;
             Ok(())
         })
         .await
     }
 
     /// Send a message written in Markdown as a reply to row `item_id`'s
-    /// message, which must be sent (have an event ID). Shown and sent as
-    /// [`Timeline::send_text`].
-    pub async fn reply(&self, item_id: String, text: String) -> Result<(), MtrxError> {
+    /// message, which must be sent (have an event ID). Shown, sent and
+    /// disappearing as [`Timeline::send_text`].
+    pub async fn reply(
+        &self,
+        item_id: String,
+        text: String,
+        disappear_after_read: Option<Duration>,
+    ) -> Result<(), MtrxError> {
         let event_id = self
             .event(&item_id)?
             .event_id
             .ok_or_else(|| MtrxError::invalid("the message is not sent yet"))?;
-        let timeline = self.core();
+        let (timeline, disappear) = (self.core(), self.disappear(disappear_after_read));
         run(async move {
-            timeline.send_markdown(&text, Some(&event_id)).await?;
+            timeline
+                .send(&text, Vec::new(), Some(&event_id), disappear)
+                .await?;
             Ok(())
         })
         .await

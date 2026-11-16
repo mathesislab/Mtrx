@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import java.time.Duration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -72,6 +73,30 @@ class RoomModelsTest {
         model.load()
         assertEquals(listOf("@b:x", "@c:x"), model.members.value?.map { it.user.userId })
         assertEquals(1, session.settingsSubscriptions.size)
+    }
+
+    @Test
+    fun roomInfoFollowsTheDisappearingModeAndAFailedChangeGoesBack() = runTest {
+        session.disappearingModes[room] = Duration.ofMinutes(5)
+        val model = RoomInfoModel(room, session) { text, _ -> text }
+        // Not known until Room info shows.
+        assertNull(model.disappearingMode.value)
+        model.load()
+        assertEquals(DisappearingMode(Duration.ofMinutes(5)), model.disappearingMode.value)
+        // Changed on another device.
+        session.pushDisappearingMode(room, null)
+        assertEquals(DisappearingMode(null), model.disappearingMode.value)
+
+        model.setDisappearingMode(Duration.ofHours(1))
+        assertEquals(DisappearingMode(Duration.ofHours(1)), model.disappearingMode.value)
+        assertEquals(listOf("disappearing $room PT1H"), session.roomCalls)
+        session.roomError = MtrxException.Other("not allowed")
+        model.setDisappearingMode(Duration.ofDays(1))
+        assertEquals("not allowed", model.error.value)
+        assertEquals(DisappearingMode(Duration.ofHours(1)), model.disappearingMode.value)
+        // Followed once, however often it shows.
+        model.load()
+        assertEquals(1, session.modeSubscriptions.size)
     }
 
     @Test

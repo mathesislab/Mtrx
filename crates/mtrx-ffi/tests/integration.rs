@@ -21,15 +21,15 @@ use mtrx_core::{
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use mtrx_ffi::{
-    ConnectionListener, ConnectionState, Download, DownloadState, DownloadsListener,
-    EncryptionState, EncryptionStateListener, EventContent, JoinAction, JoinRule, MediaKind,
-    Membership, Message, MessageKind, Mtrx, MtrxError, Notification, Presence, PresenceActivity,
-    PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction,
-    RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists,
-    RoomListsListener, RoomSettings, RoomSettingsListener, RoomSort, RowContent, SecretBackend,
-    SecretError, SectionLayout, SendState, Session, SpaceKey, TimelineEvent, TimelineRow,
-    TimelineRowsListener, TypingListener, User, Verification, VerificationListener,
-    VerificationRequestListener, VerificationState,
+    ConnectionListener, ConnectionState, Disappearance, DisappearingLimitListener,
+    DisappearingModeListener, Download, DownloadState, DownloadsListener, EncryptionState,
+    EncryptionStateListener, EventContent, JoinAction, JoinRule, MediaKind, Membership, Message,
+    MessageKind, Mtrx, MtrxError, Notification, Presence, PresenceActivity, PresenceDot,
+    PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction, RecoveryListener,
+    RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists, RoomListsListener, RoomSettings,
+    RoomSettingsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout,
+    SendState, Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener,
+    User, Verification, VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -83,6 +83,18 @@ impl DownloadsListener for Forward<Vec<Download>> {
 impl RoomSettingsListener for Forward<RoomSettings> {
     fn on_update(&self, settings: RoomSettings) {
         self.send(settings);
+    }
+}
+
+impl DisappearingLimitListener for Forward<Duration> {
+    fn on_update(&self, at_most: Duration) {
+        self.send(at_most);
+    }
+}
+
+impl DisappearingModeListener for Forward<Option<Duration>> {
+    fn on_update(&self, after_read: Option<Duration>) {
+        self.send(after_read);
     }
 }
 
@@ -300,7 +312,7 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
     // A second time: the same.
     assert_eq!(room.download(media, None).unwrap(), id);
 
-    block_on(timeline.send_text("hello **world**".into())).unwrap();
+    block_on(timeline.send_text("hello **world**".into(), None)).unwrap();
     let items = wait_for("our message, sent", &item_updates, |items| {
         items.iter().any(|item| {
             message_body(item) == Some("hello world")
@@ -393,7 +405,7 @@ fn send(session: &Session, room_id: &str, text: &str) {
     let timeline = block_on(session.timeline(room_id.into())).unwrap();
     let (items, updates) = forward();
     let _handle = timeline.subscribe_rows(items);
-    block_on(timeline.send_text(text.into())).unwrap();
+    block_on(timeline.send_text(text.into(), None)).unwrap();
     wait_for("sent", &updates, |items: &Vec<TimelineRow>| {
         items.iter().any(|item| {
             message_body(item) == Some(text)
@@ -1166,14 +1178,14 @@ fn reactions_replies_edits_receipts_and_typing() {
     let mut bob_items = Items::follow(&bob_timeline);
 
     // Bob asks; Alice replies, quoting him.
-    block_on(bob_timeline.send_text("Which dataset?".into())).unwrap();
+    block_on(bob_timeline.send_text("Which dataset?".into(), None)).unwrap();
     let items = alice_items.wait("Alice gets the question", |i| {
         sent(i, "Which dataset?").is_some()
     });
     let (question_row, question) = sent(items, "Which dataset?").unwrap();
     let (question_row, question_id) = (question_row.to_owned(), question.event_id.clone());
     assert!(!question.editable);
-    block_on(alice_timeline.reply(question_row.clone(), "The **new** one".into())).unwrap();
+    block_on(alice_timeline.reply(question_row.clone(), "The **new** one".into(), None)).unwrap();
     let items = bob_items.wait("Bob sees the reply with its quote", |i| {
         find(i, "The new one").is_some_and(|(_, e)| {
             message(e).reply_to.as_ref().is_some_and(|q| {
@@ -1284,7 +1296,7 @@ fn reactions_replies_edits_receipts_and_typing() {
 
     // Bob reads Alice's latest message: his receipt moves there, with his
     // name.
-    block_on(alice_timeline.send_text("Thanks".into())).unwrap();
+    block_on(alice_timeline.send_text("Thanks".into(), None)).unwrap();
     bob_items.wait("Bob gets the thanks", |i| sent(i, "Thanks").is_some());
     let read_by_bob = |items: &[TimelineRow]| -> Vec<String> {
         items
@@ -1320,7 +1332,7 @@ fn unsent_messages_come_back_as_drafts() {
     let failed = |i: &[TimelineRow]| {
         find(i, &too_long).is_some_and(|(_, e)| matches!(e.send_state, SendState::Failed { .. }))
     };
-    block_on(timeline.send_text(too_long.clone())).unwrap();
+    block_on(timeline.send_text(too_long.clone(), None)).unwrap();
     let row = find(items.wait("shown as failed", failed), &too_long)
         .unwrap()
         .0
@@ -1329,7 +1341,7 @@ fn unsent_messages_come_back_as_drafts() {
     // Queued behind it, it waits: taken back, its Markdown comes back.
     // Rows show its text without the Markdown.
     let (queued, shown) = ("**queued** after it", "queued after it");
-    block_on(timeline.send_text(queued.into())).unwrap();
+    block_on(timeline.send_text(queued.into(), None)).unwrap();
     let queued_row = find(items.wait("queued", |i| find(i, shown).is_some()), shown)
         .unwrap()
         .0
@@ -1347,7 +1359,7 @@ fn unsent_messages_come_back_as_drafts() {
 
     // What is queued after it waits for it; once it is taken back, it is
     // sent.
-    block_on(timeline.send_text("after the long one".into())).unwrap();
+    block_on(timeline.send_text("after the long one".into(), None)).unwrap();
     let draft = block_on(timeline.unsend(row)).unwrap();
     assert_eq!(draft.map(|d| d.text), Some(too_long.clone()));
     let items = items.wait("taken back, and the next one sent", |i| {
@@ -1523,7 +1535,7 @@ fn sent_ending<'a>(items: &'a [TimelineRow], tail: &str) -> Option<&'a TimelineE
 /// `items` (the room's timeline on the sender's side) shows it sent, as
 /// a message ending with `tail`.
 fn send_for_id(timeline: &mtrx_ffi::Timeline, items: &mut Items, text: &str, tail: &str) -> String {
-    block_on(timeline.send_text(text.into())).unwrap();
+    block_on(timeline.send_text(text.into(), None)).unwrap();
     let items = items.wait(text, |items| sent_ending(items, tail).is_some());
     sent_ending(items, tail).unwrap().event_id.clone().unwrap()
 }
@@ -1679,4 +1691,87 @@ fn presence_is_set_read_and_followed() {
         }
         other => panic!("a stranger's presence: {other:?}"),
     }
+}
+
+#[test]
+#[ignore = "needs the local Synapse (testserver/run.sh)"]
+fn disappearing_messages_go_once_read() {
+    let secs = Duration::from_secs;
+    let core_runtime = tokio::runtime::Runtime::new().unwrap();
+    let (names, room_id) = room_of(&core_runtime, &["ffi-gone", "ffi-gone-bob"]);
+    let (alice, bob) = (sign_in(&names[0]), sign_in(&names[1]));
+    wait_for_room(&alice.session, &room_id);
+    wait_for_room(&bob.session, &room_id);
+
+    // The room's mode, followed as it is set and turned off.
+    let room = alice.session.room(room_id.clone()).unwrap();
+    let (modes, mode_updates) = forward();
+    let _modes = room.subscribe_disappearing_mode(modes);
+    wait_for("no mode", &mode_updates, Option::is_none);
+    block_on(room.set_disappearing_mode(Some(secs(300)))).unwrap();
+    wait_for("the mode", &mode_updates, |m| *m == Some(secs(300)));
+    block_on(room.set_disappearing_mode(None)).unwrap();
+    wait_for("off again", &mode_updates, Option::is_none);
+
+    // The limit, which messages sent from now on take.
+    let (limits, limit_updates) = forward();
+    let _limits = alice.session.subscribe_disappearing_limit(limits);
+    wait_for("the default limit", &limit_updates, |l| {
+        *l == secs(24 * 3600)
+    });
+    block_on(alice.session.set_disappearing_limit(secs(6 * 3600))).unwrap();
+    assert_eq!(alice.session.disappearing_limit(), secs(6 * 3600));
+    wait_for("the new limit", &limit_updates, |l| *l == secs(6 * 3600));
+
+    // Alice's message goes 2 s after Bob read it; the library deletes it
+    // while sync runs.
+    let alice_timeline = block_on(alice.session.timeline(room_id.clone())).unwrap();
+    let bob_timeline = block_on(bob.session.timeline(room_id.clone())).unwrap();
+    let mut alice_items = Items::follow(&alice_timeline);
+    let mut bob_items = Items::follow(&bob_timeline);
+    block_on(alice_timeline.send_text("gone soon".into(), Some(secs(2)))).unwrap();
+    // The marker shows once the server's copy synced: the local echo has
+    // no event JSON to read it from.
+    let marked =
+        |i: &[TimelineRow]| sent(i, "gone soon").is_some_and(|(_, e)| e.disappear.is_some());
+    let items = alice_items.wait("sent and synced", marked);
+    let (row, event) = sent(items, "gone soon").unwrap();
+    let row = row.to_owned();
+    assert_eq!(
+        event.disappear,
+        Some(Disappearance {
+            after_read: secs(2),
+            at_most: secs(6 * 3600),
+            words: "Disappears 2 seconds after everyone has read it, at the latest 6 hours \
+                    after sending"
+                .into(),
+        })
+    );
+    let items = bob_items.wait("Bob gets it", |i| sent(i, "gone soon").is_some());
+    let words = (sent(items, "gone soon").unwrap().1.disappear.as_ref()).map(|d| d.words.clone());
+    assert_eq!(words.as_deref(), Some("Disappears after it was read"));
+
+    // Unread, it stays.
+    std::thread::sleep(secs(4));
+    while let Ok(items) = alice_items.updates.try_recv() {
+        alice_items.latest = items;
+    }
+    assert!(
+        sent(&alice_items.latest, "gone soon").is_some(),
+        "deleted before read"
+    );
+
+    block_on(bob_timeline.mark_read()).unwrap();
+    wait_within(
+        secs(60),
+        "deleted once read",
+        &alice_items.updates,
+        |items| {
+            items.iter().any(|item| {
+                item.id == row
+                    && matches!(&item.content, RowContent::Message { event, .. }
+                    if event.content == EventContent::Redacted)
+            })
+        },
+    );
 }

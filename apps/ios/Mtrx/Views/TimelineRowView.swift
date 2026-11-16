@@ -86,8 +86,9 @@ struct RowActions {
 
 /// A message: in a bubble on the right if ours, else on the left with the
 /// sender's name over the first of a group and their avatar beside it; its
-/// reactions under it, and who read up to it at the right. Holding it opens
-/// its menu (`MessageMenu`); swiping it to the left replies to it.
+/// reactions under it, and who read up to it at the right; an hourglass by
+/// its time if it disappears. Holding it opens its menu (`MessageMenu`);
+/// swiping it to the left replies to it.
 struct MessageView: View {
     let id: String
     let row: MessageRow
@@ -282,9 +283,14 @@ struct MessageView: View {
         .background(bubbleColor, in: RoundedRectangle(cornerRadius: 18))
     }
 
-    /// Time and send state.
+    /// Time and send state; an hourglass before them if it disappears once
+    /// read.
     private var footer: some View {
         HStack(spacing: 4) {
+            if let disappear = event.disappear {
+                Image(systemName: "hourglass")
+                    .accessibilityLabel(disappear.words)
+            }
             Text(Formatting.time(event.timestamp))
             switch event.sendState {
             case .sent:

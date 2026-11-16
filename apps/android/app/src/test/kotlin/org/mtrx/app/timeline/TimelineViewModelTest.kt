@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import java.time.Duration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -136,6 +137,44 @@ class TimelineViewModelTest {
         assertEquals("offline", viewModel.error.value)
         // Kept again, as the send cleared it.
         assertEquals(Draft("again", null), session.drafts[room])
+    }
+
+    @Test
+    fun sendsDisappearingAsTheRoomsModeUntilOneIsChosen() = runTest {
+        session.disappearingModes[room] = Duration.ofMinutes(5)
+        val viewModel = viewModel()
+        assertEquals(Duration.ofMinutes(5), viewModel.disappearAfterRead.value)
+        // Changed on another device: followed.
+        session.pushDisappearingMode(room, Duration.ofHours(1))
+        assertEquals(Duration.ofHours(1), viewModel.disappearAfterRead.value)
+        show(textEvent("1", alice, "shall we?"))
+        viewModel.onDraft("hello")
+        viewModel.send()
+        viewModel.startReply("1")
+        viewModel.onDraft("yes")
+        viewModel.send()
+        assertEquals(listOf("hello"), timeline.sent)
+        assertEquals(listOf("1" to "yes"), timeline.replies)
+        assertEquals(listOf(Duration.ofHours(1), Duration.ofHours(1)), timeline.disappearing)
+
+        // Chosen here: it holds, whatever the room's mode becomes.
+        viewModel.chooseDisappear(null)
+        session.pushDisappearingMode(room, Duration.ofMinutes(1))
+        assertNull(viewModel.disappearAfterRead.value)
+        viewModel.onDraft("plain")
+        viewModel.send()
+        assertEquals(listOf(Duration.ofHours(1), Duration.ofHours(1), null), timeline.disappearing)
+    }
+
+    @Test
+    fun aChoiceHoldsUntilTheRoomIsLeft() = runTest {
+        session.disappearingModes[room] = Duration.ofMinutes(5)
+        val store = ViewModelStore()
+        open(room, store).chooseDisappear(Duration.ofDays(1))
+        store.clear()
+        // Its subscription ended with it; opened again, the room's mode.
+        assertTrue(session.modeSubscriptions.single().third.cancelled)
+        assertEquals(Duration.ofMinutes(5), open(room).disappearAfterRead.value)
     }
 
     @Test

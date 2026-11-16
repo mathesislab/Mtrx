@@ -481,6 +481,10 @@ impl Session {
     pub async fn pinned_timeline(&self, room_id: String) -> Result<Arc<Timeline>, MtrxError> {
         let room = crate::error::room_id(&room_id)?;
         let session = self.core();
-        run(async move { Ok(Timeline::new(session.pinned_timeline(&room).await?)) }).await
+        run(async move {
+            let timeline = session.pinned_timeline(&room).await?;
+            Ok(Timeline::new(timeline, session))
+        })
+        .await
     }
 }

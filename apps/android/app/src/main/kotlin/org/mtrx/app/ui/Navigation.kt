@@ -27,6 +27,7 @@ import org.mtrx.app.rooms.JoinContent
 import org.mtrx.app.rooms.JoinModel
 import org.mtrx.app.rooms.JoinState
 import org.mtrx.app.rooms.LeaveDialog
+import org.mtrx.app.rooms.DisappearingSetting
 import org.mtrx.app.rooms.NewRoomActions
 import org.mtrx.app.rooms.NewRoomContent
 import org.mtrx.app.rooms.NewRoomModel
@@ -52,6 +53,7 @@ import uniffi.mtrx.RoomKind
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.parseAddress
 import uniffi.mtrx.composeTopic
+import uniffi.mtrx.disappearChoices
 
 /**
  * The screens of a signed-in session: the home (its tabs, with a room open
@@ -337,15 +339,20 @@ private fun InfoScreen(
     LaunchedEffect(model) { model.load() }
     val settings by model.settings.collectAsStateWithLifecycle()
     val members by model.members.collectAsStateWithLifecycle()
+    val mode by model.disappearingMode.collectAsStateWithLifecycle()
     val busy by model.busy.collectAsStateWithLifecycle()
     val error by model.error.collectAsStateWithLifecycle()
     val room = rooms.room(model.roomId)
     val header = infoHeader(model.roomId, room)
+    val choices = remember { disappearChoices() }
+    // Our mode in a joined room, once known.
+    val disappearing = mode?.takeIf { room?.membership == Membership.JOINED }?.let { DisappearingSetting(it.afterRead, choices) }
     var leaving by remember { mutableStateOf(false) }
     RoomInfoContent(
         header,
         settings,
         members,
+        disappearing,
         busy,
         error,
         session.info.userId,

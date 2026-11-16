@@ -8,12 +8,16 @@ import androidx.compose.ui.Modifier
 import app.cash.paparazzi.DeviceConfig
 import com.android.resources.NightMode
 import app.cash.paparazzi.Paparazzi
+import java.time.Duration
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Rule
 import org.junit.Test
+import org.mtrx.app.DISAPPEAR_CHOICES
+import org.mtrx.app.LIMIT_CHOICES
 import org.mtrx.app.member
 import org.mtrx.app.topicOf
 import org.mtrx.app.model.RoomSort
+import org.mtrx.app.rooms.DisappearingSetting
 import org.mtrx.app.rooms.InviteContent
 import org.mtrx.app.rooms.JoinContent
 import org.mtrx.app.rooms.JoinResults
@@ -31,6 +35,8 @@ import org.mtrx.app.ui.RoomListSettings
 import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.ShowActions
 import org.mtrx.app.ui.ShowSheetContent
+import org.mtrx.app.settings.DisappearingLimitRow
+import org.mtrx.app.timeline.Composer
 import org.mtrx.app.timeline.RoomHeader
 import org.mtrx.app.timeline.SharedRoomsList
 import org.mtrx.app.timeline.TimelineContent
@@ -47,6 +53,7 @@ import org.mtrx.app.ui.SpaceTitle
 import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.Membership
+import uniffi.mtrx.TimelineRow
 
 /**
  * The key screens with fake data, as PNGs (recordPaparazziDebug; CI
@@ -70,6 +77,14 @@ open class ScreensTest {
         val spaces = rooms.chats().associate { it.id to rooms.chatSpaces(it.id) }
         HomeFrame(HomeTab.Chats, badges, onTab = {}) {
             ChatList(rooms.notes(), rooms.chats(), loaded = true, images, today, onOpenRoom = {}, presenceOf = { null }, spaces = spaces, drafts = drafts)
+        }
+    }
+
+    @Test
+    fun settingsDisappearingLimit() = snap("settings-disappearing") {
+        HomeFrame(HomeTab.Settings, badges, onTab = {}) {
+            SectionHeading("Privacy")
+            DisappearingLimitRow(Duration.ofDays(1), LIMIT_CHOICES, onChoose = {})
         }
     }
 
@@ -140,6 +155,18 @@ open class ScreensTest {
 
     @Test
     fun topicEditor() = snap("topic-editor") { Room(editingTopic = true) }
+
+    // Hourglasses by the times of Bob's and ours; the composer's lit.
+    @Test
+    fun roomDisappearing() = snap("room-disappearing") {
+        Room(rows = conversation + disappearingMessages, disappearAfterRead = Duration.ofMinutes(5))
+    }
+
+    @Test
+    fun composerDisappearingOff() = snap("composer-disappearing-off") { ComposerAlone(disappearAfterRead = null) }
+
+    @Test
+    fun composerDisappearingOn() = snap("composer-disappearing-on") { ComposerAlone(disappearAfterRead = Duration.ofMinutes(5)) }
 
     @Test
     fun sharedRooms() = snap("shared-rooms") { SharedRooms(roomGroups(sharedWithBob)) }
@@ -286,6 +313,8 @@ open class TallScreensTest {
                         iceHeader,
                         iceSettings,
                         iceMembers,
+                        // Joined: ours disappear 5 minutes after read.
+                        disappearing = DisappearingSetting(Duration.ofMinutes(5), DISAPPEAR_CHOICES),
                         busy = null,
                         error = null,
                         ownUserId = ME,
@@ -317,18 +346,25 @@ private val iceRoomHeader = RoomHeader(
     space = listed(TEAM),
 )
 
-/** The Ice sheets room, as on the Rooms tab. */
+/** The Ice sheets room with [rows], as on the Rooms tab; what is sent disappears [disappearAfterRead] after read. */
 @Composable
-private fun Room(topicOpen: Boolean = false, editingTopic: Boolean = false) {
+private fun Room(
+    topicOpen: Boolean = false,
+    editingTopic: Boolean = false,
+    rows: List<TimelineRow> = conversation,
+    disappearAfterRead: Duration? = null,
+) {
     HomeFrame(HomeTab.Rooms, badges, onTab = {}, showTopBar = false) {
         TimelineContent(
             iceRoomHeader,
             TimelineState(
-                rows = shownRows(conversation),
+                rows = shownRows(rows),
                 draft = "Thanks Ana, looking at them now",
                 typing = listOf("Bob Berg"),
                 canEditTopic = true,
                 pinned = shownRows(pinnedMessages).filterIsInstance<org.mtrx.app.timeline.EventRow>(),
+                disappearAfterRead = disappearAfterRead,
+                disappearChoices = DISAPPEAR_CHOICES,
             ),
             NoTimelineActions,
             images,
@@ -378,6 +414,24 @@ private fun SharedRooms(shared: List<RoomGroup>) {
     }
 }
 
+/** The composer alone with a draft; what is sent disappears [disappearAfterRead] after read (the hourglass lit), or not. */
+@Composable
+private fun ComposerAlone(disappearAfterRead: Duration?) {
+    Surface(Modifier.fillMaxWidth()) {
+        Composer(
+            draft = "Thanks Ana, looking at them now",
+            composing = null,
+            disappearAfterRead = disappearAfterRead,
+            disappearWords = "",
+            disappearChoices = DISAPPEAR_CHOICES,
+            onDraft = {},
+            onCancel = {},
+            onDisappear = {},
+            onSend = {},
+        )
+    }
+}
+
 /** Room info at the largest text size. */
 class LargeTextTallScreensTest : TallScreensTest() {
     override val fontScale: Float get() = 2f
@@ -391,5 +445,12 @@ class DarkScreensTest {
     @Test
     fun room() {
         paparazzi.snapshot("room-dark") { MtrxTheme { WithBack { Room() } } }
+    }
+
+    @Test
+    fun roomDisappearing() {
+        paparazzi.snapshot("room-disappearing-dark") {
+            MtrxTheme { WithBack { Room(rows = conversation + disappearingMessages, disappearAfterRead = Duration.ofMinutes(5)) } }
+        }
     }
 }

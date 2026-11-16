@@ -4,7 +4,8 @@ import UIKit
 
 /// A signed-in account: its connection, pictures, presence and downloads,
 /// sync, which runs while the app is in the foreground and tries the server
-/// again when the network comes back, and signing out.
+/// again when the network comes back, the limit of disappearing messages,
+/// and signing out.
 /// Its room lists, the home screen's navigation and its encryption are
 /// models of their own (`rooms`, `home`, `encryption`), which views
 /// observe apart: a room-list update draws again only the views that show
@@ -23,6 +24,9 @@ final class SessionModel: ObservableObject {
     let homeserver: String
 
     @Published private(set) var connection: ConnectionState = .online
+    /// Our disappearing messages go at the latest this long after sending,
+    /// on all our devices; followed from `start`.
+    @Published private(set) var disappearingLimit: TimeInterval
     @Published var error: String?
 
     /// Its subscriptions and requests.
@@ -44,6 +48,7 @@ final class SessionModel: ObservableObject {
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
+        disappearingLimit = session.disappearingLimit()
         rooms = RoomListModel(session: session)
         home = HomeNavigation(rooms: rooms, defaults: defaults)
         encryption = EncryptionModel(session: session, userId: userId)
@@ -51,8 +56,8 @@ final class SessionModel: ObservableObject {
     }
 
     /// Follow the connection, the room list, the encryption state, the
-    /// downloads and verification requests, for the session (sync starts
-    /// right after). The encryption state is pushed now and on every change:
+    /// downloads, verification requests and the limit of disappearing
+    /// messages, for the session (sync starts right after). The encryption state is pushed now and on every change:
     /// its recovery is `unknown` until sync has run.
     func start() {
         let connection = Feed<ConnectionState>()
@@ -60,6 +65,10 @@ final class SessionModel: ObservableObject {
             self?.connection = $0
         }
         downloads.start()
+        let limit = Feed<TimeInterval>()
+        work.follow(session.subscribeDisappearingLimit(listener: limit), limit) { [weak self] in
+            self?.disappearingLimit = $0
+        }
         let state = Feed<EncryptionState>()
         work.follow(session.subscribeEncryptionState(listener: state), state) { [weak self] in
             self?.encryption.apply($0)
@@ -136,6 +145,20 @@ final class SessionModel: ObservableObject {
     /// Our server's name, as in our user ID: "example.org".
     var serverName: String {
         userId.split(separator: ":", maxSplits: 1).last.map(String.init) ?? homeserver
+    }
+
+    /// Our messages sent to disappear from now on go at the latest
+    /// `atMost` after sending. Shows at once; if saving fails, the library
+    /// tells the saved limit again, and we say why.
+    @discardableResult
+    func setDisappearingLimit(_ atMost: TimeInterval) -> Task<Void, Never> {
+        disappearingLimit = atMost
+        let session = self.session
+        return work.request {
+            try await session.setDisappearingLimit(atMost: atMost)
+        } failed: { message in
+            self.error = message
+        }
     }
 
     /// Accept an invite: join, then open what we joined, and say `done`;

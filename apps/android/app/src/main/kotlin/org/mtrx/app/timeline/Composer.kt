@@ -15,7 +15,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +41,9 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.time.Duration
+import org.mtrx.app.ui.MtrxIcons
+import uniffi.mtrx.DisappearChoice
 
 /** Who else is typing, in a line whose height stays while nobody is. */
 @Composable
@@ -55,12 +61,22 @@ internal fun TypingLine(text: String) {
     )
 }
 
+/**
+ * The composer: the bar of a reply or an edit, the text, the hourglass
+ * (what is sent disappears [disappearAfterRead] after everyone has read
+ * it, said in [disappearWords], one of [disappearChoices], chosen with
+ * [onDisappear]) and Send.
+ */
 @Composable
 internal fun Composer(
     draft: String,
     composing: Composing?,
+    disappearAfterRead: Duration?,
+    disappearWords: String,
+    disappearChoices: List<DisappearChoice>,
     onDraft: (String) -> Unit,
     onCancel: () -> Unit,
+    onDisappear: (Duration?) -> Unit,
     onSend: () -> Unit,
 ) {
     // Typed here; set from outside (an edit starts, a send clears), the cursor goes to the end.
@@ -132,9 +148,57 @@ internal fun Composer(
                     maxLines = 6,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 )
+                DisappearButton(disappearAfterRead, disappearWords, disappearChoices, onDisappear)
                 IconButton(onClick = onSend, enabled = draft.isNotBlank()) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                 }
+            }
+        }
+    }
+}
+
+/**
+ * The hourglass left of Send, in the accent colour while what is sent
+ * disappears ([afterRead] after everyone has read it), muted while not;
+ * [words] say which. A tap opens the menu of [choices], the current one
+ * ticked.
+ */
+@Composable
+private fun DisappearButton(
+    afterRead: Duration?,
+    words: String,
+    choices: List<DisappearChoice>,
+    onChoose: (Duration?) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(
+                MtrxIcons.Hourglass,
+                contentDescription = words,
+                tint = if (afterRead != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                "Disappear after everyone read it",
+                Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (choice in choices) {
+                DropdownMenuItem(
+                    text = { Text(choice.label) },
+                    onClick = {
+                        open = false
+                        onChoose(choice.afterRead)
+                    },
+                    trailingIcon = if (choice.afterRead == afterRead) {
+                        { Icon(Icons.Filled.Check, contentDescription = "Selected") }
+                    } else {
+                        null
+                    },
+                )
             }
         }
     }

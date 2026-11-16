@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mtrx_core::{self as core, UserId};
 
-use crate::TextBlock;
+use crate::{Disappearance, TextBlock};
 
 /// Whether the server is reachable and still accepts the session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
@@ -312,6 +312,10 @@ pub struct TimelineEvent {
     /// For `EventContent.unableToDecrypt`, why, as far as known.
     #[uniffi(default)]
     pub utd_cause: Option<UtdCause>,
+    /// It disappears once read, as its sender marked it: an hourglass by
+    /// its time, its words in its menu.
+    #[uniffi(default)]
+    pub disappear: Option<Disappearance>,
 }
 
 /// Why a message could not be decrypted (the SDK's best guess).
@@ -596,6 +600,7 @@ impl TimelineEvent {
             editable: event.editable,
             read_by: event.read_by.iter().map(User::from).collect(),
             utd_cause: event.utd_cause.map(UtdCause::from),
+            disappear: (event.disappear).map(|d| Disappearance::new(d, event.own)),
         }
     }
 }

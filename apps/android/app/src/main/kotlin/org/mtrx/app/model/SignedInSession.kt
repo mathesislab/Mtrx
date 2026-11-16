@@ -1,6 +1,7 @@
 package org.mtrx.app.model
 
 import org.mtrx.app.rooms.NoRooms
+import java.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import uniffi.mtrx.ConnectionListener
+import uniffi.mtrx.DisappearingLimitListener
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.EncryptionState
@@ -34,10 +36,10 @@ data class SessionInfo(val userId: String, val homeserver: String, val deviceId:
 
 /**
  * A signed-in session and what lives with it: its room list, connection,
- * encryption, devices, recovery, verification and presence, and the space
- * selected on the Spaces tab. The [Account] opens it ([open]), starts,
- * stops and reconnects its sync, and closes it at sign-out; nothing of it outlives
- * [close]. Its work runs in a scope of its own, cancelled at [close];
+ * encryption, devices, recovery, verification and presence, the limit of
+ * disappearing messages, and the space selected on the Spaces tab. The
+ * [Account] opens it ([open]), starts, stops and reconnects its sync, and
+ * closes it at sign-out; nothing of it outlives [close]. Its work runs in a scope of its own, cancelled at [close];
  * verifications and declined requests run in [parent], so that a cancel at
  * [close] still reaches the other device. Used on [parent]'s (main)
  * thread; listener callbacks arrive on the library's threads and only set
@@ -82,6 +84,13 @@ class SignedInSession private constructor(
     private val _devices = MutableStateFlow<List<DeviceInfo>?>(null)
     val devices: StateFlow<List<DeviceInfo>?> = _devices.asStateFlow()
 
+    /**
+     * How long after sending our disappearing messages go at the latest:
+     * the account's, shared by its devices, followed from the library.
+     */
+    private val _disappearingLimit = MutableStateFlow(session.disappearingLimit())
+    val disappearingLimit: StateFlow<Duration> = _disappearingLimit.asStateFlow()
+
     private val _recovery = MutableStateFlow<Recovery>(Recovery.Idle)
     val recovery: StateFlow<Recovery> = _recovery.asStateFlow()
 
@@ -114,6 +123,22 @@ class SignedInSession private constructor(
             session.setNotesAtTop(on)
         } catch (e: MtrxException) {
             _messages.tryEmit("Could not change Notes at the top: ${describe(e)}")
+        }
+    }
+
+    /**
+     * Change [disappearingLimit], for messages sent from now on: shown at
+     * once; if saving fails, said in [messages], and the library tells the
+     * saved one again.
+     */
+    fun setDisappearingLimit(atMost: Duration): Job {
+        _disappearingLimit.value = atMost
+        return scope.launch {
+            try {
+                session.setDisappearingLimit(atMost)
+            } catch (e: MtrxException) {
+                _messages.tryEmit("Could not change the limit of disappearing messages: ${describe(e)}")
+            }
         }
     }
 
@@ -309,6 +334,11 @@ class SignedInSession private constructor(
         } catch (e: MtrxException) {
             log.warn(TAG, "No room list: ${describe(e)}")
         }
+        subscriptions += session.subscribeDisappearingLimit(object : DisappearingLimitListener {
+            override fun onUpdate(atMost: Duration) {
+                _disappearingLimit.value = atMost
+            }
+        })
         subscriptions += session.subscribeVerificationRequests(object : VerificationRequestListener {
             // On a library thread.
             override fun onRequest(verification: Verification) {

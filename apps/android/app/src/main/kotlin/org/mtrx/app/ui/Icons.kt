@@ -56,6 +56,12 @@ object MtrxIcons {
         "Copy",
         "M16,1H4c-1.1,0 -2,0.9 -2,2v14h2V3h12V1zM19,5H8c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h11c1.1,0 2,-0.9 2,-2V7c0,-1.1 -0.9,-2 -2,-2zM19,21H8V7h11v14z",
     )
+
+    /** An hourglass: messages that disappear. */
+    val Hourglass: ImageVector = icon(
+        "Hourglass",
+        "M6,2v6h0.01L6,8.01 10,12l-4,4 0.01,0.01H6V22h12v-5.99h-0.01L18,16l-4,-4 4,-3.99 -0.01,-0.01H18V2H6zM16,16.5V20H8v-3.5l4,-4 4,4zM12,11.5l-4,-4V4h8v3.5l-4,4z",
+    )
 }
 
 private fun icon(name: String, path: String, autoMirror: Boolean = false): ImageVector = ImageVector.Builder(

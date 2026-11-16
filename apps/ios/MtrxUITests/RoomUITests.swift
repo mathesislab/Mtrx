@@ -2,7 +2,8 @@ import XCTest
 
 /// The app with made-up messages (`-ui-testing`), in the Lab room, as a
 /// finger uses it: formatted text and math shown, deleting one of our
-/// messages through its menu, sending, and messages arriving; a room
+/// messages through its menu, sending, sending to disappear, and messages
+/// arriving; a room
 /// opening at its newest message; a chat's shared rooms; a room opened over
 /// another; folding the Rooms tab's groups. Each step is saved as a PNG where `SCREENSHOTS_DIR` says.
 final class RoomUITests: XCTestCase {
@@ -81,6 +82,46 @@ final class RoomUITests: XCTestCase {
             snap("ui-sent-\(n)")
             XCTAssertTrue(shown, "Sent message \(n) not in view")
         }
+    }
+
+    /// Ann's disappearing message has an hourglass by its time. The one
+    /// beside Send, off, offers the times after read: 5 minutes chosen, it
+    /// says so, and the message sent has an hourglass, whose words (with
+    /// the limit, 1 day) its menu repeats.
+    @MainActor
+    func testSendingAMessageToDisappear() {
+        openLab()
+        let annsHourglass = labelled("Disappears after it was read")
+        XCTAssertTrue(annsHourglass.waitForExistence(timeout: 5), "No hourglass on Ann's disappearing message")
+        let off = app.buttons["Disappearing messages: off"]
+        XCTAssertTrue(off.exists, "No hourglass beside Send")
+        off.tap()
+        let five = app.buttons["5 minutes"]
+        let offered = five.waitForExistence(timeout: 5)
+        snap("ui-disappear-menu")
+        XCTAssertTrue(offered, "No 5 minutes in the hourglass's menu")
+        five.tap()
+        XCTAssertTrue(
+            app.buttons["Disappears 5 minutes after everyone has read it"].waitForExistence(timeout: 5),
+            "The hourglass beside Send does not say 5 minutes")
+        let field = app.textViews.firstMatch.exists ? app.textViews.firstMatch : app.textFields.firstMatch
+        field.tap()
+        field.typeText("Gone in five minutes")
+        app.buttons["Send"].tap()
+        let words = "Disappears 5 minutes after everyone has read it, at the latest 1 day after sending"
+        let marked = labelled(words).waitForExistence(timeout: 5)
+        snap("ui-disappear-sent")
+        XCTAssertTrue(marked, "No hourglass on the message sent")
+        app.staticTexts["Gone in five minutes"].press(forDuration: 1.5)
+        let said = app.staticTexts[words].waitForExistence(timeout: 5)
+        snap("ui-disappear-message-menu")
+        XCTAssertTrue(said, "The message's menu does not say when it disappears")
+    }
+
+    /// Any element whose accessibility label is `label`.
+    @MainActor
+    private func labelled(_ label: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
 
     /// A direct chat's `#` lists the rooms shared with Ann; Models opens in

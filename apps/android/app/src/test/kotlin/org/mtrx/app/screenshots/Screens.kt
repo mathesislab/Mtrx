@@ -8,6 +8,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -41,6 +42,7 @@ import org.mtrx.app.timeline.TimelineActions
 import uniffi.mtrx.Badges
 import uniffi.mtrx.Banned
 import uniffi.mtrx.BlockKind
+import uniffi.mtrx.Disappearance
 import uniffi.mtrx.EventContent
 import uniffi.mtrx.Formula
 import uniffi.mtrx.History
@@ -175,7 +177,7 @@ val sharedWithBob = FakeRoomLists(
     ),
 )
 
-/** A message by [sender] ([name]) at [time]; the [first] of a group unless said otherwise. */
+/** A message by [sender] ([name]) at [time]; the [first] of a group unless said otherwise; [disappear] if marked so. */
 fun say(
     id: String,
     sender: String,
@@ -188,6 +190,7 @@ fun say(
     replyTo: ReplyQuote? = null,
     first: Boolean = true,
     text: List<TextBlock> = listOf(paragraph(plain(body))),
+    disappear: Disappearance? = null,
 ): TimelineRow = event(
     id,
     sender,
@@ -197,6 +200,7 @@ fun say(
     EventContent.Message(textMessage(body, text, reactions = reactions, replyTo = replyTo)),
     readBy,
     first,
+    disappear,
 )
 
 /** Bold, a mention, inline code and math (shown as LaTeX here), a list and a quote. */
@@ -226,6 +230,7 @@ fun event(
     content: EventContent,
     readBy: List<User> = emptyList(),
     first: Boolean = true,
+    disappear: Disappearance? = null,
 ): TimelineRow = messageRow(
     id,
     TimelineEvent(
@@ -237,6 +242,7 @@ fun event(
         sendState = SendState.Sent,
         editable = own,
         readBy = readBy,
+        disappear = disappear,
     ),
     firstInGroup = first,
 )
@@ -296,6 +302,24 @@ val conversation = listOf(
     event("7", ME, "Me", at(10, 35), own = true, EventContent.Redacted, first = false),
 )
 
+/** Ours, as the library words it: 5 minutes after read, at most a day. */
+val oursDisappear = Disappearance(
+    afterRead = Duration.ofMinutes(5),
+    atMost = Duration.ofDays(1),
+    words = "Disappears 5 minutes after everyone has read it, at the latest 1 day after sending",
+)
+
+/** Someone else's: only that it does. */
+val theirsDisappear = Disappearance(afterRead = Duration.ofMinutes(1), atMost = Duration.ofDays(1), words = "Disappears after it was read")
+
+/** After [conversation]: Bob's two that disappear, our answer that does, and Ana's that stays. */
+val disappearingMessages = listOf(
+    say("d1", bob, "Bob Berg", "The reviewers' comments are in, before they go to the editor.", at(10, 40), disappear = theirsDisappear),
+    say("d2", bob, "Bob Berg", "Section 3 needs the new runs.", at(10, 41), first = false, disappear = theirsDisappear),
+    say("d3", ME, "Me", "Got it, I'll redo the figures today.", at(10, 44), own = true, disappear = oursDisappear),
+    say("d4", ana, "Ana Alves", "The deadline stays Friday.", at(10, 45)),
+)
+
 val pinnedMessages = listOf(
     say("p1", bob, "Bob Berg", "Paper draft deadline: 15 November", at(9, 0, daysAgo = 6)),
     say("p2", ana, "Ana Alves", "Model setup notes are in the drive under Setup", at(11, 0, daysAgo = 12)),
@@ -352,6 +376,7 @@ object NoTimelineActions : TimelineActions {
     override fun startReply(itemId: String) {}
     override fun startEdit(itemId: String) {}
     override fun cancelComposing() {}
+    override fun chooseDisappear(afterRead: Duration?) {}
     override fun send(): Boolean = false
     override fun react(itemId: String, key: String) {}
     override fun delete(itemId: String) {}
@@ -368,6 +393,7 @@ object NoRoomInfoActions : RoomInfoActions {
     override fun rename(name: String) {}
     override fun setTopic(draft: TopicDraft) {}
     override fun setNotify(mode: NotifyMode) {}
+    override fun setDisappearingMode(afterRead: Duration?) {}
     override fun setJoinRule(rule: JoinRule) {}
     override fun setListed(listed: Boolean) {}
     override fun setSuggested(spaceId: String, suggested: Boolean) {}

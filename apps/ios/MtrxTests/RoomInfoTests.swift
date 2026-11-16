@@ -40,6 +40,20 @@ final class RoomInfoModelTests: XCTestCase {
         XCTAssertEqual(model.error, "Not allowed")
     }
 
+    /// Ours alone: changed here, on another device, or not saved.
+    func testTheDisappearingModeFollowsTheLibrary() async {
+        XCTAssertNil(model.disappearingMode)
+        session.disappearingMode = 60
+        await eventually { self.model.disappearingMode == 60 }
+        await model.setDisappearingMode(300).value
+        XCTAssertEqual(session.changes, ["disappearing 300"])
+        await eventually { self.model.disappearingMode == 300 }
+        session.changeError = MtrxError.Other(reason: "No connection")
+        await model.setDisappearingMode(nil).value
+        XCTAssertEqual(model.error, "No connection")
+        XCTAssertEqual(model.disappearingMode, 300)
+    }
+
     /// The library's room list shows it at once.
     func testATopicIsSaved() async {
         var saved: Bool?

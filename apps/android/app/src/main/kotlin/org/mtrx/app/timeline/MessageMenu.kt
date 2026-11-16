@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -45,13 +47,14 @@ import androidx.compose.ui.window.Dialog
 import androidx.emoji2.emojipicker.EmojiPickerView
 import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
+import org.mtrx.app.ui.MtrxIcons
 import uniffi.mtrx.MessageAction
 import uniffi.mtrx.User
 
 /**
- * Holding a message: the common reactions (ours marked) and "+" for the
- * full picker, then the other [actions] (the row's); with a file
- * ([hasFile]), Share… and Save to Downloads ([onFile]).
+ * Holding a message: when it disappears, if it does; the common reactions
+ * (ours marked) and "+" for the full picker, then the other [actions] (the
+ * row's); with a file ([hasFile]), Share… and Save to Downloads ([onFile]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,6 +69,10 @@ fun MessageMenu(
     onAction: (MessageAction) -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        row.event.disappear?.let {
+            DisappearLine(it.words)
+            HorizontalDivider()
+        }
         if (MessageAction.REACT in actions) {
             val ours = row.reactions.filter { it.byUs }.map { it.key }.toSet()
             Row(
@@ -106,6 +113,26 @@ fun MessageMenu(
             ListItem(headlineContent = { Text("Share…") }, modifier = Modifier.clickable { onFile(FileUse.SHARE) })
             ListItem(headlineContent = { Text("Save to Downloads") }, modifier = Modifier.clickable { onFile(FileUse.SAVE) })
         }
+    }
+}
+
+/** A message's menu says when it disappears ([words], the library's): an hourglass and the words, not an action. */
+@Composable
+private fun DisappearLine(words: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            MtrxIcons.Hourglass,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(words, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

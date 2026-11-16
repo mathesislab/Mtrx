@@ -49,7 +49,10 @@ struct RoomView: View {
                 .safeAreaInset(edge: .bottom) { OfflineBanner() }
             TypingLine(text: TimelineModel.typingLine(model.typing))
             Divider()
-            Composer(draft: $model.draft, compose: model.compose, cancel: model.cancelCompose) {
+            Composer(
+                draft: $model.draft, compose: model.compose, disappearAfterRead: model.disappearAfterRead,
+                cancel: model.cancelCompose, chooseDisappear: model.chooseDisappear
+            ) {
                 model.send()
             }
         }
@@ -653,12 +656,17 @@ struct TypingLine: View {
 }
 
 /// Writing a message (Markdown), or a reply or an edit, with a bar saying
-/// which and a button to cancel it. The field grows to six lines, three at
-/// the accessibility text sizes, leaving the timeline room.
+/// which and a button to cancel it; beside Send, the hourglass, to choose
+/// how long after read what is sent disappears. The field grows to six
+/// lines, three at the accessibility text sizes, leaving the timeline room.
 struct Composer: View {
     @Binding var draft: String
     let compose: TimelineModel.Compose?
+    /// What is sent disappears this long after everyone has read it; nil:
+    /// it doesn't.
+    let disappearAfterRead: TimeInterval?
     let cancel: () -> Void
+    let chooseDisappear: (TimeInterval?) -> Void
     let send: () -> Void
     @FocusState private var focused: Bool
     @ScaledMetric(relativeTo: .title) private var sendSize: CGFloat = 32
@@ -680,6 +688,7 @@ struct Composer: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+                DisappearMenu(afterRead: disappearAfterRead, size: sendSize, choose: chooseDisappear)
                 Button(action: send) {
                     Image(systemName: compose.isEdit ? "checkmark.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: sendSize))
@@ -723,6 +732,40 @@ struct Composer: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+}
+
+/// The hourglass beside Send, in the accent colour while what is sent
+/// disappears: a menu of how long after everyone has read it, the current
+/// choice ticked.
+private struct DisappearMenu: View {
+    let afterRead: TimeInterval?
+    /// The send button's.
+    let size: CGFloat
+    let choose: (TimeInterval?) -> Void
+
+    var body: some View {
+        Menu {
+            Section("Disappear after everyone read it") {
+                ForEach(Disappearing.choices, id: \.afterRead) { choice in
+                    Button {
+                        choose(choice.afterRead)
+                    } label: {
+                        if choice.afterRead == afterRead {
+                            Label(choice.label, systemImage: "checkmark")
+                        } else {
+                            Text(choice.label)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "hourglass")
+                .font(.system(size: size * 0.65))
+                .foregroundColor(afterRead == nil ? .secondary : .accentColor)
+                .frame(width: size, height: size)
+        }
+        .accessibilityLabel(disappearWords(afterRead: afterRead))
     }
 }
 

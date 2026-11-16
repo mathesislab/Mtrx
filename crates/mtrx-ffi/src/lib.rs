@@ -13,6 +13,7 @@ uniffi::setup_scaffolding!("mtrx");
 #[cfg(target_os = "android")]
 mod android;
 mod client;
+mod disappearing;
 mod downloads;
 mod drafts;
 mod encryption;
@@ -32,6 +33,10 @@ mod timeline;
 mod types;
 
 pub use client::{Mtrx, OAuthLogin};
+pub use disappearing::{
+    DisappearChoice, Disappearance, DisappearingLimitListener, DisappearingModeListener,
+    LimitChoice, disappear_choices, disappear_words, disappearing_limit_choices,
+};
 pub use downloads::{Download, DownloadState, DownloadsListener};
 pub use drafts::{Draft, DraftKeeper};
 pub use encryption::{

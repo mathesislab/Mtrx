@@ -35,6 +35,9 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     var onSeek: ((String) -> Void)?
     var markedRead = 0
     var replies: [(itemId: String, text: String)] = []
+    /// How long after read each message sent or reply disappears, in order
+    /// (nil: it doesn't).
+    var disappearing: [TimeInterval?] = []
     var edits: [(itemId: String, text: String)] = []
     var reactions: [(itemId: String, key: String)] = []
     var deleted: [String] = []
@@ -64,14 +67,16 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
         return handle
     }
 
-    override func sendText(text: String) async throws {
+    override func sendText(text: String, disappearAfterRead: TimeInterval?) async throws {
         if let sendError { throw sendError }
         sent.append(text)
+        disappearing.append(disappearAfterRead)
     }
 
-    override func reply(itemId: String, text: String) async throws {
+    override func reply(itemId: String, text: String, disappearAfterRead: TimeInterval?) async throws {
         if let sendError { throw sendError }
         replies.append((itemId, text))
+        disappearing.append(disappearAfterRead)
     }
 
     override func edit(itemId: String, text: String) async throws {
@@ -399,6 +404,20 @@ final class FakeSession: Session, @unchecked Sendable {
         didSet { settingsListener?.onUpdate(settings: settings) }
     }
     var settingsListener: RoomSettingsListener?
+    /// The rooms' disappearing mode, as `Room.subscribeDisappearingMode`
+    /// gives it: to each listener as it subscribes, and again on every
+    /// change (one made shows at once, as in the library).
+    var disappearingMode: TimeInterval? {
+        didSet { disappearingModeListeners.forEach { $0.onUpdate(afterRead: disappearingMode) } }
+    }
+    var disappearingModeListeners: [DisappearingModeListener] = []
+    /// The limit of disappearing messages, as the library keeps it and
+    /// `subscribeDisappearingLimit` gives it: to each listener as it
+    /// subscribes, and again on every change.
+    var limit: TimeInterval = 86_400 {
+        didSet { limitListeners.forEach { $0.onUpdate(atMost: limit) } }
+    }
+    var limitListeners: [DisappearingLimitListener] = []
     var memberList: [Member] = []
     /// Changes asked for, in order, e.g. "notify mentions", "pin $e true".
     var changes: [String] = []
@@ -435,6 +454,26 @@ final class FakeSession: Session, @unchecked Sendable {
     override func pinnedTimeline(roomId: String) async throws -> Timeline { fakePinned }
 
     override func setNotesAtTop(on: Bool) async throws { try change("notes at top \(on)") }
+
+    override func disappearingLimit() -> TimeInterval { limit }
+
+    override func subscribeDisappearingLimit(listener: DisappearingLimitListener) -> TaskHandle {
+        limitListeners.append(listener)
+        listener.onUpdate(atMost: limit)
+        return FakeTaskHandle(noHandle: .init())
+    }
+
+    /// Shown at once, as in the library; the saved one again if it fails.
+    override func setDisappearingLimit(atMost: TimeInterval) async throws {
+        let saved = limit
+        limit = atMost
+        do {
+            try change("limit \(Int(atMost))")
+        } catch {
+            limit = saved
+            throw error
+        }
+    }
 
     override func join(room: String, via: [String]) async throws -> String {
         try change("join \(room)")
@@ -534,6 +573,18 @@ final class FakeRoom: Room, @unchecked Sendable {
     override func setPermissions(permissions: Permissions) async throws {
         try session.change("permissions \(permissions)")
         session.settings.permissions = permissions
+    }
+
+    override func subscribeDisappearingMode(listener: DisappearingModeListener) -> TaskHandle {
+        session.disappearingModeListeners.append(listener)
+        listener.onUpdate(afterRead: session.disappearingMode)
+        return FakeTaskHandle(noHandle: .init())
+    }
+
+    override func setDisappearingMode(afterRead: TimeInterval?) async throws {
+        let mode = afterRead.map { String(Int($0)) } ?? "off"
+        try session.change("disappearing \(mode)")
+        session.disappearingMode = afterRead
     }
 
     override func encrypt() async throws {
@@ -642,11 +693,26 @@ enum Make {
 
     static func event(
         _ sender: String, _ content: EventContent, at minutes: Double = 0, own: Bool = false,
-        state: SendState = .sent, eventId: String? = nil, editable: Bool = false, readBy: [User] = []
+        state: SendState = .sent, eventId: String? = nil, editable: Bool = false, readBy: [User] = [],
+        disappear: Disappearance? = nil
     ) -> TimelineEvent {
         TimelineEvent(
             eventId: eventId, sender: user(sender), timestamp: start.addingTimeInterval(minutes * 60), own: own,
-            content: content, sendState: state, editable: editable, readBy: readBy)
+            content: content, sendState: state, editable: editable, readBy: readBy, disappear: disappear)
+    }
+
+    /// How a message disappears, as the library words it for ours (with
+    /// the time after read and the limit) and others'.
+    static func disappearance(
+        own: Bool, afterRead: TimeInterval = 300, atMost: TimeInterval = 86_400
+    ) -> Disappearance {
+        let after = Disappearing.choices.first { $0.afterRead == afterRead }?.label ?? ""
+        let most = Disappearing.limits.first { $0.atMost == atMost }?.label ?? ""
+        return Disappearance(
+            afterRead: afterRead, atMost: atMost,
+            words: own
+                ? "Disappears \(after) after everyone has read it, at the latest \(most) after sending"
+                : "Disappears after it was read")
     }
 
     /// A text message; its `text` one paragraph of `body` unless given.

@@ -13,6 +13,9 @@ final class RoomInfoModel: ObservableObject {
     let userId: String
     /// Nil until read.
     @Published private(set) var settings: RoomSettings?
+    /// Our messages here disappear this long after everyone has read them;
+    /// nil: they don't. Followed with the settings.
+    @Published private(set) var disappearingMode: TimeInterval?
     /// Joined and invited members, admins first; nil until read.
     @Published private(set) var members: [Member]?
     /// Why the settings or members could not be read.
@@ -50,6 +53,10 @@ final class RoomInfoModel: ObservableObject {
             let feed = Feed<RoomSettings>()
             work.follow(room.subscribeSettings(listener: feed), feed) { [weak self] settings in
                 self?.settings = settings
+            }
+            let modes = Feed<TimeInterval?>()
+            work.follow(room.subscribeDisappearingMode(listener: modes), modes) { [weak self] mode in
+                self?.disappearingMode = mode
             }
         } catch {
             loadError = errorMessage(error)
@@ -102,6 +109,13 @@ final class RoomInfoModel: ObservableObject {
     @discardableResult
     func setPermissions(_ permissions: Permissions) -> Task<Void, Never> {
         change { try await $0.setPermissions(permissions: permissions) }
+    }
+
+    /// Our messages here disappear `afterRead` after everyone has read them
+    /// (nil: they don't): ours alone, on all our devices.
+    @discardableResult
+    func setDisappearingMode(_ afterRead: TimeInterval?) -> Task<Void, Never> {
+        change { try await $0.setDisappearingMode(afterRead: afterRead) }
     }
 
     /// Encrypt from now on: not to be undone.

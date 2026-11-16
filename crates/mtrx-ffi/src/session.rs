@@ -51,16 +51,26 @@ impl Session {
 
     /// Start syncing in the background (when the app comes to the
     /// foreground). Room lists and timelines only update while sync runs.
+    /// Our disappearing messages are deleted meanwhile, those that fell
+    /// due before at once.
     pub async fn start_sync(&self) {
         let session = self.core();
-        run(async move { session.start_sync().await }).await
+        run(async move {
+            session.start_sync().await;
+            session.start_disappearing();
+        })
+        .await
     }
 
     /// Stop syncing and save the sync position (when the app goes to the
-    /// background).
+    /// background), and deleting disappearing messages.
     pub async fn stop_sync(&self) {
         let session = self.core();
-        run(async move { session.stop_sync().await }).await
+        run(async move {
+            session.stop_disappearing();
+            session.stop_sync().await
+        })
+        .await
     }
 
     /// Try the server now if it was unreachable: the device's network came
@@ -87,7 +97,11 @@ impl Session {
     pub async fn timeline(&self, room_id: String) -> Result<Arc<Timeline>, MtrxError> {
         let room_id = OwnedRoomId::try_from(room_id.as_str()).map_err(MtrxError::invalid)?;
         let session = self.core();
-        run(async move { Ok(Timeline::new(session.timeline(&room_id).await?)) }).await
+        run(async move {
+            let timeline = session.timeline(&room_id).await?;
+            Ok(Timeline::new(timeline, session))
+        })
+        .await
     }
 
     /// A thumbnail of the picture at `mxc_uri` (an avatar), cropped to
