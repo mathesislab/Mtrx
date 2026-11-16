@@ -13,7 +13,7 @@ use mtrx_core::{
     RoomLists, parse_address,
 };
 
-use crate::{app, avatar::Avatars, directory, frame, style, task::Owned};
+use crate::{app, avatar::Avatars, directory, frame, scroll, style, task::Owned};
 
 const WIDTH: f32 = 560.0;
 
@@ -362,7 +362,7 @@ impl Join {
                         .on_press(message(Message::More)),
                 );
             }
-            body = body.push(frame::scroll(list).height(Length::Shrink));
+            body = body.push(scroll::vertical(list).height(Length::Shrink));
         }
         if let Some(error) = &self.error {
             body = body.push(text(error).size(12).style(text::danger));

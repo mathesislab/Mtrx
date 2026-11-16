@@ -33,7 +33,7 @@ use crate::{
     overview,
     popover::{Edge, Side, popover},
     presence::{self, Presences},
-    spelling,
+    scroll, spelling,
     style::{self, ROOM_AVATAR, ROOM_ROW, SPACE_AVATAR, SPACE_BAR_WIDTH},
     tint::Tint,
     topic,
@@ -587,7 +587,7 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, app::Message> {
         list =
             list.push(container(text("Syncing…").size(12).style(text::secondary)).padding([8, 8]));
     }
-    let list = scrollable(list)
+    let list = scroll::vertical(list)
         .id(ROOM_LIST)
         .on_scroll(|_| app::Message::Sidebar(Message::Scrolled))
         .height(Length::Fill);
