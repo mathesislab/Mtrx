@@ -54,8 +54,68 @@ const MAX_WAIT: Duration = Duration::from_secs(30);
 /// A message still in the send queue after this long is dropped from the
 /// list; it was probably cancelled while no timer ran.
 const UNSENT_KEPT: Duration = Duration::from_secs(7 * 24 * 3600);
+const MINUTE: u64 = 60;
+const HOUR: u64 = 60 * MINUTE;
+const DAY: u64 = 24 * HOUR;
+
 /// The maximum lifetime until one is chosen in Settings.
-pub const DEFAULT_AT_MOST: Duration = Duration::from_secs(24 * 3600);
+pub const DEFAULT_AT_MOST: Duration = Duration::from_secs(DAY);
+
+/// The times after read the apps offer, for a message or a room's mode.
+pub const AFTER_READ_CHOICES: [Duration; 4] = [
+    Duration::from_secs(MINUTE),
+    Duration::from_secs(5 * MINUTE),
+    Duration::from_secs(HOUR),
+    Duration::from_secs(DAY),
+];
+
+/// The maximum lifetimes Settings offers.
+pub const AT_MOST_CHOICES: [Duration; 4] = [
+    Duration::from_secs(HOUR),
+    Duration::from_secs(6 * HOUR),
+    DEFAULT_AT_MOST,
+    Duration::from_secs(7 * DAY),
+];
+
+/// `duration` in words, in its largest whole unit: "5 minutes", "1 day".
+pub fn duration_words(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    let (count, unit) = [(DAY, "day"), (HOUR, "hour"), (MINUTE, "minute")]
+        .into_iter()
+        .find(|(unit, _)| secs >= *unit && secs.is_multiple_of(*unit))
+        .map_or((secs, "second"), |(size, unit)| (secs / size, unit));
+    plural(count, unit)
+}
+
+/// A room's mode in words: "Off", "5 minutes after read".
+pub fn disappearing_mode_words(after_read: Option<Duration>) -> String {
+    match after_read {
+        None => "Off".to_owned(),
+        Some(after) => format!("{} after read", duration_words(after)),
+    }
+}
+
+/// The time left until `due`, rounded up: "3 minutes", "less than a
+/// minute".
+fn time_left(due: SystemTime, now: SystemTime) -> String {
+    let secs = due.duration_since(now).unwrap_or_default().as_secs();
+    if secs < MINUTE {
+        "less than a minute".to_owned()
+    } else if secs < HOUR {
+        plural(secs.div_ceil(MINUTE), "minute")
+    } else if secs < DAY {
+        plural(secs.div_ceil(HOUR), "hour")
+    } else {
+        plural(secs.div_ceil(DAY), "day")
+    }
+}
+
+fn plural(count: u64, unit: &str) -> String {
+    match count {
+        1 => format!("1 {unit}"),
+        n => format!("{n} {unit}s"),
+    }
+}
 
 /// How a message disappears: `after_read` after every other member has
 /// read it, and at the latest `at_most` after it was sent. Also the
@@ -66,6 +126,22 @@ pub struct Disappear {
     pub after_read: Duration,
     #[serde(with = "secs")]
     pub at_most: Duration,
+}
+
+impl Disappear {
+    /// What a message sent so says of itself: ours (`own`) when it goes,
+    /// others' only that it does.
+    pub fn words(&self, own: bool) -> String {
+        if own {
+            format!(
+                "Disappears {} after everyone has read it, at the latest {} after sending",
+                duration_words(self.after_read),
+                duration_words(self.at_most),
+            )
+        } else {
+            "Disappears after it was read".to_owned()
+        }
+    }
 }
 
 /// One of our messages waiting to disappear.
@@ -123,6 +199,18 @@ impl Disappearing {
             Some(read) => latest.min(read + self.disappear.after_read),
             None => latest,
         })
+    }
+
+    /// What it says of itself at `now`: once everyone has read it, the
+    /// time left.
+    pub fn words(&self, now: SystemTime) -> String {
+        match (self.read_at, self.due()) {
+            (Some(_), Some(due)) => format!(
+                "Everyone has read it: disappears in {}",
+                time_left(due, now)
+            ),
+            _ => self.disappear.words(true),
+        }
     }
 }
 
@@ -822,5 +910,52 @@ mod tests {
         let bytes = serde_json::to_vec(&list).unwrap();
         let back: Vec<Disappearing> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(back, list);
+    }
+
+    #[test]
+    fn durations_in_words() {
+        let secs = Duration::from_secs;
+        assert_eq!(duration_words(secs(60)), "1 minute");
+        assert_eq!(duration_words(secs(300)), "5 minutes");
+        assert_eq!(duration_words(secs(3600)), "1 hour");
+        assert_eq!(duration_words(secs(6 * 3600)), "6 hours");
+        assert_eq!(duration_words(secs(86400)), "1 day");
+        assert_eq!(duration_words(secs(7 * 86400)), "7 days");
+        assert_eq!(duration_words(secs(90)), "90 seconds");
+        assert_eq!(disappearing_mode_words(None), "Off");
+        assert_eq!(
+            disappearing_mode_words(Some(secs(300))),
+            "5 minutes after read"
+        );
+    }
+
+    #[test]
+    fn time_left_rounds_up() {
+        let now = SystemTime::UNIX_EPOCH;
+        let at = |s| now + Duration::from_secs(s);
+        assert_eq!(time_left(at(30), now), "less than a minute");
+        assert_eq!(time_left(at(61), now), "2 minutes");
+        assert_eq!(time_left(at(3600), now), "1 hour");
+        assert_eq!(time_left(at(3601), now), "2 hours");
+        assert_eq!(time_left(now, at(5)), "less than a minute", "overdue");
+    }
+
+    #[test]
+    fn messages_say_when_they_go() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let unread = entry(t, None);
+        assert_eq!(
+            unread.words(t),
+            "Disappears 5 minutes after everyone has read it, at the latest 1 hour after sending"
+        );
+        assert_eq!(
+            unread.disappear.words(false),
+            "Disappears after it was read"
+        );
+        let read = entry(t, Some(t + Duration::from_secs(60)));
+        assert_eq!(
+            read.words(t + Duration::from_secs(120)),
+            "Everyone has read it: disappears in 4 minutes"
+        );
     }
 }

@@ -15,8 +15,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    AtHome, CallService, Grouping, OwnedRoomId, Rights, RoomCategories, RoomListColours,
-    ServiceKind,
+    AT_MOST_CHOICES, AtHome, CallService, Grouping, OwnedRoomId, Rights, RoomCategories,
+    RoomListColours, ServiceKind,
 };
 use mtrx_google::GoogleClient;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ use crate::{
     app,
     appearance::Appearance,
     dialog::Kind,
-    disappear::{self, Limit},
+    disappear::Limit,
     feedback, fonts, frame,
     hint::{Position, hint, shortcut},
     spelling, style,
@@ -574,7 +574,7 @@ impl Panel {
                 "Messages you send to disappear after read are deleted at the latest this \
                  long after sending, also when not everyone has read them.",
                 pick_list(
-                    disappear::AT_MOST.map(Limit),
+                    AT_MOST_CHOICES.map(Limit),
                     Some(Limit(disappearing_limit)),
                     |Limit(at_most)| preference(Preference::DisappearingLimit(at_most)),
                 )

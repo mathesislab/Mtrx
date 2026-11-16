@@ -56,8 +56,9 @@ pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag
 pub use connection::Connection;
 pub use directory::{DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, parse_address};
 pub use disappearing::{
-    DEFAULT_AT_MOST, Disappear, Disappearing, DisappearingLimit, MARKER as DISAPPEARING_MARKER,
-    Sent,
+    AFTER_READ_CHOICES, AT_MOST_CHOICES, DEFAULT_AT_MOST, Disappear, Disappearing,
+    DisappearingLimit, MARKER as DISAPPEARING_MARKER, Sent, disappearing_mode_words,
+    duration_words,
 };
 pub use downloads::{Download, DownloadId, DownloadState, SaveTo, human_size};
 pub use drafts::{DRAFT_PAUSE, Draft, DraftKeeper};
