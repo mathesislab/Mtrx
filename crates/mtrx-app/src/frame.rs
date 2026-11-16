@@ -4,10 +4,10 @@
 
 use iced::{
     Alignment, Element, Length, Theme,
-    widget::{button, column, container, row, rule, scrollable, stack, text},
+    widget::{button, column, container, row, rule, stack, text},
 };
 
-use crate::{app, fonts, hint, icons, style};
+use crate::{app, fonts, hint, icons, scroll, style};
 
 /// Most of the window's height; the body scrolls beyond.
 const MAX_HEIGHT: f32 = 680.0;
@@ -45,7 +45,7 @@ pub fn with_bar<'a>(
     }
     header = header.push(close_button(close));
     let top = container(header).padding(iced::Padding::new(12.0).left(20.0));
-    let scrolling = |padding| scroll(container(body).padding(padding));
+    let scrolling = |padding| scroll::vertical(container(body).padding(padding));
     let frame = match bar {
         None => column![
             top,
@@ -87,13 +87,6 @@ pub fn with_bar<'a>(
         .max_height(MAX_HEIGHT)
         .style(style::dialog)
         .into()
-}
-
-/// `content` scrolling, its scrollbar beside it rather than over it.
-pub fn scroll<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> iced::widget::Scrollable<'a, M> {
-    scrollable(content).direction(scrollable::Direction::Vertical(
-        scrollable::Scrollbar::new().spacing(4),
-    ))
 }
 
 /// A plain title for [`frame`].

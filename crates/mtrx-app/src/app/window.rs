@@ -63,6 +63,19 @@ pub enum Resize {
     End,
 }
 
+/// The room list's edge being dragged. The list's width follows the
+/// cursor from where it first moved, so the edge does not jump to it: the
+/// list is wider than set while its scrollbar shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Drag {
+    Pressed,
+    /// The cursor's x and the list's width when the cursor first moved.
+    From {
+        x: f32,
+        width: f32,
+    },
+}
+
 /// The window's size, place and scale, and the system's theme.
 pub struct Window {
     /// The window's size and position, to open it there again.
@@ -76,8 +89,8 @@ pub struct Window {
     /// Light or dark as iced reports the system (on macOS, the app's
     /// appearance, see [`crate::appearance`]).
     pub system_mode: Mode,
-    /// The room list's edge is being dragged.
-    pub resizing: bool,
+    /// The room list's edge, while dragged.
+    pub resizing: Option<Drag>,
     /// The window has the keyboard focus (notifications only when not
     /// looking at the room).
     pub focused: bool,
@@ -103,7 +116,7 @@ impl Window {
             placement_file,
             scale: 1.0,
             system_mode: Mode::Light,
-            resizing: false,
+            resizing: None,
             focused: true,
         }
     }
@@ -150,16 +163,25 @@ impl Window {
                 return (Task::none(), Changed::Settings);
             }
             Message::Resize(Resize::Start) => {
-                self.resizing = true;
+                self.resizing = Some(Drag::Pressed);
                 Task::none()
             }
             Message::Resize(Resize::Move(x)) => {
-                settings.room_list_width =
-                    (x - SPACE_BAR_WIDTH).clamp(MIN_ROOM_LIST_WIDTH, MAX_ROOM_LIST_WIDTH);
+                match self.resizing {
+                    Some(Drag::Pressed) => {
+                        let width = settings.room_list_width;
+                        self.resizing = Some(Drag::From { x, width });
+                    }
+                    Some(Drag::From { x: from, width }) => {
+                        settings.room_list_width =
+                            (width + x - from).clamp(MIN_ROOM_LIST_WIDTH, MAX_ROOM_LIST_WIDTH);
+                    }
+                    None => {}
+                }
                 Task::none()
             }
             Message::Resize(Resize::End) => {
-                self.resizing = false;
+                self.resizing = None;
                 return (Task::none(), Changed::Settings);
             }
             Message::Opened(id, Some(displays), Some(position)) => {
@@ -239,7 +261,9 @@ impl Window {
         self.scale * settings.text_size.scale()
     }
 
-    /// The width of the open room, right of the room list.
+    /// The width of the open room, right of the room list. While the list
+    /// scrolls, its scrollbar takes 14 of this; math and the topic panel,
+    /// sized from it, leave more than that free.
     pub fn room_width(&self, settings: &Settings) -> f32 {
         self.viewport(settings).width - SPACE_BAR_WIDTH - settings.room_list_width - RESIZE_HANDLE
     }
@@ -272,7 +296,7 @@ impl Window {
             // Also on the sign-in screen.
             iced::event::listen_with(keys),
         ];
-        if self.resizing {
+        if self.resizing.is_some() {
             subscriptions.push(iced::event::listen_with(|event, _, _| match event {
                 iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     Some(to(Message::Resize(Resize::Move(position.x))))

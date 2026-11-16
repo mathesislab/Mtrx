@@ -3,14 +3,16 @@
 
 use iced::{
     Element,
-    widget::{container, text, tooltip},
+    widget::{container, text, text::Wrapping, tooltip},
 };
 
 use crate::style;
 
 pub use iced::widget::tooltip::Position;
 
-/// Longer labels wrap rather than make a very wide box.
+/// Longer labels wrap rather than make a very wide box: at spaces, and
+/// within a word (an address) longer than a line, so no text runs out of
+/// the box.
 const HINT_MAX_WIDTH: f32 = 260.0;
 
 pub fn hint<'a, M: 'a>(
@@ -18,7 +20,8 @@ pub fn hint<'a, M: 'a>(
     label: impl text::IntoFragment<'a>,
     position: Position,
 ) -> Element<'a, M> {
-    hint_with(content, text(label).size(12), position)
+    let label = text(label).size(12).wrapping(Wrapping::WordOrGlyph);
+    hint_with(content, label, position)
 }
 
 /// A hint whose label is more than one text, e.g. with an emoji.

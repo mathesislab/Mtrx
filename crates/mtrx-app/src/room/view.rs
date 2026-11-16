@@ -1044,12 +1044,16 @@ fn day_divider<'a>(parts: &[Part<'_>], context: &Context<'a, '_>) -> Element<'a,
     container(divider).id(row_id(&part.key)).into()
 }
 
-/// The unread messages below: "New" on a line, as a day between days.
+/// The unread messages below: "New" on a line in the accent colour, set
+/// apart from the grey lines between days.
 fn read_marker<'a>() -> Element<'a, app::Message> {
     row![
-        rule::horizontal(1).style(style::separator),
-        text("New").size(12).style(text::secondary),
-        rule::horizontal(1).style(style::separator),
+        rule::horizontal(1).style(style::read_marker),
+        text("New")
+            .size(12)
+            .font(fonts::SEMIBOLD)
+            .style(style::read_marker_text),
+        rule::horizontal(1).style(style::read_marker),
     ]
     .spacing(12)
     .align_y(Alignment::Center)

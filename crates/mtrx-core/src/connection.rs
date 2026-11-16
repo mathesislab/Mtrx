@@ -57,9 +57,10 @@ pub(crate) fn watch(
                 change = sessions.recv() => match change {
                     Ok(SessionChange::UnknownToken(_)) => {
                         warn!("the server no longer accepts this session");
-                        tx.send_replace(Connection::SignedOut);
                         // Retrying cannot help; and states no longer matter.
+                        // Stopped first, so signed out means sync stopped.
                         sync.stop().await;
+                        tx.send_replace(Connection::SignedOut);
                         return;
                     }
                     Ok(SessionChange::TokensRefreshed)

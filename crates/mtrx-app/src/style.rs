@@ -288,6 +288,21 @@ pub fn quote_bar(theme: &Theme) -> container::Style {
     }
 }
 
+/// The line above unread messages: in the accent colour, as links.
+pub fn read_marker(theme: &Theme) -> rule::Style {
+    rule::Style {
+        color: theme.extended_palette().primary.base.color,
+        ..rule::default(theme)
+    }
+}
+
+/// "New" on the line above unread messages.
+pub fn read_marker_text(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(theme.extended_palette().primary.base.color),
+    }
+}
+
 /// Subtle line under headers.
 pub fn separator(theme: &Theme) -> rule::Style {
     rule::Style {
@@ -330,11 +345,11 @@ pub fn home_tile(theme: &Theme) -> container::Style {
     }
 }
 
-/// Unread marker on a space.
+/// Unread marker on a space: in the accent colour, as unread counts.
 pub fn unread_dot(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {
-        background: Some(Background::Color(palette.background.base.text)),
+        background: Some(Background::Color(palette.primary.base.color)),
         border: Border::default()
             .rounded(5)
             .width(2)
@@ -343,8 +358,7 @@ pub fn unread_dot(theme: &Theme) -> container::Style {
     }
 }
 
-/// On the settings gear: a new version of the app. In the accent colour,
-/// apart from the black dots of unread spaces.
+/// On the settings gear: a new version of the app, in the accent colour.
 pub fn update_dot(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(
@@ -355,18 +369,18 @@ pub fn update_dot(theme: &Theme) -> container::Style {
     }
 }
 
-/// An unread count: red for mentions, else a grey darker (in dark mode
-/// lighter) than the room list and its selected row.
+/// An unread count: red for mentions, else in the accent colour, white on
+/// it.
 pub fn badge(theme: &Theme, highlight: bool) -> container::Style {
     let palette = theme.extended_palette();
-    let pair = if highlight {
-        palette.danger.base
+    let (color, text) = if highlight {
+        (palette.danger.base.color, palette.danger.base.text)
     } else {
-        palette.background.strongest
+        (palette.primary.base.color, Color::WHITE)
     };
     container::Style {
-        background: Some(Background::Color(pair.color)),
-        text_color: Some(pair.text),
+        background: Some(Background::Color(color)),
+        text_color: Some(text),
         border: Border::default().rounded(8),
         ..Default::default()
     }
@@ -945,8 +959,8 @@ mod tests {
                     contrast(text, bubble)
                 );
             }
-            // The grey bubble stands out from every room list colour, and
-            // from the selected row.
+            // The bubble stands out from every room list colour, and from
+            // the selected row.
             let Some(Background::Color(bubble)) = badge(&theme, false).background else {
                 unreachable!()
             };

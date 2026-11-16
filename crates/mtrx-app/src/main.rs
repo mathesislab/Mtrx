@@ -60,6 +60,7 @@ mod presence;
 mod reorder;
 mod room;
 mod rows;
+mod scroll;
 mod selectable;
 mod selection;
 mod send_later;

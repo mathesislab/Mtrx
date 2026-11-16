@@ -11,13 +11,13 @@ use crate::{
     avatar::{Avatars, Shape},
     dialog::{Kind, LevelChange},
     ellipsis::ellipsis,
-    fonts, frame,
+    fonts,
     hint::{Position, hint},
     icons,
     menu::{self, Entry, Item, Width},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
-    style,
+    scroll, style,
 };
 
 const WIDTH: f32 = 250.0;
@@ -84,7 +84,7 @@ pub fn view<'a>(
             .on_press(Message::Pane(app::pane::Message::ToggleMembers)),
     );
     let panel = column![header].spacing(2).padding(8);
-    container(frame::scroll(panel.push(rows(list, shown))))
+    container(scroll::vertical(panel.push(rows(list, shown))))
         .width(WIDTH)
         .height(Length::Fill)
         .style(style::panel)

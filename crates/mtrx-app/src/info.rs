@@ -32,6 +32,7 @@ use crate::{
     overview::{self, Overview},
     popover::{Edge, Side, popover},
     presence::{self, Presences},
+    scroll,
     selectable::text::selectable_text,
     settings::{self, Preference},
     sidebar, spelling, style,
@@ -829,7 +830,7 @@ impl Card {
         // A space: its rooms, members and these settings, in tabs. The
         // topic stays above them, scrolling itself if long.
         let bar = column![
-            container(frame::scroll(about).height(Length::Shrink)).max_height(ABOUT_HEIGHT),
+            container(scroll::vertical(about).height(Length::Shrink)).max_height(ABOUT_HEIGHT),
             overview.tabs(),
         ]
         .spacing(12);
@@ -1397,7 +1398,7 @@ fn shared_view<'a>(shared: &[OwnedRoomId], rooms: &'a [RoomSummary]) -> Element<
             .size(11)
             .font(fonts::SEMIBOLD)
             .style(text::secondary),
-        container(frame::scroll(list).height(Length::Shrink)).max_height(SHARED_HEIGHT),
+        container(scroll::vertical(list).height(Length::Shrink)).max_height(SHARED_HEIGHT),
     ]
     .spacing(4)
     .into()
