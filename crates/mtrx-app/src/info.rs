@@ -892,7 +892,7 @@ impl Card {
                 "Disappearing messages",
                 "Your messages here are deleted for everyone this long after all others \
                  have read them, at the latest after the limit in Settings. Only while Mtrx \
-                 runs on one of your computers.",
+                 is open on one of your devices.",
                 pick_list(
                     disappear::Mode::all(),
                     Some(mode),

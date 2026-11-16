@@ -4,8 +4,9 @@
 //!
 //! Matrix has no expiry for messages, so this runs here, as send later
 //! does. A message sent to disappear is listed in the local (encrypted)
-//! store until a timer deletes it; the timer runs while the app or `mtrx
-//! watch` runs, and deletes what fell due meanwhile as soon as it starts.
+//! store until a timer deletes it; the timer runs while the desktop app,
+//! `mtrx watch` or a phone app in front runs, and deletes what fell due
+//! meanwhile as soon as it starts.
 //! Texts carry a marker ([`MARKER`]), so those our other devices send are
 //! listed when they sync, and others see that they disappear; files can't
 //! carry it, so only the device sending them lists them.
@@ -791,6 +792,12 @@ impl Session {
     pub fn start_disappearing(&self) {
         *self.disappearer.lock().expect("not poisoned") = Some(self.disappearing.start());
     }
+
+    /// Stop deleting until [`Session::start_disappearing`] (a phone app
+    /// went to the background).
+    pub fn stop_disappearing(&self) {
+        *self.disappearer.lock().expect("not poisoned") = None;
+    }
 }
 
 impl RoomHandle {
@@ -798,6 +805,23 @@ impl RoomHandle {
     pub fn disappearing_mode(&self) -> Option<Duration> {
         let modes = self.session.disappearing.modes.borrow();
         modes.get(self.room.room_id()).copied()
+    }
+
+    /// The room's mode, then every change, from here or our other devices.
+    pub fn disappearing_mode_updates(&self) -> Live<Option<Duration>> {
+        let room = self.room.room_id().to_owned();
+        let mut modes = self.session.disappearing.modes.subscribe();
+        let first = modes.borrow_and_update().get(&room).copied();
+        Live::spawn(first, move |tx| async move {
+            while modes.changed().await.is_ok() {
+                let mode = modes.borrow_and_update().get(&room).copied();
+                tx.send_if_modified(|shown| {
+                    let changed = *shown != mode;
+                    *shown = mode;
+                    changed
+                });
+            }
+        })
     }
 
     /// Set the room's mode (`None` for off); only ours, on our devices.
