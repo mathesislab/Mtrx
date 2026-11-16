@@ -126,6 +126,21 @@ final class ScreenshotTests: XCTestCase {
         try await snap("05b-room-draft", wait: 2, HomeView())
     }
 
+    /// The room's mode on: the hourglass beside Send lit, and one by the
+    /// time of Bob's message and ours that disappear; our message's menu
+    /// says when it goes.
+    func testDisappearingMessages() async throws {
+        session.fakeTimeline.initialRows = Screens.timeline
+        session.disappearingMode = 300
+        model.home.tab = .rooms
+        model.home.roomsPath = ["!ice"]
+        try await snap("05e-room-disappearing", wait: 2, HomeView())
+        let ours = try XCTUnwrap(Screens.timeline.first { $0.id == "p2" }?.messageRow)
+        try await snap(
+            "05f-message-menu-disappearing",
+            MessageMenu(row: ours, entries: ours.actions, react: { _ in }, choose: { _ in }))
+    }
+
     /// The largest text size (Accessibility): the lists put a room's time
     /// and counts under its name; a room, and its info.
     func testLargeText() async throws {
@@ -439,12 +454,16 @@ private enum Screens {
                 "o", Make.event("me", .other(description: "poll"), at: at(10), own: true, eventId: "$o"),
                 firstInGroup: false),
             Make.row(
-                "p1", Make.event("bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1")),
+                "p1",
+                Make.event(
+                    "bob", Make.text("Meeting moved to 14:00 on Thursday."), at: at(20), eventId: "$p1",
+                    disappear: Make.disappearance(own: false))),
             Make.row("f", Make.event("bob", formatted, at: at(21), eventId: "$f"), firstInGroup: false),
             Make.row(
                 "p2",
                 Make.event(
-                    "me", Make.text("Agenda: runs, the paper, fieldwork."), at: at(22), own: true, eventId: "$p2")),
+                    "me", Make.text("Agenda: runs, the paper, fieldwork."), at: at(22), own: true, eventId: "$p2",
+                    disappear: Make.disappearance(own: true))),
         ]
     }
 

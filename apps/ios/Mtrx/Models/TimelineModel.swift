@@ -3,8 +3,8 @@ import Foundation
 import MtrxFFI
 
 /// A room's timeline while it is shown: its rows, loading older messages,
-/// sending, replying, editing and acting on messages, who types, and
-/// marking it read.
+/// sending (to disappear, if so chosen), replying, editing and acting on
+/// messages, who types, and marking it read.
 @MainActor
 final class TimelineModel: ObservableObject {
     /// Older messages loaded per request.
@@ -39,6 +39,11 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var compose: Compose? {
         didSet { drafts.changed(draft: keptDraft) }
     }
+    /// What is sent from now on (replies too, not edits) disappears this
+    /// long after everyone has read it; nil: it doesn't. The room's mode
+    /// until one is chosen in the composer, which holds while the room is
+    /// open.
+    @Published private(set) var disappearAfterRead: TimeInterval?
     /// The names of the others typing.
     @Published private(set) var typing: [String] = []
     /// Looking for a quoted message in older events.
@@ -81,6 +86,9 @@ final class TimelineModel: ObservableObject {
     /// That message's row, found by the library: answered once it is
     /// among the rows.
     private var replyRow: String?
+    /// How long after read was chosen in the composer: the room's mode no
+    /// longer applies.
+    private var choseDisappear = false
 
     init(session: Session, room: RoomSummary) {
         self.session = session
@@ -92,7 +100,7 @@ final class TimelineModel: ObservableObject {
 
     /// Open the timeline, with the draft left in the room unless something
     /// was written meanwhile: its text, and the reply once its message is
-    /// in the timeline.
+    /// in the timeline. Then follow the room's disappearing mode.
     func open() async {
         guard timeline == nil else { return }
         // Before the timeline: bringing it back is not typing.
@@ -106,6 +114,11 @@ final class TimelineModel: ObservableObject {
             let feed = Feed<[TimelineRow]>()
             work.follow(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
                 self?.apply(rows)
+            }
+            let room = try session.room(roomId: roomId)
+            let modes = Feed<TimeInterval?>()
+            work.follow(room.subscribeDisappearingMode(listener: modes), modes) { [weak self] mode in
+                self?.applyDisappearingMode(mode)
             }
             if let eventId = restoringReply {
                 waitForReply(eventId, in: timeline)
@@ -242,12 +255,13 @@ final class TimelineModel: ObservableObject {
         let drafts = self.drafts
         Task { await drafts.flush() }
         let left = draft
+        let afterRead = disappearAfterRead
         return work.request {
             switch compose {
             case nil:
-                try await timeline.sendText(text: text)
+                try await timeline.sendText(text: text, disappearAfterRead: afterRead)
             case .reply(let target):
-                try await timeline.reply(itemId: target.itemId, text: text)
+                try await timeline.reply(itemId: target.itemId, text: text, disappearAfterRead: afterRead)
             case .edit(let target):
                 try await timeline.edit(itemId: target.itemId, text: text)
             }
@@ -298,6 +312,22 @@ final class TimelineModel: ObservableObject {
             savedDraft = nil
         }
         compose = nil
+    }
+
+    /// What is sent from now on disappears `afterRead` after everyone has
+    /// read it (nil: it doesn't), whatever the room's mode, until the room
+    /// closes.
+    func chooseDisappear(_ afterRead: TimeInterval?) {
+        choseDisappear = true
+        disappearAfterRead = afterRead
+    }
+
+    /// The room's mode, now or changed (also on our other devices): what is
+    /// sent follows it, unless chosen in the composer.
+    private func applyDisappearingMode(_ afterRead: TimeInterval?) {
+        if !choseDisappear {
+            disappearAfterRead = afterRead
+        }
     }
 
     // MARK: Drafts

@@ -196,8 +196,8 @@ struct TopicSection: View {
     }
 }
 
-/// A room's settings, each only where we may change it, its spaces, its
-/// facts and who is banned.
+/// A room's settings, each only where we may change it, our disappearing
+/// mode (joined rooms), its spaces, its facts and who is banned.
 struct RoomSettingsSections: View {
     let room: RoomSummary
     @ObservedObject var model: RoomInfoModel
@@ -209,6 +209,9 @@ struct RoomSettingsSections: View {
     var body: some View {
         if let settings = model.settings {
             settingsSection(settings)
+            if room.membership == .joined && room.kind != .space {
+                disappearingSection
+            }
             spacesSection(settings)
             Section {
                 Text(RoomFacts.line(room, settings))
@@ -328,6 +331,25 @@ struct RoomSettingsSections: View {
 
     private func saveAddress() {
         model.setAddress(address)
+    }
+
+    /// How long after read our messages here disappear, or not: ours
+    /// alone, for all our devices.
+    private var disappearingSection: some View {
+        Section {
+            Picker(
+                "Disappearing messages",
+                selection: Binding(get: { model.disappearingMode }, set: { model.setDisappearingMode($0) })
+            ) {
+                ForEach(Disappearing.choices, id: \.afterRead) { choice in
+                    Text(choice.modeLabel).tag(choice.afterRead)
+                }
+            }
+        } footer: {
+            Text(
+                "Your messages here are deleted for everyone this long after all others have read them, at the "
+                    + "latest after the limit in Settings. Only while Mtrx is open on one of your devices.")
+        }
     }
 
     /// The name of the address, if on our server: "ice" of "#ice:example.org".

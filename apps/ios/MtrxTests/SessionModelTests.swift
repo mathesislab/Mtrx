@@ -170,6 +170,26 @@ final class SessionModelTests: XCTestCase {
         XCTAssertTrue(encryption.verification === shown)
     }
 
+    /// Shown at once; if not saved, the saved one again, and why.
+    func testTheDisappearingLimitChanges() async {
+        XCTAssertEqual(model.disappearingLimit, 86_400)
+        let saving = model.setDisappearingLimit(3_600)
+        XCTAssertEqual(model.disappearingLimit, 3_600)
+        await saving.value
+        XCTAssertEqual(session.changes, ["limit 3600"])
+        XCTAssertNil(model.error)
+        session.changeError = MtrxError.Other(reason: "No connection")
+        await model.setDisappearingLimit(604_800).value
+        await eventually { self.model.disappearingLimit == 3_600 }
+        XCTAssertEqual(model.error, "No connection")
+    }
+
+    /// Changed on another device: shown as the library tells it.
+    func testTheDisappearingLimitIsFollowed() async {
+        session.limit = 21_600
+        await eventually { self.model.disappearingLimit == 21_600 }
+    }
+
     /// A usable network path tries the server again.
     func testTheNetworkBackReconnects() async {
         model.network.pathChanged(usable: false)

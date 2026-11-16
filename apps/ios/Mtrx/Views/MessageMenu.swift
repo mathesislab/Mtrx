@@ -1,9 +1,10 @@
 import MtrxFFI
 import SwiftUI
 
-/// A held message's menu, as a sheet: the message, the common reactions
-/// (ours marked) and a button for all of them, then what can be done with
-/// it. Choosing closes it; a reaction shows under the message at once.
+/// A held message's menu, as a sheet: the message, when it disappears (if
+/// it does), the common reactions (ours marked) and a button for all of
+/// them, then what can be done with it. Choosing closes it; a reaction
+/// shows under the message at once.
 struct MessageMenu: View {
     let row: MessageRow
     /// Only what applies to the message, in order.
@@ -18,6 +19,9 @@ struct MessageMenu: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             preview
+            if let disappear = row.event.disappear {
+                disappears(disappear)
+            }
             if entries.contains(.react) {
                 reactions
             }
@@ -56,6 +60,19 @@ struct MessageMenu: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    /// When it disappears, in the library's words: for ours, how long after
+    /// read and at the latest; for others', only that it does.
+    private func disappears(_ disappear: Disappearance) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "hourglass")
+                .accessibilityHidden(true)
+            Text(disappear.words)
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var reactions: some View {

@@ -74,3 +74,11 @@ extension Feed: VerificationRequestListener where Value == Verification {
 extension Feed: DownloadsListener where Value == [Download] {
     func onUpdate(downloads: [Download]) { send(downloads) }
 }
+
+extension Feed: DisappearingModeListener where Value == TimeInterval? {
+    func onUpdate(afterRead: TimeInterval?) { send(afterRead) }
+}
+
+extension Feed: DisappearingLimitListener where Value == TimeInterval {
+    func onUpdate(atMost: TimeInterval) { send(atMost) }
+}

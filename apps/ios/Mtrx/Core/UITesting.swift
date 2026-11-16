@@ -6,8 +6,11 @@ import MtrxFFI
 /// account signed in with made-up rooms and messages, and no server: the
 /// Lab room in no space, Models and Papers in the space Team, and a chat
 /// with Ann, who is in all of them. Each room has messages of its own, the
-/// Lab's last one ours, to delete. A message sent shows at once, then as
-/// the server's copy; one deleted shows as deleted. A message sent or
+/// Lab's last one ours, to delete, and Ann's formatted one there to
+/// disappear. A message sent shows at once, then as the server's copy,
+/// marked to disappear if so sent (at most the limit after sending, 1 day
+/// unless changed in Settings); one deleted shows as deleted. Each room's
+/// disappearing mode is off. A message sent or
 /// arrived moves its room up the list, as the library orders it. With
 /// `-ui-testing-arrivals`, a message of Ann's arrives every two seconds in
 /// a room from when it first opens; with `-ui-testing-arrivals-papers`, in
@@ -64,6 +67,8 @@ private final class UITestSession: Session, @unchecked Sendable {
     private var drafts: [String: Draft] = [:]
     private var timelines: [String: UITestTimeline] = [:]
     private var listener: RoomListsListener?
+    /// The limit of disappearing messages.
+    private var limit: TimeInterval = 86_400
     /// The rooms, in any order.
     private var rooms = [
         UITestSession.summary(UITesting.lab, "Lab"),
@@ -168,6 +173,28 @@ private final class UITestSession: Session, @unchecked Sendable {
     override func presenceActivity(activity: PresenceActivity) async throws {}
     override func setPresenceSharing(on: Bool) async throws {}
 
+    override func disappearingLimit() -> TimeInterval { lock.withLock { limit } }
+
+    override func subscribeDisappearingLimit(listener: DisappearingLimitListener) -> TaskHandle {
+        listener.onUpdate(atMost: disappearingLimit())
+        return UITestHandle(noHandle: .init())
+    }
+
+    override func setDisappearingLimit(atMost: TimeInterval) async throws {
+        lock.withLock { limit = atMost }
+    }
+
+    /// How a message we send to disappear `afterRead` is marked, as the
+    /// library marks and words it, with the limit.
+    fileprivate func disappearance(afterRead: TimeInterval) -> Disappearance {
+        let atMost = disappearingLimit()
+        let after = Disappearing.choices.first { $0.afterRead == afterRead }?.label ?? ""
+        let most = Disappearing.limits.first { $0.atMost == atMost }?.label ?? ""
+        return Disappearance(
+            afterRead: afterRead, atMost: atMost,
+            words: "Disappears \(after) after everyone has read it, at the latest \(most) after sending")
+    }
+
     override func presence(userId: String) async throws -> Presence {
         throw MtrxError.Other(reason: "No presence here")
     }
@@ -198,13 +225,19 @@ private final class UITestSession: Session, @unchecked Sendable {
     }
 }
 
-/// A room's settings and members: none here.
+/// A room's settings and members: none here. Its disappearing mode is off;
+/// it is set only in the settings, not shown here.
 private final class UITestRoom: Room, @unchecked Sendable {
     override func subscribeSettings(listener: RoomSettingsListener) -> TaskHandle {
         UITestHandle(noHandle: .init())
     }
 
     override func members() async throws -> [Member] { [] }
+
+    override func subscribeDisappearingMode(listener: DisappearingModeListener) -> TaskHandle {
+        listener.onUpdate(afterRead: nil)
+        return UITestHandle(noHandle: .init())
+    }
 }
 
 /// A room's draft, kept in the session as it changes while the app runs.
@@ -237,8 +270,8 @@ private final class UITestDraftKeeper: DraftKeeper, @unchecked Sendable {
 
 /// A room's messages: Ann's and ours, of one to seven lines, the last two
 /// not read yet; in the Lab "Message 0, a line of it." and on, then Ann's
-/// formatted message and her message with math, the last one ours, to
-/// delete; elsewhere the room's name instead of "Message".
+/// formatted message, to disappear, and her message with math, the last
+/// one ours, to delete; elsewhere the room's name instead of "Message".
 private final class UITestTimeline: Timeline, @unchecked Sendable {
     private let lock = NSLock()
     private var room = UITesting.lab
@@ -284,8 +317,14 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
         if word == "Message" {
             // Not among the tall newest of `-ui-testing-history`.
             if !UITesting.history {
+                // Others' say only that they disappear.
+                let disappear = Disappearance(afterRead: 300, atMost: 86_400, words: "Disappears after it was read")
                 items.append(
-                    row("formatted", event(formatted, own: false, at: start.addingTimeInterval(1_860), id: "$formatted")))
+                    row(
+                        "formatted",
+                        event(
+                            formatted, own: false, at: start.addingTimeInterval(1_860), id: "$formatted",
+                            disappear: disappear)))
                 items.append(row("math", event(math, own: false, at: start.addingTimeInterval(1_880), id: "$math")))
             }
             items.append(message("mine", "Mine, to delete", own: true, at: start.addingTimeInterval(1_900)))
@@ -293,19 +332,25 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
         return items
     }
 
-    private static func message(_ id: String, _ text: String, own: Bool, at: Date, sent: Bool = true) -> TimelineRow {
+    private static func message(
+        _ id: String, _ text: String, own: Bool, at: Date, sent: Bool = true, disappear: Disappearance? = nil
+    ) -> TimelineRow {
         let message = Message(
             kind: .text, body: text, edited: false, media: nil, reactions: [], replyTo: nil, rawBody: text,
             text: [paragraph([.text(text: text, style: .plain, link: nil)])])
-        return row(id, event(message, own: own, at: at, id: sent ? "$\(id)" : nil))
+        return row(id, event(message, own: own, at: at, id: sent ? "$\(id)" : nil, disappear: disappear))
     }
 
-    /// Ours or Ann's `message`, sent unless it has no event ID.
-    private static func event(_ message: Message, own: Bool, at: Date, id: String?) -> TimelineEvent {
+    /// Ours or Ann's `message`, sent unless it has no event ID; to
+    /// disappear as `disappear` says.
+    private static func event(
+        _ message: Message, own: Bool, at: Date, id: String?, disappear: Disappearance? = nil
+    ) -> TimelineEvent {
         let sender = own ? User(userId: "@me:example.org", name: "Me", avatarUrl: nil, displayName: "Me") : annUser
         return TimelineEvent(
             eventId: id, sender: sender, timestamp: at, own: own,
-            content: .message(message: message), sendState: id != nil ? .sent : .sending, editable: own)
+            content: .message(message: message), sendState: id != nil ? .sent : .sending, editable: own,
+            disappear: disappear)
     }
 
     private static func paragraph(_ runs: [TextRun]) -> TextBlock {
@@ -418,22 +463,24 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
 
     /// Shown at once; read (the marker gone) and the server's copy a moment
     /// later.
-    override func sendText(text: String) async throws {
+    override func sendText(text: String, disappearAfterRead: TimeInterval?) async throws {
         let id = lock.withLock {
             sent += 1
             return "sent\(sent)"
         }
-        change { $0.append(Self.message(id, text, own: true, at: Date(), sent: false)) }
+        let disappear = disappearAfterRead.flatMap { session?.disappearance(afterRead: $0) }
+        change { $0.append(Self.message(id, text, own: true, at: Date(), sent: false, disappear: disappear)) }
         session?.active(roomId())
         try? await Task.sleep(nanoseconds: 300_000_000)
         change { items in
             items.removeAll { $0.id == "read-marker" }
             if let at = items.firstIndex(where: { $0.id == id }) {
-                items[at] = Self.message(id, text, own: true, at: Date())
+                items[at] = Self.message(id, text, own: true, at: Date(), disappear: disappear)
             }
         }
     }
 
+    /// Deleted, its content and the marker in it are gone.
     override func delete(itemId: String) async throws {
         change { items in
             guard let at = items.firstIndex(where: { $0.id == itemId }),
@@ -441,6 +488,7 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
             else { return }
             event.content = .redacted
             event.editable = false
+            event.disappear = nil
             items[at] = Self.row(itemId, event)
         }
     }

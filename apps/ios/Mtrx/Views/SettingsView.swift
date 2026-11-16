@@ -1,8 +1,8 @@
 import MtrxFFI
 import SwiftUI
 
-/// The Settings tab: the account, sharing our presence, its encryption on
-/// this device, and signing out.
+/// The Settings tab: the account, sharing our presence, the limit of our
+/// disappearing messages, its encryption on this device, and signing out.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
@@ -73,9 +73,12 @@ private struct RoomListSection: View {
     }
 }
 
-/// Whether others see when we are online or idle.
+/// Whether others see when we are online or idle, and how long after
+/// sending our disappearing messages go at the latest, each with its
+/// footer.
 private struct PrivacySection: View {
     @EnvironmentObject private var presence: PresenceModel
+    @EnvironmentObject private var session: SessionModel
 
     var body: some View {
         Section {
@@ -85,6 +88,20 @@ private struct PrivacySection: View {
             Text("Privacy")
         } footer: {
             Text(presence.available ? "Others see when you are online or idle." : "This server does not share presence.")
+        }
+        Section {
+            Picker(
+                "Disappearing messages",
+                selection: Binding(get: { session.disappearingLimit }, set: { session.setDisappearingLimit($0) })
+            ) {
+                ForEach(Disappearing.limits, id: \.atMost) { limit in
+                    Text(limit.label).tag(limit.atMost)
+                }
+            }
+        } footer: {
+            Text(
+                "Messages you send to disappear after read are deleted at the latest this long after sending, "
+                    + "also when not everyone has read them.")
         }
     }
 }
