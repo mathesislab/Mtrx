@@ -557,11 +557,12 @@ pub fn update(room: &mut Room, message: Message, cx: &mut Cx<'_>) -> Task<app::M
             let handle = room.handle.clone();
             let reply_to = room.compose.reply_to().cloned();
             let files = room.attachments.iter().map(|a| a.file.clone()).collect();
+            let disappear = room.disappearing(cx.session);
             // The composer is cleared once saved, so nothing is lost on errors.
             task::request(
                 async move {
                     (handle
-                        .schedule(&text, files, send_at, reply_to.as_deref(), None)
+                        .schedule(&text, files, send_at, reply_to.as_deref(), disappear)
                         .await)
                         .map(|_| ())
                 },

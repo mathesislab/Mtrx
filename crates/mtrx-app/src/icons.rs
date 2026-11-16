@@ -50,6 +50,55 @@ impl<M> canvas::Program<M> for Clock {
     }
 }
 
+/// An hourglass: what disappears after a while.
+pub fn hourglass<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Hourglass { color })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Hourglass {
+    color: fn(&Theme) -> Color,
+}
+
+impl<M> canvas::Program<M> for Hourglass {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let width = (s / 9.0).max(1.0);
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width(width)
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        let at = |x: f32, y: f32| iced::Point::new(s * x, s * y);
+        let (top, bottom) = (0.14, 0.86);
+        // The frame's top and bottom.
+        frame.stroke(&Path::line(at(0.2, top), at(0.8, top)), stroke);
+        frame.stroke(&Path::line(at(0.2, bottom), at(0.8, bottom)), stroke);
+        // The glass: two cones meeting in the middle.
+        let glass = Path::new(|path| {
+            path.move_to(at(0.3, top));
+            path.line_to(at(0.7, top));
+            path.line_to(at(0.3, bottom));
+            path.line_to(at(0.7, bottom));
+            path.close();
+        });
+        frame.stroke(&glass, stroke);
+        vec![frame.into_geometry()]
+    }
+}
+
 /// A gear with eight teeth.
 pub fn gear<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
     canvas::Canvas::new(Gear { color })

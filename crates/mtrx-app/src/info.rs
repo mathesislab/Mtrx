@@ -2,10 +2,11 @@
 //! Opened by clicking a name or from the room and member lists.
 
 use std::{
+    collections::BTreeMap,
     fmt,
     hash::{Hash, Hasher},
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use iced::{
@@ -24,7 +25,7 @@ use crate::{
     arrange,
     avatar::{Avatars, Shape},
     dialog::Kind,
-    directory, fonts, frame,
+    directory, disappear, fonts, frame,
     hint::{Position, hint},
     icons,
     menu::{self, Entry, Item, Width},
@@ -67,6 +68,8 @@ pub struct Shown<'a> {
     pub popup: Option<&'a app::Popup>,
     /// The rooms of spaces as their servers listed them.
     pub space_rooms: &'a directory::SpaceRooms,
+    /// The rooms whose mode makes our messages disappear.
+    pub disappearing_modes: &'a BTreeMap<OwnedRoomId, Duration>,
 }
 
 /// What to show a card for.
@@ -92,6 +95,8 @@ pub enum Message {
     /// Save the changed name and topic.
     SaveDetails,
     Notify(NotifyMode),
+    /// The room's mode: our messages disappear this long after read.
+    Disappearing(Option<Duration>),
     JoinRule(JoinRule),
     ChangePicture,
     RemovePicture,
@@ -405,6 +410,13 @@ impl Card {
             (Message::Notify(mode), Some(room)) => {
                 let mode = *mode;
                 task::request(async move { room.set_notify(mode).await }, saved)
+            }
+            (Message::Disappearing(after_read), Some(room)) => {
+                let after_read = *after_read;
+                task::request(
+                    async move { room.set_disappearing_mode(after_read).await },
+                    saved,
+                )
             }
             (Message::ChangePicture, Some(room)) => task::request(
                 async move {
@@ -870,6 +882,23 @@ impl Card {
                 })
                 .into(),
         ));
+        if room.membership == Membership::Joined {
+            let mode = disappear::Mode(shown.disappearing_modes.get(&room.id).copied());
+            card = card.push(settings::option(
+                "Disappearing messages",
+                "Your messages here are deleted for everyone this long after all others \
+                 have read them, at the latest after the limit in Settings. Only while Mtrx \
+                 runs on one of your computers.",
+                pick_list(
+                    disappear::Mode::all(),
+                    Some(mode),
+                    |disappear::Mode(after)| app::Message::Card(Message::Disappearing(after)),
+                )
+                .text_size(13)
+                .padding(6)
+                .into(),
+            ));
+        }
         let Some(settings) = settings else {
             return card.into();
         };

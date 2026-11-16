@@ -10,8 +10,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    CallService, Event, EventContent, MessageKind, MessageRow, OwnedRoomId, OwnedUserId, RoomKind,
-    RoomSummary, Row, UserId,
+    CallService, Disappearing, Event, EventContent, MessageKind, MessageRow, OwnedRoomId,
+    OwnedUserId, RoomKind, RoomSummary, Row, UserId,
 };
 
 use crate::{
@@ -20,6 +20,7 @@ use crate::{
     avatar::{self, Avatars, Shape},
     calls::{self},
     context_menu::context_menu,
+    disappear,
     drag_scroll::drag_scroll,
     ellipsis::ellipsis,
     emoji,
@@ -122,6 +123,8 @@ impl Room {
                 _ => None,
             },
             frequent_emoji: look.frequent_emoji,
+            disappearing: look.disappearing,
+            now: look.now,
             confirm_delete: match popup {
                 Some(Popup::ConfirmDelete(row)) => Some(row.as_str()),
                 _ => None,
@@ -248,8 +251,13 @@ impl Room {
         );
         let picker =
             scheduling.map(|later| send_later::picker(id, later, !composer_empty, scheduled.now));
+        let disappearing = disappear::composer_button(
+            id,
+            self.after_read(),
+            matches!(popup, Some(Popup::Disappear)),
+        );
         let send = popover(
-            row![send, later].spacing(4),
+            row![send, later, disappearing].spacing(4),
             picker,
             Side::Above,
             Edge::Right,
@@ -517,8 +525,11 @@ pub struct Look<'a> {
     pub popup: Option<&'a Popup>,
     /// People's presence, in the member list and a direct chat's header.
     pub presences: &'a Presences,
-    /// For how long ago people were last active.
+    /// For how long ago people were last active, and when our messages
+    /// disappear.
     pub now: SystemTime,
+    /// Our messages waiting to disappear, in all rooms.
+    pub disappearing: &'a [Disappearing],
 }
 
 /// What rendering an event needs besides the event.
@@ -561,6 +572,9 @@ struct Context<'a, 'b> {
     confirm_delete: Option<&'b str>,
     /// The message being edited in place, if any.
     editing: Option<&'a InlineEdit>,
+    /// Our messages waiting to disappear, and the time.
+    disappearing: &'b [Disappearing],
+    now: SystemTime,
     /// What the message edited shows of the room and the window.
     fields: message_field::Context<'a, 'b>,
 }
@@ -857,6 +871,19 @@ fn event_view<'a>(
                 },
             )
         });
+    // Ours or others' that disappear: an hourglass before them.
+    let markers = match (
+        disappear::mark(event, context.disappearing, context.now),
+        markers,
+    ) {
+        (Some(hourglass), Some(markers)) => Some(
+            row![hourglass, markers]
+                .spacing(4)
+                .align_y(Alignment::End)
+                .into(),
+        ),
+        (hourglass, markers) => hourglass.or(markers),
+    };
     let markers = markers.map(|markers| {
         container(markers)
             .align_right(Length::Fill)

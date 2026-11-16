@@ -17,6 +17,7 @@ mod clipboard;
 mod context_menu;
 mod dialog;
 mod directory;
+mod disappear;
 mod downloads;
 mod drag_scroll;
 mod edit_menu;

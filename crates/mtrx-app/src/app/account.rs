@@ -1,7 +1,10 @@
 //! The account's state: this device verified, the connection, scheduled
 //! messages, and notifications.
 
-use std::time::SystemTime;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, SystemTime},
+};
 
 use futures_util::SinkExt;
 use iced::{
@@ -9,7 +12,8 @@ use iced::{
     widget::{button, column, container, row, text, text_input},
 };
 use mtrx_core::{
-    Connection, Notification, OwnedRoomId, RecoveryStep, RoomLists, ScheduledMessage, Session,
+    Connection, Disappearing, Notification, OwnedRoomId, RecoveryStep, RoomLists, ScheduledMessage,
+    Session,
 };
 
 use super::{Cx, Popup, pane, start};
@@ -30,6 +34,12 @@ pub enum Message {
     /// Try the server now if it was unreachable.
     Reconnect,
     Scheduled(Vec<ScheduledMessage>),
+    /// Our messages waiting to disappear changed.
+    Disappearing(Vec<Disappearing>),
+    /// Rooms' modes of disappearing changed.
+    DisappearingModes(BTreeMap<OwnedRoomId, Duration>),
+    /// The limit of disappearing messages changed.
+    DisappearingLimit(Duration),
     /// Refreshes times shown relative to now.
     Tick,
     Notified(Notification),
@@ -48,6 +58,13 @@ pub struct Account {
     pub connection: Connection,
     /// Scheduled messages of all rooms, earliest first.
     pub scheduled: Vec<ScheduledMessage>,
+    /// Our messages waiting to disappear, in all rooms.
+    pub disappearing: Vec<Disappearing>,
+    /// The rooms whose mode makes our messages disappear, and how long
+    /// after read.
+    pub disappearing_modes: BTreeMap<OwnedRoomId, Duration>,
+    /// How long after sending they go at the latest.
+    pub disappearing_limit: Duration,
     /// When scheduled times were last compared to the clock.
     pub now: SystemTime,
 }
@@ -61,6 +78,9 @@ impl Account {
             recovery_error: None,
             connection: session.connection(),
             scheduled: session.scheduled(),
+            disappearing: session.disappearing(),
+            disappearing_modes: BTreeMap::new(),
+            disappearing_limit: session.disappearing_limit().at_most,
             now: SystemTime::now(),
         }
     }
@@ -148,6 +168,19 @@ impl Account {
                 self.scheduled = scheduled;
                 self.now = SystemTime::now();
                 room
+            }
+            Message::Disappearing(disappearing) => {
+                self.disappearing = disappearing;
+                self.now = SystemTime::now();
+                Task::none()
+            }
+            Message::DisappearingModes(modes) => {
+                self.disappearing_modes = modes;
+                Task::none()
+            }
+            Message::DisappearingLimit(at_most) => {
+                self.disappearing_limit = at_most;
+                Task::none()
             }
             Message::Tick => {
                 self.now = SystemTime::now();

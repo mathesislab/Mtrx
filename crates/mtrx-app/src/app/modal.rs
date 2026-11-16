@@ -334,6 +334,7 @@ impl Modal {
                 | settings::Action::SetSpaceService(..)
                 | settings::Action::AtHome(_)
                 | settings::Action::NotesAtTop(_)
+                | settings::Action::DisappearingLimit(_)
         ) {
             cx.save_settings();
         }
@@ -405,6 +406,13 @@ impl Modal {
             settings::Action::NotesAtTop(on) => Task::done(app::Message::Sidebar(
                 sidebar::Message::Arrange(arrange::Message::NotesAtTop(on)),
             )),
+            settings::Action::DisappearingLimit(at_most) => {
+                let session = cx.session.clone();
+                task::request(
+                    async move { session.set_disappearing_limit(at_most).await },
+                    |result| to(Message::Settings(settings::Message::LimitSaved(result))),
+                )
+            }
             settings::Action::GoogleSignOut => {
                 let google = cx.google.clone();
                 Task::perform(async move { google.sign_out().await }, |result| {
