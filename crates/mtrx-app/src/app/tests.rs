@@ -1514,7 +1514,9 @@ async fn send_later_bar() {
         outside.iter().any(|m| matches!(m, Message::ClosePopup)),
         "{outside:?}"
     );
-    let on_crab = messages(iced::Point::new(782.0, 447.0));
+    // The panel's right edge is the composer's, left of Send, the clock
+    // and the hourglass.
+    let on_crab = messages(iced::Point::new(742.0, 447.0));
     assert!(
         on_crab.iter().any(|m| matches!(m, Message::Room(
                 _,
