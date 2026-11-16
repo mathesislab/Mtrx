@@ -533,7 +533,10 @@ impl Card {
             Message::Copy(copied) => self.copied = Some(copied),
             Message::Name(name) => self.name = name,
             Message::Topic(edit) => self.topic.update(edit),
-            Message::Notify(_) | Message::JoinRule(_) | Message::SaveDetails => self.error = None,
+            Message::Notify(_)
+            | Message::Disappearing(_)
+            | Message::JoinRule(_)
+            | Message::SaveDetails => self.error = None,
             Message::ChangePicture | Message::RemovePicture => self.error = None,
             Message::Saved(result) => {
                 if result.is_ok() {

@@ -47,7 +47,7 @@ pub fn words(duration: Duration) -> String {
     let secs = duration.as_secs();
     let (count, unit) = [(DAY, "day"), (HOUR, "hour"), (MINUTE, "minute")]
         .into_iter()
-        .find(|(unit, _)| secs >= *unit && secs % unit == 0)
+        .find(|(unit, _)| secs >= *unit && secs.is_multiple_of(*unit))
         .map_or((secs, "second"), |(size, unit)| (secs / size, unit));
     plural(count, unit)
 }
