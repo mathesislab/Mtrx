@@ -1,6 +1,6 @@
 # Disappearing messages
 
-Goal: my messages disappear (are deleted for everyone) a set time after every other member has read them. Chosen per message, or as a room's mode for all my messages there. A maximum lifetime (default 1 day, changeable in Settings) applies regardless, since some members are never seen to read. The timer runs in core, like send later; the desktop offers it first, the phones later.
+Goal: my messages disappear (are deleted for everyone) a set time after every other member has read them. Chosen per message, or as a room's mode for all my messages there. A maximum lifetime (default 1 day, changeable in Settings) applies regardless, since some members are never seen to read. The timer runs in core, like send later, in every app: the desktop, `mtrx watch`, and the phones while in front.
 
 Paths: `core/` = `crates/mtrx-core/src/`, `app/` = `crates/mtrx-app/src/`, `sdk/` = `~/.cargo/registry/src/index.crates.io-*/matrix-sdk-0.19.1/src/`.
 
@@ -14,7 +14,7 @@ Paths: `core/` = `crates/mtrx-core/src/`, `app/` = `crates/mtrx-app/src/`, `sdk/
 
 ## What it can't do (said in the app)
 
-- **Only while Mtrx runs.** The desktop app (or `mtrx watch`) deletes; closed, nothing happens until it starts again, and then it deletes what is overdue at once.
+- **Only while Mtrx runs.** The desktop app, `mtrx watch` or a phone app in front deletes; with none running, nothing happens until one starts, and then it deletes what is overdue at once. iOS pauses apps in the background, so an iPhone deletes only while Mtrx is open.
 - **Deleted, not gone.**
   - Others see "Message deleted" in its place.
   - Notifications already shown, copies and screenshots stay.
@@ -97,9 +97,16 @@ impl Disappearing {
   - Hover, someone else's: "Disappears after it was read".
 - **Settings:** "Disappearing messages at most … after sending": 1 hour, 6 hours, 1 day, 7 days.
 
-### Phones (later)
+### Phones
 
-Through the FFI: send with the marker, show the icon, set the room's mode. The timer stays on the desktop and in `mtrx watch`, so a phone's disappearing messages need one of them running.
+Through the FFI (`crates/mtrx-ffi/src/disappearing.rs`), as on the desktop:
+- `Timeline.send_text` and `reply` take the time after read; the bindings add the limit.
+- `TimelineEvent.disappear`: the marker, with its words for the message's menu ("Disappears after it was read" for others'). No countdown: the phones show the marker's words, not the list.
+- `Room.subscribe_disappearing_mode` and `set_disappearing_mode`; `Session.disappearing_limit` and `set_disappearing_limit`.
+- The choices with their words (`disappear_choices`, `disappearing_limit_choices`) come from core, shared with the desktop.
+- `Session.start_sync` starts the timer and `stop_sync` stops it: a phone deletes while in front. Every app's session records our marked messages from sync, so one that never ran the timer would keep them listed forever.
+
+The apps: the hourglass beside Send with its menu, a small hourglass by a message's time with the words in its hold menu, the room's mode in room info, the limit in Settings → Privacy.
 
 ## Plan
 
