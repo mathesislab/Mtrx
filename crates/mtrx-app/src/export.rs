@@ -19,7 +19,7 @@ use crate::{
     ellipsis::ellipsis,
     frame,
     hint::{Position, hint},
-    style,
+    scroll, style,
 };
 
 const WIDTH: f32 = 480.0;
@@ -447,7 +447,7 @@ impl Dialog {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            frame::scroll(list).height(220),
+            scroll::vertical(list).height(220),
         ]
         .spacing(8)
         .into()

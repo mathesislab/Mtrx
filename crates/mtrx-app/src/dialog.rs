@@ -20,7 +20,7 @@ use crate::{
     arrange::{self, Arrange, CategoryEdit},
     fonts, frame,
     hint::{Position, hint},
-    spelling, style,
+    scroll, spelling, style,
     task::Owned,
 };
 
@@ -888,7 +888,7 @@ impl Dialog {
         {
             list = list.push(person(&User::from(id)));
         }
-        section = section.push(frame::scroll(list).height(Length::Shrink));
+        section = section.push(scroll::vertical(list).height(Length::Shrink));
         section.into()
     }
 
@@ -946,7 +946,7 @@ impl Dialog {
         column![
             self.field("Search your rooms", &self.query, Message::Query),
             text(chosen).size(12).style(text::secondary),
-            frame::scroll(column(list).spacing(2)).height(300),
+            scroll::vertical(column(list).spacing(2)).height(300),
         ]
         .spacing(8)
         .into()
@@ -1026,7 +1026,7 @@ impl Dialog {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            frame::scroll(column(list).spacing(2)).height(260),
+            scroll::vertical(column(list).spacing(2)).height(260),
         ]
         .spacing(8)
         .into()
