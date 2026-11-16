@@ -3024,9 +3024,17 @@ async fn disappearing_messages() -> Result<()> {
     // The room's mode and the limit, kept as account data.
     let handle = alice.session.room(&room)?;
     handle.set_disappearing_mode(Some(secs(300))).await?;
-    assert_eq!(handle.disappearing_mode(), Some(secs(300)));
+    assert_eq!(handle.disappearing_mode(), Some(secs(300)), "shown at once");
     handle.set_disappearing_mode(None).await?;
-    assert_eq!(handle.disappearing_mode(), None);
+    // Synced back, also after the first change's echo.
+    wait_for(
+        "mode off",
+        alice.session.disappearing_modes_updates().updates(),
+        |modes| !modes.contains_key(&room),
+    )
+    .await?;
+    tokio::time::sleep(secs(2)).await;
+    assert_eq!(handle.disappearing_mode(), None, "stays off");
     alice.session.set_disappearing_limit(secs(6 * 3600)).await?;
     assert_eq!(alice.session.disappearing_limit().at_most, secs(6 * 3600));
     Ok(())

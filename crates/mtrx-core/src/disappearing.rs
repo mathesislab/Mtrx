@@ -12,7 +12,10 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -236,6 +239,9 @@ pub(crate) struct Disappearances {
     nudge: Notify,
     /// The rooms whose mode is on, with its time after read.
     modes: watch::Sender<BTreeMap<OwnedRoomId, Duration>>,
+    /// Changes of modes not yet saved; synced modes are stale meanwhile,
+    /// as for [`crate::account_data::Synced`].
+    unsaved_modes: AtomicUsize,
 }
 
 /// What keeps a [`Disappearances`] up to date: its event handlers and the
@@ -263,6 +269,7 @@ impl Disappearances {
             write: Mutex::new(()),
             nudge: Notify::new(),
             modes: watch::Sender::new(modes),
+            unsaved_modes: AtomicUsize::new(0),
         }))
     }
 
@@ -297,8 +304,10 @@ impl Disappearances {
             move |event: RoomAccountDataEvent<DisappearingModeEventContent>, room: Room| {
                 let this = this.clone();
                 async move {
-                    let after_read = event.content.after_read.map(Duration::from_secs);
-                    this.set_mode(room.room_id(), after_read);
+                    if this.unsaved_modes.load(Ordering::SeqCst) == 0 {
+                        let after_read = event.content.after_read.map(Duration::from_secs);
+                        this.set_mode(room.room_id(), after_read);
+                    }
                 }
             },
         );
@@ -704,13 +713,18 @@ impl RoomHandle {
     }
 
     /// Set the room's mode (`None` for off); only ours, on our devices.
+    /// Shown at once, then saved on the server; if saving fails, the
+    /// server's mode is restored.
     pub async fn set_disappearing_mode(&self, after_read: Option<Duration>) -> Result<()> {
         let disappearing = &self.session.disappearing;
+        disappearing.unsaved_modes.fetch_add(1, Ordering::SeqCst);
         disappearing.set_mode(self.room.room_id(), after_read);
         let content = DisappearingModeEventContent {
             after_read: after_read.map(|d| d.as_secs()),
         };
-        if let Err(e) = self.room.set_account_data(content).await {
+        let saved = self.room.set_account_data(content).await;
+        disappearing.unsaved_modes.fetch_sub(1, Ordering::SeqCst);
+        if let Err(e) = saved {
             disappearing.set_mode(self.room.room_id(), stored_mode(&self.room).await);
             return Err(e.into());
         }
