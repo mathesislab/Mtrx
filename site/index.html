@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mtrx</title>
-<meta name="description" content="A fast, native Matrix client: send later, LaTeX math, notes to self, PDFs and more.">
+<meta name="description" content="A fast, native Matrix client: send later, disappearing messages, LaTeX math, notes to self, PDFs and more.">
 <link rel="icon" href="images/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -22,8 +22,8 @@
 <section class="hero">
   <h1>Matrix chat, native and quick</h1>
   <p class="lead">Mtrx is a desktop client for <a href="https://matrix.org">Matrix</a>, written in Rust. It is a
-    real app, not a web page in a wrapper, with what research groups need: messages sent later, LaTeX math, notes to
-    self, PDFs and call links.</p>
+    real app, not a web page in a wrapper, with what research groups need: messages sent later or set to disappear,
+    LaTeX math, notes to self, PDFs and call links.</p>
   <p class="actions">
     <a class="button primary" href="#download">Download</a>
     <a class="button" href="https://github.com/mathesislab/Mtrx">View source</a>
@@ -58,6 +58,11 @@
 
   <div class="grid">
     <article class="feature">
+      <h3>Disappearing messages</h3>
+      <p>Have a message deleted for everyone a set time after all others have read it, or every message you send in a
+        room. At the latest a day after sending, or as long as you set.</p>
+    </article>
+    <article class="feature">
       <h3>At home on a Mac</h3>
       <p>A menu bar, undo, ⌘F to find in a room, and the keys you know. Hold a letter for its accents, or pick from
         Emoji &amp; Symbols. Closing the window keeps Mtrx running, with its Dock badge.</p>
@@ -77,9 +82,19 @@
       <p>Open PDFs in a zoomable viewer, view pictures large, copy or save them.</p>
     </article>
     <article class="feature">
-      <h3>Calls by link</h3>
-      <p>Jitsi, Google Meet and Zoom links become a Join button. Give a room a standing call link, or start a new call
-        with your space's service.</p>
+      <h3>Calls, links and pins</h3>
+      <p>Jitsi, Google Meet and Zoom links become a Join button. A room's calls and links live in its topic, where every
+        Matrix app shows them, beside its pinned messages.</p>
+    </article>
+    <article class="feature">
+      <h3>Spaces to run</h3>
+      <p>Browse a server's public rooms or paste a link to join. A space's card shows its rooms, members and settings:
+        who can join and read, roles, and rooms moved between spaces.</p>
+    </article>
+    <article class="feature">
+      <h3>Downloads and exports</h3>
+      <p>Downloads show their progress in one list. Export a room or a whole space as web pages, text or JSON, with
+        its files.</p>
     </article>
     <article class="feature">
       <h3>Keeps working offline</h3>
@@ -144,7 +159,8 @@
   <p class="more">The Windows and Linux versions are new: they are built and tested automatically, but have not yet
     been tried much on real machines. Problems and feedback are welcome as
     <a href="https://github.com/mathesislab/Mtrx/issues">issues</a>.</p>
-  <p class="more">All versions are on the <a href="https://github.com/mathesislab/Mtrx/releases">releases page</a>.
+  <p class="more">Mtrx looks for a newer version once a day and installs it from Settings. All versions are on the
+    <a href="https://github.com/mathesislab/Mtrx/releases">releases page</a>.
     To build it yourself, see the <a href="https://github.com/mathesislab/Mtrx#readme">README</a>.</p>
 </section>
 </main>
