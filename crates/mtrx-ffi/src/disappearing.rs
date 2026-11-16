@@ -69,6 +69,13 @@ pub fn disappear_choices() -> Vec<DisappearChoice> {
         .collect()
 }
 
+/// What the composer sends, for its hourglass's label: "Disappears 5
+/// minutes after everyone has read it", "Disappearing messages: off".
+#[uniffi::export]
+pub fn disappear_words(after_read: Option<Duration>) -> String {
+    core::disappear_words(after_read)
+}
+
 /// The limits Settings offers, in order.
 #[uniffi::export]
 pub fn disappearing_limit_choices() -> Vec<LimitChoice> {
@@ -85,6 +92,12 @@ pub fn disappearing_limit_choices() -> Vec<LimitChoice> {
 pub trait DisappearingModeListener: Send + Sync {
     /// Our messages here disappear this long after read; `None` for off.
     fn on_update(&self, after_read: Option<Duration>);
+}
+
+/// Receives the limit, now and after every change.
+#[uniffi::export(with_foreign)]
+pub trait DisappearingLimitListener: Send + Sync {
+    fn on_update(&self, at_most: Duration);
 }
 
 #[uniffi::export]
@@ -122,6 +135,23 @@ impl Session {
     /// shared by our devices; 1 day unless changed.
     pub fn disappearing_limit(&self) -> Duration {
         self.core().disappearing_limit().at_most
+    }
+
+    /// Call `listener` with the limit, now and after every change, made
+    /// here or on our other devices.
+    pub fn subscribe_disappearing_limit(
+        &self,
+        listener: Arc<dyn DisappearingLimitListener>,
+    ) -> Arc<TaskHandle> {
+        let limits = {
+            let _runtime = runtime::enter();
+            self.core().disappearing_limit_updates()
+        };
+        follow(
+            limits,
+            |limit| limit.at_most,
+            move |at_most| listener.on_update(at_most),
+        )
     }
 
     /// Change the limit for messages sent from now on. Shows at once; if

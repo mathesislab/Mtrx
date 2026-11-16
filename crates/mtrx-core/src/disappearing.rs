@@ -96,6 +96,18 @@ pub fn disappearing_mode_words(after_read: Option<Duration>) -> String {
     }
 }
 
+/// What the composer sends, in words: "Disappears 5 minutes after
+/// everyone has read it", "Disappearing messages: off".
+pub fn disappear_words(after_read: Option<Duration>) -> String {
+    match after_read {
+        Some(after) => format!(
+            "Disappears {} after everyone has read it",
+            duration_words(after)
+        ),
+        None => "Disappearing messages: off".to_owned(),
+    }
+}
+
 /// The time left until `due`, rounded up: "3 minutes", "less than a
 /// minute".
 fn time_left(due: SystemTime, now: SystemTime) -> String {
@@ -947,6 +959,11 @@ mod tests {
         assert_eq!(duration_words(secs(7 * 86400)), "7 days");
         assert_eq!(duration_words(secs(90)), "90 seconds");
         assert_eq!(disappearing_mode_words(None), "Off");
+        assert_eq!(disappear_words(None), "Disappearing messages: off");
+        assert_eq!(
+            disappear_words(Some(secs(3600))),
+            "Disappears 1 hour after everyone has read it"
+        );
         assert_eq!(
             disappearing_mode_words(Some(secs(300))),
             "5 minutes after read"

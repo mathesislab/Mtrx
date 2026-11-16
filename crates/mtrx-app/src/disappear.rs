@@ -12,7 +12,8 @@ use iced::{
     widget::{button, container},
 };
 use mtrx_core::{
-    AFTER_READ_CHOICES, Disappearing, Event, OwnedRoomId, disappearing_mode_words, duration_words,
+    AFTER_READ_CHOICES, Disappearing, Event, OwnedRoomId, disappear_words, disappearing_mode_words,
+    duration_words,
 };
 
 use crate::{
@@ -70,13 +71,7 @@ pub fn composer_button<'a>(
                 .scale_alpha(0.75)
         }),
     };
-    let label = match after_read {
-        Some(after) => format!(
-            "Disappears {} after everyone has read it",
-            duration_words(after)
-        ),
-        None => "Disappearing messages: off".to_owned(),
-    };
+    let label = disappear_words(after_read);
     // While open, a click on it closes the menu as any outside click.
     let button = hint(
         button(icon)

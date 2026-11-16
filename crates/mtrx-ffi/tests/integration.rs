@@ -21,15 +21,15 @@ use mtrx_core::{
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
 use mtrx_ffi::{
-    ConnectionListener, ConnectionState, Disappearance, DisappearingModeListener, Download,
-    DownloadState, DownloadsListener, EncryptionState, EncryptionStateListener, EventContent,
-    JoinAction, JoinRule, MediaKind, Membership, Message, MessageKind, Mtrx, MtrxError,
-    Notification, Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState,
-    PusherInfo, QuoteState, Reaction, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote,
-    RoomKind, RoomLists, RoomListsListener, RoomSettings, RoomSettingsListener, RoomSort,
-    RowContent, SecretBackend, SecretError, SectionLayout, SendState, Session, SpaceKey,
-    TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener, User, Verification,
-    VerificationListener, VerificationRequestListener, VerificationState,
+    ConnectionListener, ConnectionState, Disappearance, DisappearingLimitListener,
+    DisappearingModeListener, Download, DownloadState, DownloadsListener, EncryptionState,
+    EncryptionStateListener, EventContent, JoinAction, JoinRule, MediaKind, Membership, Message,
+    MessageKind, Mtrx, MtrxError, Notification, Presence, PresenceActivity, PresenceDot,
+    PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction, RecoveryListener,
+    RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists, RoomListsListener, RoomSettings,
+    RoomSettingsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout,
+    SendState, Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener,
+    User, Verification, VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -83,6 +83,12 @@ impl DownloadsListener for Forward<Vec<Download>> {
 impl RoomSettingsListener for Forward<RoomSettings> {
     fn on_update(&self, settings: RoomSettings) {
         self.send(settings);
+    }
+}
+
+impl DisappearingLimitListener for Forward<Duration> {
+    fn on_update(&self, at_most: Duration) {
+        self.send(at_most);
     }
 }
 
@@ -1708,9 +1714,14 @@ fn disappearing_messages_go_once_read() {
     wait_for("off again", &mode_updates, Option::is_none);
 
     // The limit, which messages sent from now on take.
-    assert_eq!(alice.session.disappearing_limit(), secs(24 * 3600));
+    let (limits, limit_updates) = forward();
+    let _limits = alice.session.subscribe_disappearing_limit(limits);
+    wait_for("the default limit", &limit_updates, |l| {
+        *l == secs(24 * 3600)
+    });
     block_on(alice.session.set_disappearing_limit(secs(6 * 3600))).unwrap();
     assert_eq!(alice.session.disappearing_limit(), secs(6 * 3600));
+    wait_for("the new limit", &limit_updates, |l| *l == secs(6 * 3600));
 
     // Alice's message goes 2 s after Bob read it; the library deletes it
     // while sync runs.

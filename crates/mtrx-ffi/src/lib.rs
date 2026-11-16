@@ -34,8 +34,8 @@ mod types;
 
 pub use client::{Mtrx, OAuthLogin};
 pub use disappearing::{
-    DisappearChoice, Disappearance, DisappearingModeListener, LimitChoice, disappear_choices,
-    disappearing_limit_choices,
+    DisappearChoice, Disappearance, DisappearingLimitListener, DisappearingModeListener,
+    LimitChoice, disappear_choices, disappear_words, disappearing_limit_choices,
 };
 pub use downloads::{Download, DownloadState, DownloadsListener};
 pub use drafts::{Draft, DraftKeeper};
