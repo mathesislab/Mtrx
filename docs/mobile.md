@@ -1596,6 +1596,28 @@ only when the direct chats' users change, and hiding after
 `onUnavailable` or the error. The idle timer, the states set and the
 line are the library's, tested there.
 
+## 12. Disappearing messages
+
+Ours deleted for everyone a set time after all others have read them, at
+the latest after a limit; the design, the marker and what the library does
+are in `docs/disappearing.md` (section Phones). The apps, the same on both:
+- **Composer:** an hourglass left of Send (accent colour while on) opens a
+  menu headed "Disappear after everyone read it" with `disappearChoices()`'
+  labels. The choice holds in the room until it is left; until one is made,
+  the room's mode (`Room.subscribeDisappearingMode`). Its label is
+  `disappearWords(afterRead)`. `sendText` and `reply` pass it.
+- **Messages:** a small hourglass by the time when `TimelineEvent.disappear`
+  is set; its `words` in the hold menu.
+- **Room info:** "Disappearing messages" with the `modeLabel`s, joined rooms
+  only, `Room.setDisappearingMode`.
+- **Settings → Privacy:** the limit, `disappearingLimitChoices()`, followed
+  with `Session.subscribeDisappearingLimit`, set with
+  `setDisappearingLimit`.
+- Deleting is the library's, while sync runs: nothing in the apps.
+
+Android's screenshot tests can't call the library, so its composables get
+the choices and words as data from the screen.
+
 ## Later
 
 - The room list can show a room before its `m.room.encryption` event has
