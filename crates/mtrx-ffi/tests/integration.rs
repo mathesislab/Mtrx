@@ -1730,7 +1730,11 @@ fn disappearing_messages_go_once_read() {
     let mut alice_items = Items::follow(&alice_timeline);
     let mut bob_items = Items::follow(&bob_timeline);
     block_on(alice_timeline.send_text("gone soon".into(), Some(secs(2)))).unwrap();
-    let items = alice_items.wait("sent", |i| sent(i, "gone soon").is_some());
+    // The marker shows once the server's copy synced: the local echo has
+    // no event JSON to read it from.
+    let marked =
+        |i: &[TimelineRow]| sent(i, "gone soon").is_some_and(|(_, e)| e.disappear.is_some());
+    let items = alice_items.wait("sent and synced", marked);
     let (row, event) = sent(items, "gone soon").unwrap();
     let row = row.to_owned();
     assert_eq!(
