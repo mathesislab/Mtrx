@@ -13,9 +13,9 @@ use iced::{
     widget::{scrollable, scrollable::Viewport},
 };
 use mtrx_core::{
-    Draft, DraftKeeper, Event, EventContent, EventKey, Member, OwnedEventId, OwnedRoomId,
-    OwnedUserId, RoomHandle, RoomTimeline, Row, ScheduledMessage, SendState, TimelineEntry, Upload,
-    User, UserId,
+    Disappear, Draft, DraftKeeper, Event, EventContent, EventKey, Member, OwnedEventId,
+    OwnedRoomId, OwnedUserId, RoomHandle, RoomTimeline, Row, ScheduledMessage, SendState, Session,
+    TimelineEntry, Upload, User, UserId,
 };
 
 use crate::{
@@ -95,6 +95,10 @@ pub enum Message {
     /// Our message in a timeline row started sending a while ago.
     SendingSlow(String),
     Later(send_later::Message),
+    /// Open the menu beside Send of whether what is sent disappears.
+    DisappearMenu,
+    /// What is sent from now on disappears this long after read, or not.
+    Disappear(Option<Duration>),
     Act(actions::Message),
     /// Selecting text in the timeline.
     Select(selection::Message),
@@ -151,6 +155,23 @@ impl Message {
     }
 }
 
+impl Room {
+    /// How long after read what is sent disappears, if it does: as chosen
+    /// beside Send, else the room's mode.
+    pub fn after_read(&self) -> Option<Duration> {
+        (self.disappear).unwrap_or_else(|| self.handle.disappearing_mode())
+    }
+
+    /// How what is sent now disappears, if it does, with `session`'s limit.
+    pub fn disappearing(&self, session: &Session) -> Option<Disappear> {
+        let at_most = session.disappearing_limit().at_most;
+        (self.after_read()).map(|after_read| Disappear {
+            after_read,
+            at_most,
+        })
+    }
+}
+
 pub struct Room {
     pub id: OwnedRoomId,
     /// Its members, pins, calls and scheduled messages are changed through it.
@@ -174,6 +195,9 @@ pub struct Room {
     pub pending_reply: Option<OwnedEventId>,
     /// A sent or scheduled message being edited in place.
     pub editing: Option<InlineEdit>,
+    /// Whether what is sent disappears, as chosen beside Send (`Some(None)`
+    /// for off); until then, as the room's mode says.
+    pub disappear: Option<Option<Duration>>,
     /// Our messages being sent.
     sending: Sending,
     /// Text selected in the timeline.
@@ -241,6 +265,7 @@ impl Room {
             pins: pins::Pins::default(),
             compose: Compose::New,
             editing: None,
+            disappear: None,
             sending: Sending::already(&rows),
             selection: None,
             find: None,

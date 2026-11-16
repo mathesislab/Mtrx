@@ -59,15 +59,15 @@ A message to disappear carries it in its content:
 ### Core: `core/disappearing.rs`
 
 ```rust
+/// How a message disappears; also the marker's content, in seconds.
+pub struct Disappear { pub after_read: Duration, pub at_most: Duration }
+
 /// One of my messages waiting to disappear.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Disappearing {
     pub room_id: OwnedRoomId,
-    pub event_id: OwnedEventId,
-    /// Its server time.
-    pub sent_at: SystemTime,
-    pub after_read: Duration,
-    pub at_most: Duration,
+    pub disappear: Disappear,
+    /// `Queued { transaction_id, since }`, then `Sent { event_id, at }`.
+    pub sent: Sent,
     /// When every other member had read it, once seen.
     pub read_at: Option<SystemTime>,
     /// My edits of it, deleted with it.
@@ -75,23 +75,23 @@ pub struct Disappearing {
 }
 
 impl Disappearing {
-    /// When it goes: `after_read` after everyone read it, at the latest
-    /// `at_most` after it was sent.
-    pub fn due(&self) -> SystemTime;
+    /// `after_read` after everyone read it, at the latest `at_most` after
+    /// it was sent; `None` until sent.
+    pub fn due(&self) -> Option<SystemTime>;
 }
 ```
 
 - **Store:** `mtrx.disappearing_messages` in the state store, a list as send later has it; a `Watch` for the app (`disappearing_updates() -> Live<…>`).
-- **Recording:** an event handler for my own messages in sync: one with the marker is added (also for files, each its own event); an edit of one (`m.replace`) adds its id to `edits`.
+- **Recording:** the sending device lists each part (text and files) by its transaction ID when it queues them, and the send queue's `SentEvent` gives each its event ID. Sync confirms (our own events carry `unsigned.transaction_id`), adds texts with the marker sent by our other devices, and adds our edits (`m.replace`) to `edits`. Files can't carry the marker (the SDK builds their content), so only the device sending them lists them. A cancelled send leaves the list.
 - **Who has read it:** each joined member but me. A member has read it when their latest read receipt (unthreaded or main) is on it or on a later event. Later: by place in the event cache when both are there, else by server time (`load_or_fetch_event`). A receipt sent before the message was is a quick no.
 - **When to check:** on every receipt in a room with waiting messages (event handler on `SyncReceiptEvent`), when someone leaves such a room, and once when the timer starts. The first time all have read sets `read_at`.
 - **Timer:** `start_disappearing()`, started and stopped as `start_scheduler()`. It wakes at the next `due()`, at most every 30 s. When one is due it deletes the message and its edits through the send queue, without a reason (a reason would be readable by the server), and drops it from the list. Overdue after a closed app: deleted at once.
-- **Twice:** with two desktops running, both may delete; before deleting, a message already deleted is just dropped from the list.
+- **Twice:** with two desktops running, both may delete the same message; the second deletion is harmless.
 
 ### Desktop
 
 - **Composer:** a timer button beside the clock of send later. A click opens a menu: Off, 1 minute, 5 minutes, 1 hour, 1 day after read. It starts at the room's mode and applies to the messages sent until changed. A scheduled message keeps its choice (`ScheduledMessage` gets the marker).
-- **Room menu:** "Disappearing messages…" with the same choices sets the room's mode. The topic panel and the composer show a timer icon while it is on.
+- **Room settings:** "Disappearing messages" (Off, or the same choices) in the room's Settings card sets the room's mode. The hourglass beside Send is in the accent colour while what is sent disappears.
 - **On a message:** a small timer icon by the time.
   - Hover, mine: "Disappears 5 minutes after everyone has read it (at most 1 day after sending)", then "Everyone has read it: disappears in 3 minutes".
   - Hover, someone else's: "Disappears after it was read".

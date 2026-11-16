@@ -19,7 +19,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use futures_util::{Stream, StreamExt};
 use mtrx_core::{
-    Activity, Attachment, CallService, Connection, DirectoryKind, DownloadState, Draft,
+    Activity, Attachment, CallService, Connection, DirectoryKind, Disappear, DownloadState, Draft,
     EventContent, ExportFiles, ExportFormat, ExportOf, ExportRange, ExportRequest, ExportState,
     History, JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom,
     NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights, Role,
@@ -470,7 +470,7 @@ async fn scheduled_messages() -> Result<()> {
     assert!(matches!(
         session
             .room(&room)?
-            .schedule("past", Vec::new(), SystemTime::now(), None)
+            .schedule("past", Vec::new(), SystemTime::now(), None, None)
             .await,
         Err(mtrx_core::Error::SendTimeInPast)
     ));
@@ -482,11 +482,11 @@ async fn scheduled_messages() -> Result<()> {
     };
     let late = session
         .room(&room)?
-        .schedule("late", vec![file], in_secs(1), None)
+        .schedule("late", vec![file], in_secs(1), None, None)
         .await?;
     let cancelled = session
         .room(&room)?
-        .schedule("cancelled", Vec::new(), in_secs(3600), None)
+        .schedule("cancelled", Vec::new(), in_secs(3600), None, None)
         .await?;
     session.unschedule(&cancelled.id).await?;
     session.stop_sync().await;
@@ -499,7 +499,7 @@ async fn scheduled_messages() -> Result<()> {
     session.start_sync().await;
     let on_time = session
         .room(&room)?
-        .schedule("on **time**", Vec::new(), in_secs(2), None)
+        .schedule("on **time**", Vec::new(), in_secs(2), None, None)
         .await?;
     session.start_scheduler_for_test(Duration::from_secs(1));
 
@@ -1634,7 +1634,9 @@ async fn downloads() -> Result<()> {
             mimetype: "application/octet-stream".into(),
             bytes: data.clone(),
         };
-        let pending = alice_timeline.send("", vec![attachment], None).await?;
+        let pending = alice_timeline
+            .send("", vec![attachment], None, None)
+            .await?;
         timeout("sent", pending.sent()).await??;
 
         let bob_timeline = bob.session.timeline(&room).await?;
@@ -1742,6 +1744,7 @@ async fn images_and_files() -> Result<()> {
                 png("big.png", &big),
                 Attachment::read(&notes_path).await?,
             ],
+            None,
             None,
         )
         .await?;
@@ -2639,7 +2642,10 @@ async fn export_a_space() -> Result<()> {
     };
     timeout(
         "file sent",
-        lab_timeline.send("", vec![attachment], None).await?.sent(),
+        lab_timeline
+            .send("", vec![attachment], None, None)
+            .await?
+            .sent(),
     )
     .await??;
     wait_for("edited and reacted", lab_timeline.updates(), |e| {
@@ -2929,5 +2935,107 @@ async fn cancelling_an_export_keeps_what_was_written() -> Result<()> {
     s.remove_export(id);
     assert!(s.exports().get().iter().all(|e| e.id != id));
     assert!(export.folder.exists(), "the folder stays");
+    Ok(())
+}
+
+/// Our disappearing messages go once the others read them, or at the
+/// latest at their limit; others see the marker.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn disappearing_messages() -> Result<()> {
+    let (_, alice) = new_user("gone").await?;
+    let (_, bob) = new_user("gone").await?;
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some("gone".into()),
+            encrypted: true,
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&bob, &room, "gone").await?;
+    let alice_timeline = alice.session.timeline(&room).await?;
+    wait_for("bob joined", alice_timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
+    })
+    .await?;
+    let bob_timeline = bob.session.timeline(&room).await?;
+    alice.session.start_disappearing();
+    let secs = Duration::from_secs;
+
+    // Gone 2 s after bob read it, not before.
+    let after_read = Disappear {
+        after_read: secs(2),
+        at_most: secs(3600),
+    };
+    let pending = (alice_timeline)
+        .send("Read me once", Vec::new(), None, Some(after_read))
+        .await?;
+    timeout("send", pending.sent()).await??;
+    let listed = wait_for(
+        "listed as sent",
+        alice.session.disappearing_updates().updates(),
+        |list| list.iter().any(|d| d.event_id().is_some()),
+    )
+    .await?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].disappear, after_read);
+    let entries = wait_for("bob sees it", bob_timeline.updates(), |e| {
+        has_message(e, "Read me once")
+    })
+    .await?;
+    let seen = find_message(&entries, "Read me once").unwrap();
+    assert_eq!(seen.disappear, Some(after_read), "marked");
+    tokio::time::sleep(secs(3)).await;
+    assert!(has_message(&bob_timeline.current(), "Read me once"));
+    bob_timeline.mark_read().await?;
+    wait_for("gone after read", bob_timeline.updates(), |e| {
+        !has_message(e, "Read me once")
+    })
+    .await?;
+    wait_for(
+        "no longer listed",
+        alice.session.disappearing_updates().updates(),
+        |list| list.is_empty(),
+    )
+    .await?;
+
+    // Never read: gone at its limit.
+    let limited = Disappear {
+        after_read: secs(3600),
+        at_most: secs(3),
+    };
+    let pending = (alice_timeline)
+        .send("Unread", Vec::new(), None, Some(limited))
+        .await?;
+    timeout("send", pending.sent()).await??;
+    wait_for("bob sees it", bob_timeline.updates(), |e| {
+        has_message(e, "Unread")
+    })
+    .await?;
+    wait_for("gone at its limit", bob_timeline.updates(), |e| {
+        !has_message(e, "Unread")
+    })
+    .await?;
+
+    // The room's mode and the limit, kept as account data.
+    let handle = alice.session.room(&room)?;
+    handle.set_disappearing_mode(Some(secs(300))).await?;
+    assert_eq!(handle.disappearing_mode(), Some(secs(300)), "shown at once");
+    handle.set_disappearing_mode(None).await?;
+    // Synced back, also after the first change's echo.
+    wait_for(
+        "mode off",
+        alice.session.disappearing_modes_updates().updates(),
+        |modes| !modes.contains_key(&room),
+    )
+    .await?;
+    tokio::time::sleep(secs(2)).await;
+    assert_eq!(handle.disappearing_mode(), None, "stays off");
+    alice.session.set_disappearing_limit(secs(6 * 3600)).await?;
+    assert_eq!(alice.session.disappearing_limit().at_most, secs(6 * 3600));
     Ok(())
 }

@@ -1304,6 +1304,7 @@ fn composer_keeps_focus(app: &mut App) {
                 in_reply_to: None,
                 overdue: false,
                 files: Vec::new(),
+                disappear: None,
             }];
         }),
         ("and sent", |app| main(app).account.scheduled.clear()),
@@ -1405,6 +1406,7 @@ async fn send_later_bar() {
         in_reply_to: None,
         overdue,
         files: Vec::new(),
+        disappear: None,
     };
     let mut main = Main::new(Arc::new(alice));
     main.show_rooms(rooms);
@@ -1512,7 +1514,9 @@ async fn send_later_bar() {
         outside.iter().any(|m| matches!(m, Message::ClosePopup)),
         "{outside:?}"
     );
-    let on_crab = messages(iced::Point::new(782.0, 447.0));
+    // The panel's right edge is the composer's, left of Send, the clock
+    // and the hourglass.
+    let on_crab = messages(iced::Point::new(742.0, 447.0));
     assert!(
         on_crab.iter().any(|m| matches!(m, Message::Room(
                 _,
@@ -2200,6 +2204,7 @@ async fn media_messages() {
             "Melt-rate map from last night's run, and the draft:",
             files,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2864,6 +2869,7 @@ async fn website_screenshots() {
             in_reply_to: None,
             overdue: false,
             files: Vec::new(),
+            disappear: None,
         }];
         let mut open = Room::new(
             main.session.room(&room).unwrap(),

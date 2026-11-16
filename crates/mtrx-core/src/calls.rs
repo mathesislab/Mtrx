@@ -209,6 +209,7 @@ impl RoomHandle {
             &format!("{service} call: {url}"),
             Vec::new(),
             None,
+            None,
         )
         .await?;
         Ok(())

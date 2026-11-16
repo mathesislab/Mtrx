@@ -41,7 +41,8 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    AbortOnDrop, Draft, Error, Live, PinsChange, Result, Session, User,
+    AbortOnDrop, Disappear, Draft, Error, Live, PinsChange, Result, Session, User,
+    disappearing::{self, Disappearances},
     echo::{Echoes, PendingRead, Unread},
     media::{self, MediaRef},
     permissions, pins, room_links,
@@ -85,6 +86,8 @@ pub struct Event {
     /// Why an [`EventContent::UnableToDecrypt`] could not be decrypted, as
     /// far as known; `None` for other content.
     pub utd_cause: Option<UtdCause>,
+    /// Sent to disappear once read (its marker); `None` while a local echo.
+    pub disappear: Option<Disappear>,
 }
 
 /// The SDK's best guess why an event could not be decrypted.
@@ -199,6 +202,7 @@ impl Event {
             send_state: SendState::Sent,
             read_by: Vec::new(),
             utd_cause: None,
+            disappear: None,
         }
     }
 }
@@ -510,19 +514,22 @@ impl RoomTimeline {
         text: &str,
         reply_to: Option<&EventId>,
     ) -> Result<PendingSend> {
-        self.send(text, Vec::new(), reply_to).await
+        self.send(text, Vec::new(), reply_to, None).await
     }
 
     /// Queue a message: its text (Markdown), then each file as a message of
     /// its own, in that order. Either may be empty, not both. The reply goes
-    /// on the first. Returns the last, which is sent once all are.
+    /// on the first. With `disappear`, all disappear once read. Returns the
+    /// last, which is sent once all are.
     pub async fn send(
         &self,
         text: &str,
         files: Vec<Attachment>,
         reply_to: Option<&EventId>,
+        disappear: Option<Disappear>,
     ) -> Result<PendingSend> {
-        send_message(self.timeline.room(), &self.outbox, text, files, reply_to).await
+        let room = self.timeline.room();
+        send_message(room, &self.outbox, text, files, reply_to, disappear).await
     }
 
     /// Replace the text of one of our messages.
@@ -696,19 +703,27 @@ pub(crate) fn synced_receipt(room: &Room) -> Option<OwnedEventId> {
     Some(room.read_receipts().latest_active?.event_id)
 }
 
-/// Enqueues a session's messages one at a time (see [`send_message`]), and
+/// Enqueues a session's messages one at a time (see [`send_message`]),
 /// keeps the Markdown each queued text was written in, for
-/// [`RoomTimeline::unsend`].
-#[derive(Default)]
+/// [`RoomTimeline::unsend`], and lists those that disappear.
 pub(crate) struct Outbox {
     /// Held while enqueueing.
     lock: Mutex<()>,
+    disappearing: Arc<Disappearances>,
     /// By the text's transaction ID, with its room. A room's are dropped
     /// once sent, at its next send.
     sources: std::sync::Mutex<HashMap<OwnedTransactionId, (OwnedRoomId, String)>>,
 }
 
 impl Outbox {
+    pub(crate) fn new(disappearing: Arc<Disappearances>) -> Self {
+        Self {
+            lock: Mutex::default(),
+            disappearing,
+            sources: Default::default(),
+        }
+    }
+
     /// Keep only the sources of `room`'s messages that are still `queued`,
     /// and other rooms'.
     fn prune(&self, room: &RoomId, queued: &[LocalEcho]) {
@@ -733,6 +748,8 @@ impl Outbox {
 /// Queue a message in `room`'s send queue, which persists it and sends it
 /// in the background; timelines show it as a local echo. The text goes
 /// first, then each file as a message of its own; see [`RoomTimeline::send`].
+/// With `disappear`, the text carries the marker and all are listed to
+/// disappear.
 ///
 /// The SDK's send handle does not expose the transaction ID, so we take it
 /// from the new local echoes after subscribing. `outbox`, shared by all
@@ -743,6 +760,7 @@ pub(crate) async fn send_message(
     text: &str,
     files: Vec<Attachment>,
     reply_to: Option<&EventId>,
+    disappear: Option<Disappear>,
 ) -> Result<PendingSend> {
     let text = (!text.trim().is_empty()).then_some(text);
     if text.is_none() && files.is_empty() {
@@ -780,7 +798,14 @@ pub(crate) async fn send_message(
             // No reply fallback in the body: Matrix 1.13 dropped it.
             content.relates_to = Some(Relation::Reply(ReplyRelation::with_event_id(event_id)));
         }
-        queue.send(content.into()).await.map_err(timeline_error)?;
+        match disappear {
+            Some(disappear) => {
+                let content = disappearing::marked(content, disappear)?;
+                queue.send_raw(content, "m.room.message".to_owned()).await
+            }
+            None => queue.send(content.into()).await,
+        }
+        .map_err(timeline_error)?;
         queued += 1;
     }
     for (filename, mimetype, bytes, config) in prepared {
@@ -806,6 +831,11 @@ pub(crate) async fn send_message(
     }
     if let Some(text) = text {
         outbox.keep(room.room_id(), ids[0].clone(), text);
+    }
+    if let Some(disappear) = disappear {
+        (outbox.disappearing)
+            .queued(room.room_id(), &ids, disappear)
+            .await?;
     }
     Ok(PendingSend {
         transaction_id: ids.pop().expect("something was queued"),
@@ -1393,6 +1423,7 @@ impl Converter {
             send_state,
             read_by,
             utd_cause,
+            disappear: event.original_json().and_then(disappearing::marker),
         })
     }
 

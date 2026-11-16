@@ -58,6 +58,11 @@ pub struct Session {
     pub(crate) exports: crate::export::Exports,
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
+    pub(crate) disappearing: Arc<crate::disappearing::Disappearances>,
+    _disappearing_following: crate::disappearing::Following,
+    /// Set once [`Session::start_disappearing`] ran.
+    pub(crate) disappearer: std::sync::Mutex<Option<AbortOnDrop>>,
+    pub(crate) disappearing_limit: crate::account_data::Synced<crate::DisappearingLimit>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
     _notifier: EventHandlerDropGuard,
     pub(crate) categories: crate::account_data::Synced<crate::RoomCategories>,
@@ -194,7 +199,10 @@ impl Session {
         let notification_settings = client.notification_settings().await;
         let (notifications, notifier) =
             crate::notifications::register(&client, sync.clone(), notification_settings.clone());
-        let outbox = Arc::new(crate::timeline::Outbox::default());
+        let disappearing = crate::disappearing::Disappearances::load(client.clone()).await?;
+        let disappearing_following = disappearing.follow();
+        let disappearing_limit = crate::account_data::Synced::load(client.clone()).await;
+        let outbox = Arc::new(crate::timeline::Outbox::new(disappearing.clone()));
         let schedule = Arc::new(Schedule::load(client.clone(), outbox.clone()).await?);
         let categories = crate::account_data::Synced::load(client.clone()).await;
         let colours = crate::account_data::Synced::load(client.clone()).await;
@@ -218,6 +226,10 @@ impl Session {
             downloads,
             exports,
             scheduler: Default::default(),
+            disappearing,
+            _disappearing_following: disappearing_following,
+            disappearer: Default::default(),
+            disappearing_limit,
             notifications,
             _notifier: notifier,
             categories,

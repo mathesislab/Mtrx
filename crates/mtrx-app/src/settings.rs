@@ -5,6 +5,7 @@ use std::{
     collections::BTreeMap,
     fmt, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use iced::{
@@ -24,6 +25,7 @@ use crate::{
     app,
     appearance::Appearance,
     dialog::Kind,
+    disappear::{self, Limit},
     feedback, fonts, frame,
     hint::{Position, hint, shortcut},
     spelling, style,
@@ -155,6 +157,8 @@ pub enum Preference {
     UpdateChannel(update::Channel),
     /// The room list's colour in a space, or at home.
     Tint(Option<OwnedRoomId>, Tint),
+    /// How long after sending our disappearing messages go at the latest.
+    DisappearingLimit(Duration),
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +176,8 @@ pub enum Message {
     SpaceSaved(Result<(), String>),
     /// A room list colour was saved in the account, or not.
     ColourSaved(Result<(), String>),
+    /// The limit of disappearing messages was saved in the account, or not.
+    LimitSaved(Result<(), String>),
     GoogleClientId(String),
     GoogleClientSecret(String),
     GoogleSignIn,
@@ -209,6 +215,8 @@ pub enum Action {
     AtHome(AtHome),
     /// Keep the Notes to self at the top, in the account.
     NotesAtTop(bool),
+    /// Set the limit of disappearing messages, in the account.
+    DisappearingLimit(Duration),
 }
 
 /// State of the open settings panel.
@@ -366,6 +374,7 @@ pub fn change(settings: &mut Settings, preference: Preference) -> Action {
             Action::CheckUpdates
         }
         Preference::Tint(space, tint) => Action::Colour(space, tint),
+        Preference::DisappearingLimit(at_most) => Action::DisappearingLimit(at_most),
     }
 }
 
@@ -416,7 +425,7 @@ impl Panel {
                     return Action::SetSpaceService(space.id.clone(), service);
                 }
             }
-            Message::ColourSaved(result) => self.error = result.err(),
+            Message::ColourSaved(result) | Message::LimitSaved(result) => self.error = result.err(),
             Message::SpaceSaved(result) => {
                 if let Some(space) = &mut self.space {
                     space.error = result.err();
@@ -464,7 +473,9 @@ impl Panel {
     /// `spaces`: the top-level spaces, for their room list colours;
     /// `arranged`: the room list's arrangement, from the account;
     /// `presence_shared`: the server shares presence (as far as known);
+    /// `disappearing_limit`: from the account;
     /// `updater`: whether there is a newer version, first in the panel.
+    #[allow(clippy::too_many_arguments)]
     pub fn view<'a>(
         &'a self,
         settings: &'a Settings,
@@ -472,6 +483,7 @@ impl Panel {
         colours: &RoomListColours,
         arranged: &RoomCategories,
         presence_shared: bool,
+        disappearing_limit: Duration,
         updater: &'a Updater,
     ) -> Element<'a, app::Message> {
         let mut panel = column![
@@ -556,6 +568,19 @@ impl Panel {
                 toggler(settings.icon_badge)
                     .on_toggle(|on| preference(Preference::IconBadge(on)))
                     .into(),
+            ),
+            option(
+                "Disappearing messages",
+                "Messages you send to disappear after read are deleted at the latest this \
+                 long after sending, also when not everyone has read them.",
+                pick_list(
+                    disappear::AT_MOST.map(Limit),
+                    Some(Limit(disappearing_limit)),
+                    |Limit(at_most)| preference(Preference::DisappearingLimit(at_most)),
+                )
+                .text_size(13)
+                .padding(6)
+                .into(),
             ),
             heading("Room list"),
             room_list_options(settings.room_list),

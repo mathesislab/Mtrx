@@ -112,13 +112,19 @@ impl Room {
                     .collect();
                 self.error = None;
                 let timeline = self.timeline.clone();
+                let disappear = self.disappearing(cx.session);
                 let used = emoji::used(&text);
                 // Queue only: the local echo shows the send state. Queued
                 // first, so it shows before the server hears of anything.
                 let send = task::request(
                     async move {
                         let sent = timeline
-                            .send(text.trim_end(), files, compose.reply_to().map(|id| &**id))
+                            .send(
+                                text.trim_end(),
+                                files,
+                                compose.reply_to().map(|id| &**id),
+                                disappear,
+                            )
                             .await
                             .map(|_| ());
                         let _ = timeline.typing(false).await;
@@ -139,6 +145,16 @@ impl Room {
                 Task::none()
             }
             Message::Later(message) => send_later::update(self, message, cx),
+            Message::DisappearMenu => {
+                *cx.popup = Some(app::Popup::Disappear);
+                Task::none()
+            }
+            Message::Disappear(after_read) => {
+                self.disappear = Some(after_read);
+                cx.popup
+                    .take_if(|popup| matches!(popup, app::Popup::Disappear));
+                Task::none()
+            }
             Message::Act(message) => actions::update(self, message, cx),
             // The timeline is anchored at the bottom, so its offset counts
             // upwards.

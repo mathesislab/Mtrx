@@ -219,6 +219,8 @@ pub enum Popup {
     Calls(calls::Menu),
     /// A send time, for the composer's text or a scheduled message.
     SendLater(send_later::SendLater),
+    /// Whether what the composer sends disappears.
+    Disappear,
     /// The room list's "+".
     AddMenu,
     /// The space bar's "+", or a space's.
@@ -1057,6 +1059,26 @@ impl App {
                 )
                 .map(|m| Message::Account(account::Message::Notified(m))),
             );
+            subscriptions.push(
+                Subscription::run_with((Shared(main.session.clone()), "disappearing"), |(s, _)| {
+                    s.0.disappearing_updates().updates()
+                })
+                .map(|m| Message::Account(account::Message::Disappearing(m))),
+            );
+            subscriptions.push(
+                Subscription::run_with(
+                    (Shared(main.session.clone()), "disappearing modes"),
+                    |(s, _)| s.0.disappearing_modes_updates().updates(),
+                )
+                .map(|m| Message::Account(account::Message::DisappearingModes(m))),
+            );
+            subscriptions.push(
+                Subscription::run_with(
+                    (Shared(main.session.clone()), "disappearing limit"),
+                    |(s, _)| s.0.disappearing_limit_updates().updates(),
+                )
+                .map(|m| Message::Account(account::Message::DisappearingLimit(m.at_most))),
+            );
             subscriptions.push(iced::event::listen_with(shortcuts));
             // A selection being dragged ends wherever the button is released.
             if main
@@ -1097,8 +1119,12 @@ impl App {
                 })
                 .map(|m| Message::Sidebar(sidebar::Message::Colours(m))),
             );
-            // Times shown relative to now: scheduled messages, last activity.
-            if !main.account.scheduled.is_empty() || main.people.presences.following() {
+            // Times shown relative to now: scheduled messages, last
+            // activity, when our messages disappear.
+            if !main.account.scheduled.is_empty()
+                || !main.account.disappearing.is_empty()
+                || main.people.presences.following()
+            {
                 subscriptions.push(
                     iced::time::every(TICK).map(|_| Message::Account(account::Message::Tick)),
                 );
@@ -1197,6 +1223,7 @@ impl App {
                         room_pictures: self.settings.room_pictures,
                         popup: main.popup.as_ref(),
                         space_rooms: &main.sidebar.space_rooms,
+                        disappearing_modes: &main.account.disappearing_modes,
                     });
                     layers = layers.push(panel(card, Message::Card(info::Message::Close), true));
                 }
@@ -1212,6 +1239,7 @@ impl App {
                             &main.sidebar.colours,
                             &main.sidebar.arrange.categories,
                             !main.people.presences.unavailable(),
+                            main.account.disappearing_limit,
                             &self.updater,
                         );
                         panel(
@@ -1342,6 +1370,7 @@ impl App {
                     popup: main.popup.as_ref(),
                     presences: &main.people.presences,
                     now: main.account.now,
+                    disappearing: &main.account.disappearing,
                 };
                 room.view(summary, &look, &scheduled)
             }

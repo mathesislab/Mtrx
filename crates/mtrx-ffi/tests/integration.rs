@@ -210,7 +210,10 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
             mimetype: "image/png".into(),
             bytes: image.clone(),
         };
-        let sent = timeline.send("", vec![attachment], None).await.unwrap();
+        let sent = timeline
+            .send("", vec![attachment], None, None)
+            .await
+            .unwrap();
         tokio::time::timeout(TIMEOUT, sent.sent())
             .await
             .unwrap()
