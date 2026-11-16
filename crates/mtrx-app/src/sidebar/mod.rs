@@ -887,7 +887,8 @@ fn open_or_close(opened: bool, open: impl FnOnce() -> arrange::Message) -> app::
 }
 
 /// A section's name (`title`), which collapses and expands it, and its
-/// grip; a category's also has its menu.
+/// grip; a category's also has its menu, last, so its "⋯" lines up with
+/// the rooms' (the grip keeps its place while hidden).
 /// `menu`: the category whose menu is open.
 fn section_header<'a>(
     section: &Section,
@@ -912,20 +913,21 @@ fn section_header<'a>(
         section.clone(),
     )));
     let mut header = row![title].spacing(2).align_y(Alignment::Center);
+    if *section != Section::Invites {
+        header = header.push(grip(arrange, section));
+    }
     if let Section::Category(id) = section {
         let open = menu == Some(id);
+        // Padded as the rooms' "⋯".
         header = header.push(with_tooltip(
             button(text("⋯").size(13).style(text::secondary))
-                .padding([0, 6])
+                .padding([0, 4])
                 .style(style::list_item(open))
                 .on_press(open_or_close(open, || {
                     arrange::Message::CategoryMenu(id.clone())
                 })),
             "Rename, sort, move or delete the category".into(),
         ));
-    }
-    if *section != Section::Invites {
-        header = header.push(grip(arrange, section));
     }
     let hovered =
         |entered| arrange_message(arrange::Message::SectionHovered(section.clone(), entered));
