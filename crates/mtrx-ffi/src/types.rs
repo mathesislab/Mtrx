@@ -795,6 +795,7 @@ mod tests {
             send_state: core::SendState::Sending,
             read_by: Vec::new(),
             utd_cause: None,
+            disappear: None,
         }
     }
 

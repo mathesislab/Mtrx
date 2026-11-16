@@ -401,7 +401,7 @@ async fn main() -> Result<()> {
             let room = session.find_room(&room).await?;
             let message = session
                 .room(&room)?
-                .schedule(text.trim_end(), Vec::new(), send_at, None)
+                .schedule(text.trim_end(), Vec::new(), send_at, None, None)
                 .await?;
             session.stop_sync().await;
             println!(
@@ -658,9 +658,11 @@ async fn watch_timeline(timeline: &RoomTimeline) {
     }
 }
 
-/// Send scheduled messages while watching; overdue ones only get a notice.
+/// Send scheduled messages and delete disappearing ones while watching;
+/// overdue scheduled ones only get a notice.
 fn start_scheduler(session: &Session) {
     session.start_scheduler();
+    session.start_disappearing();
     let overdue = session.scheduled().iter().filter(|m| m.overdue).count();
     if overdue > 0 {
         eprintln!(

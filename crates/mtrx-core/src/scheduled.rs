@@ -21,7 +21,7 @@ use tokio::sync::{Mutex, watch};
 use tracing::warn;
 
 use crate::{
-    AbortOnDrop, Attachment, Error, Live, PendingSend, Result, RoomHandle, Session,
+    AbortOnDrop, Attachment, Disappear, Error, Live, PendingSend, Result, RoomHandle, Session,
     timeline::{Outbox, send_message},
 };
 
@@ -53,6 +53,9 @@ pub struct ScheduledMessage {
     /// Sent after the text, each as a message of its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ScheduledFile>,
+    /// It disappears once sent and read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disappear: Option<Disappear>,
 }
 
 /// A file sent with a scheduled message.
@@ -152,6 +155,7 @@ impl Schedule {
             &message.text,
             self.load_files(message).await?,
             message.in_reply_to.as_deref(),
+            message.disappear,
         )
         .await
     }
@@ -320,7 +324,8 @@ impl Session {
 
 impl RoomHandle {
     /// Schedule a Markdown message and files for `send_at`, which must be
-    /// in the future; they are sent as by [`RoomTimeline::send`].
+    /// in the future; they are sent as by [`RoomTimeline::send`], and
+    /// disappear as `disappear` says.
     ///
     /// [`RoomTimeline::send`]: crate::RoomTimeline::send
     pub async fn schedule(
@@ -329,6 +334,7 @@ impl RoomHandle {
         files: Vec<Attachment>,
         send_at: SystemTime,
         in_reply_to: Option<&EventId>,
+        disappear: Option<Disappear>,
     ) -> Result<ScheduledMessage> {
         let schedule = &self.session.schedule;
         let send_at = future_time(send_at)?;
@@ -350,6 +356,7 @@ impl RoomHandle {
                     size: file.bytes.len() as u64,
                 })
                 .collect(),
+            disappear,
         };
         // The files first: the scheduler may send the message once listed.
         let listed = match schedule.store_files(&message.id, files).await {
@@ -389,7 +396,7 @@ pub(crate) fn random_id() -> String {
 }
 
 /// `SystemTime` as milliseconds since the Unix epoch.
-mod millis {
+pub(crate) mod millis {
     use super::*;
     use serde::{Deserializer, Serializer};
 
@@ -403,5 +410,29 @@ mod millis {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SystemTime, D::Error> {
         Ok(UNIX_EPOCH + Duration::from_millis(u64::deserialize(d)?))
+    }
+
+    /// `Option<SystemTime>` the same way.
+    pub(crate) mod option {
+        use super::*;
+
+        pub fn serialize<S: Serializer>(
+            time: &Option<SystemTime>,
+            s: S,
+        ) -> Result<S::Ok, S::Error> {
+            let millis = time.map(|time| {
+                time.duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            });
+            millis.serialize(s)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            d: D,
+        ) -> Result<Option<SystemTime>, D::Error> {
+            let millis = Option::<u64>::deserialize(d)?;
+            Ok(millis.map(|millis| UNIX_EPOCH + Duration::from_millis(millis)))
+        }
     }
 }

@@ -561,7 +561,7 @@ pub fn update(room: &mut Room, message: Message, cx: &mut Cx<'_>) -> Task<app::M
             task::request(
                 async move {
                     (handle
-                        .schedule(&text, files, send_at, reply_to.as_deref())
+                        .schedule(&text, files, send_at, reply_to.as_deref(), None)
                         .await)
                         .map(|_| ())
                 },

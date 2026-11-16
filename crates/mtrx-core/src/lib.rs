@@ -11,6 +11,7 @@ mod calls;
 mod categories;
 mod connection;
 mod directory;
+mod disappearing;
 mod downloads;
 mod drafts;
 mod echo;
@@ -54,6 +55,10 @@ pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
 pub use directory::{DirectoryKind, DirectoryPage, DirectoryRoom, DirectoryServers, parse_address};
+pub use disappearing::{
+    DEFAULT_AT_MOST, Disappear, Disappearing, DisappearingLimit, MARKER as DISAPPEARING_MARKER,
+    Sent,
+};
 pub use downloads::{Download, DownloadId, DownloadState, SaveTo, human_size};
 pub use drafts::{DRAFT_PAUSE, Draft, DraftKeeper};
 pub use encryption::{

@@ -1304,6 +1304,7 @@ fn composer_keeps_focus(app: &mut App) {
                 in_reply_to: None,
                 overdue: false,
                 files: Vec::new(),
+                disappear: None,
             }];
         }),
         ("and sent", |app| main(app).account.scheduled.clear()),
@@ -1405,6 +1406,7 @@ async fn send_later_bar() {
         in_reply_to: None,
         overdue,
         files: Vec::new(),
+        disappear: None,
     };
     let mut main = Main::new(Arc::new(alice));
     main.show_rooms(rooms);
@@ -2200,6 +2202,7 @@ async fn media_messages() {
             "Melt-rate map from last night's run, and the draft:",
             files,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -2864,6 +2867,7 @@ async fn website_screenshots() {
             in_reply_to: None,
             overdue: false,
             files: Vec::new(),
+            disappear: None,
         }];
         let mut open = Room::new(
             main.session.room(&room).unwrap(),

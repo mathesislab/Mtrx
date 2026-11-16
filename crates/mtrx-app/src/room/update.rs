@@ -118,7 +118,12 @@ impl Room {
                 let send = task::request(
                     async move {
                         let sent = timeline
-                            .send(text.trim_end(), files, compose.reply_to().map(|id| &**id))
+                            .send(
+                                text.trim_end(),
+                                files,
+                                compose.reply_to().map(|id| &**id),
+                                None,
+                            )
                             .await
                             .map(|_| ());
                         let _ = timeline.typing(false).await;
