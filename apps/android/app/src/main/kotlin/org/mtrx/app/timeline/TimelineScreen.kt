@@ -95,12 +95,16 @@ import org.mtrx.app.ui.PresenceLine
 import org.mtrx.app.ui.WithPresenceDot
 import org.mtrx.app.ui.dayLabel
 import org.mtrx.app.ui.linesHeight
+import java.time.Duration
+import uniffi.mtrx.DisappearChoice
 import uniffi.mtrx.Download
 import uniffi.mtrx.MessageAction
 import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomListsInterface
 import uniffi.mtrx.RoomSummary
 import uniffi.mtrx.Session
+import uniffi.mtrx.disappearChoices
+import uniffi.mtrx.disappearWords
 
 /** Rows from the top this close load older events. */
 private const val LOAD_MARGIN = 5
@@ -130,6 +134,12 @@ data class TimelineState(
     val pinned: List<EventRow>? = null,
     /** Each message's file's newest download, by its source. */
     val downloads: Map<String, Download> = emptyMap(),
+    /** What is sent disappears this long after everyone has read it; null: not. */
+    val disappearAfterRead: Duration? = null,
+    /** That, in the library's words (`disappearWords`), for the hourglass. */
+    val disappearWords: String = "",
+    /** The composer's choices of it, the library's. */
+    val disappearChoices: List<DisappearChoice> = emptyList(),
 )
 
 /**
@@ -175,6 +185,9 @@ fun TimelineScreen(
     val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
     val pinnedRows by pinned.pinned.collectAsStateWithLifecycle()
     val downloads by viewModel.downloads.collectAsStateWithLifecycle()
+    val disappearAfterRead by viewModel.disappearAfterRead.collectAsStateWithLifecycle()
+    val choices = remember { disappearChoices() }
+    val words = remember(disappearAfterRead) { disappearWords(disappearAfterRead) }
     // The app may be ended in the background: the draft is kept first.
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(
@@ -189,6 +202,9 @@ fun TimelineScreen(
         canEditTopic = header.rights.changeTopic,
         pinned = pinnedRows,
         downloads = downloads,
+        disappearAfterRead = disappearAfterRead,
+        disappearWords = words,
+        disappearChoices = choices,
     )
     TimelineContent(
         header,
@@ -414,8 +430,12 @@ fun TimelineContent(
                 Composer(
                     draft = state.draft,
                     composing = state.composing,
+                    disappearAfterRead = state.disappearAfterRead,
+                    disappearWords = state.disappearWords,
+                    disappearChoices = state.disappearChoices,
                     onDraft = actions::onDraft,
                     onCancel = actions::cancelComposing,
+                    onDisappear = actions::chooseDisappear,
                     onSend = {
                         if (actions.send()) scope.launch { listState.scrollToItem(0) }
                     },

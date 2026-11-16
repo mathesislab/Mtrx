@@ -195,7 +195,16 @@ fun SpaceOverviewContent(
                         if (settings == null) {
                             item(key = "loading") { Spinner() }
                         } else {
-                            settingsSection(header, settings, members?.count { it.membership == Membership.JOINED }, spaceNames, ownUserId, infoActions)
+                            settingsSection(
+                                header,
+                                settings,
+                                members?.count { it.membership == Membership.JOINED },
+                                spaceNames,
+                                ownUserId,
+                                // A space has no messages of ours.
+                                disappearing = null,
+                                actions = infoActions,
+                            )
                         }
                     }
                 }

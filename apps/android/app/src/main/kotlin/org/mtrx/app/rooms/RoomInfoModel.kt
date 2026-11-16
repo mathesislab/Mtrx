@@ -2,6 +2,7 @@ package org.mtrx.app.rooms
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -10,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.mtrx.app.model.describe
+import uniffi.mtrx.DisappearingModeListener
 import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Member
@@ -24,15 +26,22 @@ import uniffi.mtrx.TaskHandle
 import uniffi.mtrx.LinkDraft
 
 /**
+ * A room's mode of disappearing messages, once known: ours there disappear
+ * [afterRead] after everyone has read them; null for off.
+ */
+data class DisappearingMode(val afterRead: Duration?)
+
+/**
  * Room info of [roomId] (a room or a space): its settings and members, and
  * the changes to them, through its [Room]. Nothing is read until [load]
  * (Room info shows; the room screen only saves the topic): from then on the
- * settings follow the room, and a change to them shows at once (the
- * library's); the members are read at each [load] and again after each
- * change to them. Changes run in a scope of their own, so leaving the
- * screen (which clears this model) does not cancel them; the room is closed
- * once they end. [composeTopic] makes the topic to save from its typed text and
- * links (the library's). Methods are called on the main thread.
+ * settings and our mode of disappearing messages there follow the room, and
+ * a change to them shows at once (the library's); the members are read at
+ * each [load] and again after each change to them. Changes run in a scope
+ * of their own, so leaving the screen (which clears this model) does not
+ * cancel them; the room is closed once they end. [composeTopic] makes the
+ * topic to save from its typed text and links (the library's). Methods are
+ * called on the main thread.
  */
 class RoomInfoModel(
     val roomId: String,
@@ -48,6 +57,10 @@ class RoomInfoModel(
     private val _members = MutableStateFlow<List<Member>?>(null)
     val members: StateFlow<List<Member>?> = _members.asStateFlow()
 
+    /** Our mode of disappearing messages here; null until known. */
+    private val _disappearingMode = MutableStateFlow<DisappearingMode?>(null)
+    val disappearingMode: StateFlow<DisappearingMode?> = _disappearingMode.asStateFlow()
+
     /** A change to the members under way, as "Banning…". */
     private val _busy = MutableStateFlow<String?>(null)
     val busy: StateFlow<String?> = _busy.asStateFlow()
@@ -55,24 +68,33 @@ class RoomInfoModel(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    /** Follows the settings into [settings] from the first [load]; cancelled with the model. */
-    private var subscription: TaskHandle? = null
+    /** Follow the settings and the mode into [settings] and [disappearingMode] from the first [load]; cancelled with the model. */
+    private var subscriptions: List<TaskHandle>? = null
 
     // Not cancelled with viewModelScope: completed when the model is cleared,
     // it ends once the changes under way are done.
     private val changesJob = SupervisorJob()
     private val changes = CoroutineScope(changesJob + Dispatchers.Main.immediate)
 
-    /** Room info shows: follow the settings (from the first call on) and read the members. */
+    /** Room info shows: follow the settings and the mode (from the first call on) and read the members. */
     fun load() {
-        if (subscription == null) {
+        if (subscriptions == null) {
             try {
-                subscription = room.getOrThrow().subscribeSettings(object : RoomSettingsListener {
-                    // On a library thread: the settings once read, then after every change.
-                    override fun onUpdate(settings: RoomSettings) {
-                        _settings.value = settings
-                    }
-                })
+                val opened = room.getOrThrow()
+                subscriptions = listOf(
+                    opened.subscribeSettings(object : RoomSettingsListener {
+                        // On a library thread: the settings once read, then after every change.
+                        override fun onUpdate(settings: RoomSettings) {
+                            _settings.value = settings
+                        }
+                    }),
+                    opened.subscribeDisappearingMode(object : DisappearingModeListener {
+                        // On a library thread: the mode now, then after every change (on our other devices too).
+                        override fun onUpdate(afterRead: Duration?) {
+                            _disappearingMode.value = DisappearingMode(afterRead)
+                        }
+                    }),
+                )
             } catch (e: MtrxException) {
                 _error.value = describe(e)
             }
@@ -94,6 +116,9 @@ class RoomInfoModel(
     override fun setTopic(draft: TopicDraft) = change { it.setTopic(draft.compose(composeTopic)) }
 
     override fun setNotify(mode: NotifyMode) = change { it.setNotify(mode) }
+
+    /** Ours alone, on all our devices; if saving fails, the saved mode shows again. */
+    override fun setDisappearingMode(afterRead: Duration?) = change { it.setDisappearingMode(afterRead) }
 
     override fun setJoinRule(rule: JoinRule) = change { it.setJoinRule(rule) }
 
@@ -160,7 +185,7 @@ class RoomInfoModel(
     }
 
     override fun onCleared() {
-        subscription?.let {
+        subscriptions?.forEach {
             it.cancel()
             it.close()
         }

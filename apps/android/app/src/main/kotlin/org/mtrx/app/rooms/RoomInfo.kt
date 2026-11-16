@@ -69,6 +69,8 @@ import org.mtrx.app.ui.ChoiceRow
 import org.mtrx.app.ui.ConfirmDialog
 import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.SwitchRow
+import java.time.Duration
+import uniffi.mtrx.DisappearChoice
 import uniffi.mtrx.LevelConfirmation
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
@@ -101,10 +103,17 @@ data class RoomInfoHeader(
 )
 
 /**
+ * "Disappearing messages" in a joined room's settings: our mode there,
+ * [afterRead] (null for off), one of [choices] (the library's).
+ */
+data class DisappearingSetting(val afterRead: Duration?, val choices: List<DisappearChoice>)
+
+/**
  * Room info, full screen: the picture, name (renamed in place where we
  * may) and address; Invite… and Leave…; the topic in a box with Edit; the
- * settings we may change; the members. [spaceNames] names the spaces of
- * the room's settings. [onLeave] asks first.
+ * settings we may change, with [disappearing] where given; the members.
+ * [spaceNames] names the spaces of the room's settings. [onLeave] asks
+ * first.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -112,6 +121,7 @@ fun RoomInfoContent(
     header: RoomInfoHeader,
     settings: RoomSettings?,
     members: List<Member>?,
+    disappearing: DisappearingSetting?,
     busy: String?,
     error: String?,
     ownUserId: String,
@@ -154,7 +164,15 @@ fun RoomInfoContent(
             if (settings == null) {
                 item(key = "loading") { Loading() }
             } else {
-                settingsSection(header, settings, members?.count { it.membership == Membership.JOINED }, spaceNames, ownUserId, actions)
+                settingsSection(
+                    header,
+                    settings,
+                    members?.count { it.membership == Membership.JOINED },
+                    spaceNames,
+                    ownUserId,
+                    disappearing,
+                    actions,
+                )
             }
             membersSection(members, images, actions)
         }
@@ -307,8 +325,9 @@ fun TopicBox(topic: Topic, canEdit: Boolean, onSave: (TopicDraft) -> Unit, onOpe
 }
 
 /**
- * The settings we may change, each with its current value; the spaces the
- * room is in as chips, the facts line, and the people banned.
+ * The settings we may change, each with its current value (our
+ * [disappearing] messages where given); the spaces the room is in as
+ * chips, the facts line, and the people banned.
  */
 fun LazyListScope.settingsSection(
     header: RoomInfoHeader,
@@ -316,10 +335,11 @@ fun LazyListScope.settingsSection(
     memberCount: Int?,
     spaceNames: Map<String, String>,
     ownUserId: String,
+    disappearing: DisappearingSetting?,
     actions: RoomInfoActions,
 ) {
     item(key = "settings") {
-        SettingsColumn(header, settings, memberCount, spaceNames, ownUserId, actions)
+        SettingsColumn(header, settings, memberCount, spaceNames, ownUserId, disappearing, actions)
     }
 }
 
@@ -331,6 +351,7 @@ fun SettingsColumn(
     memberCount: Int?,
     spaceNames: Map<String, String>,
     ownUserId: String,
+    disappearing: DisappearingSetting?,
     actions: RoomInfoActions,
 ) {
     var encrypting by remember { mutableStateOf(false) }
@@ -344,6 +365,17 @@ fun SettingsColumn(
             enabled = true,
             onChoose = actions::setNotify,
         )
+        if (disappearing != null) {
+            ChoiceRow(
+                "Disappearing messages",
+                disappearing.afterRead,
+                disappearing.choices.map { it.afterRead to it.modeLabel },
+                "Your messages here are deleted for everyone this long after all others have read them, at the " +
+                    "latest after the limit in Settings. Only while Mtrx is open on one of your devices.",
+                enabled = true,
+                onChoose = actions::setDisappearingMode,
+            )
+        }
         if (header.rights.changeJoinRule) {
             ChoiceRow(
                 "Who can join",

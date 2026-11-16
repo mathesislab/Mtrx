@@ -183,12 +183,7 @@ internal fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, do
                                 onCancelDownload = handlers.cancelDownload,
                                 onOpenFile = { handlers.openFile(row) },
                             )
-                            Text(
-                                timeOfDay(event.timestamp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colors.secondary,
-                                modifier = Modifier.align(Alignment.End),
-                            )
+                            MessageTime(event, colors.secondary, Modifier.align(Alignment.End))
                         }
                     }
                     ReactionChips(row, handlers)
@@ -204,6 +199,18 @@ internal fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, do
                 modifier = Modifier.align(Alignment.End),
             )
         }
+    }
+}
+
+/** The message's time in [color], after a small hourglass if it disappears (its words for TalkBack). */
+@Composable
+private fun MessageTime(event: TimelineEvent, color: Color, modifier: Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        event.disappear?.let {
+            Icon(MtrxIcons.Hourglass, contentDescription = it.words, modifier = Modifier.size(12.dp), tint = color)
+            Spacer(Modifier.width(2.dp))
+        }
+        Text(timeOfDay(event.timestamp), style = MaterialTheme.typography.labelSmall, color = color)
     }
 }
 
