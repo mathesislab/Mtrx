@@ -499,7 +499,9 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, app::Message> {
         Some(space) => space_topic(&view, space, top.into()),
         None => top.into(),
     };
-    let mut list = column![top].padding(8);
+    // As wide as set, also while the list scrolls: its scrollbar widens
+    // the room list instead.
+    let mut list = column![top].width(view.width).padding(8);
     if add_menu {
         let space = selected_space.map(|id| {
             let rights = rooms.iter().find(|r| &r.id == id).map(|r| r.rights);
@@ -592,7 +594,6 @@ pub fn room_list<'a>(view: RoomListView<'a>) -> Element<'a, app::Message> {
         .on_scroll(|_| app::Message::Sidebar(Message::Scrolled))
         .height(Length::Fill);
     container(out_of_view_arrows(list.into(), view.out_of_view))
-        .width(view.width)
         .height(Length::Fill)
         .style(style::room_list(view.tint))
         .into()
