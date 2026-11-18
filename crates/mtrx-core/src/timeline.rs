@@ -689,11 +689,56 @@ impl Attachment {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| Error::Timeline(format!("not a file: {}", path.display())))?;
+        Self::read_as(path, filename).await
+    }
+
+    /// The file at `path`, sent as `filename` (a copy a phone made of a
+    /// photo, which has no name): its MIME type guessed from that.
+    pub async fn read_as(path: &Path, filename: &str) -> Result<Self> {
         Ok(Self {
             filename: filename.to_owned(),
             mimetype: media::guess_mimetype(filename).to_string(),
             bytes: tokio::fs::read(path).await?,
         })
+    }
+}
+
+/// How long sending waits for the server's upload limit (asked once per
+/// session) before it queues files unchecked.
+const UPLOAD_LIMIT_WAIT: Duration = Duration::from_secs(5);
+
+/// Fails for the first of `files` larger than the server takes. While the
+/// limit cannot be had (offline, say), they are queued unchecked: the
+/// server then refuses one too large when it is sent.
+async fn check_sizes(room: &Room, files: &[Attachment]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let client = room.client();
+    let limit = tokio::time::timeout(UPLOAD_LIMIT_WAIT, client.load_or_fetch_max_upload_size());
+    match limit.await {
+        Ok(Ok(max)) => within_limit(files, u64::from(max)),
+        Ok(Err(e)) => {
+            warn!("files sent unchecked, the upload limit is not known: {e}");
+            Ok(())
+        }
+        Err(_) => {
+            warn!("files sent unchecked, the server did not say its upload limit in time");
+            Ok(())
+        }
+    }
+}
+
+/// [`Error::FileTooLarge`] for the first of `files` larger than `max`
+/// bytes.
+fn within_limit(files: &[Attachment], max: u64) -> Result<()> {
+    match files.iter().find(|file| file.bytes.len() as u64 > max) {
+        Some(file) => Err(Error::FileTooLarge {
+            filename: file.filename.clone(),
+            size: file.bytes.len() as u64,
+            max,
+        }),
+        None => Ok(()),
     }
 }
 
@@ -766,6 +811,7 @@ pub(crate) async fn send_message(
     if text.is_none() && files.is_empty() {
         return Err(Error::Timeline("nothing to send".into()));
     }
+    check_sizes(room, &files).await?;
     // Images are decoded for their size and thumbnail, before queueing.
     let mut prepared = Vec::with_capacity(files.len());
     for file in files {
@@ -933,6 +979,16 @@ pub struct Upload {
     /// Bytes sent so far, and in all.
     pub sent: usize,
     pub total: usize,
+}
+
+impl Upload {
+    /// From 0 to 1; 0 while the total is not known.
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 {
+            return 0.0;
+        }
+        (self.sent as f64 / self.total as f64).min(1.0) as f32
+    }
 }
 
 /// A message in the send queue.
@@ -1721,5 +1777,42 @@ mod tests {
                 ("room", "room".to_owned(), None),
             ]
         );
+    }
+
+    #[test]
+    fn a_file_larger_than_the_server_takes_is_named_with_both_sizes() {
+        let file = |name: &str, bytes: usize| Attachment {
+            filename: name.into(),
+            mimetype: "application/pdf".into(),
+            bytes: vec![0; bytes],
+        };
+        let files = [file("notes.pdf", 10), file("report.pdf", 11)];
+        assert!(within_limit(&files, 11).is_ok());
+        let refused = within_limit(&files, 10).unwrap_err();
+        assert!(matches!(
+            &refused,
+            Error::FileTooLarge { filename, size: 11, max: 10 } if filename == "report.pdf"
+        ));
+        let too_large = Error::FileTooLarge {
+            filename: "report.pdf".into(),
+            size: 120_000_000,
+            max: 100_000_000,
+        };
+        assert_eq!(
+            too_large.to_string(),
+            "report.pdf is too large: 120 MB; the server takes at most 100 MB"
+        );
+    }
+
+    #[test]
+    fn an_upload_goes_from_nothing_to_all() {
+        let upload = |sent, total| Upload {
+            message: EventKey(TimelineEventItemId::TransactionId("t".into())),
+            sent,
+            total,
+        };
+        assert_eq!(upload(0, 0).fraction(), 0.0);
+        assert_eq!(upload(250, 1000).fraction(), 0.25);
+        assert_eq!(upload(1000, 1000).fraction(), 1.0);
     }
 }

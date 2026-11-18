@@ -1,7 +1,8 @@
 //! A room's live timeline, and sending.
 
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, pin::pin, sync::Arc, time::Duration};
 
+use futures_util::StreamExt;
 use mtrx_core::{self as core, OwnedEventId, RoomTimeline, UserId};
 
 use crate::{
@@ -21,6 +22,48 @@ pub trait TimelineRowsListener: Send + Sync {
 #[uniffi::export(with_foreign)]
 pub trait TypingListener: Send + Sync {
     fn on_update(&self, names: Vec<String>);
+}
+
+/// Receives the files uploading for messages being sent, after every
+/// change.
+#[uniffi::export(with_foreign)]
+pub trait UploadsListener: Send + Sync {
+    fn on_update(&self, uploads: Vec<Upload>);
+}
+
+/// A file to send: a copy the app made in its cache, which it deletes once
+/// [`Timeline::send`] returns.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct FileToSend {
+    pub path: String,
+    /// The name it is sent with (a photo's made from the date, say); its
+    /// type is guessed from it.
+    pub filename: String,
+}
+
+/// A file uploading for a message being sent.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct Upload {
+    /// The message's row, `TimelineRow.id`.
+    pub item_id: String,
+    /// How much is sent, from 0 to 1, in hundredths.
+    pub fraction: f32,
+}
+
+/// `uploads` by their message's row among `rows`; those whose row is not
+/// there yet are left out.
+fn uploads_by_row(uploads: &[core::Upload], rows: &[core::Row]) -> Vec<Upload> {
+    (uploads.iter())
+        .filter_map(|upload| {
+            let event = (rows.iter().rev())
+                .filter_map(core::Row::event)
+                .find(|event| event.key == upload.message)?;
+            Some(Upload {
+                item_id: event.id.clone(),
+                fraction: (upload.fraction() * 100.0).round() / 100.0,
+            })
+        })
+        .collect()
 }
 
 /// A room's timeline, kept up to date while the object lives and sync runs.
@@ -116,45 +159,83 @@ impl Timeline {
         run(async move { Ok(timeline.item_of(&event).await) }).await
     }
 
-    /// Send a message written in Markdown. It shows in the timeline at once,
-    /// as [`crate::SendState::Sending`], and is sent in the background, also
-    /// later if the server is unreachable now. With `disappear_after_read`,
-    /// it is deleted for everyone this long after all others have read it,
-    /// at the latest after the limit (`Session.disappearingLimit`).
-    pub async fn send_text(
+    /// Send a message: its text (Markdown), then each file as a message of
+    /// its own, in that order; either may be empty, not both. With
+    /// `reply_to` (a row's `TimelineRow.id`, whose message must be sent),
+    /// the first answers that message. They show in the timeline at once,
+    /// as [`crate::SendState::Sending`], and are sent in the background,
+    /// also later if the server is unreachable now. The files are read
+    /// before this returns, so their copies can go then; one larger than
+    /// the server takes fails it all, saying so. With
+    /// `disappear_after_read`, all are deleted for everyone this long after
+    /// all others have read them, at the latest after the limit
+    /// (`Session.disappearingLimit`).
+    pub async fn send(
         &self,
         text: String,
+        files: Vec<FileToSend>,
+        reply_to: Option<String>,
         disappear_after_read: Option<Duration>,
     ) -> Result<(), MtrxError> {
+        let reply_to = match reply_to {
+            Some(item_id) => Some(
+                self.event(&item_id)?
+                    .event_id
+                    .ok_or_else(|| MtrxError::invalid("the message is not sent yet"))?,
+            ),
+            None => None,
+        };
         let (timeline, disappear) = (self.core(), self.disappear(disappear_after_read));
         run(async move {
-            timeline.send(&text, Vec::new(), None, disappear).await?;
+            let mut attachments = Vec::with_capacity(files.len());
+            for file in files {
+                let path = Path::new(&file.path);
+                attachments.push(core::Attachment::read_as(path, &file.filename).await?);
+            }
+            timeline
+                .send(&text, attachments, reply_to.as_deref(), disappear)
+                .await?;
             Ok(())
         })
         .await
     }
 
-    /// Send a message written in Markdown as a reply to row `item_id`'s
-    /// message, which must be sent (have an event ID). Shown, sent and
-    /// disappearing as [`Timeline::send_text`].
-    pub async fn reply(
-        &self,
-        item_id: String,
-        text: String,
-        disappear_after_read: Option<Duration>,
-    ) -> Result<(), MtrxError> {
-        let event_id = self
-            .event(&item_id)?
-            .event_id
-            .ok_or_else(|| MtrxError::invalid("the message is not sent yet"))?;
-        let (timeline, disappear) = (self.core(), self.disappear(disappear_after_read));
-        run(async move {
-            timeline
-                .send(&text, Vec::new(), Some(&event_id), disappear)
-                .await?;
-            Ok(())
+    /// Call `listener` with the files uploading for messages sent here
+    /// from now on, each by its message's row: none at first, then as they
+    /// go (in hundredths); a message's is gone once it is sent, or failed.
+    /// Runs until cancelled.
+    pub fn subscribe_uploads(&self, listener: Arc<dyn UploadsListener>) -> Arc<TaskHandle> {
+        let timeline = self.core();
+        TaskHandle::spawn(async move {
+            let rows = timeline.rows();
+            let uploads = match timeline.uploads().await {
+                Ok(uploads) => uploads,
+                Err(e) => {
+                    tracing::warn!("uploads not followed: {e}");
+                    return;
+                }
+            };
+            drop(timeline);
+            // An upload shows once its message's row is there, so both are
+            // followed.
+            let mut uploads = pin!(uploads.updates());
+            let mut rows = pin!(rows.updates());
+            let mut uploading: Vec<core::Upload> = Vec::new();
+            let mut shown_rows: Arc<Vec<core::Row>> = Arc::default();
+            let mut shown: Option<Vec<Upload>> = None;
+            loop {
+                tokio::select! {
+                    Some(now) = uploads.next() => uploading = now,
+                    Some(now) = rows.next() => shown_rows = now,
+                    else => break,
+                }
+                let now = uploads_by_row(&uploading, &shown_rows);
+                if shown.as_ref() != Some(&now) {
+                    listener.on_update(now.clone());
+                    shown = Some(now);
+                }
+            }
         })
-        .await
     }
 
     /// Replace the text of row `item_id`'s message (one of ours, see
