@@ -133,10 +133,11 @@ impl Notifier {
             Triage::Decrypt => {
                 // Held back while quiet, as in a muted room; unless a
                 // mention gets through, which only decrypting shows.
-                if !self.muted(&room).await
-                    && self.claim(&event)
-                    && !self.quiet.borrow().silences(true, SystemTime::now())
-                {
+                if self.muted(&room).await || !self.claim(&event) {
+                    return;
+                }
+                let quiet = self.quiet.borrow().silences(true, SystemTime::now());
+                if !quiet {
                     tokio::spawn(self.decrypt(room, event, actions));
                 }
             }
