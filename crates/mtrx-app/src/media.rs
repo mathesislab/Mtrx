@@ -26,6 +26,7 @@ use tokio::sync::Semaphore;
 use crate::{
     actions,
     app::{self, Cx, Popup, modal, pane},
+    audio::{self, Audio},
     avatar::{self, Avatars},
     clipboard,
     context_menu::context_menu,
@@ -73,6 +74,8 @@ pub enum Message {
     /// from.
     Done(Origin, Result<(), String>),
     Downloads(downloads::Message),
+    /// Playing audio messages.
+    Audio(audio::Message),
 }
 
 /// Largest size of an image in the timeline, in logical pixels.
@@ -295,18 +298,20 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
         .or(picture.map(|p| (p.width, p.height)))
 }
 
-/// A message's file: an image (a placeholder until loaded), else a card;
-/// a PDF's card opens the viewer once known to be readable, other cards the
-/// file in its app. `body` shows below it if it is a caption rather than
-/// the filename. The file is in `room`, in message `event`; an image has a
-/// download button beside it while the message is `hovered`. An image's
-/// preview, or whether a PDF can be read, is asked for.
+/// A message's file: an image (a placeholder until loaded), audio with its
+/// player (`audio`), else a card; a PDF's card opens the viewer once known
+/// to be readable, other cards the file in its app. `body` shows below it
+/// if it is a caption rather than the filename. The file is in `room`, in
+/// message `event`; an image has a download button beside it while the
+/// message is `hovered`. An image's preview, or whether a PDF can be read,
+/// is asked for.
 pub fn view<'a>(
     room: &OwnedRoomId,
     event: Option<&OwnedEventId>,
     media: &'a Media,
     body: &'a str,
     previews: &Previews,
+    audio: &Audio,
     hovered: bool,
 ) -> Element<'a, app::Message> {
     let file = File {
@@ -335,6 +340,7 @@ pub fn view<'a>(
             (true, Some(false)) => open_card(file, Some("Preview not available for this document")),
             (true, None) => open_card(file, None),
         },
+        MediaKind::Audio => audio_card(&file, audio),
         _ => open_card(file, None),
     };
     let want = (previewed(media) && previews.wanted(&media.source))
@@ -382,14 +388,28 @@ fn open_card<'a>(file: File, note: Option<&'a str>) -> Element<'a, app::Message>
     card(&file, open, "Open in its app", note)
 }
 
-/// A file: icon, name, size and type (and `note`), and a download
-/// button; clicking it sends `open`, which `tip` explains.
+/// A file: its line (see [`file_line`]); clicking it sends `open`, which
+/// `tip` explains.
 fn card<'a>(
     file: &File,
     open: app::Message,
     tip: &'a str,
     note: Option<&'a str>,
 ) -> Element<'a, app::Message> {
+    let card = hint(
+        button(file_line(file, note))
+            .padding([8, 10])
+            .width(Length::Fill)
+            .style(style::card_button)
+            .on_press(open),
+        tip,
+        Position::Top,
+    );
+    container(card).max_width(460).into()
+}
+
+/// A file's icon, name, size and type (and `note`), and a download button.
+fn file_line<'a>(file: &File, note: Option<&'a str>) -> Element<'a, app::Message> {
     let media = &file.media;
     let mut details = match media.size {
         Some(size) => format!("{} · {}", human_size(size), kind_label(media)),
@@ -398,7 +418,7 @@ fn card<'a>(
     if let Some(note) = note {
         details = format!("{details} · {note}");
     }
-    let content = row![
+    row![
         container(icons::file(16.0, on_primary))
             .center(32)
             .style(style::call_icon),
@@ -413,17 +433,25 @@ fn card<'a>(
         download_button(file),
     ]
     .spacing(10)
-    .align_y(Alignment::Center);
-    let card = hint(
-        button(content)
-            .padding([8, 10])
-            .width(Length::Fill)
-            .style(style::card_button)
-            .on_press(open),
-        tip,
-        Position::Top,
-    );
-    container(card).max_width(460).into()
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Audio: its player, below the file's line unless it's a voice message
+/// (whose name means nothing). Clicking it plays nothing: the button does.
+fn audio_card<'a>(file: &File, audio: &Audio) -> Element<'a, app::Message> {
+    let player = audio.view(file);
+    let content = if file.media.voice {
+        player
+    } else {
+        column![file_line(file, None), player].spacing(8).into()
+    };
+    container(content)
+        .padding([8, 10])
+        .width(Length::Fill)
+        .max_width(460)
+        .style(style::card)
+        .into()
 }
 
 /// Downloads the file to the Downloads folder.
@@ -772,12 +800,14 @@ pub fn dropped_files() -> Subscription<app::Message> {
     })
 }
 
-/// The pictures and typeset math the views show, and downloads.
+/// The pictures and typeset math the views show, downloads, and the audio
+/// playing.
 pub struct MediaState {
     pub avatars: Avatars,
     pub previews: Previews,
     pub math: Math,
     pub downloads: Downloads,
+    pub audio: Audio,
 }
 
 impl MediaState {
@@ -787,6 +817,7 @@ impl MediaState {
             previews: Previews::new(),
             math: Math::new(),
             downloads: Downloads::default(),
+            audio: Audio::default(),
         }
     }
 
@@ -858,6 +889,8 @@ impl MediaState {
                 }
             },
             Message::Downloads(message) => self.downloads(message, cx),
+            Message::Audio(message) => (self.audio.update(cx.session, message))
+                .map(|message| app::Message::Media(Message::Audio(message))),
         }
     }
 
@@ -962,7 +995,15 @@ mod tests {
         let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
         // In the timeline, the image leaves the click to its message's menu.
         let inline = context_menu(
-            view(&room, None, &media, &media.filename, &previews, false),
+            view(
+                &room,
+                None,
+                &media,
+                &media.filename,
+                &previews,
+                &Audio::default(),
+                false,
+            ),
             None,
             app::Message::Modal(app::modal::Message::CloseImage),
         );
@@ -1049,8 +1090,9 @@ mod tests {
             waveform: Vec::new(),
         };
         let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
+        let audio = Audio::default();
         let asked = |media: &Media, previews: &Previews| -> Vec<app::Message> {
-            let shown = view(&room, None, media, &media.filename, previews, false);
+            let shown = view(&room, None, media, &media.filename, previews, &audio, false);
             let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), shown);
             let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
                 Instant::now(),
