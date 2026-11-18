@@ -23,6 +23,7 @@ mod manage;
 mod math;
 mod presence;
 mod push;
+mod quiet;
 mod room;
 mod room_list;
 mod rooms;
@@ -59,6 +60,9 @@ pub use presence::{
     presence_line,
 };
 pub use push::{Notification, PusherInfo};
+pub use quiet::{
+    PauseEntry, PauseFor, PauseMenuItem, QuietHours, QuietListener, QuietState, Weekday,
+};
 pub use room::{Room, RoomSettingsListener};
 pub use room_list::{
     Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,

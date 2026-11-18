@@ -7,7 +7,8 @@
 //! timeline is open for its room. An event sync could not decrypt yet is
 //! decrypted by the SDK's [`NotificationClient`], which waits for its room
 //! key, before the push rules decide about its content: a mention is only
-//! seen then.
+//! seen then. While notifications are paused or in quiet hours
+//! ([`crate::Quiet`]), they are held back: not shown later either.
 
 use std::{
     collections::{HashSet, VecDeque},
@@ -36,11 +37,11 @@ use matrix_sdk_ui::{
     },
     sync_service::SyncService,
 };
-use tokio::sync::{OnceCell, broadcast};
+use tokio::sync::{OnceCell, broadcast, watch};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tracing::warn;
 
-use crate::{Session, User};
+use crate::{Quiet, Session, User};
 
 /// A message worth telling the user about.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,14 +80,17 @@ struct Notifier {
     seen: Mutex<Seen>,
     /// Made on the first event sync could not decrypt.
     decryptor: OnceCell<NotificationClient>,
+    /// When notifications are held back.
+    quiet: watch::Receiver<Quiet>,
 }
 
 /// Notify of new messages on the returned channel while `client` syncs,
-/// until the guard is dropped.
+/// unless `quiet` holds them back, until the guard is dropped.
 pub(crate) fn register(
     client: &Client,
     sync: Arc<SyncService>,
     settings: NotificationSettings,
+    quiet: watch::Receiver<Quiet>,
 ) -> (broadcast::Sender<Notification>, EventHandlerDropGuard) {
     let (tx, _) = broadcast::channel(64);
     let notifier = Arc::new(Notifier {
@@ -96,6 +100,7 @@ pub(crate) fn register(
         since: MilliSecondsSinceUnixEpoch::now(),
         seen: Mutex::new(Seen::new(REMEMBERED)),
         decryptor: OnceCell::new(),
+        quiet,
     });
     let handle = client.add_event_handler(
         move |raw: Raw<AnySyncTimelineEvent>, room: Room, actions: Vec<Action>| {
@@ -126,7 +131,13 @@ impl Notifier {
                 }
             }
             Triage::Decrypt => {
-                if !self.muted(&room).await && self.claim(&event) {
+                // Held back while quiet, as in a muted room; unless a
+                // mention gets through, which only decrypting shows.
+                if self.muted(&room).await || !self.claim(&event) {
+                    return;
+                }
+                let quiet = self.quiet.borrow().silences(true, SystemTime::now());
+                if !quiet {
                     tokio::spawn(self.decrypt(room, event, actions));
                 }
             }
@@ -198,11 +209,22 @@ impl Notifier {
         self.seen.lock().unwrap().claim(event.event_id())
     }
 
+    /// Send `notification` of a claimed event, unless quiet holds it back:
+    /// then it stays claimed, so it doesn't come once the quiet ends.
     fn send(&self, notification: Option<Notification>) {
-        if let Some(notification) = notification {
+        let Some(notification) = notification else {
+            return;
+        };
+        if !held_back(&self.quiet.borrow(), &notification, SystemTime::now()) {
             let _ = self.tx.send(notification);
         }
     }
+}
+
+/// Whether `quiet` holds back `notification` at `now`: the time it is
+/// decided, not the message's.
+fn held_back(quiet: &Quiet, notification: &Notification, now: SystemTime) -> bool {
+    quiet.silences(notification.highlight, now)
 }
 
 /// What to do with a synced event.
@@ -360,7 +382,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use matrix_sdk::ruma::{owned_event_id, uint, user_id};
+    use matrix_sdk::ruma::{owned_event_id, owned_user_id, uint, user_id};
 
     use super::*;
 
@@ -467,6 +489,43 @@ mod tests {
             }}),
         );
         assert!(!is_message(&reaction));
+    }
+
+    #[test]
+    fn a_silenced_event_stays_claimed() {
+        let message = Notification {
+            room_id: "!r:example.org".try_into().unwrap(),
+            event_id: owned_event_id!("$a"),
+            room_name: "Ice".into(),
+            room_avatar: None,
+            direct: false,
+            sender: User::from(owned_user_id!("@alice:example.org")),
+            body: "hi".into(),
+            highlight: false,
+            noisy: false,
+            timestamp: SystemTime::UNIX_EPOCH,
+        };
+        let now = SystemTime::now();
+        let paused = Quiet {
+            pause: Some(crate::Pause::UntilResumed),
+            ..Quiet::default()
+        };
+        let mut seen = Seen::new(10);
+        assert!(seen.claim(&message.event_id));
+        assert!(held_back(&paused, &message, now));
+        // Once resumed, it is not notified of again.
+        assert!(!held_back(&Quiet::default(), &message, now));
+        assert!(!seen.claim(&message.event_id));
+        // A mention gets through if mentions do.
+        let mention = Notification {
+            highlight: true,
+            ..message
+        };
+        let through = Quiet {
+            mentions_through: true,
+            ..paused
+        };
+        assert!(!held_back(&through, &mention, now));
     }
 
     #[test]

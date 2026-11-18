@@ -571,3 +571,16 @@ Differences from the design above:
 - **Desktop:** the menu ticks the current mode; the room list's bell-slash has a "Muted" hint. Only `icons::bell_slash` comes here: an unused `bell` would fail clippy, so it comes with PR 2.
 - **iOS:** `RoomInfoModel.notify(_:)` (a mode or a mute) replaces `setNotify(_:)`.
 - **Android:** `MenuRow` (`ui/Rows.kt`) shows a value with a menu of entries; `ChoiceRow` is built on it. The bell-slash is `MtrxIcons.NotificationsOff`, from Material's path: the core icon set lacks it. `RoomInfoActions.notify(action)` replaces `setNotify(mode)`.
+
+## As built: pause and quiet hours (PR 115)
+
+Differences from the design above:
+
+- **Days** are chrono's `WeekdaySet`, not `BTreeSet<Weekday>`: chrono's `Weekday` isn't `Ord`. Core re-exports `NaiveTime`, `Weekday` and `WeekdaySet`, so the FFI needs no chrono of its own.
+- **Times in the FFI** are `SystemTime`, as for timed mutes: `QuietState.until`, `PauseFor::At { at }`.
+- **Unknown fields** are kept in a private field of `Quiet`, so `Synced::change` saves them again. The content is read field by field: a damaged field reads as its default, the rest as written.
+- **`quiet_updates`** looks again 10 ms past each change, so the change has happened.
+- **Pushes ask the server.** A push fetch's own sync doesn't bring global account data: a device that stopped syncing during a pause still held back pushes after a resume elsewhere (seen in CI). `Notification::fetch` now reads `org.mtrx.quiet` from the server (GET global account data, at most 5 s) and keeps it in the store, so the store catches up; offline or too slow, it goes by the store. A pause set elsewhere is honoured the same way. Both are tested with a device that stopped syncing.
+- **Desktop:** `quiet::Quiet` is a component of the window, with `update(&mut self, Message, &mut Cx)`. Its messages add the picker's (`Picker`, `PauseUntilPicked`), `PickHours(End)`, `Updated` and `Saved`. `Popup::Quiet { picking }` picks `Until(Picker)` or `Hours(End)`: From and To are buttons that open the hour and minute wheels below them. Send later's calendar and wheels became reusable (`Picker::chooser`, `wheel`, `labelled`, `scroll_wheels`). A pause leaves the popover open, showing the new line.
+- **iOS:** `QuietModel.state` is nil until the library's first update. The days are seven round toggles. The Chats bell sits at the leading edge of the top bar and opens `QuietView` in a sheet.
+- **Android:** `QuietModel` (`model/Quiet.kt`) is the `SignedInSession`'s (`session.quiet`); `QuietScreen` has the route `settings/quiet`. The days are filter chips. "Until…" is a `DatePickerDialog`, then a `TimePicker` in an `AlertDialog`: material3 1.3 has no `TimePickerDialog`.

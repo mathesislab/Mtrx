@@ -36,6 +36,7 @@ mod pins;
 mod presence;
 mod profile;
 mod push;
+mod quiet;
 mod room;
 mod room_colours;
 mod room_links;
@@ -97,6 +98,9 @@ pub use presence::{
 };
 pub use profile::Profile;
 pub use push::{HttpPusher, PusherInfo};
+pub use quiet::{
+    Pause, PauseEntry, PauseFor, Quiet, QuietHours, QuietState, QuietStatus, pause_menu,
+};
 pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkDraft, LinkKind, RoomLink, Topic, describe_change, typed_link_url};
@@ -118,6 +122,9 @@ pub use timeline::{
 };
 
 pub use url::Url;
+
+/// Times of day and weekdays, as [`QuietHours`] has them.
+pub use chrono::{NaiveTime, Weekday, WeekdaySet};
 
 /// Matrix identifier types used in this crate's API.
 pub use matrix_sdk::ruma::{

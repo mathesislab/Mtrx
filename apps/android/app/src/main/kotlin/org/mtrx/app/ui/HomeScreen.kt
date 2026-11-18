@@ -102,6 +102,7 @@ fun HomeScreen(
     routes: HomeRoutes,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
+    onQuiet: () -> Unit,
     roomPane: @Composable (roomId: String, backCount: Long, onBack: () -> Unit, openSpace: (String) -> Unit) -> Unit,
 ) {
     val images = session.images
@@ -109,6 +110,7 @@ fun HomeScreen(
     val presences by session.presence.presences.collectAsStateWithLifecycle()
     val connection by session.connection.collectAsStateWithLifecycle()
     val encryption by session.encryption.collectAsStateWithLifecycle()
+    val quiet by session.quiet.state.collectAsStateWithLifecycle()
     val selected by session.spaceSelection.selected.collectAsStateWithLifecycle()
     val sort by account.roomSort.value.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -220,6 +222,12 @@ fun HomeScreen(
             }
         },
         actions = {
+            // While paused or in quiet hours.
+            if (nav.tab == HomeTab.Chats && quiet?.quiet == true) {
+                IconButton(onClick = onQuiet) {
+                    Icon(MtrxIcons.NotificationsOff, contentDescription = quiet?.line)
+                }
+            }
             if (nav.tab == HomeTab.Spaces) {
                 if (onSpaceRooms) {
                     IconButton(onClick = { showing = true }) {
@@ -300,7 +308,7 @@ fun HomeScreen(
                     state = roomsList,
                 )
             }
-            HomeTab.Settings -> SettingsContent(account, session, push, onEnterRecoveryKey, onVerify)
+            HomeTab.Settings -> SettingsContent(account, session, push, onEnterRecoveryKey, onVerify, onQuiet)
         }
     }
 }

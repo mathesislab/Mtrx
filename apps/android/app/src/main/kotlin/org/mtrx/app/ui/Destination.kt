@@ -31,6 +31,9 @@ sealed interface Destination {
     data object Recovery : Destination
 
     data object Verification : Destination
+
+    /** Pausing notifications and quiet hours. */
+    data object Quiet : Destination
 }
 
 /**
@@ -73,6 +76,8 @@ class Route<D : Destination> private constructor(
         val RECOVERY = Route("settings/recovery", emptyList()) { Destination.Recovery }
 
         val VERIFICATION = Route("settings/verification", emptyList()) { Destination.Verification }
+
+        val QUIET = Route("settings/quiet", emptyList()) { Destination.Quiet }
     }
 }
 
@@ -92,6 +97,7 @@ fun Destination.route(): String = when (this) {
     is Destination.New -> "new?$IS_SPACE=$space" + parent?.let { "&$PARENT=${Uri.encode(it)}" }.orEmpty()
     Destination.Recovery -> Route.RECOVERY.pattern
     Destination.Verification -> Route.VERIFICATION.pattern
+    Destination.Quiet -> Route.QUIET.pattern
 }
 
 /** Go to [to]. */

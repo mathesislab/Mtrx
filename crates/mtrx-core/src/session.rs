@@ -69,6 +69,8 @@ pub struct Session {
     pub(crate) disappearing_limit: crate::account_data::Synced<crate::DisappearingLimit>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
     _notifier: EventHandlerDropGuard,
+    /// When notifications are held back, on all our devices.
+    pub(crate) quiet: crate::account_data::Synced<crate::Quiet>,
     pub(crate) categories: crate::account_data::Synced<crate::RoomCategories>,
     pub(crate) colours: crate::account_data::Synced<crate::RoomListColours>,
     pub(crate) directory_servers: crate::account_data::Synced<crate::DirectoryServers>,
@@ -201,8 +203,13 @@ impl Session {
             crate::connection::watch(client.clone(), sync.clone(), echoes.clone());
         let verification_tx = crate::encryption::register_handlers(&client);
         let notification_settings = client.notification_settings().await;
-        let (notifications, notifier) =
-            crate::notifications::register(&client, sync.clone(), notification_settings.clone());
+        let quiet = crate::account_data::Synced::load(client.clone()).await;
+        let (notifications, notifier) = crate::notifications::register(
+            &client,
+            sync.clone(),
+            notification_settings.clone(),
+            quiet.subscribe(),
+        );
         let disappearing = crate::disappearing::Disappearances::load(client.clone()).await?;
         let disappearing_following = disappearing.follow();
         let disappearing_limit = crate::account_data::Synced::load(client.clone()).await;
@@ -242,6 +249,7 @@ impl Session {
             disappearing_limit,
             notifications,
             _notifier: notifier,
+            quiet,
             categories,
             colours,
             directory_servers,

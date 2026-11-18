@@ -44,6 +44,7 @@ import org.mtrx.app.rooms.RoomInfoModel
 import org.mtrx.app.rooms.SpaceOverviewContent
 import org.mtrx.app.rooms.SpaceOverviewModel
 import org.mtrx.app.settings.AskNotificationPermissionOnce
+import org.mtrx.app.settings.QuietScreen
 import org.mtrx.app.settings.RecoveryScreen
 import org.mtrx.app.settings.VerificationRequestDialog
 import org.mtrx.app.settings.VerificationScreen
@@ -136,6 +137,7 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
                     join = { nav.go(Destination.Join) },
                 ),
                 onEnterRecoveryKey = { nav.go(Destination.Recovery) },
+                onQuiet = { nav.go(Destination.Quiet) },
                 onVerify = {
                     session.verifyWithAnotherDevice()
                     openVerification()
@@ -152,6 +154,9 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
         }
         screen(Route.VERIFICATION) {
             VerificationScreen(session, onClose = { nav.popBackStack() })
+        }
+        screen(Route.QUIET) {
+            QuietScreen(session.quiet, onBack = { nav.popBackStack() })
         }
         screen(Route.INFO) { (roomId) ->
             val model: RoomInfoModel = viewModel { RoomInfoModel(roomId, session.session, ::composeTopic) }
