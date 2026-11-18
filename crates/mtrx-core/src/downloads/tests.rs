@@ -24,6 +24,9 @@ fn media(filename: &str, size: Option<u64>) -> Media {
         width: None,
         height: None,
         source: MediaRef::new(&MediaSource::Plain("mxc://example.org/abc".into()), None),
+        duration: None,
+        voice: false,
+        waveform: Vec::new(),
     }
 }
 

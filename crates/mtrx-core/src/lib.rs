@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod account_data;
+mod audio;
 mod calls;
 mod categories;
 mod connection;
@@ -51,6 +52,7 @@ mod timeline;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use audio::{WAVEFORM_BARS, playback_time};
 pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;

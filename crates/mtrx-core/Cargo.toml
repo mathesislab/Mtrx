@@ -11,6 +11,9 @@ test-support = ["dep:hmac", "dep:sha1"]
 # Formulas typeset one at a time, for the phones (`typeset`): Typst and its
 # math font.
 math = ["mtrx-format/math-font"]
+# Ogg Opus decoded to WAV, for players that can't play it (the desktop's,
+# iOS's): libopus, built with CMake.
+opus = ["dep:opus", "dep:ogg"]
 
 [dependencies]
 mtrx-format.workspace = true
@@ -36,6 +39,8 @@ sha1 = { workspace = true, optional = true }
 # Downloads, streamed through the SDK's client (`Client::http_client`); the
 # same version and TLS backend. With JSON, which matrix-sdk's leaves out.
 reqwest.workspace = true
+opus = { version = "0.4.0", optional = true }
+ogg = { version = "0.9.2", optional = true }
 
 # The OS keyring; iOS and Android apps supply their own (`SecretStore::Custom`).
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
@@ -49,7 +54,8 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["
 base64.workspace = true
 
 [dev-dependencies]
-mtrx-core = { path = ".", features = ["test-support"] }
+# With the Opus converter, which its tests cover.
+mtrx-core = { path = ".", features = ["test-support", "opus"] }
 mtrx-format.workspace = true
 tempfile.workspace = true
 anyhow.workspace = true

@@ -194,6 +194,9 @@ mod tests {
             width: None,
             height: None,
             source: mtrx_core::MediaRef::plain("mxc://example.org/a"),
+            duration: None,
+            voice: false,
+            waveform: Vec::new(),
         }
     }
 

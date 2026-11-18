@@ -12,6 +12,7 @@ uniffi::setup_scaffolding!("mtrx");
 
 #[cfg(target_os = "android")]
 mod android;
+mod audio;
 mod client;
 mod disappearing;
 mod downloads;
@@ -32,6 +33,7 @@ mod text;
 mod timeline;
 mod types;
 
+pub use audio::{AudioProgress, playback_time};
 pub use client::{Mtrx, OAuthLogin};
 pub use disappearing::{
     DisappearChoice, Disappearance, DisappearingLimitListener, DisappearingModeListener,

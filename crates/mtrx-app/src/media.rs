@@ -954,6 +954,9 @@ mod tests {
             width: Some(200),
             height: Some(100),
             source: MediaRef::plain("mxc://example.org/a"),
+            duration: None,
+            voice: false,
+            waveform: Vec::new(),
         };
         let previews = Previews::new();
         let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
@@ -1041,6 +1044,9 @@ mod tests {
             width: None,
             height: None,
             source: MediaRef::plain(&format!("mxc://example.org/{filename}")),
+            duration: None,
+            voice: false,
+            waveform: Vec::new(),
         };
         let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
         let asked = |media: &Media, previews: &Previews| -> Vec<app::Message> {
