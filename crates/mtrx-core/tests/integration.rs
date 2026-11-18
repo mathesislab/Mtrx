@@ -1747,7 +1747,7 @@ async fn shared_files(
     let names: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
     for attachment in attachments {
         let pending = alice_timeline
-            .send("", vec![attachment], None, None)
+            .send("", vec![attachment], None, None, MediaQuality::Original)
             .await?;
         timeout("sent", pending.sent()).await??;
     }
@@ -1775,6 +1775,7 @@ async fn audio_files() -> Result<()> {
         filename: filename.into(),
         mimetype: mimetype.into(),
         bytes,
+        video: None,
     };
 
     let voice = attachment(
