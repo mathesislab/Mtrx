@@ -53,7 +53,7 @@ pub struct Quiet {
     pub mentions_through: bool,
     /// The content's fields this version doesn't know, kept when it is
     /// saved again.
-    unknown: Map<String, Value>,
+    pub(crate) unknown: Map<String, Value>,
 }
 
 /// Notifications paused until an instant, or until turned back on.
