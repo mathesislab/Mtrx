@@ -558,7 +558,7 @@ pub fn update(room: &mut Room, message: Message, cx: &mut Cx<'_>) -> Task<app::M
             let reply_to = room.compose.reply_to().cloned();
             let files = room.attachments.iter().map(|a| a.file.clone()).collect();
             let disappear = room.disappearing(cx.session);
-            let quality = mtrx_core::MediaQuality::DESKTOP_DEFAULT;
+            let quality = cx.settings.photos;
             // The composer is cleared once saved, so nothing is lost on errors.
             task::request(
                 async move {
