@@ -44,6 +44,8 @@ import uniffi.mtrx.Manage
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
 import uniffi.mtrx.NewRoom
+import uniffi.mtrx.MuteFor
+import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.NotifyChoice
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
@@ -557,6 +559,9 @@ class FakeRoom(private val session: FakeSession, private val roomId: String) : R
 
     override suspend fun setNotify(mode: NotifyMode) = session.changeSettings("notify $mode") { it.copy(notify = mode) }
 
+    override suspend fun mute(duration: MuteFor) =
+        session.changeSettings("mute $duration") { it.copy(notify = NotifyMode.MUTE) }
+
     // As the library: the mode now, then after each change.
     override fun subscribeDisappearingMode(listener: DisappearingModeListener): TaskHandle {
         listener.onUpdate(session.disappearingModes[roomId])
@@ -692,10 +697,16 @@ fun roomSettings(
 ): RoomSettings = RoomSettings(
     rights = rights(may),
     notify = NotifyMode.ALL,
+    mutedUntil = null,
+    notifyTitle = "All messages",
+    notifyExplanation = "Every message notifies you.",
     notifyChoices = listOf(
-        NotifyChoice(NotifyMode.ALL, "All messages", "Every message notifies you."),
-        NotifyChoice(NotifyMode.MENTIONS, "Mentions", "Only mentions of you and your keywords notify you."),
-        NotifyChoice(NotifyMode.MUTE, "Mute", "Nothing here notifies you."),
+        NotifyChoice("All messages", NotifyAction.Mode(NotifyMode.ALL), true),
+        NotifyChoice("Mentions", NotifyAction.Mode(NotifyMode.MENTIONS), false),
+        NotifyChoice("Mute for 1 hour", NotifyAction.Mute(MuteFor.HOUR), false),
+        NotifyChoice("Mute for 8 hours", NotifyAction.Mute(MuteFor.EIGHT_HOURS), false),
+        NotifyChoice("Mute until tomorrow, 08:00", NotifyAction.Mute(MuteFor.TOMORROW_MORNING), false),
+        NotifyChoice("Mute until I unmute", NotifyAction.Mute(MuteFor.UNTIL_UNMUTED), false),
     ),
     joinRule = joinRule,
     joinRuleFact = ruleFact(joinRule),

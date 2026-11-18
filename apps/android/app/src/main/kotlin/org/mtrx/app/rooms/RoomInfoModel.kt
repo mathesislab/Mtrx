@@ -16,7 +16,7 @@ import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Member
 import uniffi.mtrx.MtrxException
-import uniffi.mtrx.NotifyMode
+import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.Room
 import uniffi.mtrx.RoomSettings
@@ -115,7 +115,12 @@ class RoomInfoModel(
 
     override fun setTopic(draft: TopicDraft) = change { it.setTopic(draft.compose(composeTopic)) }
 
-    override fun setNotify(mode: NotifyMode) = change { it.setNotify(mode) }
+    override fun notify(action: NotifyAction) = change {
+        when (action) {
+            is NotifyAction.Mode -> it.setNotify(action.mode)
+            is NotifyAction.Mute -> it.mute(action.duration)
+        }
+    }
 
     /** Ours alone, on all our devices; if saving fails, the saved mode shows again. */
     override fun setDisappearingMode(afterRead: Duration?) = change { it.setDisappearingMode(afterRead) }

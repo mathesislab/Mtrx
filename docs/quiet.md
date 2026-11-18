@@ -555,3 +555,19 @@ Order: PR 1 first. It's smaller, and `RoomSynced` and `start_timers` are general
 ## Decided (2026-11-18)
 
 All recommendations taken: 1a (account data `org.mtrx.quiet`, decided in core), 2a (08:00), 3a (each device's local time), 4a (the day an overnight period starts), 5a (one switch for mentions and keywords, off by default), 6a (room account data `org.mtrx.mute` through `RoomSynced<T>`), 7a (every running Mtrx ends timed mutes), 8a (a bell, not a presence button), 9a (a bell-slash on every muted room).
+
+## As built: timed room mute (PR 114)
+
+Differences from the design above:
+
+- **Times in the FFI** are `SystemTime` (Swift `Date`, Kotlin `Instant`), as the FFI's other records have them: `RoomSettings.muted_until`, not `muted_until_ms`.
+- **Morning and end times** live in `core/send_time.rs`, which PR 2 shares: `MORNING`, `tomorrow_morning`, `morning_words` ("tomorrow, 08:00" or "08:00"), `describe_until` ("14:00", "tomorrow 08:00", "Fri 08:00") and `local_at` (a wall-clock time as an instant, the first that exists when clocks go forward).
+- **Room modes** are changed through `RoomModes` (`core/room_settings.rs`): the client, `NotificationSettings` and `NotifyTurns`, cloned into the timer. `send(turn, room, mode)` takes `Option<NotifyMode>`; `None` deletes the room's rules (it follows the default), confirmed by sync like a mode. `set_notify`, `mute` and the timer all use it.
+- **`RoomSynced`**: `RoomAccountData` has a `Value` type, so the disappearing mode stays a `Duration` (`DisappearingMode` is a marker type). Unsaved changes are counted per room: one room's change doesn't hold back another's synced value. A change that leaves the value as it was isn't saved.
+- **The timer's first sync** is the room list's: it acts once the room list service's state is SettingUp, Recovering or Running, which it only is after a sync since sync (re)started. A pass whose clearing fails doesn't wake again on its own rolled-back record; it tries again within 30 s.
+- **Records** keep `until` to the millisecond, so a record synced back equals the one written.
+- **Tests** reach `mute_until` and the room's own mode through `test-support` hooks (`mute_until_for_test`, `own_notify_for_test`): the integration tests are another crate.
+- **The core and FFI commit** also gives the phones' test fakes the new record fields, so every commit builds.
+- **Desktop:** the menu ticks the current mode; the room list's bell-slash has a "Muted" hint. Only `icons::bell_slash` comes here: an unused `bell` would fail clippy, so it comes with PR 2.
+- **iOS:** `RoomInfoModel.notify(_:)` (a mode or a mute) replaces `setNotify(_:)`.
+- **Android:** `MenuRow` (`ui/Rows.kt`) shows a value with a menu of entries; `ChoiceRow` is built on it. The bell-slash is `MtrxIcons.NotificationsOff`, from Material's path: the core icon set lacks it. `RoomInfoActions.notify(action)` replaces `setNotify(mode)`.

@@ -410,12 +410,20 @@ fun RoomRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (draft || badge != null) {
+                if (draft || room.muted || badge != null) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (draft) {
                             Icon(
                                 Icons.Outlined.Edit,
                                 contentDescription = "Draft",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (room.muted) {
+                            Icon(
+                                MtrxIcons.NotificationsOff,
+                                contentDescription = "Muted",
                                 modifier = Modifier.size(14.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
