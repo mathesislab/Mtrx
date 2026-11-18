@@ -1,9 +1,9 @@
 //! Disappearing messages (see `docs/disappearing.md`): ours deleted for
 //! everyone a set time after every other member has read them, at the
 //! latest a set time after sending (the limit, in Settings). Sent with
-//! `Timeline.sendText` and `Timeline.reply`; a room's mode is the
-//! composer's default there. The library deletes them while sync runs
-//! (`Session.startSync`), as the desktop app does while it runs.
+//! `Timeline.send`; a room's mode is the composer's default there. The
+//! library deletes them while sync runs (`Session.startSync`), as the
+//! desktop app does while it runs.
 
 use std::{sync::Arc, time::Duration};
 

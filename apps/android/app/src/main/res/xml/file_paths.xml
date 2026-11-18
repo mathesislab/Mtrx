@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- What the FileProvider shares: messages' files downloaded to the
-     profile's cache (the library's downloads). -->
+     profile's cache (the library's downloads), and the files a camera app
+     writes a photo or video into, to send (Outgoing.kt). -->
 <paths>
     <cache-path name="media" path="profiles/default/media/" />
+    <cache-path name="outgoing" path="outgoing/" />
 </paths>

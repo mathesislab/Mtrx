@@ -139,6 +139,8 @@ internal fun EventBubble(
     images: Images,
     highlighted: Boolean,
     download: Download?,
+    /** How much of its file is sent, while it uploads. */
+    upload: Float?,
     handlers: RowHandlers,
     playback: () -> Playback,
 ) {
@@ -212,6 +214,7 @@ internal fun EventBubble(
                                 row.undecryptableText,
                                 colors,
                                 download,
+                                upload,
                                 playback,
                                 onOpenLink = handlers.openLink,
                                 onShowPerson = handlers.showPerson,
@@ -418,6 +421,7 @@ private fun MessageBody(
     undecryptableText: String,
     colors: BubbleColors,
     download: Download?,
+    upload: Float?,
     playback: () -> Playback,
     onOpenLink: (String) -> Unit,
     onShowPerson: (String, String) -> Unit,
@@ -444,11 +448,20 @@ private fun MessageBody(
                     Box(contentAlignment = Alignment.Center) {
                         MediaPreview(media, images)
                         DownloadProgress(download, onCancelDownload, onOpenFile)
+                        UploadRing(upload)
                     }
                     if (message.text.isNotEmpty()) text(Modifier.padding(top = 6.dp))
                 }
-                media != null && media.kind == MediaKind.AUDIO -> AudioRow(media, playback, colors, onToggleAudio, onSeekAudio)
-                media != null -> FileRow(media, download, secondary, onCancelDownload, onOpenFile)
+                media != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f, fill = false)) {
+                        if (media.kind == MediaKind.AUDIO) {
+                            AudioRow(media, playback, colors, onToggleAudio, onSeekAudio)
+                        } else {
+                            FileRow(media, download, secondary, onCancelDownload, onOpenFile)
+                        }
+                    }
+                    UploadRing(upload)
+                }
                 else -> text(Modifier)
             }
         }

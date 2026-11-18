@@ -76,7 +76,9 @@ pub use runtime::TaskHandle;
 pub use secrets::{SecretBackend, SecretError};
 pub use session::{ConnectionListener, Session};
 pub use text::{BlockKind, Formula, TextBlock, TextRun, TextStyle};
-pub use timeline::{Timeline, TimelineRowsListener, TypingListener};
+pub use timeline::{
+    FileToSend, Timeline, TimelineRowsListener, TypingListener, Upload, UploadsListener,
+};
 pub use types::*;
 
 /// Where the server sends the browser back after a browser sign-in, e.g.

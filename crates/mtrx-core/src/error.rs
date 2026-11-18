@@ -46,6 +46,17 @@ pub enum Error {
     Permissions(String),
     #[error("invalid media type `{0}`")]
     InvalidMediaType(String),
+    /// A file to send is larger than the server takes (bytes).
+    #[error(
+        "{filename} is too large: {}; the server takes at most {}",
+        crate::human_size(*.size),
+        crate::human_size(*.max)
+    )]
+    FileTooLarge {
+        filename: String,
+        size: u64,
+        max: u64,
+    },
     /// A download failed or was cancelled (why, in English).
     #[error("{0}")]
     Download(String),

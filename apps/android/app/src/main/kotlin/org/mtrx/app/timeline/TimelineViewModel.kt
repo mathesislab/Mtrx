@@ -2,6 +2,7 @@ package org.mtrx.app.timeline
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.IOException
 import java.time.Duration
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +27,7 @@ import uniffi.mtrx.Download
 import uniffi.mtrx.DownloadsListener
 import uniffi.mtrx.Draft
 import uniffi.mtrx.DraftKeeper
+import uniffi.mtrx.FileToSend
 import uniffi.mtrx.Media
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Session
@@ -34,6 +36,8 @@ import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineRow as LibraryRow
 import uniffi.mtrx.TimelineRowsListener
 import uniffi.mtrx.TypingListener
+import uniffi.mtrx.Upload
+import uniffi.mtrx.UploadsListener
 
 /**
  * A room's timeline screen: its rows, older events on demand, the composer
@@ -56,6 +60,10 @@ import uniffi.mtrx.TypingListener
  * every change (saved once typing stops), saved at once when the room is
  * left or the app stops ([keepDraft]), cleared on send; during an edit,
  * the text from before it.
+ *
+ * Photos, videos and files picked to send wait as [picked] (copies in the
+ * cache, [prepareToSend]) and go with the next message or reply; while one
+ * uploads, [uploads] says how far it is, by its row.
  *
  * Texts and replies sent disappear as [disappearAfterRead] says: the
  * room's mode, followed (also changed on our other devices), until one is
@@ -115,6 +123,17 @@ class TimelineViewModel(
     private val _files = MutableSharedFlow<FileRequest>(extraBufferCapacity = 4)
     val files: SharedFlow<FileRequest> = _files.asSharedFlow()
 
+    /** Photos, videos and files picked to send with the next message (not an edit), in the order picked. */
+    private val _picked = MutableStateFlow<List<PickedFile>>(emptyList())
+    val picked: StateFlow<List<PickedFile>> = _picked.asStateFlow()
+
+    /** How much of each uploading message's file is sent (0 to 1), by its row. */
+    private val _uploads = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val uploads: StateFlow<Map<String, Float>> = _uploads.asStateFlow()
+
+    /** The picked files being prepared, by card. */
+    private val preparing = mutableMapOf<String, Job>()
+
     /** What is sent disappears this long after everyone has read it; null: not. */
     private val _disappearAfterRead = MutableStateFlow<Duration?>(null)
     val disappearAfterRead: StateFlow<Duration?> = _disappearAfterRead.asStateFlow()
@@ -132,6 +151,7 @@ class TimelineViewModel(
     private var timeline: Timeline? = null
     private var subscription: TaskHandle? = null
     private var typingSubscription: TaskHandle? = null
+    private var uploadsSubscription: TaskHandle? = null
     private var disappearingSubscription: TaskHandle? = null
     private var nearTop = false
     private var paginating = false
@@ -175,6 +195,12 @@ class TimelineViewModel(
                     // On a library thread.
                     override fun onUpdate(names: List<String>) {
                         _typing.value = names
+                    }
+                })
+                uploadsSubscription = opened.subscribeUploads(object : UploadsListener {
+                    // On a library thread.
+                    override fun onUpdate(uploads: List<Upload>) {
+                        _uploads.value = uploads.associate { it.itemId to it.fraction }
                     }
                 })
                 launch { sendTypingNotices(opened) }
@@ -413,38 +439,84 @@ class TimelineViewModel(
 
     /**
      * Send the draft, as a reply or an edit if one is under way, a new
-     * message or reply disappearing as [disappearAfterRead] says; false if
-     * there is nothing to send.
+     * message or reply with the picked files (the text first, then each
+     * file) and disappearing as [disappearAfterRead] says; false if there is
+     * nothing to send. The files' copies go once the library has read them;
+     * if sending fails, they are back above the field.
      */
     override fun send(): Boolean {
         val current = timeline ?: return false
         val text = _draft.value
-        if (text.isBlank()) return false
         val mode = _composing.value
+        if (!canSend(text, mode, _picked.value)) return false
+        val files = if (mode is Composing.Editing) emptyList() else _picked.value.mapNotNull { it.file }
         val afterRead = _disappearAfterRead.value
         pendingReply = null
         _composing.value = null
         _draft.value = (mode as? Composing.Editing)?.draft ?: ""
+        if (mode !is Composing.Editing) _picked.value = emptyList()
         drafts.changed(currentDraft())
         keepDraft()
         typed(false)
         if (mode is Composing.Editing && text == mode.original) return true
         actions.launch {
             try {
-                when (mode) {
-                    null -> current.sendText(text, afterRead)
-                    is Composing.Replying -> current.reply(mode.itemId, text, afterRead)
-                    is Composing.Editing -> current.edit(mode.itemId, text)
+                if (mode is Composing.Editing) {
+                    current.edit(mode.itemId, text)
+                } else {
+                    current.send(text, files, (mode as? Composing.Replying)?.itemId, afterRead)
+                    files.forEach(::deleteCopy)
                 }
             } catch (e: MtrxException) {
                 _error.value = describeAction(e)
                 restore(text, mode)
+                _picked.value = files.map { PickedFile(file = it) } + _picked.value
                 // Kept, even if the room was left meanwhile.
                 drafts.changed(currentDraft())
                 drafts.flush()
             }
         }
         return true
+    }
+
+    /** A file picked to send: its card at once, ready once [prepare] has made its copy; if that fails, why shows. */
+    override fun attach(prepare: suspend () -> FileToSend) {
+        val card = PickedFile()
+        _picked.value += card
+        // Started once it is in `preparing`: it may end without suspending.
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            val file = try {
+                prepare()
+            } catch (e: IOException) {
+                notPrepared(card, e)
+                return@launch
+            } catch (e: SecurityException) {
+                notPrepared(card, e)
+                return@launch
+            }
+            preparing.remove(card.id)
+            if (_picked.value.any { it.id == card.id }) {
+                _picked.value = _picked.value.map { if (it.id == card.id) it.copy(file = file) else it }
+            } else {
+                // Taken away meanwhile.
+                deleteCopy(file)
+            }
+        }
+        preparing[card.id] = job
+        job.start()
+    }
+
+    private fun notPrepared(card: PickedFile, e: Exception) {
+        preparing.remove(card.id)
+        _picked.value = _picked.value.filter { it.id != card.id }
+        _error.value = "The file could not be added: ${e.message ?: e.javaClass.simpleName}"
+    }
+
+    override fun detach(id: String) {
+        preparing.remove(id)?.cancel()
+        val card = _picked.value.firstOrNull { it.id == id } ?: return
+        _picked.value = _picked.value.filter { it.id != id }
+        card.file?.let(::deleteCopy)
     }
 
     /** Back in the composer after a failed send, unless another was started. */
@@ -545,7 +617,7 @@ class TimelineViewModel(
 
     override fun onCleared() {
         keepDraft()
-        for (handle in listOfNotNull(subscription, typingSubscription, disappearingSubscription, downloadsSubscription)) {
+        for (handle in listOfNotNull(subscription, typingSubscription, uploadsSubscription, disappearingSubscription, downloadsSubscription)) {
             handle.cancel()
             handle.close()
         }

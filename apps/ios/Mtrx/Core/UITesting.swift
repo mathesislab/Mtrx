@@ -480,9 +480,16 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
         UITestHandle(noHandle: .init())
     }
 
-    /// Shown at once; read (the marker gone) and the server's copy a moment
-    /// later.
-    override func sendText(text: String, disappearAfterRead: TimeInterval?) async throws {
+    /// Nothing uploads: files are not sent here.
+    override func subscribeUploads(listener: UploadsListener) -> TaskHandle {
+        UITestHandle(noHandle: .init())
+    }
+
+    /// The text (as a new message, also a reply), shown at once; read (the
+    /// marker gone) and the server's copy a moment later.
+    override func send(
+        text: String, files: [FileToSend], replyTo: String?, disappearAfterRead: TimeInterval?
+    ) async throws {
         let id = lock.withLock {
             sent += 1
             return "sent\(sent)"

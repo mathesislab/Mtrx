@@ -53,6 +53,7 @@ import uniffi.mtrx.Formula
 import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Membership
+import uniffi.mtrx.FileToSend
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
@@ -391,6 +392,8 @@ object NoTimelineActions : TimelineActions {
     override fun cancelComposing() {}
     override fun chooseDisappear(afterRead: Duration?) {}
     override fun send(): Boolean = false
+    override fun attach(prepare: suspend () -> FileToSend) {}
+    override fun detach(id: String) {}
     override fun react(itemId: String, key: String) {}
     override fun delete(itemId: String) {}
     override fun retry(itemId: String) {}

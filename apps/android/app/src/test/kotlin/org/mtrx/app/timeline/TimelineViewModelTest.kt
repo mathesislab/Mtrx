@@ -4,7 +4,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import java.io.File
+import java.io.IOException
 import java.time.Duration
+import java.time.LocalDateTime
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -30,6 +33,7 @@ import org.mtrx.app.user
 import uniffi.mtrx.Download
 import uniffi.mtrx.DownloadState
 import uniffi.mtrx.Draft
+import uniffi.mtrx.FileToSend
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.Message
@@ -39,6 +43,7 @@ import uniffi.mtrx.QuoteState
 import uniffi.mtrx.ReplyQuote
 import uniffi.mtrx.RowContent
 import uniffi.mtrx.TimelineRow
+import uniffi.mtrx.Upload
 import uniffi.mtrx.User
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -140,6 +145,93 @@ class TimelineViewModelTest {
         assertEquals(Draft("again", null), session.drafts[room])
     }
 
+    /** A copy in a temporary folder, as [prepareToSend] makes one. */
+    private fun copy(name: String): FileToSend {
+        val file = File.createTempFile("outgoing", ".${name.substringAfterLast('.')}")
+        file.writeText("Ice core notes")
+        return FileToSend(file.path, name)
+    }
+
+    @Test
+    fun picksFilesAndSendsThemAloneOrWithTheTextThenTheirCopiesGo() = runTest {
+        val viewModel = viewModel()
+        val notes = copy("notes.txt")
+        // Being prepared: a card, but nothing to send yet.
+        val made = CompletableDeferred<FileToSend>()
+        viewModel.attach { made.await() }
+        assertEquals(listOf(null), viewModel.picked.value.map { it.file })
+        assertFalse(viewModel.send())
+        made.complete(notes)
+        assertEquals(listOf(notes), viewModel.picked.value.map { it.file })
+
+        assertTrue(viewModel.send())
+        assertEquals(listOf(""), timeline.sent)
+        assertEquals(listOf(listOf("notes.txt")), timeline.files)
+        assertEquals(emptyList<PickedFile>(), viewModel.picked.value)
+        assertFalse(File(notes.path).exists())
+
+        // With text, as a reply: the text answers, the files follow it.
+        show(textEvent("1", alice, "shall we?"))
+        viewModel.startReply("1")
+        viewModel.attach { copy("a.pdf") }
+        viewModel.attach { copy("b.pdf") }
+        viewModel.onDraft("here")
+        assertTrue(viewModel.send())
+        assertEquals(listOf("1" to "here"), timeline.replies)
+        assertEquals(listOf("a.pdf", "b.pdf"), timeline.files.last())
+    }
+
+    @Test
+    fun aFileTakenAwayIsNotSentAndFilesComeBackWhenSendingFails() = runTest {
+        val viewModel = viewModel()
+        viewModel.attach { copy("a.pdf") }
+        viewModel.attach { copy("b.pdf") }
+        val (a, b) = viewModel.picked.value
+        viewModel.detach(a.id)
+        assertEquals(listOf(b), viewModel.picked.value)
+        assertFalse(File(a.file!!.path).exists())
+
+        timeline.sendError = MtrxException.Other("a.pdf is too large")
+        viewModel.send()
+        assertEquals("a.pdf is too large", viewModel.error.value)
+        assertEquals(listOf("b.pdf"), viewModel.picked.value.map { it.file?.filename })
+        assertTrue(File(b.file!!.path).exists())
+
+        // One that cannot be read says so, and goes.
+        viewModel.attach { throw IOException("gone") }
+        assertEquals(1, viewModel.picked.value.size)
+        assertEquals("The file could not be added: gone", viewModel.error.value)
+    }
+
+    @Test
+    fun anEditSendsNoFiles() = runTest {
+        val viewModel = viewModel()
+        show(ours)
+        viewModel.attach { copy("a.pdf") }
+        viewModel.startEdit("mine")
+        viewModel.onDraft("mine, edited")
+        assertTrue(viewModel.send())
+        assertEquals(listOf("mine" to "mine, edited"), timeline.edits)
+        assertEquals(emptyList<List<String>>(), timeline.files)
+        assertEquals(1, viewModel.picked.value.size)
+    }
+
+    @Test
+    fun uploadsAreFollowedByRow() = runTest {
+        val viewModel = viewModel()
+        timeline.uploadsListener!!.onUpdate(listOf(Upload("f", 0.25f)))
+        assertEquals(mapOf("f" to 0.25f), viewModel.uploads.value)
+        timeline.uploadsListener!!.onUpdate(emptyList())
+        assertEquals(emptyMap<String, Float>(), viewModel.uploads.value)
+    }
+
+    @Test
+    fun photosAndVideosAreNamedFromTheDate() {
+        val at = LocalDateTime.of(2026, 11, 18, 14, 3)
+        assertEquals("Photo 2026-11-18 14.03.jpg", datedName(video = false, at, "JPEG"))
+        assertEquals("Video 2026-11-18 14.03.mp4", datedName(video = true, at, ""))
+    }
+
     @Test
     fun sendsDisappearingAsTheRoomsModeUntilOneIsChosen() = runTest {
         session.disappearingModes[room] = Duration.ofMinutes(5)
@@ -235,7 +327,7 @@ class TimelineViewModelTest {
         assertEquals("", viewModel.draft.value)
 
         // A refused reply comes back to the composer.
-        timeline.actionError = MtrxException.Other("refused")
+        timeline.sendError = MtrxException.Other("refused")
         viewModel.startReply("1")
         viewModel.onDraft("again")
         viewModel.send()

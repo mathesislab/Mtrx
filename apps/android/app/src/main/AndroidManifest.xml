@@ -56,7 +56,9 @@
         </activity>
 
         <!-- Hands messages' files, downloaded to the cache, to the apps that
-             open, share or save them. -->
+             open, share or save them; and a file in the cache to the camera
+             app that takes a photo or video to send (no CAMERA permission:
+             the camera app has it). -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

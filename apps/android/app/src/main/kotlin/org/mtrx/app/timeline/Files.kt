@@ -34,8 +34,8 @@ fun downloadsBySource(downloads: List<Download>): Map<String, Download> = buildM
     for (download in downloads) putIfAbsent(download.source, download)
 }
 
-/** The app's FileProvider (AndroidManifest.xml), which shares the cache's downloads. */
-private fun uri(context: Context, path: String): Uri =
+/** The app's FileProvider (AndroidManifest.xml), which shares the cache's downloads, and its files to send with the camera. */
+internal fun uri(context: Context, path: String): Uri =
     FileProvider.getUriForFile(context, "${context.packageName}.files", File(path))
 
 private fun mimeType(media: Media): String = media.mimetype

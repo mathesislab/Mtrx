@@ -44,6 +44,7 @@ import org.mtrx.app.timeline.Composer
 import org.mtrx.app.timeline.EventBubble
 import org.mtrx.app.timeline.EventRow
 import org.mtrx.app.timeline.Playback
+import org.mtrx.app.timeline.PickedFile
 import org.mtrx.app.timeline.RoomHeader
 import org.mtrx.app.timeline.RowHandlers
 import org.mtrx.app.timeline.SharedRoomsList
@@ -62,6 +63,7 @@ import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.Membership
 import uniffi.mtrx.TimelineRow
+import uniffi.mtrx.FileToSend
 
 /**
  * The key screens with fake data, as PNGs (recordPaparazziDebug; CI
@@ -449,25 +451,36 @@ private fun AudioMessages() {
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             for ((row, playback) in rows.zip(audioMessages.map { it.second })) {
-                EventBubble(row, images, highlighted = false, download = null, handlers = handlers, playback = { playback })
+                EventBubble(row, images, highlighted = false, download = null, upload = null, handlers = handlers, playback = { playback })
             }
         }
     }
 }
 
-/** The composer alone with a draft; what is sent disappears [disappearAfterRead] after read (the hourglass lit), or not. */
+/**
+ * The composer alone with a draft and two files picked, one still being
+ * prepared; what is sent disappears [disappearAfterRead] after read (the
+ * hourglass lit), or not.
+ */
 @Composable
 private fun ComposerAlone(disappearAfterRead: Duration?) {
     Surface(Modifier.fillMaxWidth()) {
         Composer(
             draft = "Thanks Ana, looking at them now",
             composing = null,
+            picked = listOf(
+                PickedFile("1", FileToSend("/cache/outgoing/1.csv", "melt-rates.csv")),
+                PickedFile("2"),
+            ),
             disappearAfterRead = disappearAfterRead,
             disappearWords = "",
             disappearChoices = DISAPPEAR_CHOICES,
             onDraft = {},
             onCancel = {},
             onDisappear = {},
+            onAttach = {},
+            onDetach = {},
+            onError = {},
             onSend = {},
         )
     }

@@ -185,7 +185,7 @@ class PushEndToEndTest {
             }
         })
         // Not disappearing.
-        timeline.sendText(text, null)
+        timeline.send(text, emptyList(), null, null)
         val eventId = waitFor("the sent event's ID") {
             latest.get().firstNotNullOfOrNull { row ->
                 val event = (row.content as? RowContent.Message)?.event ?: return@firstNotNullOfOrNull null

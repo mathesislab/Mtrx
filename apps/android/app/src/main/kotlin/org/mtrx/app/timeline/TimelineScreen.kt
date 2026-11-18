@@ -135,6 +135,10 @@ data class TimelineState(
     val pinned: List<EventRow>? = null,
     /** Each message's file's newest download, by its source. */
     val downloads: Map<String, Download> = emptyMap(),
+    /** The files picked to send. */
+    val picked: List<PickedFile> = emptyList(),
+    /** How much of each uploading message's file is sent (0 to 1), by its row. */
+    val uploads: Map<String, Float> = emptyMap(),
     /** What is sent disappears this long after everyone has read it; null: not. */
     val disappearAfterRead: Duration? = null,
     /** That, in the library's words (`disappearWords`), for the hourglass. */
@@ -186,6 +190,8 @@ fun TimelineScreen(
     val personInfo by viewModel.personInfo.collectAsStateWithLifecycle()
     val pinnedRows by pinned.pinned.collectAsStateWithLifecycle()
     val downloads by viewModel.downloads.collectAsStateWithLifecycle()
+    val picked by viewModel.picked.collectAsStateWithLifecycle()
+    val uploads by viewModel.uploads.collectAsStateWithLifecycle()
     val disappearAfterRead by viewModel.disappearAfterRead.collectAsStateWithLifecycle()
     // Read only by the audio messages, so its ticks redraw only them.
     val playback = viewModel.audio.playback.collectAsStateWithLifecycle()
@@ -205,6 +211,8 @@ fun TimelineScreen(
         canEditTopic = header.rights.changeTopic,
         pinned = pinnedRows,
         downloads = downloads,
+        picked = picked,
+        uploads = uploads,
         disappearAfterRead = disappearAfterRead,
         disappearWords = words,
         disappearChoices = choices,
@@ -439,12 +447,16 @@ fun TimelineContent(
                 Composer(
                     draft = state.draft,
                     composing = state.composing,
+                    picked = state.picked,
                     disappearAfterRead = state.disappearAfterRead,
                     disappearWords = state.disappearWords,
                     disappearChoices = state.disappearChoices,
                     onDraft = actions::onDraft,
                     onCancel = actions::cancelComposing,
                     onDisappear = actions::chooseDisappear,
+                    onAttach = actions::attach,
+                    onDetach = actions::detach,
+                    onError = { message -> scope.launch { snackbar.showSnackbar(message) } },
                     onSend = {
                         if (actions.send()) scope.launch { listState.scrollToItem(0) }
                     },
@@ -486,6 +498,7 @@ fun TimelineContent(
                             images,
                             state.highlighted == row.id,
                             row.message?.media?.let { state.downloads[it.source] },
+                            state.uploads[row.id],
                             handlers,
                             playback,
                         )

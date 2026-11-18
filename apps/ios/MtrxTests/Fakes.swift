@@ -35,6 +35,9 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     var onSeek: ((String) -> Void)?
     var markedRead = 0
     var replies: [(itemId: String, text: String)] = []
+    /// The names of the files sent with each message or reply, in order.
+    var files: [[String]] = []
+    var uploadsListener: UploadsListener?
     /// How long after read each message sent or reply disappears, in order
     /// (nil: it doesn't).
     var disappearing: [TimeInterval?] = []
@@ -67,16 +70,25 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
         return handle
     }
 
-    override func sendText(text: String, disappearAfterRead: TimeInterval?) async throws {
+    /// A new message's text in `sent`, a reply's in `replies`; the files of
+    /// each in `files`, read while it is sent.
+    override func send(
+        text: String, files: [FileToSend], replyTo: String?, disappearAfterRead: TimeInterval?
+    ) async throws {
         if let sendError { throw sendError }
-        sent.append(text)
+        if let replyTo {
+            replies.append((replyTo, text))
+        } else {
+            sent.append(text)
+        }
+        self.files.append(files.map(\.filename))
+        XCTAssertTrue(files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
         disappearing.append(disappearAfterRead)
     }
 
-    override func reply(itemId: String, text: String, disappearAfterRead: TimeInterval?) async throws {
-        if let sendError { throw sendError }
-        replies.append((itemId, text))
-        disappearing.append(disappearAfterRead)
+    override func subscribeUploads(listener: UploadsListener) -> TaskHandle {
+        uploadsListener = listener
+        return FakeTaskHandle(noHandle: .init())
     }
 
     override func edit(itemId: String, text: String) async throws {
