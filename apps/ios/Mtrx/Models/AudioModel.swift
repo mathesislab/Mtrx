@@ -323,7 +323,7 @@ final class SystemAudioPlayer: NSObject, AudioPlaying {
     }
 
     /// Posted on the session's thread.
-    @objc private nonisolated func interrupted(_ notification: Notification) {
+    @objc private nonisolated func interrupted(_ notification: Foundation.Notification) {
         guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             AVAudioSession.InterruptionType(rawValue: type) == .began
         else { return }
@@ -331,7 +331,7 @@ final class SystemAudioPlayer: NSObject, AudioPlaying {
     }
 
     /// Posted on the session's thread.
-    @objc private nonisolated func routeChanged(_ notification: Notification) {
+    @objc private nonisolated func routeChanged(_ notification: Foundation.Notification) {
         guard let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
             AVAudioSession.RouteChangeReason(rawValue: reason) == .oldDeviceUnavailable
         else { return }
