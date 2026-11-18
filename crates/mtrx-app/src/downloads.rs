@@ -1,17 +1,18 @@
 //! Downloads: starting them (Download to the Downloads folder, Save as…,
 //! and opening a file in its app), and the list of them behind an icon at
-//! the bottom of the space bar, shown while there are any. Exports of
-//! chats show in the same list, above the downloads.
+//! the bottom of the space bar, shown while there are any; it lights up in
+//! the accent colour as one starts. Exports of chats show in the same list,
+//! above the downloads.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme,
     widget::{button, column, container, progress_bar, row, scrollable, space, stack, text},
 };
 use mtrx_core::{
-    Download, DownloadId, DownloadState, Export, ExportId, ExportState, Media, OwnedEventId,
-    OwnedRoomId, SaveTo, Session,
+    Download, DownloadId, DownloadState, Export, ExportId, ExportState, Media, MxcUri,
+    OwnedEventId, OwnedRoomId, SaveTo, Session,
 };
 
 use crate::{
@@ -33,6 +34,8 @@ const PANEL_HEIGHT: f32 = 420.0;
 /// The icon in the space bar, and the progress ring around it.
 const ICON: f32 = 20.0;
 const RING: f32 = 30.0;
+/// How long the icon stays lit after a download or export starts.
+const FLASH: Duration = Duration::from_millis(1500);
 
 /// A message's file and where it was sent: what downloading it needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +62,10 @@ pub struct Downloads {
     exports: Vec<Export>,
     /// Why opening or showing a row's file failed.
     errors: HashMap<Row, String>,
+    /// The icon is lit: a download or export just started.
+    flashing: bool,
+    /// Flashes so far: only the newest one's end puts the light out.
+    flashes: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +108,8 @@ pub enum Message {
     Report(String),
     /// For the app: something finished, such as an export.
     Finished(String),
+    /// Flash number so-and-so is over.
+    FlashEnded(u32),
 }
 
 /// The downloads, now and after every change.
@@ -126,14 +135,25 @@ impl Downloads {
     pub fn update(&mut self, session: &Arc<Session>, message: Message) -> Task<Message> {
         match message {
             Message::Updated(list) => {
+                let started = started(&self.list, &list, |d| d.id, Download::is_running);
                 self.list = list;
                 self.forget_errors();
+                if started {
+                    return self.flash();
+                }
             }
             Message::Exports(exports) => {
+                let started = started(&self.exports, &exports, |e| e.id, Export::is_running);
                 let ended = ended(&self.exports, &exports);
                 self.exports = exports;
                 self.forget_errors();
-                return Task::batch(ended.into_iter().map(Task::done));
+                let flash = if started { self.flash() } else { Task::none() };
+                return Task::batch(ended.into_iter().map(Task::done).chain([flash]));
+            }
+            Message::FlashEnded(flash) => {
+                if flash == self.flashes {
+                    self.flashing = false;
+                }
             }
             Message::Open(id) => {
                 if let Some(path) = self.done(id) {
@@ -221,6 +241,25 @@ impl Downloads {
         Task::none()
     }
 
+    /// Light the icon for a moment.
+    fn flash(&mut self) -> Task<Message> {
+        self.flashing = true;
+        self.flashes += 1;
+        let flash = self.flashes;
+        Task::perform(tokio::time::sleep(FLASH), move |()| {
+            Message::FlashEnded(flash)
+        })
+    }
+
+    /// The newest download of a message's file, whatever its state.
+    pub fn of(&self, media: &Media) -> Option<&Download> {
+        self.newest(media.source.uri())
+    }
+
+    fn newest(&self, uri: &MxcUri) -> Option<&Download> {
+        self.list.iter().find(|d| d.uri() == uri)
+    }
+
     /// Errors of rows gone go too.
     fn forget_errors(&mut self) {
         let (list, exports) = (&self.list, &self.exports);
@@ -279,24 +318,33 @@ impl Downloads {
         }
         let downloading = self.list.iter().filter(|d| d.is_running()).count();
         let exporting = self.exports.iter().filter(|e| e.is_running()).count();
-        let mut icon = stack![
-            container(icons::download(ICON, |theme| {
+        let flashing = self.flashing;
+        let color: fn(&Theme) -> iced::Color = if flashing {
+            style::accent
+        } else {
+            |theme| {
                 theme
                     .extended_palette()
                     .background
                     .base
                     .text
                     .scale_alpha(0.7)
-            }))
-            .center(RING)
-        ];
+            }
+        };
+        let mut icon = stack![container(icons::download(ICON, color)).center(RING)];
         if downloading + exporting > 0 {
             icon = icon.push(icons::ring(RING, overall(&self.list, &self.exports)));
         }
         // While open, a click on it closes the list as any outside click.
         let anchor = button(icon)
             .padding(3)
-            .style(style::list_item(open))
+            .style(move |theme, status| {
+                if flashing {
+                    style::lit_item(theme)
+                } else {
+                    style::list_item(open)(theme, status)
+                }
+            })
             .on_press_maybe((!open).then_some(Message::OpenList));
         let anchor: Element<'_, Message> =
             hint(anchor, tip(downloading, exporting), Position::Right);
@@ -512,6 +560,17 @@ fn ended(before: &[Export], now: &[Export]) -> Vec<Message> {
         .collect()
 }
 
+/// Whether `now` has a running row that `before` lacked.
+fn started<T, Id: PartialEq>(
+    before: &[T],
+    now: &[T],
+    id: impl Fn(&T) -> Id,
+    running: impl Fn(&T) -> bool,
+) -> bool {
+    now.iter()
+        .any(|row| running(row) && !before.iter().any(|old| id(old) == id(row)))
+}
+
 /// The icon's hint.
 fn tip(downloading: usize, exporting: usize) -> String {
     let files = match downloading {
@@ -696,6 +755,48 @@ mod tests {
             labels(export_entries(&finished)),
             ["Open", "Show in folder", "Remove from list"]
         );
+    }
+
+    /// The icon lights up as a download or export starts; not as one goes
+    /// on or ends, nor for the list as stored when Mtrx starts.
+    #[test]
+    fn a_row_started_is_one_new_and_running() {
+        let downloads = |list: &[Download]| {
+            started(&[running(1, 0, None)], list, |d| d.id, Download::is_running)
+        };
+        assert!(downloads(&[running(2, 0, None), running(1, 5, None)]));
+        assert!(!downloads(&[running(1, 5, None)]));
+        assert!(!downloads(&[]));
+        let mut done = test_download(2);
+        done.state = DownloadState::Done {
+            path: "/tmp/report.pdf".into(),
+        };
+        assert!(!downloads(&[done]));
+        assert!(started(
+            &[],
+            &[exporting(1, 0, 1)],
+            |e| e.id,
+            Export::is_running
+        ));
+    }
+
+    /// A message's file shows its newest download.
+    #[test]
+    fn a_file_shows_its_newest_download() {
+        let mut done = test_download(1);
+        done.state = DownloadState::Done {
+            path: "/tmp/report.pdf".into(),
+        };
+        let uri = done.uri().to_owned();
+        let mut downloads = Downloads {
+            list: vec![done],
+            ..Downloads::default()
+        };
+        assert_eq!(downloads.newest(&uri).map(|d| d.id), Some(1));
+        downloads.list.insert(0, running(2, 0, None));
+        assert_eq!(downloads.newest(&uri).map(|d| d.id), Some(2));
+        downloads.list.clear();
+        assert!(downloads.newest(&uri).is_none());
     }
 
     #[test]

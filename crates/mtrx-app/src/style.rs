@@ -407,6 +407,22 @@ pub fn list_item(selected: bool) -> impl Fn(&Theme, button::Status) -> button::S
     }
 }
 
+/// The accent colour: unread counts, links, the New line.
+pub fn accent(theme: &Theme) -> Color {
+    theme.extended_palette().primary.base.color
+}
+
+/// A list entry lit in the accent colour for a moment: the downloads icon
+/// as a download starts.
+pub fn lit_item(theme: &Theme) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(accent(theme).scale_alpha(0.18))),
+        text_color: theme.extended_palette().background.base.text,
+        border: Border::default().rounded(8),
+        ..Default::default()
+    }
+}
+
 /// `base`, ringed in the primary colour while `on`: buttons asking to be
 /// pressed, as Cancel and Save after a click outside an editor.
 pub fn ringed(

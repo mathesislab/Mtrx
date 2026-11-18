@@ -18,7 +18,8 @@ use iced::{
     window,
 };
 use mtrx_core::{
-    Attachment, Media, MediaKind, MediaRef, OwnedEventId, OwnedRoomId, Session, human_size,
+    Attachment, Download, DownloadState, Media, MediaKind, MediaRef, OwnedEventId, OwnedRoomId,
+    Session, human_size,
 };
 use mtrx_format::Document;
 use tokio::sync::Semaphore;
@@ -95,6 +96,8 @@ const VIEWER_BAR_MIN_WIDTH: f32 = 360.0;
 const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 /// Downloads running at once.
 const PARALLEL_DOWNLOADS: usize = 3;
+/// The download button's icon, and its ring.
+const ICON: f32 = 18.0;
 
 /// A decoded image.
 #[derive(Clone, Debug)]
@@ -303,14 +306,16 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
 /// to be readable, other cards the file in its app. `body` shows below it
 /// if it is a caption rather than the filename. The file is in `room`, in
 /// message `event`; an image has a download button beside it while the
-/// message is `hovered`. An image's preview, or whether a PDF can be read,
-/// is asked for.
+/// message is `hovered` or it downloads. Download buttons show how the
+/// file's download in `downloads` goes. An image's preview, or whether a
+/// PDF can be read, is asked for.
 pub fn view<'a>(
     room: &OwnedRoomId,
     event: Option<&OwnedEventId>,
     media: &'a Media,
     body: &'a str,
     previews: &Previews,
+    downloads: &Downloads,
     audio: &Audio,
     hovered: bool,
 ) -> Element<'a, app::Message> {
@@ -319,11 +324,12 @@ pub fn view<'a>(
         room: room.clone(),
         event: event.cloned(),
     };
+    let download = downloads.of(media);
     let content = match media.kind {
         MediaKind::Image if !previews.failed(&media.source) => {
             let picture = inline_image(&file, previews.ready(&media.source));
-            if hovered {
-                row![picture, download_button(&file)]
+            if hovered || download.is_some_and(Download::is_running) {
+                row![picture, download_button(&file, download)]
                     .spacing(8)
                     .align_y(Alignment::End)
                     .into()
@@ -332,16 +338,20 @@ pub fn view<'a>(
             }
         }
         _ if pdf::is_pdf(media) => match (previewed(media), previews.readable(&media.source)) {
-            (false, _) => open_card(file, Some("Too large to preview here")),
+            (false, _) => open_card(file, download, Some("Too large to preview here")),
             (true, Some(true)) => {
                 let open = app::Message::Modal(app::modal::Message::OpenPdf(file.clone()));
-                card(&file, open, "Open in the viewer", None)
+                card(&file, download, open, "Open in the viewer", None)
             }
-            (true, Some(false)) => open_card(file, Some("Preview not available for this document")),
-            (true, None) => open_card(file, None),
+            (true, Some(false)) => open_card(
+                file,
+                download,
+                Some("Preview not available for this document"),
+            ),
+            (true, None) => open_card(file, download, None),
         },
-        MediaKind::Audio => audio_card(&file, audio),
-        _ => open_card(file, None),
+        MediaKind::Audio => audio_card(&file, download, audio),
+        _ => open_card(file, download, None),
     };
     let want = (previewed(media) && previews.wanted(&media.source))
         .then(|| app::Message::Media(Message::PreviewWanted(media.clone())));
@@ -381,23 +391,28 @@ fn placeholder<'a>(size: Size) -> Element<'a, app::Message> {
 }
 
 /// A card that opens the file in its app (downloading it first).
-fn open_card<'a>(file: File, note: Option<&'a str>) -> Element<'a, app::Message> {
+fn open_card<'a>(
+    file: File,
+    download: Option<&Download>,
+    note: Option<&'a str>,
+) -> Element<'a, app::Message> {
     let open = app::Message::Media(Message::Downloads(downloads::Message::OpenFile(
         file.clone(),
     )));
-    card(&file, open, "Open in its app", note)
+    card(&file, download, open, "Open in its app", note)
 }
 
 /// A file: its line (see [`file_line`]); clicking it sends `open`, which
 /// `tip` explains.
 fn card<'a>(
     file: &File,
+    download: Option<&Download>,
     open: app::Message,
     tip: &'a str,
     note: Option<&'a str>,
 ) -> Element<'a, app::Message> {
     let card = hint(
-        button(file_line(file, note))
+        button(file_line(file, download, note))
             .padding([8, 10])
             .width(Length::Fill)
             .style(style::card_button)
@@ -408,8 +423,13 @@ fn card<'a>(
     container(card).max_width(460).into()
 }
 
-/// A file's icon, name, size and type (and `note`), and a download button.
-fn file_line<'a>(file: &File, note: Option<&'a str>) -> Element<'a, app::Message> {
+/// A file's icon, name, size and type (and `note`), and a download button
+/// showing `download`.
+fn file_line<'a>(
+    file: &File,
+    download: Option<&Download>,
+    note: Option<&'a str>,
+) -> Element<'a, app::Message> {
     let media = &file.media;
     let mut details = match media.size {
         Some(size) => format!("{} · {}", human_size(size), kind_label(media)),
@@ -430,7 +450,7 @@ fn file_line<'a>(file: &File, note: Option<&'a str>) -> Element<'a, app::Message
         ]
         .spacing(1)
         .width(Length::Fill),
-        download_button(file),
+        download_button(file, download),
     ]
     .spacing(10)
     .align_y(Alignment::Center)
@@ -439,12 +459,18 @@ fn file_line<'a>(file: &File, note: Option<&'a str>) -> Element<'a, app::Message
 
 /// Audio: its player, below the file's line unless it's a voice message
 /// (whose name means nothing). Clicking it plays nothing: the button does.
-fn audio_card<'a>(file: &File, audio: &Audio) -> Element<'a, app::Message> {
+fn audio_card<'a>(
+    file: &File,
+    download: Option<&Download>,
+    audio: &Audio,
+) -> Element<'a, app::Message> {
     let player = audio.view(file);
     let content = if file.media.voice {
         player
     } else {
-        column![file_line(file, None), player].spacing(8).into()
+        column![file_line(file, download, None), player]
+            .spacing(8)
+            .into()
     };
     container(content)
         .padding([8, 10])
@@ -454,23 +480,50 @@ fn audio_card<'a>(file: &File, audio: &Audio) -> Element<'a, app::Message> {
         .into()
 }
 
-/// Downloads the file to the Downloads folder.
-pub fn download_button<'a>(file: &File) -> Element<'a, app::Message> {
-    hint(
-        button(icons::download(18.0, |theme| {
+/// Downloads the file to the Downloads folder, and shows how its newest
+/// `download` goes: a ring filling while it runs (a click cancels), a tick
+/// once done (a click opens the file), the arrow again after it failed or
+/// was cancelled.
+pub fn download_button<'a>(file: &File, download: Option<&Download>) -> Element<'a, app::Message> {
+    let arrow = || {
+        icons::download(ICON, |theme| {
             theme
                 .extended_palette()
                 .background
                 .base
                 .text
                 .scale_alpha(0.75)
-        }))
-        .padding([6, 8])
-        .style(style::secondary_button)
-        .on_press(app::Message::Media(Message::Downloads(
-            downloads::Message::Download(file.clone()),
-        ))),
-        "Download to your Downloads folder",
+        })
+    };
+    let get = || downloads::Message::Download(file.clone());
+    let (icon, message, tip) = match download.map(|d| (d, &d.state)) {
+        Some((d, DownloadState::Downloading { .. })) => (
+            icons::ring(ICON, d.fraction()),
+            downloads::Message::Cancel(d.id),
+            format!("{}. Click to cancel", d.status()),
+        ),
+        Some((_, DownloadState::Done { .. })) => (
+            icons::check(ICON, style::accent),
+            downloads::Message::OpenFile(file.clone()),
+            "Downloaded. Click to open".to_owned(),
+        ),
+        Some((d, DownloadState::Failed(_))) => (
+            arrow(),
+            get(),
+            format!("{}. Click to try again", d.status()),
+        ),
+        Some((_, DownloadState::Cancelled)) | None => (
+            arrow(),
+            get(),
+            "Download to your Downloads folder".to_owned(),
+        ),
+    };
+    hint(
+        button(icon)
+            .padding([6, 8])
+            .style(style::secondary_button)
+            .on_press(app::Message::Media(Message::Downloads(message))),
+        tip,
         Position::Top,
     )
 }
@@ -565,7 +618,12 @@ impl Viewer {
     /// The image as large as fits (at most its own size), with its name,
     /// Save and Close below, and its menu while `menu` (right-click).
     /// Clicking around it closes it.
-    pub fn view<'a>(&'a self, previews: &'a Previews, menu: bool) -> Element<'a, app::Message> {
+    pub fn view<'a>(
+        &'a self,
+        previews: &'a Previews,
+        downloads: &'a Downloads,
+        menu: bool,
+    ) -> Element<'a, app::Message> {
         let picture = self
             .full
             .as_ref()
@@ -599,7 +657,7 @@ impl Viewer {
             .on_dismiss(app::Message::ClosePopup);
             let bar_width = size.width.max(VIEWER_BAR_MIN_WIDTH).min(available.width);
             container(
-                column![opaque(shown), opaque(self.bar(bar_width))]
+                column![opaque(shown), opaque(self.bar(bar_width, downloads))]
                     .spacing(8)
                     .align_x(Alignment::Center),
             )
@@ -615,7 +673,7 @@ impl Viewer {
         .into()
     }
 
-    fn bar<'a>(&'a self, width: f32) -> Element<'a, app::Message> {
+    fn bar<'a>(&'a self, width: f32, downloads: &Downloads) -> Element<'a, app::Message> {
         let mut name = column![
             ellipsis(&self.file.media.filename)
                 .font(fonts::SEMIBOLD)
@@ -628,7 +686,7 @@ impl Viewer {
         container(
             row![
                 name,
-                download_button(&self.file),
+                download_button(&self.file, downloads.of(&self.file.media)),
                 frame::close_button(app::Message::Modal(app::modal::Message::CloseImage)),
             ]
             .spacing(8)
@@ -992,6 +1050,7 @@ mod tests {
             waveform: Vec::new(),
         };
         let previews = Previews::new();
+        let downloads = Downloads::default();
         let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
         // In the timeline, the image leaves the click to its message's menu.
         let inline = context_menu(
@@ -1001,6 +1060,7 @@ mod tests {
                 &media,
                 &media.filename,
                 &previews,
+                &downloads,
                 &Audio::default(),
                 false,
             ),
@@ -1017,7 +1077,7 @@ mod tests {
             room,
             event: None,
         });
-        assert!(right_click(viewer.view(&previews, false), (100.0, 100.0)).is_empty());
+        assert!(right_click(viewer.view(&previews, &downloads, false), (100.0, 100.0)).is_empty());
         let mut renderer = iced::futures::executor::block_on(iced::Renderer::new(
             fonts::INTER,
             iced::Pixels(style::TEXT_SIZE),
@@ -1026,7 +1086,7 @@ mod tests {
         .unwrap();
         let window = Size::new(800.0, 600.0);
         let mut ui = UserInterface::build(
-            viewer.view(&previews, false),
+            viewer.view(&previews, &downloads, false),
             window,
             Cache::default(),
             &mut renderer,
@@ -1041,8 +1101,12 @@ mod tests {
         ));
         // Its first item, just below where it was right-clicked.
         let cache = ui.into_cache();
-        let mut ui =
-            UserInterface::build(viewer.view(&previews, true), window, cache, &mut renderer);
+        let mut ui = UserInterface::build(
+            viewer.view(&previews, &downloads, true),
+            window,
+            cache,
+            &mut renderer,
+        );
         let sent = send(
             &mut ui,
             &mut renderer,
@@ -1090,9 +1154,18 @@ mod tests {
             waveform: Vec::new(),
         };
         let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
-        let audio = Audio::default();
+        let (downloads, audio) = (Downloads::default(), Audio::default());
         let asked = |media: &Media, previews: &Previews| -> Vec<app::Message> {
-            let shown = view(&room, None, media, &media.filename, previews, &audio, false);
+            let shown = view(
+                &room,
+                None,
+                media,
+                &media.filename,
+                previews,
+                &downloads,
+                &audio,
+                false,
+            );
             let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), shown);
             let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
                 Instant::now(),

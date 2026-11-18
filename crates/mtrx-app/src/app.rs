@@ -1273,9 +1273,10 @@ impl App {
                     // Fill the window, with their own backdrop.
                     Some(modal::Shown::Image(viewer)) => opaque(viewer.view(
                         &main.media.previews,
+                        &main.media.downloads,
                         matches!(main.popup, Some(Popup::Viewer)),
                     )),
-                    Some(modal::Shown::Pdf(pdf)) => opaque(pdf.view()),
+                    Some(modal::Shown::Pdf(pdf)) => opaque(pdf.view(&main.media.downloads)),
                 };
                 layers.push(modal).into()
             }
@@ -1368,6 +1369,7 @@ impl App {
                     colored_names: self.settings.colored_names,
                     call_services: &self.settings.call_services,
                     previews: &main.media.previews,
+                    downloads: &main.media.downloads,
                     audio: &main.media.audio,
                     frequent_emoji: &main.people.frequent_emoji,
                     show_members: main.pane.show_members,

@@ -22,6 +22,7 @@ use crate::{
     calls::{self},
     context_menu::context_menu,
     disappear,
+    downloads::Downloads,
     drag_scroll::drag_scroll,
     ellipsis::ellipsis,
     emoji,
@@ -89,6 +90,7 @@ impl Room {
             params: &look.params,
             avatars: look.avatars,
             previews: look.previews,
+            downloads: look.downloads,
             audio: look.audio,
             colored_names: look.colored_names,
             call_services: look.call_services,
@@ -520,6 +522,8 @@ pub struct Look<'a> {
     pub call_services: &'a [CallService],
     pub own_user: &'a OwnedUserId,
     pub previews: &'a Previews,
+    /// The files downloaded, for the download buttons.
+    pub downloads: &'a Downloads,
     /// The audio message playing, and where others stopped.
     pub audio: &'a Audio,
     /// The user's most used emoji, for reactions.
@@ -548,6 +552,7 @@ struct Context<'a, 'b> {
     params: &'b math::Params,
     avatars: &'b Avatars,
     previews: &'b Previews,
+    downloads: &'b Downloads,
     audio: &'b Audio,
     colored_names: bool,
     call_services: &'b [CallService],
@@ -715,6 +720,7 @@ fn event_view<'a>(
                         file,
                         &m.body,
                         context.previews,
+                        context.downloads,
                         context.audio,
                         context.hovered == Some(event.id.as_str()),
                     ),
