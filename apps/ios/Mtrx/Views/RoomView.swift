@@ -7,11 +7,13 @@ import SwiftUI
 /// the topic line its topic panel; at the right, Join for the room's call
 /// (or a menu of its links), and its space's picture, which shows the
 /// space. A direct chat's `#` shows the rooms shared with the person over
-/// the timeline.
+/// the timeline. Audio messages play in their bubbles while the room is
+/// open (its info over it too), pausing in the background.
 struct RoomView: View {
     let room: RoomSummary
     @StateObject private var model: TimelineModel
     @StateObject private var info: RoomInfoModel
+    @StateObject private var audio: AudioModel
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var presence: PresenceModel
     @EnvironmentObject private var downloads: DownloadsModel
@@ -36,16 +38,18 @@ struct RoomView: View {
 
     init(
         room: RoomSummary, model: @autoclosure @escaping () -> TimelineModel,
-        info: @autoclosure @escaping () -> RoomInfoModel
+        info: @autoclosure @escaping () -> RoomInfoModel, audio: @autoclosure @escaping () -> AudioModel
     ) {
         self.room = room
         _model = StateObject(wrappedValue: model())
         _info = StateObject(wrappedValue: info())
+        _audio = StateObject(wrappedValue: audio())
     }
 
     var body: some View {
         VStack(spacing: 0) {
             TimelineList(model: model, actions: actions)
+                .environmentObject(audio)
                 .safeAreaInset(edge: .bottom) { OfflineBanner() }
             TypingLine(text: TimelineModel.typingLine(model.typing))
             Divider()
@@ -100,6 +104,9 @@ struct RoomView: View {
         .onChange(of: scenePhase) { phase in
             if phase != .active {
                 model.leftForeground()
+            }
+            if phase == .background {
+                audio.pause()
             }
         }
         .sheet(item: $sheet, onDismiss: performChosen) { sheet in

@@ -141,6 +141,47 @@ final class ScreenshotTests: XCTestCase {
             MessageMenu(row: ours, entries: ours.actions, react: { _ in }, choose: { _ in }))
     }
 
+    /// Ann's voice message paused part-way; our talk with its slider, moved
+    /// on before playing; Ann's voice message being fetched, and ours that
+    /// can't play.
+    func testAudioMessages() async throws {
+        let voice = Make.audio("mxc://example.org/voice")
+        let talk = Make.audio("mxc://example.org/talk", name: "Ice sheet talk.m4a", seconds: 1_234)
+        let fetched = Make.audio("mxc://example.org/fetched", seconds: 9)
+        let broken = Make.audio("mxc://example.org/broken", seconds: 15)
+        session.audioFiles = [
+            voice.source: .success("/cache/audio/voice.wav"),
+            broken.source: .failure(MtrxError.Other(reason: "This audio can't be played")),
+        ]
+        session.audioProgress = [0.4]
+        let makePlayer: @MainActor (URL, Bool) throws -> AudioPlaying = { file, _ in
+            FakeAudioPlayer(file: file, duration: 42)
+        }
+        let paused = AudioModel(session: session, makePlayer: makePlayer)
+        paused.toggle(voice)
+        await eventually { paused.state == .playing }
+        paused.seek(voice, to: 12)
+        paused.pause()
+        paused.seek(talk, to: 263)
+        let fetching = AudioModel(session: session, makePlayer: makePlayer)
+        fetching.toggle(fetched)
+        await eventually { fetching.state == .fetching(0.4) }
+        let failed = AudioModel(session: session, makePlayer: makePlayer)
+        failed.toggle(broken)
+        await eventually { failed.state == .failed("This audio can't be played") }
+        try await snap(
+            "05g-room-audio",
+            VStack(spacing: 0) {
+                Screens.audioRow("1", voice, own: false).environmentObject(paused)
+                Screens.audioRow("2", talk, own: true).environmentObject(paused)
+                Screens.audioRow("3", fetched, own: false).environmentObject(fetching)
+                Screens.audioRow("4", broken, own: true).environmentObject(failed)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 60)
+            .frame(maxHeight: .infinity, alignment: .top))
+    }
+
     /// The largest text size (Accessibility): the lists put a room's time
     /// and counts under its name; a room, and its info.
     func testLargeText() async throws {
@@ -465,6 +506,20 @@ private enum Screens {
                     "me", Make.text("Agenda: runs, the paper, fieldwork."), at: at(22), own: true, eventId: "$p2",
                     disappear: Make.disappearance(own: true))),
         ]
+    }
+
+    /// An audio message's row, Ann's or ours, as the timeline draws it.
+    static func audioRow(_ id: String, _ media: Media, own: Bool) -> TimelineRowView {
+        TimelineRowView(
+            row: Make.row(id, Make.event(own ? "me" : "ann", Make.audioMessage(media), own: own, eventId: "$\(id)")),
+            actions: noActions)
+    }
+
+    /// What a row asks of the room: nothing here.
+    static var noActions: RowActions {
+        RowActions(
+            hold: { _ in }, perform: { _, _ in }, react: { _, _ in }, goTo: { _ in }, showReactors: { _, _ in },
+            showReaders: { _ in }, unsent: { _ in }, open: { _, _ in }, showPerson: { _, _ in })
     }
 
     static let settings = Make.settings(
