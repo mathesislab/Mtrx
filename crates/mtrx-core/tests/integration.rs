@@ -22,8 +22,9 @@ use mtrx_core::{
     Activity, Attachment, CallService, Connection, DirectoryKind, Disappear, DownloadState, Draft,
     EventContent, ExportFiles, ExportFormat, ExportOf, ExportRange, ExportRequest, ExportState,
     History, JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom,
-    NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights, Role,
-    RoomKind, SaveTo, SecretStore, Session, TimelineEntry, VerificationState,
+    Notification, NotifyMode, PauseFor, Permissions, PinsChange, PresenceState, Profile,
+    QuietStatus, RecoveryStatus, Rights, Role, RoomKind, SaveTo, SecretStore, Session,
+    TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -1687,6 +1688,147 @@ async fn downloads() -> Result<()> {
     Ok(())
 }
 
+/// A room of alice's that bob joined, and the file of each attachment
+/// alice sent there, as bob's timeline shows it.
+async fn shared_files(
+    alice: &Device,
+    bob: &Device,
+    encrypted: bool,
+    attachments: Vec<Attachment>,
+) -> Result<(mtrx_core::OwnedRoomId, Vec<mtrx_core::Media>)> {
+    let name = format!("audio {encrypted}");
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some(name.clone()),
+            encrypted,
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(bob, &room, &name).await?;
+    let alice_timeline = alice.session.timeline(&room).await?;
+    wait_for("bob joined", alice_timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
+    })
+    .await?;
+    let names: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
+    for attachment in attachments {
+        let pending = alice_timeline
+            .send("", vec![attachment], None, None)
+            .await?;
+        timeout("sent", pending.sent()).await??;
+    }
+    let bob_timeline = bob.session.timeline(&room).await?;
+    let entries = wait_for("bob sees the files", bob_timeline.updates(), |e| {
+        names.iter().all(|name| find_media(e, name).is_some())
+    })
+    .await?;
+    let files = (names.iter())
+        .map(|name| find_media(&entries, name).unwrap().clone())
+        .collect();
+    Ok((room, files))
+}
+
+/// A message's audio for the player: encrypted Ogg Opus as WAV, with
+/// progress, and fetched once for two calls at once; a plain MP3 as it
+/// is; a file downloaded to the cache, without fetching it again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn audio_files() -> Result<()> {
+    let (_, alice) = new_user("audio").await?;
+    let (_, bob) = new_user("audio").await?;
+    let cache = bob.session.profile().cache_dir().join("audio");
+    let attachment = |filename: &str, mimetype: &str, bytes: Vec<u8>| Attachment {
+        filename: filename.into(),
+        mimetype: mimetype.into(),
+        bytes,
+    };
+
+    let voice = attachment(
+        "Voice message.ogg",
+        "audio/ogg",
+        test_support::ogg_opus_sine(440.0, 3, 0),
+    );
+    let voice = shared_files(&alice, &bob, true, vec![voice])
+        .await?
+        .1
+        .remove(0);
+    let (one, two) = (
+        std::sync::Mutex::new(Vec::new()),
+        std::sync::Mutex::new(Vec::new()),
+    );
+    let (first, second) = timeout(
+        "audio files",
+        futures_util::future::join(
+            bob.session
+                .audio_file(&voice, |f| one.lock().unwrap().push(f)),
+            bob.session
+                .audio_file(&voice, |f| two.lock().unwrap().push(f)),
+        ),
+    )
+    .await?;
+    let wav = first?;
+    assert_eq!(second?, wav);
+    assert!(wav.starts_with(&cache), "{wav:?}");
+    assert_eq!(wav.extension().unwrap(), "wav");
+    assert_eq!(std::fs::metadata(&wav)?.len(), 44 + 3 * 48_000 * 2);
+    let (one, two) = (one.into_inner().unwrap(), two.into_inner().unwrap());
+    // One call fetched it; the other found it.
+    let progress = if one.is_empty() { two } else { one };
+    let fractions: Vec<f32> = progress.iter().flatten().copied().collect();
+    assert!(fractions.is_sorted(), "{progress:?}");
+    assert_eq!(fractions.last(), Some(&1.0), "{progress:?}");
+    // Then it converted.
+    assert_eq!(progress.last(), Some(&None), "{progress:?}");
+    let files: Vec<_> = std::fs::read_dir(&cache)?.collect::<Result<_, _>>()?;
+    assert_eq!(files.len(), 1, "{files:?}");
+
+    let mp3 = b"ID3\x04\0\0\0\0\0\0".repeat(1000);
+    let notes = b"\0\0\0\x18ftypM4A ".repeat(1000);
+    let (room, files) = shared_files(
+        &alice,
+        &bob,
+        false,
+        vec![
+            attachment("song.mp3", "audio/mpeg", mp3.clone()),
+            attachment("notes.m4a", "audio/mp4", notes.clone()),
+        ],
+    )
+    .await?;
+    let progress = std::sync::Mutex::new(Vec::new());
+    let song = timeout(
+        "an MP3",
+        bob.session
+            .audio_file(&files[0], |f| progress.lock().unwrap().push(f)),
+    )
+    .await??;
+    assert_eq!(song.extension().unwrap(), "mp3");
+    assert!(std::fs::read(&song)? == mp3);
+    assert_eq!(progress.into_inner().unwrap().last(), Some(&Some(1.0)));
+
+    // Downloaded to the cache (as the phones do): that file, not fetched
+    // again.
+    let id = bob
+        .session
+        .room(&room)?
+        .download(&files[1], None, SaveTo::Cache);
+    let downloaded = timeout("downloaded", bob.session.finished(id)).await??;
+    let progress = std::sync::Mutex::new(Vec::new());
+    let notes_file = timeout(
+        "a downloaded file",
+        bob.session
+            .audio_file(&files[1], |f| progress.lock().unwrap().push(f)),
+    )
+    .await??;
+    assert_eq!(notes_file, downloaded);
+    assert!(std::fs::read(&notes_file)? == notes);
+    assert!(progress.into_inner().unwrap().is_empty());
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn images_and_files() -> Result<()> {
@@ -2963,7 +3105,7 @@ async fn disappearing_messages() -> Result<()> {
     })
     .await?;
     let bob_timeline = bob.session.timeline(&room).await?;
-    alice.session.start_disappearing();
+    alice.session.start_timers();
     let secs = Duration::from_secs;
 
     // Gone 2 s after bob read it, not before.
@@ -3037,5 +3179,240 @@ async fn disappearing_messages() -> Result<()> {
     assert_eq!(handle.disappearing_mode(), None, "stays off");
     alice.session.set_disappearing_limit(secs(6 * 3600)).await?;
     assert_eq!(alice.session.disappearing_limit().at_most, secs(6 * 3600));
+    Ok(())
+}
+
+/// Until `done` says so, asked every 200 ms.
+async fn eventually<F: Future<Output = bool>>(
+    what: &str,
+    mut done: impl FnMut() -> F,
+) -> Result<()> {
+    timeout(what, async {
+        while !done().await {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn timed_mutes() -> Result<()> {
+    let (name, a) = new_user("mute").await?;
+    let b = login(&name).await?;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let room = a.session.create_room(new_room("muted")).await?;
+    let follows = a.session.create_room(new_room("default")).await?;
+    let list = a.session.room_list().await?;
+    wait_for("rooms synced", list.updates(), |state| {
+        [&room, &follows]
+            .iter()
+            .all(|id| state.rooms.iter().any(|r| &r.id == *id))
+    })
+    .await?;
+    let b_list = b.session.room_list().await?;
+    wait_for("rooms synced on b", b_list.updates(), |state| {
+        state.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    let handle = a.session.room(&room)?;
+    let live = timeout("settings read", handle.settings()).await?;
+    handle.set_notify(NotifyMode::Mentions).await?;
+    let secs = Duration::from_secs;
+
+    // Muted until a few seconds ahead, with both devices' timers running:
+    // the rule and the record at once.
+    a.session.start_timers();
+    b.session.start_timers();
+    let until = SystemTime::now() + secs(4);
+    handle.mute_until_for_test(until).await?;
+    let shown = live.get();
+    assert_eq!(shown.notify, NotifyMode::Mute);
+    assert!(shown.muted_until.is_some());
+    assert!(
+        shown.notify_title.starts_with("Muted until "),
+        "{}",
+        shown.notify_title
+    );
+    assert!(
+        shown.notify_explanation.ends_with(", then mentions only."),
+        "{}",
+        shown.notify_explanation
+    );
+    assert_eq!(shown.notify_choices.len(), 6);
+    let (own, record) = handle.own_notify_for_test().await;
+    assert_eq!(own, Some(NotifyMode::Mute));
+    assert_eq!(record.map(|r| r.before), Some(Some(NotifyMode::Mentions)));
+    let lists = a.session.room_lists(&list);
+    wait_for("muted in the room list", lists.updates(), |lists| {
+        lists.muted.get(&room).is_some_and(|end| end.is_some())
+    })
+    .await?;
+
+    // Once due, Mentions again and no record, on both devices.
+    let b_handle = b.session.room(&room)?;
+    for handle in [&handle, &b_handle] {
+        eventually("unmuted with its mode", || async move {
+            handle.own_notify_for_test().await == (Some(NotifyMode::Mentions), None)
+        })
+        .await?;
+    }
+    wait_for("settings unmuted", live.updates(), |s| {
+        s.notify == NotifyMode::Mentions && s.muted_until.is_none()
+    })
+    .await?;
+    wait_for("not muted in the room list", lists.updates(), |lists| {
+        !lists.muted.contains_key(&room)
+    })
+    .await?;
+
+    // A room following the default follows it again, with no rule of its
+    // own.
+    let default = &a.session.room(&follows)?;
+    assert_eq!(default.own_notify_for_test().await, (None, None));
+    default
+        .mute_until_for_test(SystemTime::now() + secs(3))
+        .await?;
+    assert_eq!(
+        default.own_notify_for_test().await.0,
+        Some(NotifyMode::Mute)
+    );
+    eventually("following the default again", || async move {
+        default.own_notify_for_test().await == (None, None)
+    })
+    .await?;
+
+    // Due while no timer ran: a new session ends it after its first sync.
+    a.session.stop_timers();
+    b.session.stop_timers();
+    handle
+        .mute_until_for_test(SystemTime::now() + secs(1))
+        .await?;
+    tokio::time::sleep(secs(3)).await;
+    assert_eq!(handle.own_notify_for_test().await.0, Some(NotifyMode::Mute));
+    let c = login(&name).await?;
+    let c_list = c.session.room_list().await?;
+    wait_for("rooms synced on c", c_list.updates(), |state| {
+        state.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    c.session.start_timers();
+    let c_handle = &c.session.room(&room)?;
+    eventually("unmuted by the new session", || async move {
+        c_handle.own_notify_for_test().await == (Some(NotifyMode::Mentions), None)
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_pause_holds_back_notifications() -> Result<()> {
+    let (name, a) = new_user("quiet").await?;
+    let b = login(&name).await?;
+    let (_, bob) = new_user("quiet-bob").await?;
+    let alice_id = a.session.user_id();
+    let room = bob
+        .session
+        .create_room(NewRoom {
+            name: Some("quiet".into()),
+            invite: vec![alice_id.clone()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&a, &room, "quiet").await?;
+    a.session.room(&room)?.set_notify(NotifyMode::All).await?;
+    let joined = |state: &mtrx_core::RoomListState| {
+        (state.rooms.iter()).any(|r| r.id == room && r.membership == Membership::Joined)
+    };
+    wait_for(
+        "joined on b",
+        b.session.room_list().await?.updates(),
+        joined,
+    )
+    .await?;
+    let timeline = bob.session.timeline(&room).await?;
+    wait_for("alice joined", timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == alice_id))
+    })
+    .await?;
+    // A third device, which stops syncing once paused.
+    let c = login(&name).await?;
+    let quiet_on = |device: &Device, on: bool| {
+        let updates = device.session.quiet_updates().updates();
+        wait_for("the pause", updates, move |q| {
+            (q.status != QuietStatus::On) == on
+        })
+    };
+
+    // Paused on A: B holds back Bob's message, and a mention once mentions
+    // get through.
+    a.session
+        .pause_notifications(PauseFor::UntilResumed)
+        .await?;
+    assert_ne!(a.session.quiet().status, QuietStatus::On, "shown at once");
+    quiet_on(&b, true).await?;
+    quiet_on(&c, true).await?;
+    c.session.stop_sync().await;
+    let mut notifications = std::pin::pin!(b.session.notifications());
+    let held = send_text(&timeline, "while paused").await?;
+    a.session.set_mentions_through(true).await?;
+    wait_for(
+        "mentions through on b",
+        b.session.quiet_updates().updates(),
+        |q| q.quiet.mentions_through,
+    )
+    .await?;
+    send_text(&timeline, &format!("over to you {alice_id}")).await?;
+    let first = wait_for("the mention", &mut notifications, |_| true).await?;
+    assert!(first.body.starts_with("over to you"), "{}", first.body);
+    assert!(first.highlight);
+
+    // The push path: nothing while paused, from the store.
+    let fetched = timeout(
+        "b's fetch",
+        Notification::fetch(b.session.profile(), &room, &held),
+    )
+    .await??;
+    assert_eq!(fetched, None);
+
+    // Resumed: messages notify again, pushed ones too.
+    a.session.resume_notifications().await?;
+    quiet_on(&b, false).await?;
+    let fetched = timeout(
+        "b's fetch",
+        Notification::fetch(b.session.profile(), &room, &held),
+    )
+    .await??;
+    assert!(fetched.is_some_and(|n| n.body == "while paused"));
+    // C didn't sync the resume: its fetch asks the server, and its store
+    // catches up.
+    let c_profile = c.session.profile();
+    let fetched = timeout("c's fetch", Notification::fetch(c_profile, &room, &held)).await??;
+    assert!(fetched.is_some_and(|n| n.body == "while paused"));
+    let stored = Notification::stored_quiet_for_test(c_profile, &room);
+    let stored = timeout("c's store", stored).await??;
+    assert_eq!(stored.status(SystemTime::now()), QuietStatus::On);
+    send_text(&timeline, "after the pause").await?;
+    let next = wait_for("a message", &mut notifications, |_| true).await?;
+    assert_eq!(next.body, "after the pause", "not the one held back");
+
+    // Paused again on A: C, still not syncing and its store saying on,
+    // holds back a push all the same.
+    a.session.pause_notifications(PauseFor::Hour).await?;
+    let again = send_text(&timeline, "paused again").await?;
+    let fetched = timeout("c's fetch", Notification::fetch(c_profile, &room, &again)).await??;
+    assert_eq!(fetched, None);
+    let stored = Notification::stored_quiet_for_test(c_profile, &room);
+    let stored = timeout("c's store", stored).await??;
+    assert!(matches!(
+        stored.status(SystemTime::now()),
+        QuietStatus::Paused { until: Some(_) }
+    ));
     Ok(())
 }

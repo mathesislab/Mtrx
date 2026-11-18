@@ -1,7 +1,7 @@
 //! A room's settings and people: what we may change, the changes, who is in
 //! it and their roles, and its pinned messages.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
 use mtrx_core as core;
 
@@ -16,6 +16,24 @@ pub enum NotifyMode {
     /// Only for mentions and keywords.
     Mentions,
     Mute,
+}
+
+/// How long a room stays muted (`Room.mute`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum MuteFor {
+    Hour,
+    EightHours,
+    /// 08:00: today's before 05:00, else tomorrow's.
+    TomorrowMorning,
+    UntilUnmuted,
+}
+
+/// What an entry of a room's notifications menu does: `Room.setNotify`
+/// or `Room.mute`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NotifyAction {
+    Mode { mode: NotifyMode },
+    Mute { duration: MuteFor },
 }
 
 /// Who may read a room's history.
@@ -54,6 +72,39 @@ impl From<NotifyMode> for core::NotifyMode {
             NotifyMode::All => Self::All,
             NotifyMode::Mentions => Self::Mentions,
             NotifyMode::Mute => Self::Mute,
+        }
+    }
+}
+
+impl From<core::MuteFor> for MuteFor {
+    fn from(duration: core::MuteFor) -> Self {
+        match duration {
+            core::MuteFor::Hour => Self::Hour,
+            core::MuteFor::EightHours => Self::EightHours,
+            core::MuteFor::TomorrowMorning => Self::TomorrowMorning,
+            core::MuteFor::UntilUnmuted => Self::UntilUnmuted,
+        }
+    }
+}
+
+impl From<MuteFor> for core::MuteFor {
+    fn from(duration: MuteFor) -> Self {
+        match duration {
+            MuteFor::Hour => Self::Hour,
+            MuteFor::EightHours => Self::EightHours,
+            MuteFor::TomorrowMorning => Self::TomorrowMorning,
+            MuteFor::UntilUnmuted => Self::UntilUnmuted,
+        }
+    }
+}
+
+impl From<core::NotifyAction> for NotifyAction {
+    fn from(action: core::NotifyAction) -> Self {
+        match action {
+            core::NotifyAction::Mode(mode) => Self::Mode { mode: mode.into() },
+            core::NotifyAction::Mute(duration) => Self::Mute {
+                duration: duration.into(),
+            },
         }
     }
 }
@@ -98,14 +149,26 @@ impl From<Permissions> for core::Permissions {
     }
 }
 
-/// A notification mode a room's settings offer, with its words.
+/// An entry of a room's notifications menu, with its words.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct NotifyChoice {
-    pub mode: NotifyMode,
-    /// As the menu names it: "All messages", "Mentions", "Mute".
+    /// As the menu names it: "All messages", "Mentions", "Mute for 1
+    /// hour", "Mute for 8 hours", "Mute until tomorrow, 08:00", "Mute
+    /// until I unmute"; "Mute" for a room muted without an end.
     pub title: String,
-    /// What it does: "Every message notifies you."…
-    pub explanation: String,
+    pub action: NotifyAction,
+    /// The room's mode now.
+    pub current: bool,
+}
+
+impl From<core::NotifyChoice> for NotifyChoice {
+    fn from(choice: core::NotifyChoice) -> Self {
+        Self {
+            title: choice.title,
+            action: choice.action.into(),
+            current: choice.current,
+        }
+    }
 }
 
 /// Who may read the history, as a room's settings offer it, with its words.
@@ -239,7 +302,15 @@ pub struct RoomSettings {
     /// What we may change; the same as `RoomSummary.rights`.
     pub rights: Rights,
     pub notify: NotifyMode,
-    /// The modes to offer, in order, with their words.
+    /// The end of a timed mute.
+    pub muted_until: Option<SystemTime>,
+    /// For the notifications menu's button: "All messages", "Mentions",
+    /// "Muted", "Muted until 14:00".
+    pub notify_title: String,
+    /// Below it: "Every message notifies you.", "Muted until 14:00, then
+    /// all messages again."
+    pub notify_explanation: String,
+    /// The notifications menu, in order.
     pub notify_choices: Vec<NotifyChoice>,
     pub join_rule: JoinRule,
     /// Who may join, in words: "Public: anyone can join"…
@@ -272,13 +343,11 @@ impl From<core::RoomSettings> for RoomSettings {
         Self {
             rights: s.rights.into(),
             notify: s.notify.into(),
-            notify_choices: (core::NotifyMode::ALL.into_iter())
-                .map(|mode| NotifyChoice {
-                    mode: mode.into(),
-                    title: mode.title().to_owned(),
-                    explanation: mode.explanation().to_owned(),
-                })
-                .collect(),
+            muted_until: s.muted_until,
+            notify_title: s.notify_title,
+            notify_explanation: s.notify_explanation,
+            notify_choices: s.notify_choices.into_iter().map(Into::into).collect(),
+
             join_rule: s.join_rule.into(),
             join_rule_fact: s.join_rule.fact().to_owned(),
             join_rule_choices: s.join_rule_choices.into_iter().map(Into::into).collect(),

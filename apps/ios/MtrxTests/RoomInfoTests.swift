@@ -23,9 +23,15 @@ final class RoomInfoModelTests: XCTestCase {
     }
 
     func testAChangeShowsAsTheLibraryGivesIt() async {
-        await model.setNotify(.mentions).value
+        await model.notify(.mode(mode: .mentions)).value
         XCTAssertEqual(session.changes, ["notify mentions"])
         await eventually { self.model.settings?.notify == .mentions }
+    }
+
+    func testAMuteForATimeGoesToTheLibrary() async {
+        await model.notify(.mute(duration: .eightHours)).value
+        XCTAssertEqual(session.changes, ["mute eightHours"])
+        await eventually { self.model.settings?.notify == .mute }
     }
 
     func testAChangeMadeElsewhereShows() async {

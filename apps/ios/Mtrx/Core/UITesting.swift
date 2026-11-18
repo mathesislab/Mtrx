@@ -100,6 +100,25 @@ private final class UITestSession: Session, @unchecked Sendable {
         UITestHandle(noHandle: .init())
     }
 
+    override func subscribeQuiet(listener: QuietListener) -> TaskHandle {
+        let hours = QuietHours(
+            on: false, fromMinute: 22 * 60, toMinute: 7 * 60, days: [.mon, .tue, .wed, .thu, .fri, .sat, .sun])
+        listener.onUpdate(
+            state: QuietState(
+                quiet: false, paused: false, until: nil, line: "Notifications on", hours: hours, hoursLine: "Off",
+                mentionsThrough: false))
+        return UITestHandle(noHandle: .init())
+    }
+
+    override func pauseMenu() -> [PauseMenuItem] {
+        [
+            PauseMenuItem(entry: .pause(pause: .hour), title: "For 1 hour"),
+            PauseMenuItem(entry: .pause(pause: .tomorrowMorning), title: "Until tomorrow, 08:00"),
+            PauseMenuItem(entry: .pickTime, title: "Until…"),
+            PauseMenuItem(entry: .pause(pause: .untilResumed), title: "Until I turn them back on"),
+        ]
+    }
+
     override func subscribeRoomLists(listener: RoomListsListener) async throws -> TaskHandle {
         let lists = lock.withLock {
             self.listener = listener

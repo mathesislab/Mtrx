@@ -86,7 +86,7 @@ struct RoomRow: View {
         }
     }
 
-    /// The draft's pencil and the unread count.
+    /// The draft's pencil, a muted room's bell and the unread count.
     private var marks: some View {
         HStack(spacing: 4) {
             if draft {
@@ -94,6 +94,12 @@ struct RoomRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Draft")
+            }
+            if room.muted {
+                Image(systemName: "bell.slash")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Muted")
             }
             UnreadBadge(room: room)
         }

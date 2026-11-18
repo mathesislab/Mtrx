@@ -63,6 +63,9 @@ pub enum Error {
     /// An export could not start (why, in English).
     #[error("{0}")]
     Export(String),
+    /// A message's audio can't be fetched or played (why, in English).
+    #[error("{0}")]
+    Audio(String),
     #[error("notifications: {0}")]
     Notifications(String),
     /// The server does not share presence: it refuses ours and others'

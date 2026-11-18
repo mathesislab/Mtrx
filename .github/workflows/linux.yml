@@ -36,11 +36,12 @@ jobs:
       - name: System packages
         # Mesa's lavapipe (Vulkan) and llvmpipe (GL): wgpu renders the UI
         # snapshots on the CPU. GNOME Keyring: a Secret Service for the
-        # keyring tests. Noto Color Emoji: the app's emoji font on Linux.
+        # keyring tests. Noto Color Emoji: the app's emoji font on Linux. ALSA:
+        # playing audio (cpal).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libxkbcommon-dev \
+            pkg-config libxkbcommon-dev libasound2-dev \
             mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri \
             dbus dbus-x11 gnome-keyring \
             fonts-noto-color-emoji
@@ -112,7 +113,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libxkbcommon-dev dpkg-dev file desktop-file-utils \
+            pkg-config libxkbcommon-dev libasound2-dev dpkg-dev file desktop-file-utils \
             xvfb x11-utils imagemagick mesa-vulkan-drivers libvulkan1 libegl1 libgl1-mesa-dri
       - name: appimagetool and the AppImage runtime (pinned)
         run: |

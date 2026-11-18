@@ -98,6 +98,7 @@ import org.mtrx.app.ui.linesHeight
 import java.time.Duration
 import uniffi.mtrx.DisappearChoice
 import uniffi.mtrx.Download
+import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageAction
 import uniffi.mtrx.Presence
 import uniffi.mtrx.RoomListsInterface
@@ -192,6 +193,8 @@ fun TimelineScreen(
     val picked by viewModel.picked.collectAsStateWithLifecycle()
     val uploads by viewModel.uploads.collectAsStateWithLifecycle()
     val disappearAfterRead by viewModel.disappearAfterRead.collectAsStateWithLifecycle()
+    // Read only by the audio messages, so its ticks redraw only them.
+    val playback = viewModel.audio.playback.collectAsStateWithLifecycle()
     val choices = remember { disappearChoices() }
     val words = remember(disappearAfterRead) { disappearWords(disappearAfterRead) }
     // The app may be ended in the background: the draft is kept first.
@@ -223,6 +226,7 @@ fun TimelineScreen(
         backCount = backCount,
         scrollTo = viewModel.scrollTo,
         files = viewModel.files,
+        playback = { playback.value },
         onBack = onBack,
         onRoomInfo = onRoomInfo,
         onOpenLink = onOpenLink,
@@ -274,6 +278,8 @@ fun TimelineContent(
     sharedRooms: @Composable (String) -> Unit,
     /** Downloaded files to open, share or save; none in the screenshots (no activity). */
     files: Flow<FileRequest>? = null,
+    /** How the audio messages play; read only by them, so its ticks redraw only them. */
+    playback: () -> Playback = { Playback() },
     topicOpen: Boolean = false,
     editingTopic: Boolean = false,
     sharedOpen: Boolean = false,
@@ -377,9 +383,12 @@ fun TimelineContent(
             showPerson = { userId, name -> actions.showPersonInfo(PersonCard(userId, name, avatarUrl = null)) },
             unsent = { rowId -> overlay = Overlay.Menu(rowId, unsent = true) },
             openFile = { row ->
-                row.message?.media?.let { actions.file(it, row.event.eventId, FileUse.OPEN) }
+                // Audio plays in its bubble.
+                row.message?.media?.takeIf { it.kind != MediaKind.AUDIO }?.let { actions.file(it, row.event.eventId, FileUse.OPEN) }
             },
             cancelDownload = actions::cancelDownload,
+            toggleAudio = actions::toggleAudio,
+            seekAudio = actions::seekAudio,
         )
     }
 
@@ -491,6 +500,7 @@ fun TimelineContent(
                             row.message?.media?.let { state.downloads[it.source] },
                             state.uploads[row.id],
                             handlers,
+                            playback,
                         )
                         is StateRow -> Notice(row.text)
                         is DayRow -> DayDivider(dayLabel(row.date, today))

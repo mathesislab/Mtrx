@@ -43,12 +43,14 @@ fun SettingsContent(
     push: PushRegistration,
     onEnterRecoveryKey: () -> Unit,
     onVerify: () -> Unit,
+    onQuiet: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val info = session.info
     val encryption by session.encryption.collectAsStateWithLifecycle()
     val devices by session.devices.collectAsStateWithLifecycle()
     val rooms by session.rooms.collectAsStateWithLifecycle()
+    val quiet by session.quiet.state.collectAsStateWithLifecycle()
     LaunchedEffect(session) { session.loadDevices() }
     // Unknown (not loaded, or failed) counts as having one: the request says.
     val otherDevice = devices?.any { !it.current } ?: true
@@ -68,6 +70,11 @@ fun SettingsContent(
         RoomListSettings(rooms.notesAtTop(), onNotesAtTop = { session.setNotesAtTop(it) })
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Notifications")
+        ListItem(
+            headlineContent = { Text("Pause notifications") },
+            supportingContent = { Text(quiet?.line.orEmpty()) },
+            modifier = Modifier.clickable(onClick = onQuiet),
+        )
         NotificationsSection(push)
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Privacy")

@@ -304,6 +304,54 @@ final class FakeSession: Session, @unchecked Sendable {
         return FakeTaskHandle(noHandle: .init())
     }
 
+    /// What `subscribeQuiet` gives, now and on every change; the changes
+    /// asked for, as `changes` has them.
+    var quietState = QuietState(
+        quiet: false, paused: false, until: nil, line: "Notifications on",
+        hours: QuietHours(on: false, fromMinute: 22 * 60, toMinute: 7 * 60, days: [.mon, .tue, .wed, .thu, .fri, .sat, .sun]),
+        hoursLine: "Off", mentionsThrough: false
+    ) {
+        didSet { quietListener?.onUpdate(state: quietState) }
+    }
+    var quietListener: QuietListener?
+
+    override func subscribeQuiet(listener: QuietListener) -> TaskHandle {
+        quietListener = listener
+        listener.onUpdate(state: quietState)
+        return FakeTaskHandle(noHandle: .init())
+    }
+
+    override func pauseMenu() -> [PauseMenuItem] {
+        [
+            PauseMenuItem(entry: .pause(pause: .hour), title: "For 1 hour"),
+            PauseMenuItem(entry: .pause(pause: .tomorrowMorning), title: "Until tomorrow, 08:00"),
+            PauseMenuItem(entry: .pickTime, title: "Until…"),
+            PauseMenuItem(entry: .pause(pause: .untilResumed), title: "Until I turn them back on"),
+        ]
+    }
+
+    override func pauseNotifications(pause: PauseFor) async throws {
+        try change("pause \(pause)")
+        quietState.quiet = true
+        quietState.paused = true
+    }
+
+    override func resumeNotifications() async throws {
+        try change("resume")
+        quietState.quiet = false
+        quietState.paused = false
+    }
+
+    override func setQuietHours(hours: QuietHours) async throws {
+        try change("hours \(hours.fromMinute)-\(hours.toMinute)")
+        quietState.hours = hours
+    }
+
+    override func setMentionsThrough(on: Bool) async throws {
+        try change("mentions through \(on)")
+        quietState.mentionsThrough = on
+    }
+
     override func subscribeEncryptionState(listener: EncryptionStateListener) -> TaskHandle {
         encryptionListener = listener
         listener.onUpdate(state: encryption)
@@ -532,6 +580,66 @@ final class FakeSession: Session, @unchecked Sendable {
         created.append(new)
         return "!new:example.org"
     }
+
+    // MARK: Audio
+
+    /// The file `audioFile` gives for each source, after reporting
+    /// `audioProgress`; for others it waits until cancelled.
+    var audioFiles: [String: Result<String, Error>] = [:]
+    var audioProgress: [Float?] = []
+    private var fetches: [String] = []
+    private var cancelledFetches: [String] = []
+
+    /// The sources fetched, in order (from the model's tasks, off the main
+    /// actor: behind the lock).
+    var audioFetches: [String] { locked { fetches } }
+    /// The sources whose fetch was cancelled, in order.
+    var audioCancelled: [String] { locked { cancelledFetches } }
+
+    override func audioFile(media: Media, progress: AudioProgress) async throws -> String {
+        let (file, steps) = locked { () -> (Result<String, Error>?, [Float?]) in
+            fetches.append(media.source)
+            return (audioFiles[media.source], audioProgress)
+        }
+        for step in steps {
+            progress.onProgress(fraction: step)
+        }
+        if let file { return try file.get() }
+        while !Task.isCancelled { try? await Task.sleep(nanoseconds: 10_000_000) }
+        locked { cancelledFetches.append(media.source) }
+        throw CancellationError()
+    }
+}
+
+/// A player of a message's file (`AudioModel`): it plays from where it is
+/// set, which the tests move; `end()` plays it to its end.
+@MainActor
+final class FakeAudioPlayer: AudioPlaying {
+    let file: URL
+    let duration: TimeInterval
+    var currentTime: TimeInterval = 0
+    var stopped: (@MainActor (AudioStop) -> Void)?
+    private(set) var playing = false
+
+    init(file: URL, duration: TimeInterval) {
+        self.file = file
+        self.duration = duration
+    }
+
+    func play() -> Bool {
+        playing = true
+        return true
+    }
+
+    func pause() {
+        playing = false
+    }
+
+    func end() {
+        playing = false
+        currentTime = 0
+        stopped?(.ended)
+    }
 }
 
 /// A room of a fake session (`FakeSession.room`): gives its settings and
@@ -556,6 +664,11 @@ final class FakeRoom: Room, @unchecked Sendable {
     override func setNotify(mode: NotifyMode) async throws {
         try session.change("notify \(mode)")
         session.settings.notify = mode
+    }
+
+    override func mute(duration: MuteFor) async throws {
+        try session.change("mute \(duration)")
+        session.settings.notify = .mute
     }
 
     override func setJoinRule(rule: JoinRule) async throws {
@@ -738,6 +851,27 @@ enum Make {
                 rawBody: rawBody, text: text ?? [paragraph([plain(body)])]))
     }
 
+    /// An audio message's file, `seconds` long as the library labels it: a
+    /// voice message with its waveform, unless `name` is given.
+    static func audio(_ source: String, name: String? = nil, seconds: TimeInterval? = 42) -> Media {
+        Media(
+            kind: .audio, filename: name ?? "Voice message.ogg", size: 24_000,
+            mimetype: name == nil ? "audio/ogg" : "audio/mp4", width: nil, height: nil, source: source,
+            duration: seconds, durationLabel: seconds.map { playbackTime(time: $0) }, voice: name == nil,
+            waveform: name == nil ? waveform : [])
+    }
+
+    /// A voice message's 40 bars.
+    static let waveform = (0..<40).map { Float(0.2 + 0.8 * abs(sin(Double($0) * 0.45))) }
+
+    /// A message with an audio file.
+    static func audioMessage(_ media: Media) -> EventContent {
+        .message(
+            message: Message(
+                kind: .audio, body: media.filename, edited: false, media: media, reactions: [], replyTo: nil,
+                rawBody: media.filename, text: []))
+    }
+
     /// A paragraph of `runs`, outside quotes and lists.
     static func paragraph(_ runs: [TextRun]) -> TextBlock {
         TextBlock(kind: .paragraph(runs: runs), quotes: 0, lists: 0, marker: nil)
@@ -883,7 +1017,8 @@ enum Make {
             .filter { $0 != .spaceMembers || inSpace || joinRule == .spaceMembers }
             .map { JoinRuleChoice(rule: $0, title: title($0), fact: fact($0)) }
         return RoomSettings(
-            rights: rights(canChange), notify: .all, notifyChoices: notifyChoices, joinRule: joinRule,
+            rights: rights(canChange), notify: .all, mutedUntil: nil, notifyTitle: "All messages",
+            notifyExplanation: "Every message notifies you.", notifyChoices: notifyChoices, joinRule: joinRule,
             joinRuleFact: fact(joinRule), joinRuleChoices: choices, address: address, listed: listed,
             history: .joined, historyChoices: historyChoices, permissions: .everyone,
             permissionsChoices: permissionsChoices, encrypted: encrypted, version: "12", spaces: spaces,
@@ -893,10 +1028,12 @@ enum Make {
     /// The notification modes a room's settings offer, as the library words
     /// them.
     static let notifyChoices = [
-        NotifyChoice(mode: .all, title: "All messages", explanation: "Every message notifies you."),
-        NotifyChoice(
-            mode: .mentions, title: "Mentions", explanation: "Only mentions of you and your keywords notify you."),
-        NotifyChoice(mode: .mute, title: "Mute", explanation: "Nothing here notifies you."),
+        NotifyChoice(title: "All messages", action: .mode(mode: .all), current: true),
+        NotifyChoice(title: "Mentions", action: .mode(mode: .mentions), current: false),
+        NotifyChoice(title: "Mute for 1 hour", action: .mute(duration: .hour), current: false),
+        NotifyChoice(title: "Mute for 8 hours", action: .mute(duration: .eightHours), current: false),
+        NotifyChoice(title: "Mute until tomorrow, 08:00", action: .mute(duration: .tomorrowMorning), current: false),
+        NotifyChoice(title: "Mute until I unmute", action: .mute(duration: .untilUnmuted), current: false),
     ]
 
     /// Who may read the history, as the library words it.

@@ -123,16 +123,24 @@ pub struct RoomLists {
 }
 
 impl RoomLists {
+    /// `room`'s summary, muted as the lists say.
+    fn summary(&self, room: &core::RoomSummary) -> RoomSummary {
+        RoomSummary {
+            muted: self.inner.muted.contains_key(&room.id),
+            ..RoomSummary::from(room)
+        }
+    }
+
     fn summaries<'a>(&self, ids: impl IntoIterator<Item = &'a OwnedRoomId>) -> Vec<RoomSummary> {
         (ids.into_iter())
             .filter_map(|id| self.inner.room(id))
-            .map(RoomSummary::from)
+            .map(|room| self.summary(room))
             .collect()
     }
 
     fn entry(&self, entry: &core::SpaceEntry) -> SpaceEntry {
         let space = match &entry.key {
-            core::SpaceKey::Space(id) => self.inner.room(id).map(RoomSummary::from),
+            core::SpaceKey::Space(id) => self.inner.room(id).map(|room| self.summary(room)),
             _ => None,
         };
         SpaceEntry {
@@ -162,7 +170,8 @@ impl RoomLists {
     /// by space ID, in order) and the members of the spaces by space ID,
     /// for their direct chats; the rooms tagged `favourites` and
     /// `low_priority` by ID, the `categories`, and the rooms `joining`.
-    /// Rooms whose membership is `Asked` are asked to join, not listed.
+    /// Rooms whose membership is `Asked` are asked to join, not listed;
+    /// those `muted` are muted, without an end.
     #[uniffi::constructor]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -178,6 +187,10 @@ impl RoomLists {
         categories: Vec<TestCategory>,
         joining: Vec<String>,
     ) -> Result<Arc<Self>, MtrxError> {
+        let rooms_muted: Vec<&String> = (rooms.iter())
+            .filter(|room| room.muted)
+            .map(|room| &room.id)
+            .collect();
         let rooms = (rooms.iter())
             .map(|room| {
                 let mut summary = core::RoomSummary::try_from(room)?;
@@ -255,6 +268,9 @@ impl RoomLists {
             .iter()
             .map(|id| crate::error::room_id(id))
             .collect::<Result<_, _>>()?;
+        lists.muted = (rooms_muted.iter())
+            .map(|id| Ok((crate::error::room_id(id)?, None)))
+            .collect::<Result<_, MtrxError>>()?;
         Ok(Arc::new(Self::from(Arc::new(lists))))
     }
 
@@ -267,12 +283,16 @@ impl RoomLists {
     /// Every joined and invited room (spaces too), most recently active
     /// first.
     pub fn rooms(&self) -> Vec<RoomSummary> {
-        self.inner.rooms.iter().map(RoomSummary::from).collect()
+        self.inner
+            .rooms
+            .iter()
+            .map(|room| self.summary(room))
+            .collect()
     }
 
     pub fn room(&self, room_id: String) -> Option<RoomSummary> {
         let id = OwnedRoomId::try_from(room_id).ok()?;
-        self.inner.room(&id).map(RoomSummary::from)
+        self.inner.room(&id).map(|room| self.summary(room))
     }
 
     /// Our membership of a room to show: joined once joining here, else as
@@ -335,7 +355,7 @@ impl RoomLists {
     /// The top-level spaces, in order: where someone can be invited.
     pub fn top_level_spaces(&self) -> Vec<RoomSummary> {
         (self.inner.top_level_spaces().into_iter())
-            .map(RoomSummary::from)
+            .map(|room| self.summary(room))
             .collect()
     }
 
@@ -433,7 +453,7 @@ impl RoomLists {
         let grouping = core::Grouping::default();
         (self.inner.search(key.as_ref(), &grouping, &filter))
             .into_iter()
-            .map(RoomSummary::from)
+            .map(|room| self.summary(room))
             .collect()
     }
 
@@ -448,7 +468,9 @@ impl RoomLists {
     /// and for direct chats and spaces.
     pub fn first_space_of(&self, room_id: String) -> Option<RoomSummary> {
         let id = OwnedRoomId::try_from(room_id).ok()?;
-        self.inner.first_space_of(&id).map(RoomSummary::from)
+        self.inner
+            .first_space_of(&id)
+            .map(|room| self.summary(room))
     }
 
     /// The names of the top-level spaces that list a direct chat (those of
@@ -593,6 +615,7 @@ mod tests {
             join_rule_fact: String::new(),
             pinned: Vec::new(),
             rights: core::Rights::default().into(),
+            muted: false,
         }
     }
 
