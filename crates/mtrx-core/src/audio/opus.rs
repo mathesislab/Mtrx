@@ -181,12 +181,41 @@ fn wav_header(channels: u16, data: u64) -> Vec<u8> {
 /// it, its head saying `mapping_family`. For tests.
 #[cfg(any(test, feature = "test-support"))]
 pub fn ogg_opus_sine(hz: f32, seconds: u32, mapping_family: u8) -> Vec<u8> {
-    use ::opus::{Application, Encoder};
+    let recording = Recording {
+        application: ::opus::Application::Audio,
+        bitrate: None,
+        packets_per_page: None,
+        mapping_family,
+    };
+    record(hz, seconds, &recording)
+}
+
+/// How a test's Ogg Opus is encoded and put in pages.
+#[cfg(any(test, feature = "test-support"))]
+struct Recording {
+    application: ::opus::Application,
+    /// Bits a second; else the encoder's choice.
+    bitrate: Option<i32>,
+    /// A page ends after this many packets; else pages fill up.
+    packets_per_page: Option<usize>,
+    mapping_family: u8,
+}
+
+/// One channel of Ogg Opus: a `hz` sine for `seconds`, as `recording`
+/// says.
+#[cfg(any(test, feature = "test-support"))]
+fn record(hz: f32, seconds: u32, recording: &Recording) -> Vec<u8> {
+    use ::opus::{Bitrate, Encoder};
     use ogg::{PacketWriteEndInfo, PacketWriter};
 
     /// 20 ms.
     const FRAME: usize = 960;
-    let mut encoder = Encoder::new(RATE, Channels::Mono, Application::Audio).expect("an encoder");
+    let mapping_family = recording.mapping_family;
+    let mut encoder =
+        Encoder::new(RATE, Channels::Mono, recording.application).expect("an encoder");
+    if let Some(bits) = recording.bitrate {
+        (encoder.set_bitrate(Bitrate::Bits(bits))).expect("a bitrate");
+    }
     let pre_skip = encoder.get_lookahead().expect("its delay") as u64;
     let frames = u64::from(seconds) * u64::from(RATE);
 
@@ -226,8 +255,12 @@ pub fn ogg_opus_sine(hz: f32, seconds: u32, mapping_family: u8) -> Vec<u8> {
         let mut frame = chunk.to_vec();
         frame.resize(FRAME, 0);
         let packet = encoder.encode_vec(&frame, 4000).expect("encoded");
+        let page_full =
+            (recording.packets_per_page).is_some_and(|count| (n + 1).is_multiple_of(count));
         let (end, granule) = if n + 1 == packets {
             (PacketWriteEndInfo::EndStream, pre_skip + frames)
+        } else if page_full {
+            (PacketWriteEndInfo::EndPage, (n as u64 + 1) * FRAME as u64)
         } else {
             (
                 PacketWriteEndInfo::NormalPacket,
@@ -241,6 +274,9 @@ pub fn ogg_opus_sine(hz: f32, seconds: u32, mapping_family: u8) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+    use serde_json::json;
+
     use super::*;
 
     /// The samples of a 16-bit WAV, checking its header.
@@ -292,6 +328,48 @@ mod tests {
             .max_by(|&a, &b| power(&samples, a as f64).total_cmp(&power(&samples, b as f64)))
             .unwrap();
         assert_eq!(strongest, 440);
+    }
+
+    /// A voice message as Element Web sends one: the event's MSC3245 and
+    /// MSC1767 blocks give `voice`, the length and the bars; its file,
+    /// recorded as Element Web's recorder does (VoIP, 24 kb/s, 20 ms
+    /// packets, 40 to a page), converts to exactly that length.
+    #[test]
+    fn an_element_voice_message_converts_to_its_length() {
+        let waveform: Vec<u64> = (0..100).map(|i| i * 37 % 1024).collect();
+        let event = json!({
+            "msgtype": "m.audio",
+            "body": "Voice message",
+            "url": "mxc://example.org/voice",
+            "info": { "mimetype": "audio/ogg", "size": 9_000, "duration": 3_000 },
+            "org.matrix.msc1767.text": "Voice message",
+            "org.matrix.msc1767.file": {
+                "url": "mxc://example.org/voice",
+                "name": "Voice message.ogg",
+                "mimetype": "audio/ogg",
+                "size": 9_000,
+            },
+            "org.matrix.msc1767.audio": { "duration": 3_000, "waveform": waveform },
+            "org.matrix.msc3245.voice": {},
+        });
+        let content: RoomMessageEventContent = serde_json::from_value(event).unwrap();
+        let media = crate::timeline::media(&content.msgtype).unwrap();
+        assert!(media.voice);
+        assert_eq!(media.waveform.len(), crate::WAVEFORM_BARS);
+        let duration = media.duration.unwrap();
+
+        let recording = Recording {
+            application: ::opus::Application::Voip,
+            bitrate: Some(24_000),
+            packets_per_page: Some(40),
+            mapping_family: 0,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let from = write(&dir, "Voice message.ogg", &record(300.0, 3, &recording));
+        let to = dir.path().join("voice.wav");
+        decode(&from, &to, || true).unwrap();
+        let samples = wav_samples(&to, 1);
+        assert_eq!(samples.len() as u128, duration.as_millis() * 48);
     }
 
     #[tokio::test]
