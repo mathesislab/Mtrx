@@ -205,7 +205,9 @@ pub enum SpaceMenu {
 }
 
 /// `menu`: the open one; `update`: a newer version not yet seen in
-/// Settings, a dot on the gear.
+/// Settings, a dot on the gear. At the bottom: `downloads` while there are
+/// any, the `bell` (notifications), the gear.
+#[allow(clippy::too_many_arguments)]
 pub fn space_bar<'a>(
     lists: &RoomLists,
     selected: Option<&OwnedRoomId>,
@@ -214,6 +216,7 @@ pub fn space_bar<'a>(
     menu: Option<&SpaceMenu>,
     update: bool,
     downloads: Option<Element<'a, app::Message>>,
+    bell: Element<'a, app::Message>,
 ) -> Element<'a, app::Message> {
     let entry =
         |icon: Element<'a, app::Message>, title: String, target: Option<OwnedRoomId>, unread| {
@@ -322,6 +325,7 @@ pub fn space_bar<'a>(
     if let Some(downloads) = downloads {
         bottom = bottom.push(container(downloads).center_x(Length::Fill));
     }
+    bottom = bottom.push(container(bell).center_x(Length::Fill));
     bottom = bottom.push(container(with_tooltip(settings, tip.into())).center_x(Length::Fill));
     container(column![
         scrollable(bar.spacing(4).width(Length::Fill).padding([8, 0])).height(Length::Fill),

@@ -942,6 +942,17 @@ impl<M> canvas::Program<M> for Lock {
     }
 }
 
+/// A bell: notifications.
+pub fn bell<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Bell {
+        color,
+        slash: false,
+    })
+    .width(size)
+    .height(size)
+    .into()
+}
+
 /// A bell struck through: muted, notifications paused.
 pub fn bell_slash<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
     canvas::Canvas::new(Bell { color, slash: true })

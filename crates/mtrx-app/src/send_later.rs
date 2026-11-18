@@ -1,7 +1,8 @@
 //! Send later: the bar of scheduled messages above the composer, and the
 //! picker for a message's send time: quick picks, a calendar and hour and
 //! minute wheels, floating above the clock next to Send (or above the
-//! scheduled message getting a new time).
+//! scheduled message getting a new time). The calendar and wheels also
+//! pick when notifications resume ([`crate::quiet`]).
 
 use std::time::{Duration, SystemTime};
 
@@ -27,7 +28,7 @@ use crate::{
 /// The wheels' scrollables, to bring the picked hour and minute into view.
 const HOURS: &str = "send-later-hours";
 const MINUTES: &str = "send-later-minutes";
-const MINUTE_STEP: u32 = 5;
+pub const MINUTE_STEP: u32 = 5;
 /// Height of a wheel entry, and how many show.
 const WHEEL_ROW: f32 = 26.0;
 const WHEEL_ROWS: f32 = 7.0;
@@ -127,63 +128,136 @@ impl Picker {
 
     /// Bring the picked hour and minute into view.
     pub fn scroll(&self) -> Task<app::Message> {
-        let offset = |index: u32| operation::AbsoluteOffset {
-            x: None,
-            y: Some((index as f32 - (WHEEL_ROWS - 1.0) / 2.0).max(0.0) * WHEEL_ROW),
-        };
-        Task::batch([
-            operation::scroll_to(HOURS, offset(self.hour)),
-            operation::scroll_to(MINUTES, offset(self.minute / MINUTE_STEP)),
-        ])
+        scroll_wheels(self.hour, self.minute)
+    }
+
+    /// The calendar and the hour and minute wheels; past days, hours and
+    /// minutes can't be picked. `on` makes their messages the window's.
+    pub fn chooser<'a>(
+        &self,
+        now: SystemTime,
+        on: impl Fn(Message) -> app::Message + Clone,
+    ) -> Element<'a, app::Message> {
+        let local = DateTime::<Local>::from(now);
+        let today = local.date_naive();
+        // Past hours and minutes of today are not offered.
+        let on_today = self.date == today;
+        let hours = wheel(
+            true,
+            self.hour,
+            move |hour| !on_today || hour >= local.hour(),
+            {
+                let on = on.clone();
+                move |hour| on(Message::Hour(hour))
+            },
+        );
+        let this_hour = on_today && self.hour == local.hour();
+        let minutes = wheel(
+            false,
+            self.minute,
+            move |minute| !this_hour || minute > local.minute(),
+            {
+                let on = on.clone();
+                move |minute| on(Message::Minute(minute))
+            },
+        );
+        row![
+            self.calendar(today, on),
+            labelled("Hour", hours),
+            labelled("Min", minutes)
+        ]
+        .spacing(16)
+        .into()
     }
 
     /// A month of days, Monday first; past days are disabled.
-    fn calendar<'a>(&self, room: &OwnedRoomId, today: NaiveDate) -> Element<'a, app::Message> {
+    fn calendar<'a>(
+        &self,
+        today: NaiveDate,
+        on: impl Fn(Message) -> app::Message + Clone,
+    ) -> Element<'a, app::Message> {
+        let month = self.month;
+        let turn = {
+            let on = on.clone();
+            move |by| (by > 0 || month > first_of_month(today)).then(|| on(Message::Month(by)))
+        };
         calendar::view(
             self.month,
             self.date,
             today,
             |day| day >= today,
-            |by| {
-                (by > 0 || self.month > first_of_month(today))
-                    .then(|| later(room, Message::Month(by)))
-            },
-            |day| later(room, Message::Day(day)),
+            turn,
+            move |day| on(Message::Day(day)),
         )
     }
+}
 
-    /// A scrolling column of hours or minutes; past ones are disabled.
-    fn wheel<'a>(
-        &self,
-        room: &OwnedRoomId,
-        id: &'static str,
-        values: impl Iterator<Item = u32>,
-        picked: u32,
-        allowed: impl Fn(u32) -> bool,
-        message: fn(u32) -> Message,
-    ) -> Element<'a, app::Message> {
-        let entries = values.map(|value| {
-            let selected = value == picked;
-            button(
-                text(format!("{value:02}"))
-                    .size(13)
-                    .center()
-                    .width(Length::Fill),
-            )
-            .height(WHEEL_ROW)
-            .padding([4, 0])
-            .style(move |theme, status| style::wheel_item(theme, status, selected))
-            .on_press_maybe(allowed(value).then(|| later(room, message(value))))
-            .into()
-        });
-        scrollable(column(entries).width(48))
-            .id(Id::new(id))
-            .height(WHEEL_ROW * WHEEL_ROWS)
-            .direction(scrollable::Direction::Vertical(
-                scrollable::Scrollbar::new().width(0).scroller_width(0),
-            ))
-            .into()
+/// Bring `hour` and `minute` into view on the wheels.
+pub fn scroll_wheels(hour: u32, minute: u32) -> Task<app::Message> {
+    let offset = |index: u32| operation::AbsoluteOffset {
+        x: None,
+        y: Some((index as f32 - (WHEEL_ROWS - 1.0) / 2.0).max(0.0) * WHEEL_ROW),
+    };
+    Task::batch([
+        operation::scroll_to(HOURS, offset(hour)),
+        operation::scroll_to(MINUTES, offset(minute / MINUTE_STEP)),
+    ])
+}
+
+/// The wheel of hours (0 to 23) or minutes (every [`MINUTE_STEP`]), with
+/// `picked` highlighted; those not `allowed` are disabled. `message` is
+/// the window's for a value picked.
+pub fn wheel<'a>(
+    hours: bool,
+    picked: u32,
+    allowed: impl Fn(u32) -> bool,
+    message: impl Fn(u32) -> app::Message,
+) -> Element<'a, app::Message> {
+    if hours {
+        wheel_of(HOURS, 0..24, picked, allowed, message)
+    } else {
+        let minutes = (0..60).step_by(MINUTE_STEP as usize);
+        wheel_of(MINUTES, minutes, picked, allowed, message)
     }
+}
+
+/// A scrolling column of `values`, one of the wheels.
+fn wheel_of<'a>(
+    id: &'static str,
+    values: impl Iterator<Item = u32>,
+    picked: u32,
+    allowed: impl Fn(u32) -> bool,
+    message: impl Fn(u32) -> app::Message,
+) -> Element<'a, app::Message> {
+    let entries = values.map(|value| {
+        let selected = value == picked;
+        button(
+            text(format!("{value:02}"))
+                .size(13)
+                .center()
+                .width(Length::Fill),
+        )
+        .height(WHEEL_ROW)
+        .padding([4, 0])
+        .style(move |theme, status| style::wheel_item(theme, status, selected))
+        .on_press_maybe(allowed(value).then(|| message(value)))
+        .into()
+    });
+    scrollable(column(entries).width(48))
+        .id(Id::new(id))
+        .height(WHEEL_ROW * WHEEL_ROWS)
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::new().width(0).scroller_width(0),
+        ))
+        .into()
+}
+
+/// A wheel with its `label` above: "Hour", "Min".
+pub fn labelled<'a>(label: &'a str, wheel: Element<'a, app::Message>) -> Element<'a, app::Message> {
+    column![text(label).size(11).style(text::secondary), wheel]
+        .spacing(4)
+        .align_x(Alignment::Center)
+        .into()
 }
 
 fn next_hour(now: DateTime<Local>) -> DateTime<Local> {
@@ -339,8 +413,6 @@ pub fn picker<'a>(
 ) -> Element<'a, app::Message> {
     let picker = &state.picker;
     let can_schedule = can_schedule || state.rescheduling.is_some();
-    let local = DateTime::<Local>::from(now);
-    let today = local.date_naive();
     let quick = |label: &'a str, at: Option<SystemTime>| {
         button(text(label).size(13).width(Length::Fill).center())
             .width(150)
@@ -371,31 +443,6 @@ pub fn picker<'a>(
     ]
     .spacing(6);
 
-    // Past hours and minutes of today are not offered.
-    let on_today = picker.date == today;
-    let hours = picker.wheel(
-        room,
-        HOURS,
-        0..24,
-        picker.hour,
-        move |hour| !on_today || hour >= local.hour(),
-        Message::Hour,
-    );
-    let this_hour = on_today && picker.hour == local.hour();
-    let minutes = picker.wheel(
-        room,
-        MINUTES,
-        (0..60).step_by(MINUTE_STEP as usize),
-        picker.minute,
-        move |minute| !this_hour || minute > local.minute(),
-        Message::Minute,
-    );
-    let wheel = |label, wheel| {
-        column![text(label).size(11).style(text::secondary), wheel]
-            .spacing(4)
-            .align_x(Alignment::Center)
-    };
-
     let time = picker.time(now);
     let summary = match time {
         Ok(at) => text(format!(
@@ -408,12 +455,7 @@ pub fn picker<'a>(
     };
     let schedule = (can_schedule && time.is_ok()).then(|| later(room, Message::Schedule));
     let chosen = column![
-        row![
-            picker.calendar(room, today),
-            wheel("Hour", hours),
-            wheel("Min", minutes)
-        ]
-        .spacing(16),
+        picker.chooser(now, |message| later(room, message)),
         row![
             summary,
             space::horizontal(),

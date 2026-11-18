@@ -57,6 +57,7 @@ mod pins;
 mod placement;
 mod popover;
 mod presence;
+mod quiet;
 mod reorder;
 mod room;
 mod rows;
