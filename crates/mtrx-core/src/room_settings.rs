@@ -2,15 +2,20 @@
 //! it notifies them. Kept up to date while shown; a change made here shows
 //! at once, and its setter returns once the server took it.
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::Arc,
+    time::{Instant, SystemTime},
+};
 
 use futures_util::{
     StreamExt,
     stream::{self, BoxStream},
 };
 use matrix_sdk::{
-    Room, RoomMemberships,
-    notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode},
+    Client, Room, RoomMemberships,
+    notification_settings::{IsEncrypted, IsOneToOne, NotificationSettings, RoomNotificationMode},
     ruma::{
         OwnedRoomAliasId, OwnedRoomId, RoomAliasId, RoomId, UserId,
         api::client::{
@@ -30,14 +35,16 @@ use matrix_sdk::{
     },
 };
 use tokio::sync::{OwnedMutexGuard, broadcast};
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::warn;
 
 use crate::{
-    Error, JoinRule, Live, Permissions, Result, Rights, RoomHandle, Session, User,
+    Error, JoinRule, Live, MuteFor, Permissions, Result, Rights, RoomHandle, Session, TimedMute,
+    User,
     echo::{ECHO_TIMEOUT, Setting, SettingKey},
     media::guess_mimetype,
     permissions::{levels, rights},
+    send_time::describe_until,
 };
 
 /// When a room notifies (push rules, so on all the user's devices).
@@ -70,6 +77,25 @@ impl NotifyMode {
             Self::Mute => "Nothing here notifies you.",
         }
     }
+}
+
+/// An entry of a room's notifications menu: a mode, or a mute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyAction {
+    Mode(NotifyMode),
+    Mute(MuteFor),
+}
+
+/// An entry of a room's notifications menu, with its words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotifyChoice {
+    pub action: NotifyAction,
+    /// "All messages", "Mentions", "Mute for 1 hour", "Mute for 8 hours",
+    /// "Mute until tomorrow, 08:00", "Mute until I unmute"; "Mute" for a
+    /// room muted without an end.
+    pub title: String,
+    /// The room's mode now.
+    pub current: bool,
 }
 
 impl From<RoomNotificationMode> for NotifyMode {
@@ -175,6 +201,15 @@ pub struct RoomSettings {
     /// What we may change; the same as the room list's.
     pub rights: Rights,
     pub notify: NotifyMode,
+    /// The end of a timed mute.
+    pub muted_until: Option<SystemTime>,
+    /// "All messages", "Mentions", "Muted", "Muted until 14:00".
+    pub notify_title: String,
+    /// "Every message notifies you.", "Muted until 14:00, then all
+    /// messages again."
+    pub notify_explanation: String,
+    /// The notifications menu, in order.
+    pub notify_choices: Vec<NotifyChoice>,
     pub join_rule: JoinRule,
     /// The rules to offer, in order: Space members only for a room in a
     /// joined space, or already so.
@@ -195,6 +230,73 @@ pub struct RoomSettings {
     pub banned: Vec<Banned>,
 }
 
+/// What a room's settings say of its notifications.
+#[derive(Debug, PartialEq, Eq)]
+struct NotifyWords {
+    muted_until: Option<SystemTime>,
+    title: String,
+    explanation: String,
+    choices: Vec<NotifyChoice>,
+}
+
+impl NotifyWords {
+    /// For a room whose mode is `mode`, and `mute` if muted for a time; it
+    /// follows `default` without a mode of its own.
+    fn new(
+        mode: NotifyMode,
+        mute: Option<&TimedMute>,
+        default: NotifyMode,
+        now: SystemTime,
+    ) -> Self {
+        let timed = mute.filter(|_| mode == NotifyMode::Mute);
+        let (title, explanation) = match (timed, mode) {
+            (Some(mute), _) => {
+                let until = describe_until(mute.until, now);
+                let then = match mute.before.unwrap_or(default) {
+                    NotifyMode::All => "all messages again",
+                    NotifyMode::Mentions => "mentions only",
+                    NotifyMode::Mute => "still nothing",
+                };
+                (
+                    format!("Muted until {until}"),
+                    format!("Muted until {until}, then {then}."),
+                )
+            }
+            (None, NotifyMode::Mute) => ("Muted".to_owned(), mode.explanation().to_owned()),
+            (None, mode) => (mode.title().to_owned(), mode.explanation().to_owned()),
+        };
+        let choice = |choice: NotifyMode| NotifyChoice {
+            action: NotifyAction::Mode(choice),
+            title: choice.title().to_owned(),
+            current: choice == mode,
+        };
+        let mut choices = vec![choice(NotifyMode::All), choice(NotifyMode::Mentions)];
+        if mode == NotifyMode::Mute && timed.is_none() {
+            // Muted without an end: no mode to go back to after a time.
+            choices.push(choice(NotifyMode::Mute));
+        } else {
+            choices.extend(MuteFor::ALL.map(|duration| NotifyChoice {
+                action: NotifyAction::Mute(duration),
+                title: duration.title(now),
+                current: false,
+            }));
+        }
+        Self {
+            muted_until: timed.map(|mute| mute.until),
+            title,
+            explanation,
+            choices,
+        }
+    }
+
+    fn lay(self, settings: &mut RoomSettings) {
+        settings.muted_until = self.muted_until;
+        settings.notify_title = self.title;
+        settings.notify_explanation = self.explanation;
+        settings.notify_choices = self.choices;
+    }
+}
+
 /// Changes to rooms' notification modes, one after another in each room:
 /// each starts once the one before is confirmed, so from the server's
 /// rules.
@@ -209,6 +311,106 @@ impl NotifyTurns {
             .clone();
         turn.lock_owned().await
     }
+}
+
+/// A room's turn to change its mode, see [`RoomModes`].
+pub(crate) type Turn = OwnedMutexGuard<()>;
+
+/// Rooms' notification modes (push rules, so on all the user's devices),
+/// read and changed in each room's turn ([`NotifyTurns`]).
+#[derive(Clone)]
+pub(crate) struct RoomModes {
+    client: Client,
+    /// Follows push rule changes, so it knows a room's mode right after
+    /// setting it (sync echoes it later).
+    settings: NotificationSettings,
+    turns: Arc<NotifyTurns>,
+}
+
+impl RoomModes {
+    pub(crate) fn new(client: Client, settings: NotificationSettings) -> Self {
+        Self {
+            client,
+            settings,
+            turns: Arc::default(),
+        }
+    }
+
+    /// `room`'s turn, once the change before it is confirmed.
+    pub(crate) async fn turn(&self, room: &RoomId) -> Turn {
+        self.turns.take(room).await
+    }
+
+    /// The room's own mode; none if it follows the default for rooms like
+    /// it.
+    pub(crate) async fn own(&self, room: &RoomId) -> Option<NotifyMode> {
+        let settings = &self.settings;
+        let mode = settings.get_user_defined_room_notification_mode(room).await;
+        mode.map(NotifyMode::from)
+    }
+
+    /// In its `turn`, give `room` `mode` of its own, or none (it follows
+    /// the default then); it is confirmed before the next change.
+    ///
+    /// `notification_settings` applies a change to its rules as soon as the
+    /// server took it, before sync brings it back; a sync from midway
+    /// through the change (a rule added, the old one not yet removed) may
+    /// still replace them after that. So the change is confirmed by the
+    /// rules as last synced (the store's, kept before event handlers run),
+    /// once `notification_settings` applied that sync too.
+    pub(crate) async fn send(
+        &self,
+        turn: Turn,
+        room: &RoomId,
+        mode: Option<NotifyMode>,
+    ) -> Result<()> {
+        if self.own(room).await == mode {
+            // Nothing to change, so nothing comes back.
+            return Ok(());
+        }
+        let settings = &self.settings;
+        let mut synced = settings.subscribe_to_changes();
+        let changed = match mode {
+            Some(mode) => settings.set_room_notification_mode(room, mode.into()).await,
+            None => settings.delete_user_defined_room_rules(room).await,
+        };
+        changed.map_err(|e| Error::Notifications(e.to_string()))?;
+        let (modes, room) = (self.clone(), room.to_owned());
+        tokio::spawn(async move {
+            let _turn = turn;
+            let confirmed = async {
+                loop {
+                    match synced.recv().await {
+                        Err(broadcast::error::RecvError::Closed) => return,
+                        // A change missed while lagging still left its rules.
+                        _ if modes.synced(&room).await == Some(mode)
+                            && modes.own(&room).await == mode =>
+                        {
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+            };
+            // The server took the change either way.
+            let _ = tokio::time::timeout(ECHO_TIMEOUT, confirmed).await;
+        });
+        Ok(())
+    }
+
+    /// The room's own mode, as the push rules last synced give it; none if
+    /// they can't be read.
+    async fn synced(&self, room: &RoomId) -> Option<Option<NotifyMode>> {
+        let rules = self.client.account().push_rules().await.ok()?;
+        Some(user_defined_mode(&rules, room).map(NotifyMode::from))
+    }
+}
+
+/// A room's settings as synced, and the mode it follows without one of
+/// its own.
+struct Read {
+    settings: RoomSettings,
+    default: NotifyMode,
 }
 
 impl Session {
@@ -248,24 +450,19 @@ impl Session {
         (links, others)
     }
 
-    /// The room's own mode, else the default for rooms like it.
-    async fn notify_mode(&self, room: &Room) -> RoomNotificationMode {
-        let settings = &self.notification_settings;
-        if let Some(mode) = settings
-            .get_user_defined_room_notification_mode(room.room_id())
-            .await
-        {
-            return mode;
-        }
+    /// The account's mode for rooms like `room`, which it follows without
+    /// one of its own.
+    async fn default_notify(&self, room: &Room) -> NotifyMode {
         let encrypted = room.encryption_state().is_encrypted();
         // Two people, as push rules count them.
         let one_to_one = room.active_members_count() == 2;
-        settings
+        (self.notification_settings)
             .get_default_room_notification_mode(
                 IsEncrypted::from(encrypted),
                 IsOneToOne::from(one_to_one),
             )
             .await
+            .into()
     }
 }
 
@@ -277,9 +474,9 @@ fn changes<T: Clone + Send + 'static>(updates: broadcast::Receiver<T>) -> BoxStr
 
 impl RoomHandle {
     /// The room's settings, once read, kept up to date while held: as its
-    /// state, who is banned, the notification rules and the joined spaces
-    /// change. The changes made here show at once, until the settings
-    /// show them or [`ECHO_TIMEOUT`] after the server took them. Whether
+    /// state, who is banned, the notification rules, its timed mute and
+    /// the joined spaces change. The changes made here show at once, until
+    /// the settings show them or [`ECHO_TIMEOUT`] after the server took them. Whether
     /// the room is listed is not room state: it is read when this starts,
     /// and again once the server took a change to it. A reading that fails
     /// (the power levels not known yet) is tried again at the next change.
@@ -290,6 +487,9 @@ impl RoomHandle {
         let mut changes = stream::select_all([
             changes(session.client.subscribe_to_room_updates(self.id())),
             changes(session.notification_settings.subscribe_to_changes()),
+            WatchStream::from_changes(session.mutes.subscribe())
+                .map(|_| ())
+                .boxed(),
             session.spaces.updates().map(|_| ()).boxed(),
         ]);
         let mut echoes = session.echoes.subscribe();
@@ -334,7 +534,7 @@ impl RoomHandle {
                             if taken.is_some() && taken != accepted {
                                 accepted = taken;
                                 listed = handle.listed().await;
-                                synced.listed = listed;
+                                synced.settings.listed = listed;
                             }
                         }
                         () = timed_out => {}
@@ -355,7 +555,7 @@ impl RoomHandle {
 
     /// The settings as synced, with `listed`; none while the power levels
     /// are not known yet, or if those banned can't be read.
-    async fn read_settings(&self, listed: Option<bool>) -> Option<RoomSettings> {
+    async fn read_settings(&self, listed: Option<bool>) -> Option<Read> {
         let (session, room) = (&self.session, &self.room);
         let levels = levels(room).await?;
         let banned = match room.members_no_sync(RoomMemberships::BAN).await {
@@ -379,11 +579,19 @@ impl RoomHandle {
         let (spaces, can_add_to) = session.space_links(self.id()).await;
         let join_rule = JoinRule::from(room.join_rule().as_ref());
         let in_space = !spaces.is_empty();
-        Some(RoomSettings {
+        let default = session.default_notify(room).await;
+        let notify = session.room_modes.own(self.id()).await.unwrap_or(default);
+        let mute = session.mutes.get(self.id());
+        let words = NotifyWords::new(notify, mute.as_ref(), default, SystemTime::now());
+        let settings = RoomSettings {
             rights: Rights::of(&levels, &session.user_id()),
             join_rule,
             join_rule_choices: JoinRule::choices(join_rule, in_space),
-            notify: session.notify_mode(room).await.into(),
+            notify,
+            muted_until: words.muted_until,
+            notify_title: words.title,
+            notify_explanation: words.explanation,
+            notify_choices: words.choices,
             address: room.canonical_alias(),
             listed,
             history: room.history_visibility_or_default().into(),
@@ -393,14 +601,18 @@ impl RoomHandle {
             spaces,
             can_add_to,
             banned,
-        })
+        };
+        Some(Read { settings, default })
     }
 
-    /// `synced` with the changes made here laid over, and when the next of
-    /// those times out.
-    fn shown(&self, synced: &RoomSettings) -> (RoomSettings, Option<Instant>) {
-        let mut shown = synced.clone();
+    /// The settings as synced with the changes made here laid over, and
+    /// when the next of those times out.
+    fn shown(&self, synced: &Read) -> (RoomSettings, Option<Instant>) {
+        let mut shown = synced.settings.clone();
         let timeout = (self.session.echoes).lay_settings(self.id(), &mut shown, Instant::now());
+        let mute = self.session.mutes.get(self.id());
+        let now = SystemTime::now();
+        NotifyWords::new(shown.notify, mute.as_ref(), synced.default, now).lay(&mut shown);
         (shown, timeout)
     }
 
@@ -422,76 +634,20 @@ impl RoomHandle {
     }
 
     /// Change when the room notifies, shown at once; returns once the
-    /// server took it.
+    /// server took it. Ends a timed mute.
     ///
     /// Changes to a room's mode go one after another: each waits until the
     /// one before is confirmed by the push rules sync brings back (or
     /// [`ECHO_TIMEOUT`]), so it starts from the server's rules, not from
     /// older ones still on their way.
     pub async fn set_notify(&self, mode: NotifyMode) -> Result<()> {
-        let request = self.send_notify(mode.into());
-        self.session
-            .echoed(self.id(), Setting::Notify(mode), request)
-            .await
-    }
-
-    /// In the room's turn, send `mode`; it is confirmed before the next
-    /// change.
-    ///
-    /// `notification_settings` applies a change to its rules as soon as the
-    /// server took it, before sync brings it back; a sync from midway
-    /// through the change (a rule added, the old one not yet removed) may
-    /// still replace them after that. So the change is confirmed by the
-    /// rules as last synced (the store's, kept before event handlers run),
-    /// once `notification_settings` applied that sync too.
-    async fn send_notify(&self, mode: RoomNotificationMode) -> Result<()> {
-        let turn = self.session.notify_turns.take(self.id()).await;
-        if self.has_notify(mode).await {
-            // Nothing to change, so nothing comes back.
-            return Ok(());
-        }
-        let settings = &self.session.notification_settings;
-        let mut synced = settings.subscribe_to_changes();
-        settings
-            .set_room_notification_mode(self.id(), mode)
-            .await
-            .map_err(|e| Error::Notifications(e.to_string()))?;
-        let handle = self.clone();
-        tokio::spawn(async move {
-            let _turn = turn;
-            let confirmed = async {
-                loop {
-                    match synced.recv().await {
-                        Err(broadcast::error::RecvError::Closed) => return,
-                        // A change missed while lagging still left its rules.
-                        _ if handle.synced_notify().await == Some(mode)
-                            && handle.has_notify(mode).await =>
-                        {
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-            };
-            // The server took the change either way.
-            let _ = tokio::time::timeout(ECHO_TIMEOUT, confirmed).await;
-        });
-        Ok(())
-    }
-
-    /// Whether `notification_settings` gives the room `mode` of its own.
-    async fn has_notify(&self, mode: RoomNotificationMode) -> bool {
-        let settings = &self.session.notification_settings;
-        settings
-            .get_user_defined_room_notification_mode(self.id())
-            .await
-            == Some(mode)
-    }
-
-    /// The room's own mode, as the push rules last synced give it.
-    async fn synced_notify(&self) -> Option<RoomNotificationMode> {
-        let rules = self.session.client.account().push_rules().await.ok()?;
-        user_defined_mode(&rules, self.id())
+        let (session, id) = (&self.session, self.id());
+        let request = async {
+            let turn = session.room_modes.turn(id).await;
+            session.room_modes.send(turn, id, Some(mode)).await?;
+            session.mutes.set(&self.room, None).await
+        };
+        session.echoed(id, Setting::Notify(mode), request).await
     }
 
     /// Change who may join; [`JoinRule::SpaceMembers`] lets in members of
@@ -715,6 +871,90 @@ mod tests {
         assert_eq!(
             user_defined_mode(&rules, &room),
             Some(RoomNotificationMode::Mute)
+        );
+    }
+
+    fn at(s: &str) -> SystemTime {
+        use chrono::TimeZone;
+        let naive = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
+        chrono::Local.from_local_datetime(&naive).unwrap().into()
+    }
+
+    fn titles(words: &NotifyWords) -> Vec<(&str, bool)> {
+        (words.choices.iter())
+            .map(|c| (c.title.as_str(), c.current))
+            .collect()
+    }
+
+    #[test]
+    fn a_rooms_notifications_in_words() {
+        // Wednesday afternoon.
+        let now = at("2026-10-21 14:00");
+        let all = NotifyWords::new(NotifyMode::All, None, NotifyMode::All, now);
+        assert_eq!(all.title, "All messages");
+        assert_eq!(all.explanation, "Every message notifies you.");
+        assert_eq!(all.muted_until, None);
+        assert_eq!(
+            titles(&all),
+            [
+                ("All messages", true),
+                ("Mentions", false),
+                ("Mute for 1 hour", false),
+                ("Mute for 8 hours", false),
+                ("Mute until tomorrow, 08:00", false),
+                ("Mute until I unmute", false),
+            ]
+        );
+        assert_eq!(all.choices[2].action, NotifyAction::Mute(MuteFor::Hour),);
+
+        // Muted without an end: nothing to go back to after a time.
+        let muted = NotifyWords::new(NotifyMode::Mute, None, NotifyMode::All, now);
+        assert_eq!(muted.title, "Muted");
+        assert_eq!(muted.explanation, "Nothing here notifies you.");
+        assert_eq!(
+            titles(&muted),
+            [("All messages", false), ("Mentions", false), ("Mute", true)]
+        );
+
+        // Muted for a time: ended early, or a new end.
+        let mute = TimedMute {
+            until: at("2026-10-21 16:00"),
+            before: Some(NotifyMode::Mentions),
+        };
+        let timed = NotifyWords::new(NotifyMode::Mute, Some(&mute), NotifyMode::All, now);
+        assert_eq!(timed.title, "Muted until 16:00");
+        assert_eq!(timed.explanation, "Muted until 16:00, then mentions only.");
+        assert_eq!(timed.muted_until, Some(mute.until));
+        assert_eq!(timed.choices.len(), 6);
+        assert!(timed.choices.iter().all(|c| !c.current));
+
+        // It followed the default: the default is named.
+        let default = TimedMute {
+            until: at("2026-10-22 08:00"),
+            before: None,
+        };
+        let words = NotifyWords::new(NotifyMode::Mute, Some(&default), NotifyMode::All, now);
+        assert_eq!(
+            words.explanation,
+            "Muted until tomorrow 08:00, then all messages again."
+        );
+        let words = NotifyWords::new(NotifyMode::Mute, Some(&default), NotifyMode::Mentions, now);
+        assert_eq!(
+            words.explanation,
+            "Muted until tomorrow 08:00, then mentions only."
+        );
+
+        // A record left while the room isn't muted says nothing.
+        let mentions = NotifyWords::new(NotifyMode::Mentions, Some(&mute), NotifyMode::All, now);
+        assert_eq!(mentions.title, "Mentions");
+        assert_eq!(mentions.muted_until, None);
+        assert_eq!(
+            mentions.choices[1],
+            NotifyChoice {
+                action: NotifyAction::Mode(NotifyMode::Mentions),
+                title: "Mentions".to_owned(),
+                current: true,
+            }
         );
     }
 

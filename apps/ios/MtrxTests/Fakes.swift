@@ -871,7 +871,8 @@ enum Make {
             .filter { $0 != .spaceMembers || inSpace || joinRule == .spaceMembers }
             .map { JoinRuleChoice(rule: $0, title: title($0), fact: fact($0)) }
         return RoomSettings(
-            rights: rights(canChange), notify: .all, notifyChoices: notifyChoices, joinRule: joinRule,
+            rights: rights(canChange), notify: .all, mutedUntil: nil, notifyTitle: "All messages",
+            notifyExplanation: "Every message notifies you.", notifyChoices: notifyChoices, joinRule: joinRule,
             joinRuleFact: fact(joinRule), joinRuleChoices: choices, address: address, listed: listed,
             history: .joined, historyChoices: historyChoices, permissions: .everyone,
             permissionsChoices: permissionsChoices, encrypted: encrypted, version: "12", spaces: spaces,
@@ -881,10 +882,16 @@ enum Make {
     /// The notification modes a room's settings offer, as the library words
     /// them.
     static let notifyChoices = [
-        NotifyChoice(mode: .all, title: "All messages", explanation: "Every message notifies you."),
         NotifyChoice(
-            mode: .mentions, title: "Mentions", explanation: "Only mentions of you and your keywords notify you."),
-        NotifyChoice(mode: .mute, title: "Mute", explanation: "Nothing here notifies you."),
+            mode: .all, title: "All messages", explanation: "Every message notifies you.", action: .mode(mode: .all),
+            current: true),
+        NotifyChoice(
+            mode: .mentions, title: "Mentions", explanation: "Only mentions of you and your keywords notify you.",
+            action: .mode(mode: .mentions), current: false),
+        NotifyChoice(
+            mode: .mute, title: "Mute", explanation: "Nothing here notifies you.", action: .mode(mode: .mute),
+            current: false),
+
     ]
 
     /// Who may read the history, as the library words it.

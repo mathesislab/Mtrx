@@ -776,18 +776,6 @@ impl Session {
             .change(|limit| limit.at_most = at_most)
             .await
     }
-
-    /// Delete our disappearing messages when due, until the session is
-    /// dropped; those due while none ran go at once.
-    pub fn start_disappearing(&self) {
-        *self.disappearer.lock().expect("not poisoned") = Some(self.disappearing.start());
-    }
-
-    /// Stop deleting until [`Session::start_disappearing`] (a phone app
-    /// went to the background).
-    pub fn stop_disappearing(&self) {
-        *self.disappearer.lock().expect("not poisoned") = None;
-    }
 }
 
 impl RoomHandle {

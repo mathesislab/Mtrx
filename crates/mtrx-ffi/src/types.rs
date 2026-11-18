@@ -154,6 +154,10 @@ pub struct RoomSummary {
     pub pinned: Vec<String>,
     /// What we may do in it.
     pub rights: crate::Rights,
+    /// Muted (its own mode is Mute), for a time or not; as `RoomLists`
+    /// give it, false elsewhere.
+    #[uniffi(default)]
+    pub muted: bool,
 }
 
 impl From<&core::RoomSummary> for RoomSummary {
@@ -181,6 +185,7 @@ impl From<&core::RoomSummary> for RoomSummary {
             join_rule_fact: room.join_rule.fact().to_owned(),
             pinned: room.pinned.iter().map(ToString::to_string).collect(),
             rights: room.rights.into(),
+            muted: false,
         }
     }
 }

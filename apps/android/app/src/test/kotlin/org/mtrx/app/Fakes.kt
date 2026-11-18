@@ -44,7 +44,9 @@ import uniffi.mtrx.Manage
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
 import uniffi.mtrx.NewRoom
+import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.NotifyChoice
+
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.PermissionsChoice
@@ -692,10 +694,22 @@ fun roomSettings(
 ): RoomSettings = RoomSettings(
     rights = rights(may),
     notify = NotifyMode.ALL,
+    mutedUntil = null,
+    notifyTitle = "All messages",
+    notifyExplanation = "Every message notifies you.",
     notifyChoices = listOf(
-        NotifyChoice(NotifyMode.ALL, "All messages", "Every message notifies you."),
-        NotifyChoice(NotifyMode.MENTIONS, "Mentions", "Only mentions of you and your keywords notify you."),
-        NotifyChoice(NotifyMode.MUTE, "Mute", "Nothing here notifies you."),
+        NotifyChoice(
+            NotifyMode.ALL, "All messages", "Every message notifies you.",
+            NotifyAction.Mode(NotifyMode.ALL), true,
+        ),
+        NotifyChoice(
+            NotifyMode.MENTIONS, "Mentions", "Only mentions of you and your keywords notify you.",
+            NotifyAction.Mode(NotifyMode.MENTIONS), false,
+        ),
+        NotifyChoice(
+            NotifyMode.MUTE, "Mute", "Nothing here notifies you.",
+            NotifyAction.Mode(NotifyMode.MUTE), false,
+        ),
     ),
     joinRule = joinRule,
     joinRuleFact = ruleFact(joinRule),

@@ -51,23 +51,24 @@ impl Session {
 
     /// Start syncing in the background (when the app comes to the
     /// foreground). Room lists and timelines only update while sync runs.
-    /// Our disappearing messages are deleted meanwhile, those that fell
-    /// due before at once.
+    /// Our disappearing messages are deleted meanwhile and timed mutes
+    /// end, those that fell due before at once.
     pub async fn start_sync(&self) {
         let session = self.core();
         run(async move {
             session.start_sync().await;
-            session.start_disappearing();
+            session.start_timers();
         })
         .await
     }
 
     /// Stop syncing and save the sync position (when the app goes to the
-    /// background), and deleting disappearing messages.
+    /// background), deleting disappearing messages and ending timed mutes.
+
     pub async fn stop_sync(&self) {
         let session = self.core();
         run(async move {
-            session.stop_disappearing();
+            session.stop_timers();
             session.stop_sync().await
         })
         .await

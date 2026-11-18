@@ -799,6 +799,10 @@ mod tests {
         RoomSettings {
             rights: Default::default(),
             notify: NotifyMode::All,
+            muted_until: None,
+            notify_title: "All messages".into(),
+            notify_explanation: "Every message notifies you.".into(),
+            notify_choices: Vec::new(),
             join_rule: JoinRule::Invite,
             join_rule_choices: JoinRule::choices(JoinRule::Invite, true),
             address: None,

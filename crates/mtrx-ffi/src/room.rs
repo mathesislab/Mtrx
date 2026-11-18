@@ -7,7 +7,7 @@ use std::sync::Arc;
 use mtrx_core::{self as core, OwnedEventId};
 
 use crate::{
-    History, JoinRule, Member, MtrxError, NotifyMode, Permissions, RoomSettings, Session,
+    History, JoinRule, Member, MtrxError, MuteFor, NotifyMode, Permissions, RoomSettings, Session,
     TaskHandle,
     runtime::{InRuntime, forward, run},
 };
@@ -116,10 +116,19 @@ impl Room {
         run(async move { Ok(room.encrypt().await?) }).await
     }
 
+    /// When the room notifies, on all our devices; ends a timed mute.
     pub async fn set_notify(&self, mode: NotifyMode) -> Result<(), MtrxError> {
         let mode = core::NotifyMode::from(mode);
         let room = self.core();
         run(async move { Ok(room.set_notify(mode).await?) }).await
+    }
+
+    /// Mute the room in every Matrix app; for a time, it gets its mode
+    /// back afterwards, once Mtrx runs on one of our devices.
+    pub async fn mute(&self, duration: MuteFor) -> Result<(), MtrxError> {
+        let duration = core::MuteFor::from(duration);
+        let room = self.core();
+        run(async move { Ok(room.mute(duration).await?) }).await
     }
 
     /// Pin a message (its `TimelineEvent.eventId`), or unpin it.
