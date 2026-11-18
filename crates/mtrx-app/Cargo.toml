@@ -10,7 +10,8 @@ name = "mtrx-app"
 path = "src/main.rs"
 
 [dependencies]
-mtrx-core.workspace = true
+# Ogg Opus voice messages decoded to WAV, which rodio plays.
+mtrx-core = { workspace = true, features = ["opus"] }
 mtrx-format = { workspace = true, features = ["typst-fonts"] }
 mtrx-google.workspace = true
 iced = { version = "0.14.0", features = ["tokio", "image", "svg", "canvas", "advanced"] }
@@ -31,6 +32,8 @@ serde_json.workspace = true
 unicode-segmentation = "1.13.3"
 # Finding text without its accents (⌘F).
 unicode-normalization = "0.1.26"
+# Playing audio messages: the output (cpal) and the decoders (symphonia).
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "mp3", "mp4", "flac", "vorbis", "wav"] }
 # Same version as typst-render's, for previewing PDFs.
 hayro = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

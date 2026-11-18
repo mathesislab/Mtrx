@@ -70,6 +70,10 @@ import uniffi.mtrx.UploadsListener
  * room's mode, followed (also changed on our other devices), until one is
  * chosen in the composer ([chooseDisappear]), which holds until the room
  * is left. Edits keep their message's.
+ *
+ * Audio messages play in their bubbles through the room's [audio], which
+ * lives with the room ([RoomAudio]), not with this model: it plays on
+ * while Room info shows over the room.
  */
 class TimelineViewModel(
     private val roomId: String,
@@ -77,6 +81,8 @@ class TimelineViewModel(
     private val mediaQuality: StateFlow<MediaQuality>,
     private val onRead: () -> Unit,
     private val onInput: () -> Unit = {},
+    /** The room's audio messages, played one at a time while it is open. */
+    val audio: AudioPlayer,
 ) : ViewModel(), TimelineActions {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
@@ -261,6 +267,10 @@ class TimelineViewModel(
     override fun cancelDownload(id: ULong) {
         session.cancelDownload(id)
     }
+
+    override fun toggleAudio(media: Media) = audio.toggle(media)
+
+    override fun seekAudio(media: Media, to: Duration) = audio.seek(media, to)
 
     /** The list is scrolled (nearly) to its top: load older events while it is. */
     override fun onNearTop(value: Boolean) {

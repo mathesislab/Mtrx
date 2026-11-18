@@ -53,4 +53,10 @@ interface TimelineActions {
     fun file(media: Media, eventId: String?, use: FileUse)
 
     fun cancelDownload(id: ULong)
+
+    /** An audio message's button: play, pause, resume, cancel its fetch or try again ([AudioPlayer.toggle]). */
+    fun toggleAudio(media: Media)
+
+    /** Move an audio message to [to]; one not playing starts there. */
+    fun seekAudio(media: Media, to: Duration)
 }

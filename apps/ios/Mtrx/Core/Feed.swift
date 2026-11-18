@@ -82,3 +82,7 @@ extension Feed: DisappearingModeListener where Value == TimeInterval? {
 extension Feed: DisappearingLimitListener where Value == TimeInterval {
     func onUpdate(atMost: TimeInterval) { send(atMost) }
 }
+
+extension Feed: QuietListener where Value == QuietState {
+    func onUpdate(state: QuietState) { send(state) }
+}

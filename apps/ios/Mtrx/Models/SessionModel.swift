@@ -16,6 +16,8 @@ final class SessionModel: ObservableObject {
     let images: ImageCache
     let presence: PresenceModel
     let downloads: DownloadsModel
+    /// Pausing notifications and quiet hours.
+    let quiet: QuietModel
     let rooms: RoomListModel
     let home: HomeNavigation
     let encryption: EncryptionModel
@@ -45,6 +47,7 @@ final class SessionModel: ObservableObject {
         images = ImageCache(session: session)
         presence = PresenceModel(session: session, defaults: defaults)
         downloads = DownloadsModel(session: session)
+        quiet = QuietModel(session: session)
         userId = session.userId()
         deviceId = session.deviceId()
         homeserver = session.homeserver()
@@ -65,6 +68,7 @@ final class SessionModel: ObservableObject {
             self?.connection = $0
         }
         downloads.start()
+        quiet.start()
         let limit = Feed<TimeInterval>()
         work.follow(session.subscribeDisappearingLimit(listener: limit), limit) { [weak self] in
             self?.disappearingLimit = $0

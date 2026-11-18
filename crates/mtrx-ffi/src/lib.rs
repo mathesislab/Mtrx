@@ -12,6 +12,7 @@ uniffi::setup_scaffolding!("mtrx");
 
 #[cfg(target_os = "android")]
 mod android;
+mod audio;
 mod client;
 mod disappearing;
 mod downloads;
@@ -23,6 +24,7 @@ mod math;
 mod media;
 mod presence;
 mod push;
+mod quiet;
 mod room;
 mod room_list;
 mod rooms;
@@ -33,6 +35,7 @@ mod text;
 mod timeline;
 mod types;
 
+pub use audio::{AudioProgress, playback_time};
 pub use client::{Mtrx, OAuthLogin};
 pub use disappearing::{
     DisappearChoice, Disappearance, DisappearingLimitListener, DisappearingModeListener,
@@ -47,10 +50,11 @@ pub use encryption::{
 };
 pub use error::MtrxError;
 pub use manage::{
-    Banned, History, HistoryChoice, LevelChoice, LevelConfirmation, Manage, Member, NotifyChoice,
-    NotifyMode, Permissions, PermissionsChoice, Rights, Role, RoomSettings, SpaceLink,
-    level_confirmation, typed_level,
+    Banned, History, HistoryChoice, LevelChoice, LevelConfirmation, Manage, Member, MuteFor,
+    NotifyAction, NotifyChoice, NotifyMode, Permissions, PermissionsChoice, Rights, Role,
+    RoomSettings, SpaceLink, level_confirmation, typed_level,
 };
+
 pub use math::{FormulaImage, typeset_formula};
 pub use media::{
     MediaQuality, MediaQualityChoice, VideoPlan, default_media_quality, media_quality_choices,
@@ -61,6 +65,9 @@ pub use presence::{
     presence_line,
 };
 pub use push::{Notification, PusherInfo};
+pub use quiet::{
+    PauseEntry, PauseFor, PauseMenuItem, QuietHours, QuietListener, QuietState, Weekday,
+};
 pub use room::{Room, RoomSettingsListener};
 pub use room_list::{
     Badges, ListSection, RoomLists, RoomListsListener, RoomSort, SectionChoice, SectionLayout,

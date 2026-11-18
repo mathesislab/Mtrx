@@ -106,6 +106,9 @@ class SignedInSession private constructor(
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
+    /** Pausing notifications and quiet hours, on all our devices with Mtrx. */
+    val quiet = QuietModel(session, scope) { _messages.tryEmit(it) }
+
     // The connection, room list and verification requests: from [open] to [close].
     private val subscriptions = mutableListOf<TaskHandle>()
 
@@ -339,6 +342,7 @@ class SignedInSession private constructor(
                 _disappearingLimit.value = atMost
             }
         })
+        quiet.start()
         subscriptions += session.subscribeVerificationRequests(object : VerificationRequestListener {
             // On a library thread.
             override fun onRequest(verification: Verification) {
@@ -356,6 +360,7 @@ class SignedInSession private constructor(
             it.close()
         }
         presence.close()
+        quiet.close()
         _verification.value?.close()
         _verificationRequest.value?.let { decline(it) }
         session.close()

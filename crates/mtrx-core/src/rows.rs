@@ -643,6 +643,9 @@ mod tests {
                     width: None,
                     height: None,
                     source: MediaRef::plain("mxc://x/ice"),
+                    duration: None,
+                    voice: false,
+                    waveform: Vec::new(),
                 }),
             }),
             ..message("7", "bob", 0)

@@ -37,8 +37,13 @@ import org.mtrx.app.summary
 import org.mtrx.app.textMessage
 import org.mtrx.app.user
 import org.mtrx.app.timeline.FileUse
+import org.mtrx.app.timeline.LocalPlaybackTime
 import org.mtrx.app.timeline.PersonCard
+import org.mtrx.app.timeline.PlayState
+import org.mtrx.app.timeline.Playback
 import org.mtrx.app.timeline.TimelineActions
+import kotlin.math.abs
+import kotlin.math.sin
 import uniffi.mtrx.Badges
 import uniffi.mtrx.Banned
 import uniffi.mtrx.BlockKind
@@ -50,8 +55,10 @@ import uniffi.mtrx.JoinRule
 import uniffi.mtrx.Membership
 import org.mtrx.app.timeline.Prepare
 import uniffi.mtrx.Media
+import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
+import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Permissions
@@ -334,7 +341,13 @@ val iceSettings = roomSettings(
     spaces = listOf(SpaceLink(spaceId = TEAM, suggested = true, canChange = true)),
     canAddTo = listOf(OUTREACH),
     banned = listOf(Banned(user = user("@spam:example.net", "Spammer"), reason = "Spam")),
-).copy(notify = NotifyMode.MENTIONS, history = History.INVITED, permissions = Permissions.MODERATORS)
+).copy(
+    notify = NotifyMode.MENTIONS,
+    notifyTitle = "Mentions",
+    notifyExplanation = "Only mentions of you and your keywords notify you.",
+    history = History.INVITED,
+    permissions = Permissions.MODERATORS,
+)
 
 val iceMembers = listOf(
     member(ME, "Me", level = 100, upTo = 99),
@@ -390,12 +403,81 @@ object NoTimelineActions : TimelineActions {
     override fun setPinned(eventId: String, pin: Boolean) {}
     override fun file(media: Media, eventId: String?, use: FileUse) {}
     override fun cancelDownload(id: ULong) {}
+    override fun toggleAudio(media: Media) {}
+    override fun seekAudio(media: Media, to: Duration) {}
 }
+
+/** A time as the library writes it (`playbackTime`): "0:07", "12:34", "1:02:03". */
+fun playbackTimeOf(time: Duration): String {
+    val seconds = time.seconds
+    return if (seconds >= 3600) {
+        "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60)
+    } else {
+        "%d:%02d".format(seconds / 60, seconds % 60)
+    }
+}
+
+/** A voice message's bars, from 0 to 1 as the library gives them. */
+val waveform: List<Float> = List(40) { 0.2f + 0.8f * abs(sin(it * 0.45f)) }
+
+/** An audio message's file, [seconds] long as its event says: a voice message with its waveform, unless [name] is given. */
+fun audioFile(source: String, seconds: Long, name: String? = null, size: ULong = 24_000u) = Media(
+    kind = MediaKind.AUDIO,
+    filename = name ?: "Voice message.ogg",
+    size = size,
+    mimetype = if (name == null) "audio/ogg" else "audio/mp4",
+    width = null,
+    height = null,
+    source = source,
+    duration = Duration.ofSeconds(seconds),
+    durationLabel = playbackTimeOf(Duration.ofSeconds(seconds)),
+    voice = name == null,
+    waveform = if (name == null) waveform else emptyList(),
+)
+
+/** An audio message of [media] by [sender] ([name]) at [time]. */
+fun audioMessage(id: String, sender: String, name: String, media: Media, time: Instant, own: Boolean = false): TimelineRow = event(
+    id,
+    sender,
+    name,
+    time,
+    own,
+    EventContent.Message(textMessage(media.filename, text = emptyList(), kind = MessageKind.AUDIO).copy(media = media)),
+)
+
+val voiceNote = audioFile("mxc://example.org/voice", seconds = 42)
+val talk = audioFile("mxc://example.org/talk", seconds = 1_234, name = "Ice sheet talk.m4a", size = 19_700_000u)
+val fetchedNote = audioFile("mxc://example.org/fetched", seconds = 9)
+val brokenNote = audioFile("mxc://example.org/broken", seconds = 15)
+
+/** Ana's voice message paused part-way, and our talk moved on before playing. */
+val pausedPlayback = Playback(
+    source = voiceNote.source,
+    state = PlayState.Paused,
+    position = Duration.ofSeconds(12),
+    duration = Duration.ofSeconds(42),
+    kept = mapOf(talk.source to Duration.ofSeconds(263)),
+)
+
+/**
+ * Each audio message's row with how the room plays it (one message is
+ * current in each): Ana's voice message paused part-way; our talk with its
+ * slider, moved on before playing; Ana's voice message being fetched, and
+ * ours that can't play.
+ */
+val audioMessages: List<Pair<TimelineRow, Playback>> = listOf(
+    audioMessage("v1", ana, "Ana Alves", voiceNote, at(11, 2)) to pausedPlayback,
+    audioMessage("v2", ME, "Me", talk, at(11, 5), own = true) to pausedPlayback,
+    audioMessage("v3", ana, "Ana Alves", fetchedNote, at(11, 7)) to
+        Playback(fetchedNote.source, PlayState.Fetching(0.4f), duration = Duration.ofSeconds(9)),
+    audioMessage("v4", ME, "Me", brokenNote, at(11, 8), own = true) to
+        Playback(brokenNote.source, PlayState.Failed("This audio can't be played"), duration = Duration.ofSeconds(15)),
+)
 
 object NoRoomInfoActions : RoomInfoActions {
     override fun rename(name: String) {}
     override fun setTopic(draft: TopicDraft) {}
-    override fun setNotify(mode: NotifyMode) {}
+    override fun notify(action: NotifyAction) {}
     override fun setDisappearingMode(afterRead: Duration?) {}
     override fun setJoinRule(rule: JoinRule) {}
     override fun setListed(listed: Boolean) {}
@@ -437,7 +519,12 @@ fun WithBack(content: @Composable () -> Unit) {
             override val onBackPressedDispatcher = OnBackPressedDispatcher()
         }
     }
-    // Without the library: an address is a web address if it says so.
+    // Without the library: an address is a web address if it says so, and times are written as it does.
     val linkUrl = { url: String -> url.trim().takeIf { it.startsWith("https://") } }
-    CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides owner, LocalLinkUrl provides linkUrl, content = content)
+    CompositionLocalProvider(
+        LocalOnBackPressedDispatcherOwner provides owner,
+        LocalLinkUrl provides linkUrl,
+        LocalPlaybackTime provides ::playbackTimeOf,
+        content = content,
+    )
 }

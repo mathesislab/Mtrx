@@ -5,9 +5,9 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::Arc,
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 use futures_util::{Stream, StreamExt};
@@ -135,6 +135,8 @@ pub struct RoomLists {
     pub spaces: Vec<SpaceEntry>,
     /// The rooms with a draft on this device.
     pub drafts: BTreeSet<OwnedRoomId>,
+    /// Muted rooms, with the end of a timed mute.
+    pub muted: BTreeMap<OwnedRoomId, Option<SystemTime>>,
     /// Rooms and spaces joined or made here that `rooms` does not list as
     /// joined yet: coming, not gone.
     pub joining: BTreeSet<OwnedRoomId>,
@@ -183,6 +185,7 @@ impl RoomLists {
             chats,
             spaces: Vec::new(),
             drafts,
+            muted: BTreeMap::new(),
             joining: BTreeSet::new(),
             asked: asked.into_iter().map(|r| r.id).collect(),
             badges: Badges::default(),
@@ -661,22 +664,25 @@ fn search_by<T>(items: Vec<T>, filter: &str, name: impl Fn(&T) -> &str) -> Vec<T
 
 impl Session {
     /// The room lists from `list`, kept up to date while held: as the list,
-    /// the categories, the drafts and the changes made here (tags, topics,
-    /// pinned messages, rooms joined or asked to join) change. Spaces list their direct
-    /// chats once their members are loaded, in a later update.
+    /// the categories, the drafts, the muted rooms and the changes made
+    /// here (tags, topics, pinned messages, rooms joined or asked to join)
+    /// change. Spaces list their direct chats once their members are
+    /// loaded, in a later update.
     pub fn room_lists(&self, list: &Live<RoomListState>) -> Live<Arc<RoomLists>> {
         let categories = self.room_categories_updates();
         let drafts = self.rooms_with_drafts_updates();
+        let muted = self.muted_rooms_updates();
         let mut follow = Follow {
             client: self.client.clone(),
             own_user: self.user_id(),
             states: Box::pin(list.updates()),
             categories: Box::pin(categories.updates()),
             drafts: Box::pin(drafts.updates()),
+            muted: Box::pin(muted.updates()),
             echo_updates: Box::pin(WatchStream::new(self.echoes.subscribe()).map(|_| ())),
             echoes: self.echoes.clone(),
             state: list.get(),
-            current: (categories.get(), drafts.get()),
+            current: (categories.get(), drafts.get(), muted.get()),
             members: SpaceMembers::default(),
             loads: JoinSet::new(),
         };
@@ -694,10 +700,15 @@ struct Follow {
     states: Updates<RoomListState>,
     categories: Updates<RoomCategories>,
     drafts: Updates<BTreeSet<OwnedRoomId>>,
+    muted: Updates<BTreeMap<OwnedRoomId, Option<SystemTime>>>,
     echo_updates: Updates<()>,
     echoes: Arc<crate::echo::Echoes>,
     state: RoomListState,
-    current: (RoomCategories, BTreeSet<OwnedRoomId>),
+    current: (
+        RoomCategories,
+        BTreeSet<OwnedRoomId>,
+        BTreeMap<OwnedRoomId, Option<SystemTime>>,
+    ),
     members: SpaceMembers,
     loads: JoinSet<(OwnedRoomId, u64, Result<HashSet<OwnedUserId>>)>,
 }
@@ -720,6 +731,7 @@ impl Follow {
                 },
                 Some(next) = self.categories.next() => self.current.0 = next,
                 Some(next) = self.drafts.next() => self.current.1 = next,
+                Some(next) = self.muted.next() => self.current.2 = next,
                 Some(()) = self.echo_updates.next() => {}
                 Some(Ok((space, count, loaded))) = self.loads.join_next() => match loaded {
                     Ok(ids) => self.members.loaded(space, count, ids),
@@ -756,9 +768,11 @@ impl Follow {
         (self.echoes).lay_reads(&mut state.rooms, |id| {
             client.get_room(id).as_ref().and_then(synced_receipt)
         });
-        let (categories, drafts) = self.current.clone();
+        let (categories, drafts, muted) = self.current.clone();
         let members = self.members.known().clone();
         let mut lists = RoomLists::new(state, categories, members, &self.own_user, drafts);
+        lists.muted = muted;
+
         lists.joining = self.echoes.joining();
         lists.asked.extend(self.echoes.knocking());
         (lists, timeout)

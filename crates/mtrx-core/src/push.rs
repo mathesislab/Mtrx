@@ -9,14 +9,17 @@
 //! store's cross-process locks while it writes (see
 //! [`crate::session`]'s `lock_holder`).
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use matrix_sdk::{
+    Client, StateChanges,
     encryption::EncryptionSettings,
     ruma::{
         EventId, RoomId, UserId,
         api::client::push::{self as api, PusherIds, PusherInit, PusherKind, get_pushers},
+        events::StaticEventContent,
         push::{HttpPusherData, PushFormat},
+        serde::Raw,
     },
     store::RoomLoadSettings,
 };
@@ -25,13 +28,20 @@ use matrix_sdk_ui::notification_client::{
     NotificationStatus,
 };
 use tokio::sync::Mutex;
+use tracing::warn;
 use url::Url;
 
 use crate::{
-    Error, Notification, Profile, Result, Session, User,
+    Error, Notification, Profile, Quiet, QuietStatus, Result, Session, User,
+    account_data::{AccountData, stored},
     notifications::{self, should_notify},
+    quiet::QuietEventContent,
     session::restore_client,
 };
+
+/// How long a push waits for the server to say whether notifications are
+/// paused, before it goes by what this device last synced.
+const QUIET_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A pusher posting to an HTTP push gateway, which forwards each push to
 /// the device (UnifiedPush: through the distributor; iOS: through APNs).
@@ -145,7 +155,8 @@ impl Notification {
     /// also while the app's session syncs (in this process or another).
     /// `None` if there is nothing to show: the push rules say no (a muted
     /// room), it is our own event (also when the rules cannot be read), the
-    /// sender is ignored, or the event was deleted.
+    /// sender is ignored, the event was deleted, or notifications are
+    /// paused or in quiet hours ([`Quiet`]; also when it can't be fetched).
     pub async fn fetch(
         profile: &Profile,
         room_id: &RoomId,
@@ -160,30 +171,58 @@ impl Notification {
         )
         .await?;
         let own = client.user_id().expect("restored").to_owned();
-        let notifications =
-            NotificationClient::new(client, NotificationProcessSetup::MultipleProcesses)
-                .await
-                .map_err(notification_error)?;
-        match notifications
-            .get_notification(room_id, event_id)
-            .await
-            .map_err(notification_error)?
-        {
-            NotificationStatus::Event(item) => Ok(Self::pushed(room_id, event_id, &item, &own)),
-            NotificationStatus::EventFilteredOut | NotificationStatus::EventRedacted => Ok(None),
-            NotificationStatus::EventNotFound => Err(Error::Notifications(format!(
+        let fetched = async {
+            let notifications = NotificationClient::new(
+                client.clone(),
+                NotificationProcessSetup::MultipleProcesses,
+            )
+            .await?;
+            notifications.get_notification(room_id, event_id).await
+        }
+        .await
+        .map_err(notification_error);
+        let quiet = current_quiet(&client).await;
+        let now = SystemTime::now();
+        match fetched {
+            Ok(NotificationStatus::Event(item)) => {
+                Ok(Self::pushed(room_id, event_id, &item, &own, &quiet, now))
+            }
+            Ok(NotificationStatus::EventFilteredOut | NotificationStatus::EventRedacted) => {
+                Ok(None)
+            }
+            // Nothing to tell what it is, so nothing while quiet (the app
+            // would show that something came).
+            _ if quiet.status(now) != QuietStatus::On => Ok(None),
+            Ok(NotificationStatus::EventNotFound) => Err(Error::Notifications(format!(
                 "event {event_id} not found in {room_id}"
             ))),
+            Err(e) => Err(e),
         }
     }
 
+    /// When notifications are held back, as the store of the session saved
+    /// in `profile` has it (what [`Self::fetch`] decides by), for tests.
+    #[cfg(feature = "test-support")]
+    pub async fn stored_quiet_for_test(profile: &Profile, room_id: &RoomId) -> Result<Quiet> {
+        let _one = ONE_AT_A_TIME.lock().await;
+        let client = restore_client(
+            profile,
+            RoomLoadSettings::One(room_id.to_owned()),
+            EncryptionSettings::default(),
+        )
+        .await?;
+        Ok(stored::<Quiet>(&client).await)
+    }
+
     /// The notification of `item`, if someone else's event the push rules
-    /// notify for.
+    /// notify for, and `quiet` doesn't hold it back at `now`.
     fn pushed(
         room_id: &RoomId,
         event_id: &EventId,
         item: &NotificationItem,
         own: &UserId,
+        quiet: &Quiet,
+        now: SystemTime,
     ) -> Option<Self> {
         let sender = item.event.sender();
         let notifies = item
@@ -191,7 +230,8 @@ impl Notification {
             .as_deref()
             // Unknown: the server pushed it, so its rules said to.
             .is_none_or(should_notify);
-        if !notifies || sender == own {
+        let highlight = item.has_mention.unwrap_or(false);
+        if !notifies || sender == own || quiet.silences(highlight, now) {
             return None;
         }
         Some(Self {
@@ -206,7 +246,7 @@ impl Notification {
                 avatar: item.sender_avatar_url.clone().map(Into::into),
             },
             body: body(&item.event),
-            highlight: item.has_mention.unwrap_or(false),
+            highlight,
             noisy: item.is_noisy.unwrap_or(false),
             timestamp: match &item.event {
                 NotificationEvent::Timeline(event) => crate::system_time(event.origin_server_ts()),
@@ -214,6 +254,49 @@ impl Notification {
             },
         })
     }
+}
+
+/// When notifications are held back, as the server has it now: another
+/// device may have paused or resumed them since this one last synced (the
+/// fetch's own sync doesn't bring global account data). Kept in the store,
+/// so it catches up. If the server can't be asked (offline, too slow), as
+/// the store has it.
+async fn current_quiet(client: &Client) -> Quiet {
+    match tokio::time::timeout(QUIET_TIMEOUT, fetched_quiet(client)).await {
+        Ok(Ok(quiet)) => quiet,
+        Ok(Err(e)) => {
+            warn!("could not ask the server whether notifications are paused: {e}");
+            stored::<Quiet>(client).await
+        }
+        Err(_) => {
+            warn!("the server did not say in time whether notifications are paused");
+            stored::<Quiet>(client).await
+        }
+    }
+}
+
+/// The server's `org.mtrx.quiet`, kept in the store; the default if there
+/// is none.
+async fn fetched_quiet(client: &Client) -> Result<Quiet> {
+    let account = client.account();
+    let Some(raw) = account
+        .fetch_account_data_static::<QuietEventContent>()
+        .await?
+    else {
+        return Ok(Quiet::default());
+    };
+    // Read leniently: what can't be read is the default.
+    let content = raw.deserialize().unwrap_or_default();
+    let event = serde_json::json!({ "type": QuietEventContent::TYPE, "content": raw });
+    let mut changes = StateChanges::default();
+    changes.account_data.insert(
+        QuietEventContent::TYPE.into(),
+        Raw::from_json(serde_json::value::to_raw_value(&event)?),
+    );
+    if let Err(e) = client.state_store().save_changes(&changes).await {
+        warn!("could not keep whether notifications are paused: {e}");
+    }
+    Ok(Quiet::from_content(content))
 }
 
 fn notification_error(error: matrix_sdk_ui::notification_client::Error) -> Error {
@@ -286,12 +369,45 @@ mod tests {
     }
 
     fn notification(item: &NotificationItem) -> Option<Notification> {
+        quietly(item, &Quiet::default())
+    }
+
+    fn quietly(item: &NotificationItem, quiet: &Quiet) -> Option<Notification> {
         Notification::pushed(
             room_id!("!r:example.org"),
             event_id!("$e:example.org"),
             item,
             user_id!("@bob:example.org"),
+            quiet,
+            SystemTime::now(),
         )
+    }
+
+    #[test]
+    fn nothing_while_paused_but_a_mention_if_mentions_get_through() {
+        let paused = Quiet {
+            pause: Some(crate::Pause::UntilResumed),
+            ..Quiet::default()
+        };
+        let message = item(
+            event("@alice:example.org", text("hi")),
+            Some(vec![Action::Notify]),
+        );
+        assert_eq!(quietly(&message, &paused), None);
+        let mention = item(
+            event("@alice:example.org", text("Bob?")),
+            Some(vec![
+                Action::Notify,
+                Action::SetTweak(Tweak::Highlight(true.into())),
+            ]),
+        );
+        assert_eq!(quietly(&mention, &paused), None, "mentions too");
+        let through = Quiet {
+            mentions_through: true,
+            ..paused
+        };
+        assert!(quietly(&mention, &through).is_some_and(|n| n.highlight));
+        assert_eq!(quietly(&message, &through), None);
     }
 
     #[test]

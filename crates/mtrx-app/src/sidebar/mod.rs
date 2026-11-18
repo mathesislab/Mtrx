@@ -205,7 +205,9 @@ pub enum SpaceMenu {
 }
 
 /// `menu`: the open one; `update`: a newer version not yet seen in
-/// Settings, a dot on the gear.
+/// Settings, a dot on the gear. At the bottom: `downloads` while there are
+/// any, the `bell` (notifications), the gear.
+#[allow(clippy::too_many_arguments)]
 pub fn space_bar<'a>(
     lists: &RoomLists,
     selected: Option<&OwnedRoomId>,
@@ -214,6 +216,7 @@ pub fn space_bar<'a>(
     menu: Option<&SpaceMenu>,
     update: bool,
     downloads: Option<Element<'a, app::Message>>,
+    bell: Element<'a, app::Message>,
 ) -> Element<'a, app::Message> {
     let entry =
         |icon: Element<'a, app::Message>, title: String, target: Option<OwnedRoomId>, unread| {
@@ -322,6 +325,7 @@ pub fn space_bar<'a>(
     if let Some(downloads) = downloads {
         bottom = bottom.push(container(downloads).center_x(Length::Fill));
     }
+    bottom = bottom.push(container(bell).center_x(Length::Fill));
     bottom = bottom.push(container(with_tooltip(settings, tip.into())).center_x(Length::Fill));
     container(column![
         scrollable(bar.spacing(4).width(Length::Fill).padding([8, 0])).height(Length::Fill),
@@ -1465,9 +1469,20 @@ impl<'a> RoomListView<'a> {
         };
         let name = ellipsis(&room.name).size(14).font(font);
         // Right after the name, so nothing moves when the star and menu
-        // show on hover.
-        let name = match unread_count(room) {
-            Some(count) => followed_by(name, count, 6.0),
+        // show on hover: a muted room's bell, its count.
+        let muted = self.lists.muted.contains_key(&room.id);
+        let after: Option<Element<'a, app::Message>> = match (muted, unread_count(room)) {
+            (false, count) => count,
+            (true, None) => Some(muted_mark()),
+            (true, Some(count)) => Some(
+                row![muted_mark(), count]
+                    .spacing(4)
+                    .align_y(Alignment::Center)
+                    .into(),
+            ),
+        };
+        let name = match after {
+            Some(after) => followed_by(name, after, 6.0),
             None => name.width(Length::Fill).into(),
         };
         let mut line = row![avatar, name].spacing(8).align_y(Alignment::Center);
@@ -1509,6 +1524,11 @@ impl<'a> RoomListView<'a> {
             area.into()
         }
     }
+}
+
+/// A faint bell-slash after a muted room's name.
+fn muted_mark<'a>() -> Element<'a, app::Message> {
+    with_tooltip(icons::bell_slash(12.0, faint), "Muted".into())
 }
 
 /// Greyed text and icons, e.g. of Notes not started yet.

@@ -115,6 +115,30 @@ fun <T> ChoiceRow(
     enabled: Boolean,
     onChoose: (T) -> Unit,
 ) {
+    MenuRow(
+        label,
+        options.firstOrNull { it.first == current }?.second.orEmpty(),
+        options.map { (value, text) -> MenuEntry(text, value == current) { if (value != current) onChoose(value) } },
+        explanation,
+        enabled,
+    )
+}
+
+/** An entry of a [MenuRow]'s menu, ticked if [current]. */
+data class MenuEntry(val text: String, val current: Boolean, val onChoose: () -> Unit)
+
+/**
+ * A setting showing [shown], whose menu has [entries]; with its
+ * [explanation] below.
+ */
+@Composable
+fun MenuRow(
+    label: String,
+    shown: String,
+    entries: List<MenuEntry>,
+    explanation: String?,
+    enabled: Boolean,
+) {
     var open by remember { mutableStateOf(false) }
     Column(
         Modifier
@@ -127,21 +151,21 @@ fun <T> ChoiceRow(
             Box {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        options.firstOrNull { it.first == current }?.second.orEmpty(),
+                        shown,
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (enabled) Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 }
                 DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                    for ((value, text) in options) {
+                    for (entry in entries) {
                         DropdownMenuItem(
-                            text = { Text(text) },
+                            text = { Text(entry.text) },
                             onClick = {
                                 open = false
-                                if (value != current) onChoose(value)
+                                entry.onChoose()
                             },
-                            trailingIcon = if (value == current) {
+                            trailingIcon = if (entry.current) {
                                 { Icon(Icons.Filled.Check, contentDescription = "Selected") }
                             } else {
                                 null

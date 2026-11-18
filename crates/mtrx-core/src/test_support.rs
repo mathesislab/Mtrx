@@ -13,6 +13,9 @@ use crate::{
     profile::{StoredAuth, StoredSession},
 };
 
+#[cfg(feature = "opus")]
+pub use crate::audio::opus::ogg_opus_sine;
+
 /// Shared secret from `testserver/homeserver.yaml`.
 const SHARED_SECRET: &str = "mtrx-test-shared-secret";
 /// Password of every user created by [`register`].

@@ -666,11 +666,11 @@ async fn watch_timeline(timeline: &RoomTimeline) {
     }
 }
 
-/// Send scheduled messages and delete disappearing ones while watching;
-/// overdue scheduled ones only get a notice.
+/// Send scheduled messages, delete disappearing ones and end timed mutes
+/// while watching; overdue scheduled ones only get a notice.
 fn start_scheduler(session: &Session) {
     session.start_scheduler();
-    session.start_disappearing();
+    session.start_timers();
     let overdue = session.scheduled().iter().filter(|m| m.overdue).count();
     if overdue > 0 {
         eprintln!(

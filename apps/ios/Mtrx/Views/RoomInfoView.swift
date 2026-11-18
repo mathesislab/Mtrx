@@ -236,11 +236,7 @@ struct RoomSettingsSections: View {
     private func settingsSection(_ settings: RoomSettings) -> some View {
         let direct = room.kind == .direct
         return Section("Settings") {
-            Picker("Notifications", selection: Binding(get: { settings.notify }, set: { model.setNotify($0) })) {
-                ForEach(settings.notifyChoices, id: \.mode) { choice in
-                    Text(choice.title).tag(choice.mode)
-                }
-            }
+            notifyRow(settings)
             if room.rights.changeJoinRule && !direct {
                 Picker("Who can join", selection: Binding(get: { settings.joinRule }, set: { model.setJoinRule($0) })) {
                     ForEach(settings.joinRuleChoices, id: \.rule) { choice in
@@ -293,6 +289,34 @@ struct RoomSettingsSections: View {
                 }
             }
             addressRow(settings)
+        }
+    }
+
+    /// When the room notifies: a menu of the modes and of mutes for a time,
+    /// labelled with what it does now, which the line below explains.
+    private func notifyRow(_ settings: RoomSettings) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent("Notifications") {
+                Menu {
+                    ForEach(Array(settings.notifyChoices.enumerated()), id: \.offset) { _, choice in
+                        Button {
+                            model.notify(choice.action)
+                        } label: {
+                            if choice.current {
+                                Label(choice.title, systemImage: "checkmark")
+                            } else {
+                                Text(choice.title)
+                            }
+                        }
+                    }
+                } label: {
+                    Text(settings.notifyTitle)
+                }
+                .accessibilityIdentifier("notify-menu")
+            }
+            Text(settings.notifyExplanation)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 

@@ -17,6 +17,7 @@ use mtrx_core::{
 use crate::{
     actions::{self, Editing, InlineEdit, PickerAt, Target, act},
     app::{self, Popup},
+    audio::Audio,
     avatar::{self, Avatars, Shape},
     calls::{self},
     context_menu::context_menu,
@@ -90,6 +91,7 @@ impl Room {
             avatars: look.avatars,
             previews: look.previews,
             downloads: look.downloads,
+            audio: look.audio,
             colored_names: look.colored_names,
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
@@ -522,6 +524,8 @@ pub struct Look<'a> {
     pub previews: &'a Previews,
     /// The files downloaded, for the download buttons.
     pub downloads: &'a Downloads,
+    /// The audio message playing, and where others stopped.
+    pub audio: &'a Audio,
     /// The user's most used emoji, for reactions.
     pub frequent_emoji: &'a [String],
     /// The member list is shown beside the room.
@@ -549,6 +553,7 @@ struct Context<'a, 'b> {
     avatars: &'b Avatars,
     previews: &'b Previews,
     downloads: &'b Downloads,
+    audio: &'b Audio,
     colored_names: bool,
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
@@ -714,8 +719,11 @@ fn event_view<'a>(
                         event.event_id.as_ref(),
                         file,
                         &m.body,
-                        context.previews,
-                        context.downloads,
+                        media::Files {
+                            previews: context.previews,
+                            downloads: context.downloads,
+                            audio: context.audio,
+                        },
                         context.hovered == Some(event.id.as_str()),
                     ),
                     None => text(format!("[{kind:?}] {}", m.body))

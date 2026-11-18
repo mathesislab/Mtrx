@@ -14,7 +14,7 @@ use mtrx_core::{
 
 use super::{Cx, Popup, Shared, account};
 use crate::{
-    app, fonts, info, members,
+    app, audio, fonts, info, media, members,
     room::{self, Load, Room},
     style, task,
 };
@@ -109,17 +109,25 @@ impl Pane {
         }
     }
 
-    /// Show `shown`: the popups of the room shown before close, and its
-    /// draft is kept now.
+    /// Show `shown`: the popups of the room shown before close, its draft
+    /// is kept now, and its audio stops.
     pub fn set(&mut self, shown: Shown, popup: &mut Option<Popup>) -> Task<app::Message> {
         let left = std::mem::replace(&mut self.shown, shown);
         if let Some(room) = left.id() {
             popup.take_if(|popup| popup.of_room(room));
         }
-        match left {
+        let stop = if left.id().is_some() && left.id() != self.shown.id() {
+            Task::done(app::Message::Media(media::Message::Audio(
+                audio::Message::Stop,
+            )))
+        } else {
+            Task::none()
+        };
+        let keep = match left {
             Shown::Open(room) => room::keep_now(room.drafts.clone(), room.draft()),
             _ => Task::none(),
-        }
+        };
+        Task::batch([stop, keep])
     }
 
     /// A message for room `id`: to it while it is open, else what still

@@ -1,10 +1,14 @@
 package org.mtrx.app.screenshots
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import app.cash.paparazzi.DeviceConfig
 import com.android.resources.NightMode
 import app.cash.paparazzi.Paparazzi
@@ -39,8 +43,12 @@ import org.mtrx.app.ui.ShowSheetContent
 import org.mtrx.app.settings.DisappearingLimitRow
 import org.mtrx.app.settings.MediaQualityRow
 import org.mtrx.app.timeline.Composer
+import org.mtrx.app.timeline.EventBubble
+import org.mtrx.app.timeline.EventRow
+import org.mtrx.app.timeline.Playback
 import org.mtrx.app.timeline.PickedFile
 import org.mtrx.app.timeline.RoomHeader
+import org.mtrx.app.timeline.RowHandlers
 import org.mtrx.app.timeline.SharedRoomsList
 import org.mtrx.app.timeline.TimelineContent
 import org.mtrx.app.timeline.TimelineState
@@ -173,6 +181,11 @@ open class ScreensTest {
     fun roomDisappearing() = snap("room-disappearing") {
         Room(rows = conversation + disappearingMessages, disappearAfterRead = Duration.ofMinutes(5))
     }
+
+    // Ana's voice message paused part-way; our talk with its slider, moved on
+    // before playing; Ana's voice message being fetched, and ours that can't play.
+    @Test
+    fun roomAudio() = snap("room-audio") { AudioMessages() }
 
     @Test
     fun composerDisappearingOff() = snap("composer-disappearing-off") { ComposerAlone(disappearAfterRead = null) }
@@ -423,6 +436,34 @@ private fun SharedRooms(shared: List<RoomGroup>) {
             sharedRooms = { SharedRoomsList("Bob Berg", shared, images, today, onOpenRoom = {}, onOpenSpace = {}) },
             sharedOpen = true,
         )
+    }
+}
+
+/** The [audioMessages]' bubbles, each played as its own [Playback] says. */
+@Composable
+private fun AudioMessages() {
+    val handlers = RowHandlers(
+        hold = {},
+        goTo = {},
+        reply = {},
+        react = { _, _ -> },
+        showReactors = { _, _ -> },
+        showReaders = {},
+        openLink = {},
+        showPerson = { _, _ -> },
+        unsent = {},
+        openFile = {},
+        cancelDownload = {},
+        toggleAudio = {},
+        seekAudio = { _, _ -> },
+    )
+    val rows = shownRows(audioMessages.map { it.first }).filterIsInstance<EventRow>()
+    Surface(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            for ((row, playback) in rows.zip(audioMessages.map { it.second })) {
+                EventBubble(row, images, highlighted = false, download = null, upload = null, handlers = handlers, playback = { playback })
+            }
+        }
     }
 }
 

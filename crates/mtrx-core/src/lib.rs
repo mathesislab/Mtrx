@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod account_data;
+mod audio;
 mod calls;
 mod categories;
 mod connection;
@@ -26,6 +27,7 @@ mod live;
 mod math;
 mod media;
 mod members;
+mod mute;
 mod notes;
 mod notifications;
 mod people;
@@ -34,6 +36,7 @@ mod pins;
 mod presence;
 mod profile;
 mod push;
+mod quiet;
 mod room;
 mod room_colours;
 mod room_links;
@@ -51,6 +54,7 @@ mod timeline;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use audio::{WAVEFORM_BARS, playback_time};
 pub use calls::{CallService, ServiceKind, recognize_call_link};
 pub use categories::{AtHome, Category, Grouping, Layout, RoomCategories, RoomTag, Section, Sort};
 pub use connection::Connection;
@@ -85,6 +89,7 @@ pub use members::{
     Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,
     typed_level,
 };
+pub use mute::{MuteFor, TimedMute};
 pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, User, UserInfo};
@@ -96,10 +101,16 @@ pub use presence::{
 };
 pub use profile::Profile;
 pub use push::{HttpPusher, PusherInfo};
+pub use quiet::{
+    Pause, PauseEntry, PauseFor, Quiet, QuietHours, QuietState, QuietStatus, pause_menu,
+};
 pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkDraft, LinkKind, RoomLink, Topic, describe_change, typed_link_url};
-pub use room_settings::{Banned, History, NotifyMode, RoomSettings, SpaceLink};
+pub use room_settings::{
+    Banned, History, NotifyAction, NotifyChoice, NotifyMode, RoomSettings, SpaceLink,
+};
+
 pub use rooms::{JoinAction, JoinRule, Membership, NewRoom, RoomKind, RoomListState, RoomSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};
 pub use scheduled::{ScheduledFile, ScheduledMessage};
@@ -114,6 +125,9 @@ pub use timeline::{
 };
 
 pub use url::Url;
+
+/// Times of day and weekdays, as [`QuietHours`] has them.
+pub use chrono::{NaiveTime, Weekday, WeekdaySet};
 
 /// Matrix identifier types used in this crate's API.
 pub use matrix_sdk::ruma::{

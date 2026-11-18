@@ -290,6 +290,13 @@ pub struct Media {
     pub height: Option<u32>,
     /// For downloading it, see [`Session::media_content`].
     pub source: MediaRef,
+    /// Audio and video: as sent (`info.duration`, else MSC1767's).
+    pub duration: Option<Duration>,
+    /// A voice message (MSC3245): its file name means nothing.
+    pub voice: bool,
+    /// Audio: the sender's waveform (MSC1767) as [`crate::WAVEFORM_BARS`]
+    /// values from 0 to 1; empty if none.
+    pub waveform: Vec<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1600,6 +1607,9 @@ pub(crate) fn media(msgtype: &MessageType) -> Option<Media> {
         width: None,
         height: None,
         source: MediaRef::new(source, thumbnail),
+        duration: None,
+        voice: false,
+        waveform: Vec::new(),
     };
     let pixels = |n: Option<UInt>| n.and_then(|n| u32::try_from(n).ok());
     Some(match msgtype {
@@ -1625,6 +1635,7 @@ pub(crate) fn media(msgtype: &MessageType) -> Option<Media> {
                 mimetype: info.and_then(|i| i.mimetype.clone()),
                 width: pixels(info.and_then(|i| i.width)),
                 height: pixels(info.and_then(|i| i.height)),
+                duration: info.and_then(|i| i.duration),
                 ..media(
                     MediaKind::Video,
                     c.filename(),
@@ -1635,9 +1646,16 @@ pub(crate) fn media(msgtype: &MessageType) -> Option<Media> {
         }
         MessageType::Audio(c) => {
             let info = c.info.as_deref();
+            let details = c.audio.as_ref();
+            let samples: Vec<u64> = details
+                .map(|a| a.waveform.iter().map(|v| u64::from(v.get())).collect())
+                .unwrap_or_default();
             Media {
                 size: info.and_then(|i| i.size).map(u64::from),
                 mimetype: info.and_then(|i| i.mimetype.clone()),
+                duration: (info.and_then(|i| i.duration)).or_else(|| details.map(|a| a.duration)),
+                voice: c.voice.is_some(),
+                waveform: crate::audio::waveform(&samples),
                 ..media(MediaKind::Audio, c.filename(), &c.source, None)
             }
         }

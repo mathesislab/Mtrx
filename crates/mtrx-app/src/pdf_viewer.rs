@@ -470,6 +470,9 @@ mod tests {
             width: None,
             height: None,
             source: MediaRef::plain("mxc://example.org/a"),
+            duration: None,
+            voice: false,
+            waveform: Vec::new(),
         };
         let file = File {
             media,

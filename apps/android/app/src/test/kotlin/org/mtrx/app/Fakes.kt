@@ -2,8 +2,10 @@ package org.mtrx.app
 
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
@@ -24,7 +26,10 @@ import org.mtrx.app.model.Preference
 import org.mtrx.app.model.PreferenceStore
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
+import org.mtrx.app.timeline.AudioOutput
+import org.mtrx.app.timeline.AudioPlayer
 import uniffi.mtrx.Address
+import uniffi.mtrx.AudioProgress
 import uniffi.mtrx.Banned
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.DirectoryKind
@@ -45,8 +50,17 @@ import uniffi.mtrx.Manage
 import uniffi.mtrx.Member
 import uniffi.mtrx.Membership
 import uniffi.mtrx.NewRoom
+import uniffi.mtrx.MuteFor
+import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.NotifyChoice
 import uniffi.mtrx.NotifyMode
+import uniffi.mtrx.PauseEntry
+import uniffi.mtrx.PauseFor
+import uniffi.mtrx.PauseMenuItem
+import uniffi.mtrx.QuietHours
+import uniffi.mtrx.QuietListener
+import uniffi.mtrx.QuietState
+import uniffi.mtrx.Weekday
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.PermissionsChoice
 import uniffi.mtrx.Rights
@@ -450,6 +464,59 @@ class FakeSession : Session(NoHandle) {
         }
     val limitSubscriptions = mutableListOf<Pair<DisappearingLimitListener, FakeHandle>>()
 
+    /** What [subscribeQuiet] tells, now and on every change. */
+    var quietState = QuietState(
+        quiet = false,
+        paused = false,
+        until = null,
+        line = "Notifications on",
+        hours = QuietHours(on = false, fromMinute = (22 * 60).toUShort(), toMinute = (7 * 60).toUShort(), days = Weekday.entries),
+        hoursLine = "Off",
+        mentionsThrough = false,
+    )
+        set(value) {
+            field = value
+            for ((listener, handle) in quietSubscriptions.toList()) {
+                if (!handle.cancelled) listener.onUpdate(value)
+            }
+        }
+    val quietSubscriptions = mutableListOf<Pair<QuietListener, FakeHandle>>()
+
+    override fun subscribeQuiet(listener: QuietListener): TaskHandle {
+        val handle = FakeHandle().also { handles += it }
+        quietSubscriptions += listener to handle
+        listener.onUpdate(quietState)
+        return handle
+    }
+
+    override fun pauseMenu(): List<PauseMenuItem> = listOf(
+        PauseMenuItem(PauseEntry.Pause(PauseFor.Hour), "For 1 hour"),
+        PauseMenuItem(PauseEntry.Pause(PauseFor.TomorrowMorning), "Until tomorrow, 08:00"),
+        PauseMenuItem(PauseEntry.PickTime, "Until…"),
+        PauseMenuItem(PauseEntry.Pause(PauseFor.UntilResumed), "Until I turn them back on"),
+    )
+
+    /** As the library: [call] ("pause Hour"), then told. */
+    override suspend fun pauseNotifications(pause: PauseFor) {
+        call("pause ${pause::class.simpleName}")
+        quietState = quietState.copy(quiet = true, paused = true, line = "Paused")
+    }
+
+    override suspend fun resumeNotifications() {
+        call("resume")
+        quietState = quietState.copy(quiet = false, paused = false, line = "Notifications on")
+    }
+
+    override suspend fun setQuietHours(hours: QuietHours) {
+        call("hours ${hours.fromMinute}-${hours.toMinute}")
+        quietState = quietState.copy(hours = hours)
+    }
+
+    override suspend fun setMentionsThrough(on: Boolean) {
+        call("mentions through $on")
+        quietState = quietState.copy(mentionsThrough = on)
+    }
+
     override fun disappearingLimit(): Duration = limit
 
     override fun subscribeDisappearingLimit(listener: DisappearingLimitListener): TaskHandle {
@@ -539,6 +606,31 @@ class FakeSession : Session(NoHandle) {
         return "!new:example.org"
     }
 
+    /**
+     * The file [audioFile] gives for each source, after reporting
+     * [audioProgress]; it throws [audioErrors]' instead, and for other
+     * sources it waits until cancelled. The sources fetched, and those
+     * cancelled, in order.
+     */
+    val audioFiles = mutableMapOf<String, String>()
+    val audioErrors = mutableMapOf<String, MtrxException>()
+    var audioProgress: List<Float?> = emptyList()
+    val audioFetches = mutableListOf<String>()
+    val audioCancelled = mutableListOf<String>()
+
+    override suspend fun audioFile(media: Media, progress: AudioProgress): String {
+        audioFetches += media.source
+        for (fraction in audioProgress) progress.onProgress(fraction)
+        audioFiles[media.source]?.let { return it }
+        audioErrors[media.source]?.let { throw it }
+        return try {
+            awaitCancellation()
+        } catch (e: CancellationException) {
+            audioCancelled += media.source
+            throw e
+        }
+    }
+
     companion object {
         const val USER_ID = "@me:example.org"
     }
@@ -571,6 +663,9 @@ class FakeRoom(private val session: FakeSession, private val roomId: String) : R
     override suspend fun setName(name: String) = session.call("name $name")
 
     override suspend fun setNotify(mode: NotifyMode) = session.changeSettings("notify $mode") { it.copy(notify = mode) }
+
+    override suspend fun mute(duration: MuteFor) =
+        session.changeSettings("mute $duration") { it.copy(notify = NotifyMode.MUTE) }
 
     // As the library: the mode now, then after each change.
     override fun subscribeDisappearingMode(listener: DisappearingModeListener): TaskHandle {
@@ -713,10 +808,16 @@ fun roomSettings(
 ): RoomSettings = RoomSettings(
     rights = rights(may),
     notify = NotifyMode.ALL,
+    mutedUntil = null,
+    notifyTitle = "All messages",
+    notifyExplanation = "Every message notifies you.",
     notifyChoices = listOf(
-        NotifyChoice(NotifyMode.ALL, "All messages", "Every message notifies you."),
-        NotifyChoice(NotifyMode.MENTIONS, "Mentions", "Only mentions of you and your keywords notify you."),
-        NotifyChoice(NotifyMode.MUTE, "Mute", "Nothing here notifies you."),
+        NotifyChoice("All messages", NotifyAction.Mode(NotifyMode.ALL), true),
+        NotifyChoice("Mentions", NotifyAction.Mode(NotifyMode.MENTIONS), false),
+        NotifyChoice("Mute for 1 hour", NotifyAction.Mute(MuteFor.HOUR), false),
+        NotifyChoice("Mute for 8 hours", NotifyAction.Mute(MuteFor.EIGHT_HOURS), false),
+        NotifyChoice("Mute until tomorrow, 08:00", NotifyAction.Mute(MuteFor.TOMORROW_MORNING), false),
+        NotifyChoice("Mute until I unmute", NotifyAction.Mute(MuteFor.UNTIL_UNMUTED), false),
     ),
     joinRule = joinRule,
     joinRuleFact = ruleFact(joinRule),
@@ -1513,6 +1614,34 @@ fun testAccount(
 
 /** The account's open session; signed in. */
 val Account.signedIn: SignedInSession get() = (state.value as AccountState.SignedIn).session
+
+/** The audio focus and the headphones: [held] while playing, the focus refused if [refuse]; [interrupt] as a call would. */
+class FakeAudioOutput : AudioOutput {
+    var held = false
+    var refuse = false
+    private var interrupted: (() -> Unit)? = null
+
+    override fun acquire(voice: Boolean, interrupted: () -> Unit): Boolean {
+        if (refuse) return false
+        held = true
+        this.interrupted = interrupted
+        return true
+    }
+
+    override fun release() {
+        held = false
+        interrupted = null
+    }
+
+    /** The focus is lost, or the headphones go. */
+    fun interrupt() {
+        interrupted?.invoke()
+    }
+}
+
+/** A room's audio for tests that play none. */
+fun FakeSession.testAudio(): AudioPlayer =
+    AudioPlayer(this, CoroutineScope(Dispatchers.Unconfined), FakeAudioOutput()) { error("nothing plays here") }
 
 /** What the models logged, as "tag: message". */
 class FakeLog : Logger {

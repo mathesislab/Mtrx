@@ -56,6 +56,7 @@ use crate::{
     placement::Placement,
     popover,
     presence::{self},
+    quiet::{self},
     room::{self, Look},
     selection::{self},
     send_later,
@@ -119,6 +120,8 @@ pub enum Message {
     People(people::Message),
     /// Pictures and typeset math, copying images, and downloads.
     Media(media::Message),
+    /// The bell: pausing notifications and quiet hours.
+    Quiet(quiet::Message),
     Update(update::Message),
     /// Open the settings and look for updates: Check for Updates… in the
     /// app menu, which only macOS has.
@@ -188,6 +191,7 @@ struct Main {
     account: Account,
     people: People,
     media: MediaState,
+    quiet: quiet::Quiet,
 }
 
 /// A menu or picker: one at a time in the whole window, the one opened last
@@ -237,10 +241,14 @@ pub enum Popup {
     CardPicture,
     /// The card's spaces to add its room to.
     CardAddToSpace,
+    /// The card's notifications menu.
+    CardNotify,
     /// The image's in the viewer.
     Viewer,
     /// The list of downloads and exports, and a row's menu in it.
     Downloads { menu: Option<downloads::Row> },
+    /// The bell's popover, and what it picks on wheels.
+    Quiet { picking: Option<quiet::Picking> },
 }
 
 impl Popup {
@@ -256,8 +264,10 @@ impl Popup {
             | Popup::ShowMenu
             | Popup::CardPicture
             | Popup::CardAddToSpace
+            | Popup::CardNotify
             | Popup::Viewer
-            | Popup::Downloads { .. } => false,
+            | Popup::Downloads { .. }
+            | Popup::Quiet { .. } => false,
             _ => true,
         }
     }
@@ -266,7 +276,7 @@ impl Popup {
     pub fn of_card(&self) -> bool {
         matches!(
             self,
-            Popup::MemberMenu(_) | Popup::CardPicture | Popup::CardAddToSpace
+            Popup::MemberMenu(_) | Popup::CardPicture | Popup::CardAddToSpace | Popup::CardNotify
         )
     }
 
@@ -280,6 +290,7 @@ impl Popup {
     fn escape(&mut self) -> bool {
         match self {
             Popup::Downloads { menu } => menu.take().is_some(),
+            Popup::Quiet { picking } => picking.take().is_some(),
             _ => false,
         }
     }
@@ -413,6 +424,7 @@ impl Main {
             account: Account::new(&session),
             people: People::default(),
             media: MediaState::new(),
+            quiet: quiet::Quiet::new(&session),
             session,
         }
     }
@@ -466,6 +478,7 @@ impl Main {
             account,
             people,
             media,
+            quiet,
             ..
         } = self;
         let mut cx = Cx {
@@ -508,6 +521,7 @@ impl Main {
             }
             Message::People(message) => people.update(message, &mut cx),
             Message::Media(message) => media.update(message, &mut cx),
+            Message::Quiet(message) => quiet.update(message, &mut cx),
             Message::Left(id) => {
                 let left = if pane.id() == Some(&id) {
                     pane.set(Shown::Empty, cx.popup)
@@ -1196,6 +1210,10 @@ impl App {
                 downloads::exports_subscription(&main.session)
                     .map(|m| Message::Media(media::Message::Downloads(m))),
             );
+            subscriptions.push(quiet::subscription(&main.session));
+            subscriptions.push(
+                (main.media.audio.subscription()).map(|m| Message::Media(media::Message::Audio(m))),
+            );
         }
         Subscription::batch(subscriptions)
     }
@@ -1297,6 +1315,7 @@ impl App {
                 Some(Popup::Downloads { menu }) => main.media.downloads.view(true, *menu),
                 _ => main.media.downloads.view(false, None),
             },
+            main.quiet.view(main.popup.as_ref()),
         );
         let room_list = sidebar::room_list(sidebar::RoomListView {
             // As wide as a room's below its name.
@@ -1367,6 +1386,7 @@ impl App {
                     call_services: &self.settings.call_services,
                     previews: &main.media.previews,
                     downloads: &main.media.downloads,
+                    audio: &main.media.audio,
                     frequent_emoji: &main.people.frequent_emoji,
                     show_members: main.pane.show_members,
                     popup: main.popup.as_ref(),
