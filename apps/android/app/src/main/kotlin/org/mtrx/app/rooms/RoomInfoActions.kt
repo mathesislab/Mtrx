@@ -3,7 +3,7 @@ package org.mtrx.app.rooms
 import java.time.Duration
 import uniffi.mtrx.History
 import uniffi.mtrx.JoinRule
-import uniffi.mtrx.NotifyMode
+import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.Permissions
 
 /**
@@ -16,7 +16,8 @@ interface RoomInfoActions {
     /** The topic as typed in the editor; the library composes it. */
     fun setTopic(draft: TopicDraft)
 
-    fun setNotify(mode: NotifyMode)
+    /** A mode, or a mute: for a time, the room gets its mode back afterwards. */
+    fun notify(action: NotifyAction)
 
     /** Our messages here disappear [afterRead] after everyone has read them; null: not. */
     fun setDisappearingMode(afterRead: Duration?)

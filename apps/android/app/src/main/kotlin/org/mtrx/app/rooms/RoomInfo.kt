@@ -67,6 +67,8 @@ import org.mtrx.app.model.Images
 import org.mtrx.app.ui.Avatar
 import org.mtrx.app.ui.ChoiceRow
 import org.mtrx.app.ui.ConfirmDialog
+import org.mtrx.app.ui.MenuEntry
+import org.mtrx.app.ui.MenuRow
 import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.SwitchRow
 import java.time.Duration
@@ -357,13 +359,14 @@ fun SettingsColumn(
     var encrypting by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth()) {
         SectionHeading("Settings")
-        ChoiceRow(
+        MenuRow(
             "Notifications",
-            settings.notify,
-            settings.notifyChoices.map { it.mode to it.title },
-            settings.notifyChoices.firstOrNull { it.mode == settings.notify }?.explanation,
+            settings.notifyTitle,
+            settings.notifyChoices.map { choice ->
+                MenuEntry(choice.title, choice.current) { if (!choice.current) actions.notify(choice.action) }
+            },
+            settings.notifyExplanation,
             enabled = true,
-            onChoose = actions::setNotify,
         )
         if (disappearing != null) {
             ChoiceRow(

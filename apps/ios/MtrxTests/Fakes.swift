@@ -887,15 +887,12 @@ enum Make {
     /// The notification modes a room's settings offer, as the library words
     /// them.
     static let notifyChoices = [
-        NotifyChoice(
-            mode: .all, title: "All messages", explanation: "Every message notifies you.", action: .mode(mode: .all),
-            current: true),
-        NotifyChoice(
-            mode: .mentions, title: "Mentions", explanation: "Only mentions of you and your keywords notify you.",
-            action: .mode(mode: .mentions), current: false),
-        NotifyChoice(
-            mode: .mute, title: "Mute", explanation: "Nothing here notifies you.", action: .mode(mode: .mute),
-            current: false),
+        NotifyChoice(title: "All messages", action: .mode(mode: .all), current: true),
+        NotifyChoice(title: "Mentions", action: .mode(mode: .mentions), current: false),
+        NotifyChoice(title: "Mute for 1 hour", action: .mute(duration: .hour), current: false),
+        NotifyChoice(title: "Mute for 8 hours", action: .mute(duration: .eightHours), current: false),
+        NotifyChoice(title: "Mute until tomorrow, 08:00", action: .mute(duration: .tomorrowMorning), current: false),
+        NotifyChoice(title: "Mute until I unmute", action: .mute(duration: .untilUnmuted), current: false),
     ]
 
     /// Who may read the history, as the library words it.

@@ -152,14 +152,10 @@ impl From<Permissions> for core::Permissions {
 /// An entry of a room's notifications menu, with its words.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct NotifyChoice {
-    /// The mode it sets; Mute for every mute.
-    pub mode: NotifyMode,
     /// As the menu names it: "All messages", "Mentions", "Mute for 1
     /// hour", "Mute for 8 hours", "Mute until tomorrow, 08:00", "Mute
     /// until I unmute"; "Mute" for a room muted without an end.
     pub title: String,
-    /// What its mode does: "Every message notifies you."…
-    pub explanation: String,
     pub action: NotifyAction,
     /// The room's mode now.
     pub current: bool,
@@ -167,14 +163,8 @@ pub struct NotifyChoice {
 
 impl From<core::NotifyChoice> for NotifyChoice {
     fn from(choice: core::NotifyChoice) -> Self {
-        let mode = match choice.action {
-            core::NotifyAction::Mode(mode) => mode,
-            core::NotifyAction::Mute(_) => core::NotifyMode::Mute,
-        };
         Self {
-            mode: mode.into(),
             title: choice.title,
-            explanation: mode.explanation().to_owned(),
             action: choice.action.into(),
             current: choice.current,
         }
