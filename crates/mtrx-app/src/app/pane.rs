@@ -180,6 +180,7 @@ impl Pane {
                         };
                         let draft = room.load_draft();
                         let call_service = room.load_call_service(cx.session);
+                        let focus = room.composer.focus();
                         let opening = self.set(Shown::Open(room), cx.popup);
                         let go_to = match self.go_to.take() {
                             Some((room, event)) if room == id => {
@@ -189,6 +190,7 @@ impl Pane {
                         };
                         Task::batch([
                             opening,
+                            focus,
                             paginate,
                             read,
                             members,
@@ -340,8 +342,9 @@ impl Pane {
         cx.cover();
         cx.close_card();
         self.go_to.take_if(|(room, _)| *room != id);
-        if self.open(&id).is_some() {
-            return Task::none();
+        // The cursor in the composer, to write at once.
+        if let Some(room) = self.open(&id) {
+            return room.composer.focus();
         }
         // An invite shows Accept and Decline instead of a timeline.
         let invited = |r: &RoomSummary| r.membership == Membership::Invited;

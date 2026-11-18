@@ -360,9 +360,10 @@ async fn a_file_streams_to_its_place() {
     let target = folder.path().join("saved.bin");
     let file = media("data.bin", None);
     let id = start(&downloads, &file, SaveTo::File(target.clone()));
+    // Listed at once; its first bytes may already have come.
     assert!(matches!(
         state(&downloads, id),
-        DownloadState::Downloading { received: 0, .. }
+        DownloadState::Downloading { .. }
     ));
     // The same file to the same place is the same download.
     assert_eq!(start(&downloads, &file, SaveTo::File(target.clone())), id);

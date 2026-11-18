@@ -243,6 +243,7 @@ impl InlineEdit {
                 placeholder: None,
                 cancellable: false,
                 edit_last: false,
+                pages_timeline: false,
                 side: Side::Below,
                 compact: true,
                 padding: Padding::new(6.0).right(emoji::FIELD_INSET_COMPACT),
