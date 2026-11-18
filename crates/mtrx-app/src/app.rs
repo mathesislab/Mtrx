@@ -237,6 +237,8 @@ pub enum Popup {
     CardPicture,
     /// The card's spaces to add its room to.
     CardAddToSpace,
+    /// The card's notifications menu.
+    CardNotify,
     /// The image's in the viewer.
     Viewer,
     /// The list of downloads and exports, and a row's menu in it.
@@ -256,6 +258,7 @@ impl Popup {
             | Popup::ShowMenu
             | Popup::CardPicture
             | Popup::CardAddToSpace
+            | Popup::CardNotify
             | Popup::Viewer
             | Popup::Downloads { .. } => false,
             _ => true,
@@ -266,7 +269,7 @@ impl Popup {
     pub fn of_card(&self) -> bool {
         matches!(
             self,
-            Popup::MemberMenu(_) | Popup::CardPicture | Popup::CardAddToSpace
+            Popup::MemberMenu(_) | Popup::CardPicture | Popup::CardAddToSpace | Popup::CardNotify
         )
     }
 

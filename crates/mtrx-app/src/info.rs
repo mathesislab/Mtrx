@@ -15,7 +15,7 @@ use iced::{
     widget::{button, column, container, pick_list, row, space, stack, text, text_input, toggler},
 };
 use mtrx_core::{
-    CallService, History, JoinRule, Membership, NotifyMode, OwnedRoomId, OwnedServerName,
+    CallService, History, JoinRule, Membership, NotifyAction, OwnedRoomId, OwnedServerName,
     OwnedUserId, Permissions, RoomHandle, RoomKind, RoomLists, RoomSettings, RoomSummary, RoomTag,
     Session, Topic, User, UserInfo,
 };
@@ -49,6 +49,8 @@ const OVERVIEW_WIDTH: f32 = 720.0;
 const ABOUT_HEIGHT: f32 = 180.0;
 /// Height of a person's shared rooms list; more scroll.
 const SHARED_HEIGHT: f32 = 200.0;
+/// The notifications menu, for "Mute until tomorrow, 08:00".
+const NOTIFY_MENU_WIDTH: f32 = 220.0;
 
 /// What a card shows, besides its target: the rooms we know, pictures, who
 /// we are, people's presence as of `now`, whether the Notes are pinned at
@@ -95,7 +97,10 @@ pub enum Message {
     Topic(topic::Edit),
     /// Save the changed name and topic.
     SaveDetails,
-    Notify(NotifyMode),
+    /// Open the notifications menu.
+    OpenNotifyMenu,
+    /// A mode, or a mute, from the notifications menu.
+    Notify(NotifyAction),
     /// The room's mode: our messages disappear this long after read.
     Disappearing(Option<Duration>),
     JoinRule(JoinRule),
@@ -366,6 +371,13 @@ impl Card {
                 *cx.popup = Some(Popup::CardAddToSpace);
                 return Task::none();
             }
+            Message::OpenNotifyMenu => {
+                *cx.popup = Some(Popup::CardNotify);
+                return Task::none();
+            }
+            Message::Notify(_) => {
+                cx.popup.take_if(|popup| matches!(popup, Popup::CardNotify));
+            }
             Message::ChangePicture | Message::RemovePicture => {
                 cx.popup
                     .take_if(|popup| matches!(popup, Popup::CardPicture));
@@ -408,9 +420,17 @@ impl Card {
                 let rule = *rule;
                 task::request(async move { room.set_join_rule(rule).await }, saved)
             }
-            (Message::Notify(mode), Some(room)) => {
-                let mode = *mode;
-                task::request(async move { room.set_notify(mode).await }, saved)
+            (Message::Notify(action), Some(room)) => {
+                let action = *action;
+                task::request(
+                    async move {
+                        match action {
+                            NotifyAction::Mode(mode) => room.set_notify(mode).await,
+                            NotifyAction::Mute(duration) => room.mute(duration).await,
+                        }
+                    },
+                    saved,
+                )
             }
             (Message::Disappearing(after_read), Some(room)) => {
                 let after_read = *after_read;
@@ -856,17 +876,11 @@ impl Card {
         let change = |change| app::Message::Card(Message::Change(change));
         let mut card = column![].spacing(14);
         if let Some(settings) = settings {
+            let open = matches!(shown.popup, Some(app::Popup::CardNotify));
             card = card.push(settings::option(
                 "Notifications",
-                settings.notify.explanation(),
-                pick_list(
-                    NotifyMode::ALL.map(Notify),
-                    Some(Notify(settings.notify)),
-                    |Notify(mode)| app::Message::Card(Message::Notify(mode)),
-                )
-                .text_size(13)
-                .padding(6)
-                .into(),
+                settings.notify_explanation.as_str(),
+                notify_menu(settings, open),
             ));
         }
         let low_priority = room.tag == RoomTag::LowPriority;
@@ -1483,14 +1497,32 @@ fn banned_view(settings: &RoomSettings, can_unban: bool) -> Element<'_, app::Mes
     labelled("Banned", column(rows).spacing(6))
 }
 
-/// A room's notifications, as its menu names them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Notify(NotifyMode);
-
-impl fmt::Display for Notify {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0.title())
-    }
+/// A button naming the room's notifications ("Muted until 14:00"), which
+/// opens their menu, `open` or not: the modes, and mutes for a time.
+fn notify_menu(settings: &RoomSettings, open: bool) -> Element<'_, app::Message> {
+    let label = row![
+        text(settings.notify_title.as_str()).size(13),
+        icons::chevron(10.0, open, style::on_secondary),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+    // While open, a click on it closes the menu as any outside click.
+    let button = button(label)
+        .padding([5, 10])
+        .style(style::secondary_button)
+        .on_press_maybe((!open).then_some(app::Message::Card(Message::OpenNotifyMenu)));
+    let entries: Vec<Entry<'_, app::Message>> = (settings.notify_choices.iter())
+        .map(|choice| {
+            let notify = app::Message::Card(Message::Notify(choice.action));
+            Item::new(choice.title.clone(), notify)
+                .checked(choice.current)
+                .into()
+        })
+        .collect();
+    let menu = open.then(|| menu::view(entries, Width::At(NOTIFY_MENU_WIDTH)));
+    popover(button, menu, Side::Below, Edge::Right)
+        .on_dismiss(app::Message::ClosePopup)
+        .into()
 }
 
 /// Who can read a room's history, as its menu names them.
