@@ -194,6 +194,20 @@ impl Notification {
         }
     }
 
+    /// When notifications are held back, as the store of the session saved
+    /// in `profile` has it (what [`Self::fetch`] decides by), for tests.
+    #[cfg(feature = "test-support")]
+    pub async fn stored_quiet_for_test(profile: &Profile, room_id: &RoomId) -> Result<Quiet> {
+        let _one = ONE_AT_A_TIME.lock().await;
+        let client = restore_client(
+            profile,
+            RoomLoadSettings::One(room_id.to_owned()),
+            EncryptionSettings::default(),
+        )
+        .await?;
+        Ok(stored::<Quiet>(&client).await)
+    }
+
     /// The notification of `item`, if someone else's event the push rules
     /// notify for, and `quiet` doesn't hold it back at `now`.
     fn pushed(

@@ -3233,21 +3233,31 @@ async fn a_pause_holds_back_notifications() -> Result<()> {
     assert!(first.highlight);
 
     // The push path: nothing while paused, from the store.
-    let fetched = Notification::fetch(b.session.profile(), &room, &held).await?;
+    let fetched = timeout(
+        "b's fetch",
+        Notification::fetch(b.session.profile(), &room, &held),
+    )
+    .await??;
     assert_eq!(fetched, None);
 
     // Resumed: messages notify again, pushed ones too.
     a.session.resume_notifications().await?;
     quiet_on(&b, false).await?;
-    let fetched = Notification::fetch(b.session.profile(), &room, &held).await?;
+    let fetched = timeout(
+        "b's fetch",
+        Notification::fetch(b.session.profile(), &room, &held),
+    )
+    .await??;
     assert!(fetched.is_some_and(|n| n.body == "while paused"));
     // C didn't sync the resume: its fetch's own sync brings it.
-    let fetched = Notification::fetch(c.session.profile(), &room, &held).await;
-    let stored = Session::restore(c.session.profile().clone()).await?.quiet();
+    let c_profile = c.session.profile();
+    let fetched = timeout("c's fetch", Notification::fetch(c_profile, &room, &held)).await?;
+    let stored = Notification::stored_quiet_for_test(c_profile, &room);
+    let stored = timeout("c's store", stored).await??;
     assert!(
         matches!(&fetched, Ok(Some(n)) if n.body == "while paused"),
         "fetched {fetched:?}; C's store says {:?}",
-        stored.status
+        stored.status(SystemTime::now())
     );
     send_text(&timeline, "after the pause").await?;
     let next = wait_for("a message", &mut notifications, |_| true).await?;
