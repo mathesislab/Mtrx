@@ -719,9 +719,11 @@ fn event_view<'a>(
                         event.event_id.as_ref(),
                         file,
                         &m.body,
-                        context.previews,
-                        context.downloads,
-                        context.audio,
+                        media::Files {
+                            previews: context.previews,
+                            downloads: context.downloads,
+                            audio: context.audio,
+                        },
                         context.hovered == Some(event.id.as_str()),
                     ),
                     None => text(format!("[{kind:?}] {}", m.body))

@@ -301,24 +301,36 @@ fn dimensions(media: &Media, picture: Option<&Picture>) -> Option<(u32, u32)> {
         .or(picture.map(|p| (p.width, p.height)))
 }
 
+/// What the window knows of messages' files, which [`view`] shows them
+/// with: their previews, their downloads, and the audio playing.
+#[derive(Clone, Copy)]
+pub struct Files<'b> {
+    pub previews: &'b Previews,
+    pub downloads: &'b Downloads,
+    pub audio: &'b Audio,
+}
+
 /// A message's file: an image (a placeholder until loaded), audio with its
-/// player (`audio`), else a card; a PDF's card opens the viewer once known
-/// to be readable, other cards the file in its app. `body` shows below it
-/// if it is a caption rather than the filename. The file is in `room`, in
+/// player, else a card; a PDF's card opens the viewer once known to be
+/// readable, other cards the file in its app. `body` shows below it if it
+/// is a caption rather than the filename. The file is in `room`, in
 /// message `event`; an image has a download button beside it while the
 /// message is `hovered` or it downloads. Download buttons show how the
-/// file's download in `downloads` goes. An image's preview, or whether a
-/// PDF can be read, is asked for.
+/// file's download goes. An image's preview, or whether a PDF can be read,
+/// is asked for.
 pub fn view<'a>(
     room: &OwnedRoomId,
     event: Option<&OwnedEventId>,
     media: &'a Media,
     body: &'a str,
-    previews: &Previews,
-    downloads: &Downloads,
-    audio: &Audio,
+    files: Files<'_>,
     hovered: bool,
 ) -> Element<'a, app::Message> {
+    let Files {
+        previews,
+        downloads,
+        audio,
+    } = files;
     let file = File {
         media: media.clone(),
         room: room.clone(),
@@ -1059,9 +1071,11 @@ mod tests {
                 None,
                 &media,
                 &media.filename,
-                &previews,
-                &downloads,
-                &Audio::default(),
+                Files {
+                    previews: &previews,
+                    downloads: &downloads,
+                    audio: &Audio::default(),
+                },
                 false,
             ),
             None,
@@ -1161,9 +1175,11 @@ mod tests {
                 None,
                 media,
                 &media.filename,
-                previews,
-                &downloads,
-                &audio,
+                Files {
+                    previews,
+                    downloads: &downloads,
+                    audio: &audio,
+                },
                 false,
             );
             let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), shown);
