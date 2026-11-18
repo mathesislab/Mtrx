@@ -187,6 +187,7 @@ impl Room {
                 placeholder: Some("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)"),
                 cancellable: self.compose.cancellable(),
                 edit_last: true,
+                pages_timeline: true,
                 side: Side::Above,
                 compact: false,
                 padding: Padding::new(10.0).right(COMPOSER_INSET).top(
