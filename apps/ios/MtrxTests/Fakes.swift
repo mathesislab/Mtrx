@@ -546,6 +546,11 @@ final class FakeRoom: Room, @unchecked Sendable {
         session.settings.notify = mode
     }
 
+    override func mute(duration: MuteFor) async throws {
+        try session.change("mute \(duration)")
+        session.settings.notify = .mute
+    }
+
     override func setJoinRule(rule: JoinRule) async throws {
         try session.change("join rule \(rule)")
         session.settings.joinRule = rule
@@ -891,7 +896,6 @@ enum Make {
         NotifyChoice(
             mode: .mute, title: "Mute", explanation: "Nothing here notifies you.", action: .mode(mode: .mute),
             current: false),
-
     ]
 
     /// Who may read the history, as the library words it.
