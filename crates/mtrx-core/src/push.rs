@@ -9,14 +9,17 @@
 //! store's cross-process locks while it writes (see
 //! [`crate::session`]'s `lock_holder`).
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use matrix_sdk::{
+    Client, StateChanges,
     encryption::EncryptionSettings,
     ruma::{
         EventId, RoomId, UserId,
         api::client::push::{self as api, PusherIds, PusherInit, PusherKind, get_pushers},
+        events::StaticEventContent,
         push::{HttpPusherData, PushFormat},
+        serde::Raw,
     },
     store::RoomLoadSettings,
 };
@@ -25,14 +28,20 @@ use matrix_sdk_ui::notification_client::{
     NotificationStatus,
 };
 use tokio::sync::Mutex;
+use tracing::warn;
 use url::Url;
 
 use crate::{
     Error, Notification, Profile, Quiet, QuietStatus, Result, Session, User,
-    account_data::stored,
+    account_data::{AccountData, stored},
     notifications::{self, should_notify},
+    quiet::QuietEventContent,
     session::restore_client,
 };
+
+/// How long a push waits for the server to say whether notifications are
+/// paused, before it goes by what this device last synced.
+const QUIET_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A pusher posting to an HTTP push gateway, which forwards each push to
 /// the device (UnifiedPush: through the distributor; iOS: through APNs).
@@ -172,10 +181,7 @@ impl Notification {
         }
         .await
         .map_err(notification_error);
-        // The fetch's sync brought the account data: from before a resume
-        // on another device, the store's could be stale, so it is read only
-        // now.
-        let quiet = stored::<Quiet>(&client).await;
+        let quiet = current_quiet(&client).await;
         let now = SystemTime::now();
         match fetched {
             Ok(NotificationStatus::Event(item)) => {
@@ -248,6 +254,49 @@ impl Notification {
             },
         })
     }
+}
+
+/// When notifications are held back, as the server has it now: another
+/// device may have paused or resumed them since this one last synced (the
+/// fetch's own sync doesn't bring global account data). Kept in the store,
+/// so it catches up. If the server can't be asked (offline, too slow), as
+/// the store has it.
+async fn current_quiet(client: &Client) -> Quiet {
+    match tokio::time::timeout(QUIET_TIMEOUT, fetched_quiet(client)).await {
+        Ok(Ok(quiet)) => quiet,
+        Ok(Err(e)) => {
+            warn!("could not ask the server whether notifications are paused: {e}");
+            stored::<Quiet>(client).await
+        }
+        Err(_) => {
+            warn!("the server did not say in time whether notifications are paused");
+            stored::<Quiet>(client).await
+        }
+    }
+}
+
+/// The server's `org.mtrx.quiet`, kept in the store; the default if there
+/// is none.
+async fn fetched_quiet(client: &Client) -> Result<Quiet> {
+    let account = client.account();
+    let Some(raw) = account
+        .fetch_account_data_static::<QuietEventContent>()
+        .await?
+    else {
+        return Ok(Quiet::default());
+    };
+    // Read leniently: what can't be read is the default.
+    let content = raw.deserialize().unwrap_or_default();
+    let event = serde_json::json!({ "type": QuietEventContent::TYPE, "content": raw });
+    let mut changes = StateChanges::default();
+    changes.account_data.insert(
+        QuietEventContent::TYPE.into(),
+        Raw::from_json(serde_json::value::to_raw_value(&event)?),
+    );
+    if let Err(e) = client.state_store().save_changes(&changes).await {
+        warn!("could not keep whether notifications are paused: {e}");
+    }
+    Ok(Quiet::from_content(content))
 }
 
 fn notification_error(error: matrix_sdk_ui::notification_client::Error) -> Error {

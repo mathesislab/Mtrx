@@ -3249,18 +3249,29 @@ async fn a_pause_holds_back_notifications() -> Result<()> {
     )
     .await??;
     assert!(fetched.is_some_and(|n| n.body == "while paused"));
-    // C didn't sync the resume: its fetch's own sync brings it.
+    // C didn't sync the resume: its fetch asks the server, and its store
+    // catches up.
     let c_profile = c.session.profile();
-    let fetched = timeout("c's fetch", Notification::fetch(c_profile, &room, &held)).await?;
+    let fetched = timeout("c's fetch", Notification::fetch(c_profile, &room, &held)).await??;
+    assert!(fetched.is_some_and(|n| n.body == "while paused"));
     let stored = Notification::stored_quiet_for_test(c_profile, &room);
     let stored = timeout("c's store", stored).await??;
-    assert!(
-        matches!(&fetched, Ok(Some(n)) if n.body == "while paused"),
-        "fetched {fetched:?}; C's store says {:?}",
-        stored.status(SystemTime::now())
-    );
+    assert_eq!(stored.status(SystemTime::now()), QuietStatus::On);
     send_text(&timeline, "after the pause").await?;
     let next = wait_for("a message", &mut notifications, |_| true).await?;
     assert_eq!(next.body, "after the pause", "not the one held back");
+
+    // Paused again on A: C, still not syncing and its store saying on,
+    // holds back a push all the same.
+    a.session.pause_notifications(PauseFor::Hour).await?;
+    let again = send_text(&timeline, "paused again").await?;
+    let fetched = timeout("c's fetch", Notification::fetch(c_profile, &room, &again)).await??;
+    assert_eq!(fetched, None);
+    let stored = Notification::stored_quiet_for_test(c_profile, &room);
+    let stored = timeout("c's store", stored).await??;
+    assert!(matches!(
+        stored.status(SystemTime::now()),
+        QuietStatus::Paused { until: Some(_) }
+    ));
     Ok(())
 }
