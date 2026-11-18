@@ -48,10 +48,11 @@ pub use encryption::{
 };
 pub use error::MtrxError;
 pub use manage::{
-    Banned, History, HistoryChoice, LevelChoice, LevelConfirmation, Manage, Member, NotifyChoice,
-    NotifyMode, Permissions, PermissionsChoice, Rights, Role, RoomSettings, SpaceLink,
-    level_confirmation, typed_level,
+    Banned, History, HistoryChoice, LevelChoice, LevelConfirmation, Manage, Member, MuteFor,
+    NotifyAction, NotifyChoice, NotifyMode, Permissions, PermissionsChoice, Rights, Role,
+    RoomSettings, SpaceLink, level_confirmation, typed_level,
 };
+
 pub use math::{FormulaImage, typeset_formula};
 pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,

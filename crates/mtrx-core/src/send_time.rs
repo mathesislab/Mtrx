@@ -1,4 +1,5 @@
-//! Reading and describing the times messages are scheduled for.
+//! Reading and describing times: those messages are scheduled for, and
+//! the ends of mutes.
 
 use std::time::SystemTime;
 
@@ -6,6 +7,12 @@ use chrono::{DateTime, Datelike, Days, Duration, Local, NaiveDate, NaiveTime, Ti
 
 /// Time of day used when only a day is given ("tomorrow", "monday").
 const DEFAULT_TIME: NaiveTime = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+
+/// "Tomorrow morning", for a room muted or notifications paused until
+/// then: 08:00 local.
+pub const MORNING: NaiveTime = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
+/// Before this, "tomorrow morning" is today's: the night is not over.
+const NIGHT_ENDS: NaiveTime = NaiveTime::from_hms_opt(5, 0, 0).unwrap();
 
 /// Read a send time typed by the user, relative to `now`:
 ///
@@ -54,6 +61,54 @@ pub fn describe_send_time(at: SystemTime, now: SystemTime) -> String {
         _ if at.year() == now.year() => at.format("%a %-d %b %H:%M").to_string(),
         _ => at.format("%a %-d %b %Y %H:%M").to_string(),
     }
+}
+
+/// [`MORNING`] local: today's before 05:00, else tomorrow's.
+pub(crate) fn tomorrow_morning(now: SystemTime) -> SystemTime {
+    let now = DateTime::<Local>::from(now);
+    let today = now.date_naive();
+    let date = if now.time() < NIGHT_ENDS {
+        today
+    } else {
+        today.succ_opt().unwrap_or(today)
+    };
+    local_at(date, MORNING).map_or_else(|| (now + Duration::hours(12)).into(), Into::into)
+}
+
+/// "Tomorrow morning" as a menu says it at `now`: "tomorrow, 08:00", or
+/// "08:00" before 05:00.
+pub(crate) fn morning_words(now: SystemTime) -> String {
+    let at = tomorrow_morning(now);
+    let (at, now) = (DateTime::<Local>::from(at), DateTime::<Local>::from(now));
+    let time = at.format("%H:%M");
+    if at.date_naive() == now.date_naive() {
+        time.to_string()
+    } else {
+        format!("tomorrow, {time}")
+    }
+}
+
+/// When something ends, in words, e.g. "14:00" (today), "tomorrow 08:00",
+/// "Fri 08:00", "Mon 3 Nov 08:00".
+pub(crate) fn describe_until(at: SystemTime, now: SystemTime) -> String {
+    let (at, now) = (DateTime::<Local>::from(at), DateTime::<Local>::from(now));
+    let time = at.format("%H:%M");
+    match (at.date_naive() - now.date_naive()).num_days() {
+        ..=0 => time.to_string(),
+        1 => format!("tomorrow {time}"),
+        2..7 => format!("{} {time}", at.format("%a")),
+        _ if at.year() == now.year() => at.format("%a %-d %b %H:%M").to_string(),
+        _ => at.format("%a %-d %b %Y %H:%M").to_string(),
+    }
+}
+
+/// `time` on `date`, local: the earlier when clocks go back, the first
+/// time that exists when they go forward.
+pub(crate) fn local_at(date: NaiveDate, time: NaiveTime) -> Option<DateTime<Local>> {
+    let at = date.and_time(time);
+    (0..=24 * 60)
+        .map(|minutes| at + Duration::minutes(minutes))
+        .find_map(|at| Local.from_local_datetime(&at).earliest())
 }
 
 /// `30m`, `2h`, `1h30m`, `3d`.
@@ -141,6 +196,41 @@ mod tests {
         }
         for input in ["", "soon", "in", "5x", "25:00", "tomorrow noon", "0m"] {
             assert_eq!(parse_send_time(input, now), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn tomorrow_morning_is_todays_before_five() {
+        assert_eq!(
+            tomorrow_morning(at("2026-10-21 04:59")),
+            at("2026-10-21 08:00")
+        );
+        assert_eq!(
+            tomorrow_morning(at("2026-10-21 05:00")),
+            at("2026-10-22 08:00")
+        );
+        assert_eq!(
+            tomorrow_morning(at("2026-10-21 23:30")),
+            at("2026-10-22 08:00")
+        );
+        assert_eq!(morning_words(at("2026-10-21 04:59")), "08:00");
+        assert_eq!(morning_words(at(NOW)), "tomorrow, 08:00");
+    }
+
+    #[test]
+    fn describes_ends() {
+        let now = at(NOW);
+        let cases = [
+            ("2026-10-21 17:30", "17:30"),
+            ("2026-10-22 08:00", "tomorrow 08:00"),
+            ("2026-10-24 09:00", "Sat 09:00"),
+            ("2026-11-02 10:00", "Mon 2 Nov 10:00"),
+            ("2027-01-04 10:00", "Mon 4 Jan 2027 10:00"),
+            // Passed: the time.
+            ("2026-10-20 09:00", "09:00"),
+        ];
+        for (time, expected) in cases {
+            assert_eq!(describe_until(at(time), now), expected);
         }
     }
 

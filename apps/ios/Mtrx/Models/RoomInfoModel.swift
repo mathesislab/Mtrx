@@ -86,9 +86,14 @@ final class RoomInfoModel: ObservableObject {
         return change { try await $0.setName(name: name) }
     }
 
+    /// A mode, or a mute (for a time, after which the room gets its mode
+    /// back), from the notifications menu.
     @discardableResult
-    func setNotify(_ mode: NotifyMode) -> Task<Void, Never> {
-        change { try await $0.setNotify(mode: mode) }
+    func notify(_ action: NotifyAction) -> Task<Void, Never> {
+        switch action {
+        case .mode(let mode): return change { try await $0.setNotify(mode: mode) }
+        case .mute(let duration): return change { try await $0.mute(duration: duration) }
+        }
     }
 
     @discardableResult

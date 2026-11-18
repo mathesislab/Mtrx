@@ -27,6 +27,7 @@ mod live;
 mod math;
 mod media;
 mod members;
+mod mute;
 mod notes;
 mod notifications;
 mod people;
@@ -84,6 +85,7 @@ pub use members::{
     Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,
     typed_level,
 };
+pub use mute::{MuteFor, TimedMute};
 pub use notes::notes_markdown;
 pub use notifications::Notification;
 pub use people::{Contact, User, UserInfo};
@@ -98,7 +100,10 @@ pub use push::{HttpPusher, PusherInfo};
 pub use room::RoomHandle;
 pub use room_colours::RoomListColours;
 pub use room_links::{LinkDraft, LinkKind, RoomLink, Topic, describe_change, typed_link_url};
-pub use room_settings::{Banned, History, NotifyMode, RoomSettings, SpaceLink};
+pub use room_settings::{
+    Banned, History, NotifyAction, NotifyChoice, NotifyMode, RoomSettings, SpaceLink,
+};
+
 pub use rooms::{JoinAction, JoinRule, Membership, NewRoom, RoomKind, RoomListState, RoomSummary};
 pub use rows::{GROUP_GAP, MessageAction, MessageRow, Row, RowContext, rows};
 pub use scheduled::{ScheduledFile, ScheduledMessage};

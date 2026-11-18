@@ -606,6 +606,11 @@ final class FakeRoom: Room, @unchecked Sendable {
         session.settings.notify = mode
     }
 
+    override func mute(duration: MuteFor) async throws {
+        try session.change("mute \(duration)")
+        session.settings.notify = .mute
+    }
+
     override func setJoinRule(rule: JoinRule) async throws {
         try session.change("join rule \(rule)")
         session.settings.joinRule = rule
@@ -952,7 +957,8 @@ enum Make {
             .filter { $0 != .spaceMembers || inSpace || joinRule == .spaceMembers }
             .map { JoinRuleChoice(rule: $0, title: title($0), fact: fact($0)) }
         return RoomSettings(
-            rights: rights(canChange), notify: .all, notifyChoices: notifyChoices, joinRule: joinRule,
+            rights: rights(canChange), notify: .all, mutedUntil: nil, notifyTitle: "All messages",
+            notifyExplanation: "Every message notifies you.", notifyChoices: notifyChoices, joinRule: joinRule,
             joinRuleFact: fact(joinRule), joinRuleChoices: choices, address: address, listed: listed,
             history: .joined, historyChoices: historyChoices, permissions: .everyone,
             permissionsChoices: permissionsChoices, encrypted: encrypted, version: "12", spaces: spaces,
@@ -962,10 +968,12 @@ enum Make {
     /// The notification modes a room's settings offer, as the library words
     /// them.
     static let notifyChoices = [
-        NotifyChoice(mode: .all, title: "All messages", explanation: "Every message notifies you."),
-        NotifyChoice(
-            mode: .mentions, title: "Mentions", explanation: "Only mentions of you and your keywords notify you."),
-        NotifyChoice(mode: .mute, title: "Mute", explanation: "Nothing here notifies you."),
+        NotifyChoice(title: "All messages", action: .mode(mode: .all), current: true),
+        NotifyChoice(title: "Mentions", action: .mode(mode: .mentions), current: false),
+        NotifyChoice(title: "Mute for 1 hour", action: .mute(duration: .hour), current: false),
+        NotifyChoice(title: "Mute for 8 hours", action: .mute(duration: .eightHours), current: false),
+        NotifyChoice(title: "Mute until tomorrow, 08:00", action: .mute(duration: .tomorrowMorning), current: false),
+        NotifyChoice(title: "Mute until I unmute", action: .mute(duration: .untilUnmuted), current: false),
     ]
 
     /// Who may read the history, as the library words it.

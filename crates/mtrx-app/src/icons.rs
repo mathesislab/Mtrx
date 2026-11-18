@@ -942,6 +942,72 @@ impl<M> canvas::Program<M> for Lock {
     }
 }
 
+/// A bell struck through: muted, notifications paused.
+pub fn bell_slash<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    canvas::Canvas::new(Bell { color, slash: true })
+        .width(size)
+        .height(size)
+        .into()
+}
+
+struct Bell {
+    color: fn(&Theme) -> Color,
+    slash: bool,
+}
+
+impl<M> canvas::Program<M> for Bell {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        use std::f32::consts::PI;
+        let mut frame = Frame::new(renderer, bounds.size());
+        let s = bounds.width;
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        let stroke = Stroke::default()
+            .with_color((self.color)(theme))
+            .with_width((s / 10.0).max(1.0))
+            .with_line_cap(canvas::LineCap::Round)
+            .with_line_join(canvas::LineJoin::Round);
+        // The dome and its flared rim, then the clapper below.
+        let bell = Path::new(|path| {
+            path.move_to(p(0.16, 0.72));
+            path.quadratic_curve_to(p(0.27, 0.66), p(0.27, 0.56));
+            path.line_to(p(0.27, 0.42));
+            path.arc(canvas::path::Arc {
+                center: p(0.5, 0.42),
+                radius: 0.23 * s,
+                start_angle: iced::Radians(PI),
+                end_angle: iced::Radians(2.0 * PI),
+            });
+            path.line_to(p(0.73, 0.56));
+            path.quadratic_curve_to(p(0.73, 0.66), p(0.84, 0.72));
+            path.close();
+        });
+        frame.stroke(&bell, stroke);
+        let clapper = Path::new(|path| {
+            path.move_to(p(0.58, 0.76));
+            path.arc(canvas::path::Arc {
+                center: p(0.5, 0.76),
+                radius: 0.08 * s,
+                start_angle: iced::Radians(0.0),
+                end_angle: iced::Radians(PI),
+            });
+        });
+        frame.stroke(&clapper, stroke);
+        if self.slash {
+            frame.stroke(&Path::line(p(0.12, 0.1), p(0.88, 0.9)), stroke);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
 /// A notebook: notes to self.
 pub fn notebook<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
     canvas::Canvas::new(Notebook { color })

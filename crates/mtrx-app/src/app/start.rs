@@ -148,7 +148,7 @@ impl App {
             async move {
                 session.start_sync().await;
                 session.start_scheduler();
-                session.start_disappearing();
+                session.start_timers();
                 let list = session.room_list().await?;
                 let lists = session.room_lists(&list);
                 let verified = session.is_device_verified().await?;

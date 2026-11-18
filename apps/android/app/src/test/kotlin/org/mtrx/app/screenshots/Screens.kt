@@ -57,6 +57,7 @@ import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
+import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.NotifyMode
 import uniffi.mtrx.QuoteState
 import uniffi.mtrx.Permissions
@@ -339,7 +340,13 @@ val iceSettings = roomSettings(
     spaces = listOf(SpaceLink(spaceId = TEAM, suggested = true, canChange = true)),
     canAddTo = listOf(OUTREACH),
     banned = listOf(Banned(user = user("@spam:example.net", "Spammer"), reason = "Spam")),
-).copy(notify = NotifyMode.MENTIONS, history = History.INVITED, permissions = Permissions.MODERATORS)
+).copy(
+    notify = NotifyMode.MENTIONS,
+    notifyTitle = "Mentions",
+    notifyExplanation = "Only mentions of you and your keywords notify you.",
+    history = History.INVITED,
+    permissions = Permissions.MODERATORS,
+)
 
 val iceMembers = listOf(
     member(ME, "Me", level = 100, upTo = 99),
@@ -467,7 +474,7 @@ val audioMessages: List<Pair<TimelineRow, Playback>> = listOf(
 object NoRoomInfoActions : RoomInfoActions {
     override fun rename(name: String) {}
     override fun setTopic(draft: TopicDraft) {}
-    override fun setNotify(mode: NotifyMode) {}
+    override fun notify(action: NotifyAction) {}
     override fun setDisappearingMode(afterRead: Duration?) {}
     override fun setJoinRule(rule: JoinRule) {}
     override fun setListed(listed: Boolean) {}

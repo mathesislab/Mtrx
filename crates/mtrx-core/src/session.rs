@@ -62,8 +62,10 @@ pub struct Session {
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
     pub(crate) disappearing: Arc<crate::disappearing::Disappearances>,
     _disappearing_following: crate::disappearing::Following,
-    /// Set once [`Session::start_disappearing`] ran.
-    pub(crate) disappearer: std::sync::Mutex<Option<AbortOnDrop>>,
+    /// Rooms muted for a time, until when.
+    pub(crate) mutes: Arc<crate::account_data::RoomSynced<crate::TimedMute>>,
+    /// Set while [`Session::start_timers`] runs them.
+    timers: std::sync::Mutex<Option<[AbortOnDrop; 2]>>,
     pub(crate) disappearing_limit: crate::account_data::Synced<crate::DisappearingLimit>,
     pub(crate) notifications: broadcast::Sender<crate::Notification>,
     _notifier: EventHandlerDropGuard,
@@ -82,8 +84,8 @@ pub struct Session {
     /// Kept for the session: it follows push rule changes, so it knows a
     /// room's mode right after setting it (sync echoes it later).
     pub(crate) notification_settings: matrix_sdk::notification_settings::NotificationSettings,
-    /// Changes to rooms' modes, one after another in each room.
-    pub(crate) notify_turns: crate::room_settings::NotifyTurns,
+    /// Rooms' own modes, changed one after another in each room.
+    pub(crate) room_modes: crate::room_settings::RoomModes,
     /// Sets our presence and keeps it, see [`Session::set_presence`].
     pub(crate) presence_keeper: crate::presence::Keeper,
     pub(crate) own_presence: crate::OwnPresence,
@@ -204,6 +206,9 @@ impl Session {
         let disappearing = crate::disappearing::Disappearances::load(client.clone()).await?;
         let disappearing_following = disappearing.follow();
         let disappearing_limit = crate::account_data::Synced::load(client.clone()).await;
+        let mutes = Arc::new(crate::account_data::RoomSynced::load(client.clone()).await);
+        let room_modes =
+            crate::room_settings::RoomModes::new(client.clone(), notification_settings.clone());
         let outbox = Arc::new(crate::timeline::Outbox::new(disappearing.clone()));
         let schedule = Arc::new(Schedule::load(client.clone(), outbox.clone()).await?);
         let categories = crate::account_data::Synced::load(client.clone()).await;
@@ -232,7 +237,8 @@ impl Session {
             scheduler: Default::default(),
             disappearing,
             _disappearing_following: disappearing_following,
-            disappearer: Default::default(),
+            mutes,
+            timers: Default::default(),
             disappearing_limit,
             notifications,
             _notifier: notifier,
@@ -245,7 +251,7 @@ impl Session {
             listings: Default::default(),
             connection,
             notification_settings,
-            notify_turns: Default::default(),
+            room_modes,
             presence_keeper: presence_keeper.clone(),
             own_presence: crate::presence::own_presence(presence_keeper),
             profile,
@@ -262,6 +268,26 @@ impl Session {
     /// Stop syncing and persist the sync position.
     pub async fn stop_sync(&self) {
         self.sync.stop().await;
+    }
+
+    /// Delete our disappearing messages and end timed mutes when due,
+    /// until stopped or the session is dropped; those due while none ran
+    /// at once (timed mutes after the first sync).
+    pub fn start_timers(&self) {
+        let unmuter = crate::mute::Unmuter {
+            client: self.client.clone(),
+            sync: self.sync.clone(),
+            modes: self.room_modes.clone(),
+            mutes: self.mutes.clone(),
+        };
+        let timers = [self.disappearing.start(), unmuter.start()];
+        *self.timers.lock().expect("not poisoned") = Some(timers);
+    }
+
+    /// Stop the timers until [`Session::start_timers`] (a phone app went
+    /// to the background).
+    pub fn stop_timers(&self) {
+        *self.timers.lock().expect("not poisoned") = None;
     }
 
     /// Log out on the server and delete all local data of the profile.

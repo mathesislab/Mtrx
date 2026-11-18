@@ -3104,7 +3104,7 @@ async fn disappearing_messages() -> Result<()> {
     })
     .await?;
     let bob_timeline = bob.session.timeline(&room).await?;
-    alice.session.start_disappearing();
+    alice.session.start_timers();
     let secs = Duration::from_secs;
 
     // Gone 2 s after bob read it, not before.
@@ -3178,5 +3178,131 @@ async fn disappearing_messages() -> Result<()> {
     assert_eq!(handle.disappearing_mode(), None, "stays off");
     alice.session.set_disappearing_limit(secs(6 * 3600)).await?;
     assert_eq!(alice.session.disappearing_limit().at_most, secs(6 * 3600));
+    Ok(())
+}
+
+/// Until `done` says so, asked every 200 ms.
+async fn eventually<F: Future<Output = bool>>(
+    what: &str,
+    mut done: impl FnMut() -> F,
+) -> Result<()> {
+    timeout(what, async {
+        while !done().await {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn timed_mutes() -> Result<()> {
+    let (name, a) = new_user("mute").await?;
+    let b = login(&name).await?;
+    let new_room = |name: &str| NewRoom {
+        name: Some(name.into()),
+        ..Default::default()
+    };
+    let room = a.session.create_room(new_room("muted")).await?;
+    let follows = a.session.create_room(new_room("default")).await?;
+    let list = a.session.room_list().await?;
+    wait_for("rooms synced", list.updates(), |state| {
+        [&room, &follows]
+            .iter()
+            .all(|id| state.rooms.iter().any(|r| &r.id == *id))
+    })
+    .await?;
+    let b_list = b.session.room_list().await?;
+    wait_for("rooms synced on b", b_list.updates(), |state| {
+        state.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    let handle = a.session.room(&room)?;
+    let live = timeout("settings read", handle.settings()).await?;
+    handle.set_notify(NotifyMode::Mentions).await?;
+    let secs = Duration::from_secs;
+
+    // Muted until a few seconds ahead, with both devices' timers running:
+    // the rule and the record at once.
+    a.session.start_timers();
+    b.session.start_timers();
+    let until = SystemTime::now() + secs(4);
+    handle.mute_until_for_test(until).await?;
+    let shown = live.get();
+    assert_eq!(shown.notify, NotifyMode::Mute);
+    assert!(shown.muted_until.is_some());
+    assert!(
+        shown.notify_title.starts_with("Muted until "),
+        "{}",
+        shown.notify_title
+    );
+    assert!(
+        shown.notify_explanation.ends_with(", then mentions only."),
+        "{}",
+        shown.notify_explanation
+    );
+    assert_eq!(shown.notify_choices.len(), 6);
+    let (own, record) = handle.own_notify_for_test().await;
+    assert_eq!(own, Some(NotifyMode::Mute));
+    assert_eq!(record.map(|r| r.before), Some(Some(NotifyMode::Mentions)));
+    let lists = a.session.room_lists(&list);
+    wait_for("muted in the room list", lists.updates(), |lists| {
+        lists.muted.get(&room).is_some_and(|end| end.is_some())
+    })
+    .await?;
+
+    // Once due, Mentions again and no record, on both devices.
+    let b_handle = b.session.room(&room)?;
+    for handle in [&handle, &b_handle] {
+        eventually("unmuted with its mode", || async move {
+            handle.own_notify_for_test().await == (Some(NotifyMode::Mentions), None)
+        })
+        .await?;
+    }
+    wait_for("settings unmuted", live.updates(), |s| {
+        s.notify == NotifyMode::Mentions && s.muted_until.is_none()
+    })
+    .await?;
+    wait_for("not muted in the room list", lists.updates(), |lists| {
+        !lists.muted.contains_key(&room)
+    })
+    .await?;
+
+    // A room following the default follows it again, with no rule of its
+    // own.
+    let default = &a.session.room(&follows)?;
+    assert_eq!(default.own_notify_for_test().await, (None, None));
+    default
+        .mute_until_for_test(SystemTime::now() + secs(3))
+        .await?;
+    assert_eq!(
+        default.own_notify_for_test().await.0,
+        Some(NotifyMode::Mute)
+    );
+    eventually("following the default again", || async move {
+        default.own_notify_for_test().await == (None, None)
+    })
+    .await?;
+
+    // Due while no timer ran: a new session ends it after its first sync.
+    a.session.stop_timers();
+    b.session.stop_timers();
+    handle
+        .mute_until_for_test(SystemTime::now() + secs(1))
+        .await?;
+    tokio::time::sleep(secs(3)).await;
+    assert_eq!(handle.own_notify_for_test().await.0, Some(NotifyMode::Mute));
+    let c = login(&name).await?;
+    let c_list = c.session.room_list().await?;
+    wait_for("rooms synced on c", c_list.updates(), |state| {
+        state.rooms.iter().any(|r| r.id == room)
+    })
+    .await?;
+    c.session.start_timers();
+    let c_handle = &c.session.room(&room)?;
+    eventually("unmuted by the new session", || async move {
+        c_handle.own_notify_for_test().await == (Some(NotifyMode::Mentions), None)
+    })
+    .await?;
     Ok(())
 }
