@@ -524,7 +524,7 @@ Differences from the design above.
 **Core and FFI**
 - Cache names: `<server>_<media id>.<ext>` as fetched, `<server>_<media id>.wav` decoded. Partial files (`.part`) are left alone by the limit; those not written for an hour (a crash) go.
 - A finished cache download that needs no converting comes back as its own path, not copied.
-- No Element Web fixture yet: no recording was at hand. The sine test (exact length, frequency), a cut-off file, mapping family 1, Ogg Vorbis and MP3 are covered.
+- No recorded fixture: the Element Web voice message is built from the spec. Its event JSON has the MSC3245 and MSC1767 blocks, and its Ogg Opus is encoded in the test as Element Web's recorder does (VoIP, 24 kb/s, 20 ms packets, 40 to a page); it converts to the event's length. A real recording can replace it later.
 - "Two calls fetch once" is in the integration test. `test_support::ogg_opus_sine` makes the Ogg Opus files; core's own tests always build with `opus`.
 - FFI `Media` is no longer `Eq` or `Hash` (the waveform is `f32`). Its new fields are `#[uniffi(default)]`, so the apps' existing `Media(…)` calls compile. `audio_file`, `AudioProgress` and `playback_time` are in `ffi/audio.rs`.
 
@@ -549,9 +549,9 @@ Differences from the design above.
 - Tests: releasing the model stands for `Stop`; one more covers cancel and retry.
 
 **Android**
-- `AudioPlayer` takes an `AudioOutput` (focus and headphones) instead of a `Context`; `SystemAudioOutput` is built from the application context in `Navigation.kt` and passed to `TimelineViewModel`. The JVM tests use fakes, without Robolectric.
+- `AudioPlayer` takes an `AudioOutput` (focus and headphones) instead of a `Context`. The JVM tests use fakes, without Robolectric.
+- The player lives with the room, not with `TimelineViewModel`: `RoomAudio`, held by `SignedInNavigation`, gives the open room's player to its timeline, so it plays on while Room info shows over the room (Room info is its own screen, which ends the timeline's composition). It's released once the room is no longer open on Chats or Rooms, or another room's timeline shows. The activity's `ON_STOP` pauses it.
 - `Playback` has defaults and `stateOf`, `positionOf`, `durationOf`. At its end a message is paused at 0, keeping its player.
 - `pause()` while fetching cancels the fetch. Refused focus (a call) leaves it paused; any loss of focus pauses (`setWillPauseWhenDucked`).
 - After a failure the reason is a line below the row. A voice message without a waveform gets the slider. TalkBack also reads "Cancel loading", "Try again" and "0:12 of 0:42".
 - The rows take the time format through `LocalPlaybackTime`, so the screenshots don't load the native library.
-- Room info is its own screen, so opening it stops playback (on iOS it keeps playing over the room).
