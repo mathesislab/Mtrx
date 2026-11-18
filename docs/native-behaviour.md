@@ -70,10 +70,12 @@ per day:
       to the first and last message on screen.
 - [x] Page Up/Down and ⌥↑/⌥↓ scroll the timeline; ⌘↑/⌘↓ go to the oldest
       loaded and the newest message (when the composer does not take them).
+      The composer passes Page Up/Down on, so they scroll from it too.
 - [x] ⌥⌘↑ and ⌥⌘↓ (or ⌃Tab and ⌃⇧Tab) go to the room above and below;
       ⌘1–⌘9 to the first nine rooms.
 - [x] ⌘F: find in the room's loaded messages (`find.rs`). Counted from
       the newest; Enter and ⌘G go to older matches.
+- [x] A room opens (or is chosen again) with the cursor in its composer.
 - [x] Typing with nothing focused goes to the composer.
 - [x] ↑ in an empty composer edits our last message.
 

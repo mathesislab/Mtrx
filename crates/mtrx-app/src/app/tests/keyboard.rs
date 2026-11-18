@@ -351,8 +351,8 @@ impl Ui {
 }
 
 /// Page Up and ⌥↑ scroll the timeline up a page, Page Down and ⌥↓ down;
-/// ⌘↑ goes to the oldest loaded message, ⌘↓ to the newest. Not while the
-/// composer has the keys.
+/// ⌘↑ goes to the oldest loaded message, ⌘↓ to the newest. While the
+/// composer has the keys, only Page Up and Page Down.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn keys_scroll_the_timeline() {
@@ -380,13 +380,13 @@ async fn keys_scroll_the_timeline() {
     ui.press(Named::ArrowDown, Modifiers::COMMAND);
     assert_near(ui.scrolled(), all - view);
 
-    // The composer takes them.
+    // The composer takes the arrows, and passes on the page keys.
     ui.run(iced::widget::operation::focus(message_field::COMPOSER));
-    assert_eq!(
-        ui.press(Named::PageUp, Modifiers::empty()),
-        Status::Captured
-    );
+    assert_eq!(ui.press(Named::ArrowUp, Modifiers::ALT), Status::Captured);
     assert_near(ui.scrolled(), all - view);
+    assert_eq!(ui.press(Named::PageUp, Modifiers::empty()), Status::Ignored);
+    assert_near(ui.scrolled(), all - view - page);
+    assert!(ui.composer_focused());
 }
 
 /// Offsets, to within rounding.
@@ -563,6 +563,29 @@ async fn typing_with_nothing_focused_goes_to_the_composer() {
         Status::Ignored
     );
     assert_eq!(ui.room().composer.text(), "Ok");
+}
+
+/// A room that opens, or is chosen again, has the cursor in its composer.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_room_opens_with_the_cursor_in_the_composer() {
+    let (mut ui, _dir) = room_with("cursor", &["Hello"]).await;
+    let id = ui.room().id.clone();
+    let timeline = ui.room().timeline.clone();
+    assert!(!ui.composer_focused());
+
+    ui.main().pane.shown = Shown::Opening(id.clone());
+    ui.update(Message::Pane(pane::Message::Opened(
+        id.clone(),
+        Ok(Shared(timeline)),
+    )));
+    assert!(ui.composer_focused());
+
+    // Chosen again after a click elsewhere.
+    ui.run(iced::widget::operation::focus("nothing"));
+    assert!(!ui.composer_focused());
+    ui.update(Message::Pane(pane::Message::Open(id)));
+    assert!(ui.composer_focused());
 }
 
 /// ↑ in the empty composer edits our newest message; not with a draft, nor
