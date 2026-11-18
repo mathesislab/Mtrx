@@ -20,6 +20,8 @@ annotation = "1.9.1"
 jna = "5.17.0"
 # UnifiedPush (docs/mobile.md, section 10): PushService and UnifiedPush.register.
 unifiedpush = "3.3.5"
+# Converting videos to send, with the system's encoders (docs/reducing-media.md).
+media3 = "1.11.1"
 junit = "4.13.2"
 # Android's org.json for the JVM unit tests (android.jar has only stubs).
 json = "20250517"
@@ -50,6 +52,7 @@ androidx-compose-material-icons-core = { group = "androidx.compose.material", na
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 unifiedpush-connector = { group = "org.unifiedpush.android", name = "connector", version.ref = "unifiedpush" }
+androidx-media3-transformer = { group = "androidx.media3", name = "media3-transformer", version.ref = "media3" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 json = { group = "org.json", name = "json", version.ref = "json" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }

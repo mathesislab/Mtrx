@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import org.mtrx.app.rooms.SectionPrefs
+import uniffi.mtrx.MediaQuality
 import uniffi.mtrx.SpaceKey
 
 /** What the app shows, kept across launches (as the desktop's `view.json`). */
@@ -31,6 +32,15 @@ fun roomSortStore(data: DataStore<Preferences>): PreferenceStore<RoomSort> =
 /** "Share my presence" in [data]. */
 fun sharePresenceStore(data: DataStore<Preferences>): PreferenceStore<Boolean> =
     DataStoreFlag(data, booleanPreferencesKey("share_presence"))
+
+/** How photos and videos are sent from this phone ("Photos and videos"), in [data]. */
+fun mediaQualityStore(data: DataStore<Preferences>): PreferenceStore<MediaQuality> =
+    DataStoreText<MediaQuality>(
+        data,
+        stringPreferencesKey("media_quality"),
+        encode = { it.name },
+        decode = { saved -> MediaQuality.entries.firstOrNull { it.name == saved } },
+    )
 
 /**
  * How this phone arranges the spaces' sections, in [data]: a JSON object

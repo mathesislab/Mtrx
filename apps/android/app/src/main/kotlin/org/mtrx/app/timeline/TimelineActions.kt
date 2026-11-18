@@ -1,7 +1,6 @@
 package org.mtrx.app.timeline
 
 import java.time.Duration
-import uniffi.mtrx.FileToSend
 import uniffi.mtrx.Media
 
 /**
@@ -29,7 +28,7 @@ interface TimelineActions {
     fun send(): Boolean
 
     /** A file picked to send, which [prepare] makes ([prepareToSend]): its card shows at once, ready once made. */
-    fun attach(prepare: suspend () -> FileToSend)
+    fun attach(prepare: Prepare)
 
     /** Take picked file [id] away: it is not sent, and its copy goes. */
     fun detach(id: String)

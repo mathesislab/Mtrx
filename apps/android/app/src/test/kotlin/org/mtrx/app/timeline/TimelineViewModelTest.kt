@@ -12,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
@@ -35,6 +36,7 @@ import uniffi.mtrx.Draft
 import uniffi.mtrx.FileToSend
 import uniffi.mtrx.Media
 import uniffi.mtrx.MediaKind
+import uniffi.mtrx.MediaQuality
 import uniffi.mtrx.Message
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.MtrxException
@@ -44,6 +46,7 @@ import uniffi.mtrx.RowContent
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.Upload
 import uniffi.mtrx.User
+import uniffi.mtrx.VideoPlan
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TimelineViewModelTest {
@@ -64,11 +67,14 @@ class TimelineViewModelTest {
 
     private val room = "!room:example.org"
 
-    private fun viewModel() = TimelineViewModel(room, session, onRead = { reads++ })
+    /** This phone's "Photos and videos". */
+    private val quality = MutableStateFlow(MediaQuality.REDUCED)
+
+    private fun viewModel() = TimelineViewModel(room, session, quality, onRead = { reads++ })
 
     /** [roomId]'s model in [store]: clearing it leaves the room. */
     private fun open(roomId: String, store: ViewModelStore = ViewModelStore()): TimelineViewModel {
-        val factory = viewModelFactory { initializer { TimelineViewModel(roomId, session, onRead = {}) } }
+        val factory = viewModelFactory { initializer { TimelineViewModel(roomId, session, quality, onRead = {}) } }
         return ViewModelProvider(store, factory)[TimelineViewModel::class.java]
     }
 
@@ -213,6 +219,56 @@ class TimelineViewModelTest {
         assertEquals(listOf("mine" to "mine, edited"), timeline.edits)
         assertEquals(emptyList<List<String>>(), timeline.files)
         assertEquals(1, viewModel.picked.value.size)
+    }
+
+    @Test
+    fun picksAndSendsAsThisPhonesSettingSaysThen() = runTest {
+        val viewModel = viewModel()
+        val preparations = mutableListOf<Preparation>()
+        viewModel.attach { preparation ->
+            preparations += preparation
+            copy("a.jpg")
+        }
+        viewModel.onDraft("reduced")
+        assertTrue(viewModel.send())
+        quality.value = MediaQuality.ORIGINAL
+        viewModel.attach { preparation ->
+            preparations += preparation
+            copy("b.jpg")
+        }
+        viewModel.onDraft("as taken")
+        assertTrue(viewModel.send())
+        assertEquals(listOf(MediaQuality.REDUCED, MediaQuality.ORIGINAL), preparations.map { it.quality })
+        assertEquals(listOf(MediaQuality.REDUCED, MediaQuality.ORIGINAL), timeline.qualities)
+    }
+
+    @Test
+    fun aVideosConversionShowsOnItsCardAndOneTooLongSaysWhy() = runTest {
+        val viewModel = viewModel()
+        val made = CompletableDeferred<FileToSend>()
+        viewModel.attach { preparation ->
+            preparation.progress(0.4f)
+            made.await()
+        }
+        assertEquals("Preparing… 40%", preparing(viewModel.picked.value.single().progress))
+        made.complete(copy("clip.mp4"))
+        assertEquals("clip.mp4", viewModel.picked.value.single().file?.filename)
+        assertEquals("Preparing…", preparing(null))
+
+        val tooLong = "Too long to send: the server takes at most 50.0 MB (about 10 minutes)"
+        viewModel.attach { throw MtrxException.Other(tooLong) }
+        assertEquals(1, viewModel.picked.value.size)
+        assertEquals(tooLong, viewModel.error.value)
+    }
+
+    @Test
+    fun aVideosPlanIsAskedForWithItsNumbersWhichGoToTheEncoders() = runTest {
+        val plan = VideoPlan(1280u, 720u, 30f, 1_935_360u, 128_000u)
+        session.plan = plan
+        assertEquals(plan, planVideo(VideoSource(3840, 2160, 60f, 12_500, 80_000_000), session))
+        assertEquals(listOf(listOf<Any>(3840u, 2160u, 60f, 12_500uL, 80_000_000uL)), session.planned)
+        assertEquals(1_935_360, videoEncoderSettings(plan).bitrate)
+        assertEquals(128_000, audioEncoderSettings(plan).bitrate)
     }
 
     @Test
@@ -421,7 +477,7 @@ class TimelineViewModelTest {
     @Test
     fun leavingTheRoomStopsTypingButNotSending() = runTest {
         val store = ViewModelStore()
-        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session, onRead = {}) } }
+        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session, quality, onRead = {}) } }
         val viewModel = ViewModelProvider(store, factory)[TimelineViewModel::class.java]
         val gate = CompletableDeferred<Unit>()
         timeline.gate = gate
@@ -622,7 +678,7 @@ class TimelineViewModelTest {
 
     @Test
     fun aMessageIsPinned() = runTest {
-        val viewModel = TimelineViewModel("!a:x", session, onRead = {})
+        val viewModel = TimelineViewModel("!a:x", session, quality, onRead = {})
         viewModel.setPinned("\$1", true)
         viewModel.setPinned("\$1", false)
         assertEquals(listOf("pin \$1", "unpin \$1"), session.roomCalls)

@@ -65,7 +65,6 @@ import java.io.IOException
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import uniffi.mtrx.FileToSend
 
 /**
  * The paperclip left of the message field: a menu of "Photos and videos"
@@ -78,7 +77,7 @@ import uniffi.mtrx.FileToSend
 @Composable
 internal fun AttachButton(
     enabled: Boolean,
-    onAttach: (prepare: suspend () -> FileToSend) -> Unit,
+    onAttach: (prepare: Prepare) -> Unit,
     onError: (String) -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -127,9 +126,11 @@ internal fun AttachButton(
 private class Pickers(val media: () -> Unit, val files: () -> Unit, val camera: ((video: Boolean) -> Unit)?)
 
 @Composable
-private fun rememberPickers(onAttach: (prepare: suspend () -> FileToSend) -> Unit, onError: (String) -> Unit): Pickers {
+private fun rememberPickers(onAttach: (prepare: Prepare) -> Unit, onError: (String) -> Unit): Pickers {
     val app = LocalContext.current.applicationContext
-    val attach by rememberUpdatedState<(Picked) -> Unit>({ picked -> onAttach { prepareToSend(app, picked) } })
+    val attach by rememberUpdatedState<(Picked) -> Unit>({ picked ->
+        onAttach { preparation -> prepareToSend(app, picked, preparation) }
+    })
     val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
         uris.forEach { attach(Picked.Media(it)) }
     }
@@ -169,7 +170,8 @@ private fun rememberPickers(onAttach: (prepare: suspend () -> FileToSend) -> Uni
 /**
  * The files picked to send, above the message field, like the desktop's
  * chips: a card each with its picture (or a file's symbol), its name, and ✕
- * ([onRemove]); "Preparing…" until its copy is made.
+ * ([onRemove]); "Preparing…" until its copy is made, with how far a video's
+ * conversion is ("Preparing… 40%").
  */
 @Composable
 internal fun PickedFileCards(files: List<PickedFile>, onRemove: (String) -> Unit) {
@@ -213,7 +215,7 @@ private fun PickedFileCard(card: PickedFile, onRemove: () -> Unit) {
                 }
             }
             Text(
-                file?.filename ?: "Preparing…",
+                file?.filename ?: preparing(card.progress),
                 Modifier
                     .padding(start = 8.dp)
                     .widthIn(max = 140.dp),
@@ -232,6 +234,10 @@ private fun PickedFileCard(card: PickedFile, onRemove: () -> Unit) {
         }
     }
 }
+
+/** What a card says while its file is prepared: how far a video's conversion is, if it is converted. */
+internal fun preparing(progress: Float?): String =
+    if (progress == null) "Preparing…" else "Preparing… ${(progress * 100).roundToInt()}%"
 
 /** While a message's file uploads ([fraction] of it sent), a ring that fills as it goes; nothing otherwise. */
 @Composable

@@ -29,6 +29,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mtrx.app.model.AccountState
 import uniffi.mtrx.EventContent
+import uniffi.mtrx.MediaQuality
 import uniffi.mtrx.Mtrx
 import uniffi.mtrx.RoomLists
 import uniffi.mtrx.RoomListsListener
@@ -185,7 +186,7 @@ class PushEndToEndTest {
             }
         })
         // Not disappearing.
-        timeline.send(text, emptyList(), null, null)
+        timeline.send(text, emptyList(), null, null, MediaQuality.ORIGINAL)
         val eventId = waitFor("the sent event's ID") {
             latest.get().firstNotNullOfOrNull { row ->
                 val event = (row.content as? RowContent.Message)?.event ?: return@firstNotNullOfOrNull null

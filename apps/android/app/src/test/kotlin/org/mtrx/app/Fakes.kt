@@ -20,6 +20,7 @@ import org.mtrx.app.model.PusherDevice
 import org.mtrx.app.model.RoomNotifications
 import org.mtrx.app.model.RoomSort
 import org.mtrx.app.model.MemoryStore
+import org.mtrx.app.model.Preference
 import org.mtrx.app.model.PreferenceStore
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
@@ -72,6 +73,8 @@ import uniffi.mtrx.MessageAction
 import uniffi.mtrx.MessageKind
 import uniffi.mtrx.DownloadsListener
 import uniffi.mtrx.Media
+import uniffi.mtrx.MediaQuality
+import uniffi.mtrx.MediaQualityChoice
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.NoHandle
@@ -103,6 +106,7 @@ import uniffi.mtrx.SpaceKey
 import uniffi.mtrx.SendState
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
+import uniffi.mtrx.VideoPlan
 import uniffi.mtrx.Topic
 import uniffi.mtrx.Timeline
 import uniffi.mtrx.TimelineEvent
@@ -322,6 +326,15 @@ class FakeSession : Session(NoHandle) {
     }
 
     override suspend fun timeline(roomId: String): Timeline = roomTimeline
+
+    /** What [videoPlan] gives, and the videos it was asked for: (width, height, fps, duration ms, bytes). */
+    var plan: VideoPlan? = null
+    val planned = mutableListOf<List<Any>>()
+
+    override suspend fun videoPlan(width: UInt, height: UInt, fps: Float, durationMs: ULong, size: ULong): VideoPlan? {
+        planned += listOf(width, height, fps, durationMs, size)
+        return plan
+    }
 
     override suspend fun userProfile(userId: String): User {
         profileGate?.await()
@@ -648,6 +661,12 @@ val DISAPPEAR_CHOICES: List<DisappearChoice> = listOf(DisappearChoice(null, "Off
         Duration.ofHours(1) to "1 hour",
         Duration.ofDays(1) to "1 day",
     ).map { (afterRead, words) -> DisappearChoice(afterRead, words, "$words after read") }
+
+/** "Photos and videos", as the library words it (`mediaQualityChoices`). */
+val MEDIA_CHOICES: List<MediaQualityChoice> = listOf(
+    MediaQualityChoice(MediaQuality.REDUCED, "Reduced", "Photos up to 1 MB, videos at 720p. Location data is left out."),
+    MediaQualityChoice(MediaQuality.ORIGINAL, "Original", "As taken, with the photo's details such as its location."),
+)
 
 /** The limits Settings offers, as the library words them (`disappearingLimitChoices`). */
 val LIMIT_CHOICES: List<LimitChoice> = listOf(
@@ -1048,17 +1067,27 @@ class FakeTimeline : Timeline(NoHandle) {
     /** How each text and reply sent disappears (null: not), in order. */
     val disappearing = mutableListOf<Duration?>()
 
+    /** How each text and reply sent sends its photos, in order. */
+    val qualities = mutableListOf<MediaQuality>()
+
     /** The names of the files sent with each text or reply, in order. */
     val files = mutableListOf<List<String>>()
     var uploadsListener: UploadsListener? = null
 
     /** A new message's text in [sent], a reply's in [replies]. */
-    override suspend fun send(text: String, files: List<FileToSend>, replyTo: String?, disappearAfterRead: Duration?) {
+    override suspend fun send(
+        text: String,
+        files: List<FileToSend>,
+        replyTo: String?,
+        disappearAfterRead: Duration?,
+        quality: MediaQuality,
+    ) {
         gate?.await()
         sendError?.let { throw it }
         if (replyTo == null) sent += text else replies += replyTo to text
         this.files += files.map { it.filename }
         disappearing += disappearAfterRead
+        qualities += quality
     }
 
     override fun subscribeUploads(listener: UploadsListener): TaskHandle {
@@ -1465,9 +1494,22 @@ fun testAccount(
     notifications: RoomNotifications = FakeNotifier(),
     sharePresence: PreferenceStore<Boolean> = MemoryStore(),
     sections: PreferenceStore<Map<String, SectionPrefs>> = MemoryStore(),
+    mediaQuality: PreferenceStore<MediaQuality> = MemoryStore(),
     network: NetworkMonitor = FakeNetwork(),
     log: FakeLog = FakeLog(),
-): Account = Account(mtrx, scope, spaces, sort, push, notifications, sharePresence, sections, network, log)
+): Account = Account(
+    mtrx,
+    scope,
+    spaces,
+    sort,
+    push,
+    notifications,
+    sharePresence,
+    sections,
+    Preference(mediaQuality, MediaQuality.REDUCED, scope),
+    network,
+    log,
+)
 
 /** The account's open session; signed in. */
 val Account.signedIn: SignedInSession get() = (state.value as AccountState.SignedIn).session

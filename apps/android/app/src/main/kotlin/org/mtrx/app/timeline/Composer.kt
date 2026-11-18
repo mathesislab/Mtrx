@@ -44,7 +44,6 @@ import androidx.compose.ui.unit.dp
 import java.time.Duration
 import org.mtrx.app.ui.MtrxIcons
 import uniffi.mtrx.DisappearChoice
-import uniffi.mtrx.FileToSend
 
 /** Who else is typing, in a line whose height stays while nobody is. */
 @Composable
@@ -81,7 +80,7 @@ internal fun Composer(
     onDraft: (String) -> Unit,
     onCancel: () -> Unit,
     onDisappear: (Duration?) -> Unit,
-    onAttach: (prepare: suspend () -> FileToSend) -> Unit,
+    onAttach: (prepare: Prepare) -> Unit,
     onDetach: (String) -> Unit,
     onError: (String) -> Unit,
     onSend: () -> Unit,
