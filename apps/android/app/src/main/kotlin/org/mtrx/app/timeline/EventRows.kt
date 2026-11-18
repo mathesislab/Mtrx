@@ -107,7 +107,15 @@ internal class RowHandlers(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, download: Download?, handlers: RowHandlers) {
+internal fun EventBubble(
+    row: EventRow,
+    images: Images,
+    highlighted: Boolean,
+    download: Download?,
+    /** How much of its file is sent, while it uploads. */
+    upload: Float?,
+    handlers: RowHandlers,
+) {
     val event = row.event
     val own = event.own
     val name = event.sender.displayName
@@ -178,6 +186,7 @@ internal fun EventBubble(row: EventRow, images: Images, highlighted: Boolean, do
                                 row.undecryptableText,
                                 colors,
                                 download,
+                                upload,
                                 onOpenLink = handlers.openLink,
                                 onShowPerson = handlers.showPerson,
                                 onCancelDownload = handlers.cancelDownload,
@@ -381,6 +390,7 @@ private fun MessageBody(
     undecryptableText: String,
     colors: BubbleColors,
     download: Download?,
+    upload: Float?,
     onOpenLink: (String) -> Unit,
     onShowPerson: (String, String) -> Unit,
     onCancelDownload: (ULong) -> Unit,
@@ -404,10 +414,16 @@ private fun MessageBody(
                     Box(contentAlignment = Alignment.Center) {
                         MediaPreview(media, images)
                         DownloadProgress(download, onCancelDownload, onOpenFile)
+                        UploadRing(upload)
                     }
                     if (message.text.isNotEmpty()) text(Modifier.padding(top = 6.dp))
                 }
-                media != null -> FileRow(media, download, secondary, onCancelDownload, onOpenFile)
+                media != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f, fill = false)) {
+                        FileRow(media, download, secondary, onCancelDownload, onOpenFile)
+                    }
+                    UploadRing(upload)
+                }
                 else -> text(Modifier)
             }
         }

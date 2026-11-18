@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import java.time.Duration
 import org.mtrx.app.ui.MtrxIcons
 import uniffi.mtrx.DisappearChoice
+import uniffi.mtrx.FileToSend
 
 /** Who else is typing, in a line whose height stays while nobody is. */
 @Composable
@@ -62,21 +63,27 @@ internal fun TypingLine(text: String) {
 }
 
 /**
- * The composer: the bar of a reply or an edit, the text, the hourglass
- * (what is sent disappears [disappearAfterRead] after everyone has read
- * it, said in [disappearWords], one of [disappearChoices], chosen with
- * [onDisappear]) and Send.
+ * The composer: the bar of a reply or an edit, the files [picked] to send
+ * (cards; ✕ calls [onDetach]), the paperclip (what is picked goes to
+ * [onAttach]; not during an edit), the text, the hourglass (what is sent
+ * disappears [disappearAfterRead] after everyone has read it, said in
+ * [disappearWords], one of [disappearChoices], chosen with [onDisappear])
+ * and Send, with text or files alone.
  */
 @Composable
 internal fun Composer(
     draft: String,
     composing: Composing?,
+    picked: List<PickedFile>,
     disappearAfterRead: Duration?,
     disappearWords: String,
     disappearChoices: List<DisappearChoice>,
     onDraft: (String) -> Unit,
     onCancel: () -> Unit,
     onDisappear: (Duration?) -> Unit,
+    onAttach: (prepare: suspend () -> FileToSend) -> Unit,
+    onDetach: (String) -> Unit,
+    onError: (String) -> Unit,
     onSend: () -> Unit,
 ) {
     // Typed here; set from outside (an edit starts, a send clears), the cursor goes to the end.
@@ -127,6 +134,7 @@ internal fun Composer(
                     }
                 }
             }
+            if (picked.isNotEmpty()) PickedFileCards(picked, onDetach)
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -135,6 +143,7 @@ internal fun Composer(
                     .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                AttachButton(enabled = composing !is Composing.Editing, onAttach = onAttach, onError = onError)
                 OutlinedTextField(
                     value = shown,
                     onValueChange = {
@@ -149,7 +158,7 @@ internal fun Composer(
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 )
                 DisappearButton(disappearAfterRead, disappearWords, disappearChoices, onDisappear)
-                IconButton(onClick = onSend, enabled = draft.isNotBlank()) {
+                IconButton(onClick = onSend, enabled = canSend(draft, composing, picked)) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                 }
             }

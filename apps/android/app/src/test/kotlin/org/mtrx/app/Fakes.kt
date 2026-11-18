@@ -56,6 +56,7 @@ import uniffi.mtrx.SpaceLink
 import uniffi.mtrx.ConnectionState
 import uniffi.mtrx.DeviceInfo
 import uniffi.mtrx.Draft
+import uniffi.mtrx.FileToSend
 import uniffi.mtrx.DraftKeeper
 import uniffi.mtrx.EncryptionState
 import uniffi.mtrx.EncryptionStateListener
@@ -108,6 +109,7 @@ import uniffi.mtrx.TimelineEvent
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.TimelineRowsListener
 import uniffi.mtrx.TypingListener
+import uniffi.mtrx.UploadsListener
 import uniffi.mtrx.User
 import uniffi.mtrx.Verification
 import uniffi.mtrx.VerificationListener
@@ -1046,16 +1048,22 @@ class FakeTimeline : Timeline(NoHandle) {
     /** How each text and reply sent disappears (null: not), in order. */
     val disappearing = mutableListOf<Duration?>()
 
-    override suspend fun sendText(text: String, disappearAfterRead: Duration?) {
+    /** The names of the files sent with each text or reply, in order. */
+    val files = mutableListOf<List<String>>()
+    var uploadsListener: UploadsListener? = null
+
+    /** A new message's text in [sent], a reply's in [replies]. */
+    override suspend fun send(text: String, files: List<FileToSend>, replyTo: String?, disappearAfterRead: Duration?) {
         gate?.await()
         sendError?.let { throw it }
-        sent += text
+        if (replyTo == null) sent += text else replies += replyTo to text
+        this.files += files.map { it.filename }
         disappearing += disappearAfterRead
     }
 
-    override suspend fun reply(itemId: String, text: String, disappearAfterRead: Duration?) = action {
-        replies += itemId to text
-        disappearing += disappearAfterRead
+    override fun subscribeUploads(listener: UploadsListener): TaskHandle {
+        uploadsListener = listener
+        return FakeHandle()
     }
 
     override suspend fun edit(itemId: String, text: String) = action { edits += itemId to text }
