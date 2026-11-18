@@ -3,8 +3,9 @@ import Foundation
 import MtrxFFI
 
 /// A room's timeline while it is shown: its rows, loading older messages,
-/// sending (to disappear, if so chosen), replying, editing and acting on
-/// messages, who types, and marking it read.
+/// sending (with photos, videos and files; to disappear, if so chosen) and
+/// its uploads, replying, editing and acting on messages, who types, and
+/// marking it read.
 @MainActor
 final class TimelineModel: ObservableObject {
     /// Older messages loaded per request.
@@ -39,6 +40,12 @@ final class TimelineModel: ObservableObject {
     @Published private(set) var compose: Compose? {
         didSet { drafts.changed(draft: keptDraft) }
     }
+    /// Photos, videos and files picked to send with the next message (not
+    /// an edit), in the order picked: each a copy in the cache once
+    /// prepared (`Outgoing`).
+    @Published private(set) var picked: [PickedFile] = []
+    /// The files uploading for messages sent here, for their bubbles.
+    let uploads = UploadsModel()
     /// What is sent from now on (replies too, not edits) disappears this
     /// long after everyone has read it; nil: it doesn't. The room's mode
     /// until one is chosen in the composer, which holds while the room is
@@ -89,6 +96,8 @@ final class TimelineModel: ObservableObject {
     /// How long after read was chosen in the composer: the room's mode no
     /// longer applies.
     private var choseDisappear = false
+    /// The picked files being prepared, by their card.
+    private var preparing: [UUID: Task<Void, Never>] = [:]
 
     init(session: Session, room: RoomSummary) {
         self.session = session
@@ -115,6 +124,7 @@ final class TimelineModel: ObservableObject {
             work.follow(timeline.subscribeRows(listener: feed), feed) { [weak self] rows in
                 self?.apply(rows)
             }
+            uploads.follow(timeline)
             let room = try session.room(roomId: roomId)
             let modes = Feed<TimeInterval?>()
             work.follow(room.subscribeDisappearingMode(listener: modes), modes) { [weak self] mode in
@@ -237,20 +247,23 @@ final class TimelineModel: ObservableObject {
 
     // MARK: Composing
 
-    /// Send the draft: a new message, a reply or an edit, as `compose`
-    /// says. It shows in the timeline at once, and is sent in the
-    /// background.
+    /// Send the draft: a new message with the picked files (text first,
+    /// then each file), a reply, or an edit, as `compose` says. It shows in
+    /// the timeline at once, and is sent in the background; the files'
+    /// copies go once the library has read them.
     @discardableResult
     func send() -> Task<Void, Never>? {
+        guard let timeline, canSend else { return nil }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let timeline, !text.isEmpty else { return nil }
         let compose = self.compose
+        let files = compose.isEdit ? [] : picked.compactMap(\.file)
         // Its message not found: sent as a new one.
         restoringReply = nil
         // After an edit, the draft from before it is back.
         endCompose()
-        if case .edit = compose {} else {
+        if !compose.isEdit {
             draft = ""
+            picked = []
         }
         let drafts = self.drafts
         Task { await drafts.flush() }
@@ -258,22 +271,90 @@ final class TimelineModel: ObservableObject {
         let afterRead = disappearAfterRead
         return work.request {
             switch compose {
-            case nil:
-                try await timeline.sendText(text: text, disappearAfterRead: afterRead)
-            case .reply(let target):
-                try await timeline.reply(itemId: target.itemId, text: text, disappearAfterRead: afterRead)
+            case nil, .reply:
+                try await timeline.send(
+                    text: text, files: files, replyTo: compose?.target.itemId, disappearAfterRead: afterRead)
+                files.forEach(Outgoing.delete)
             case .edit(let target):
                 try await timeline.edit(itemId: target.itemId, text: text)
             }
         } failed: { message in
             // Back as it was, unless something else was begun meanwhile.
             if self.compose == nil && self.draft == left {
-                if case .edit = compose {
+                if compose.isEdit {
                     self.savedDraft = left
                 }
                 self.draft = text
                 self.compose = compose
             }
+            self.picked = files.map { PickedFile(file: $0) } + self.picked
+            self.error = message
+        }
+    }
+
+    /// Send can go: there is text, or there are files picked, all prepared
+    /// (an edit needs its text, and sends no files).
+    var canSend: Bool {
+        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if compose.isEdit {
+            return hasText
+        }
+        return (hasText || !picked.isEmpty) && picked.allSatisfy { $0.file != nil }
+    }
+
+    /// Prepare `items` (`Outgoing.prepare`) to wait above the field until
+    /// sent, a card each in the order picked; one that fails says why.
+    /// Returns the preparing, to wait for.
+    @discardableResult
+    func attach(_ items: [Picked]) -> Task<Void, Never> {
+        let tasks = items.map { item -> Task<Void, Never> in
+            let card = PickedFile()
+            picked.append(card)
+            let task = Task { [weak self] in
+                do {
+                    let file = try await Outgoing.prepare(item)
+                    guard let self else {
+                        Outgoing.delete(file)
+                        return
+                    }
+                    prepared(card.id, file)
+                } catch {
+                    self?.failedToPrepare(card.id, error)
+                }
+            }
+            preparing[card.id] = task
+            return task
+        }
+        return Task {
+            for task in tasks {
+                await task.value
+            }
+        }
+    }
+
+    /// Take a picked file away (its ✕): it is not sent, and its copy goes.
+    func detach(_ id: UUID) {
+        preparing.removeValue(forKey: id)?.cancel()
+        guard let at = picked.firstIndex(where: { $0.id == id }) else { return }
+        if let file = picked.remove(at: at).file {
+            Outgoing.delete(file)
+        }
+    }
+
+    private func prepared(_ id: UUID, _ file: FileToSend) {
+        preparing[id] = nil
+        guard let at = picked.firstIndex(where: { $0.id == id }) else {
+            // Taken away meanwhile.
+            Outgoing.delete(file)
+            return
+        }
+        picked[at].file = file
+    }
+
+    private func failedToPrepare(_ id: UUID, _ error: Error) {
+        preparing[id] = nil
+        picked.removeAll { $0.id == id }
+        if let message = errorMessage(error) {
             self.error = message
         }
     }
@@ -562,6 +643,14 @@ extension TimelineModel {
     struct ScrollTarget: Equatable {
         let rowId: String
         let serial: Int
+    }
+}
+
+extension Optional where Wrapped == TimelineModel.Compose {
+    /// An edit is under way.
+    var isEdit: Bool {
+        if case .edit = self { return true }
+        return false
     }
 }
 

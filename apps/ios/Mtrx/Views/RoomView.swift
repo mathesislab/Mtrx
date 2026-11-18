@@ -47,11 +47,13 @@ struct RoomView: View {
         VStack(spacing: 0) {
             TimelineList(model: model, actions: actions)
                 .safeAreaInset(edge: .bottom) { OfflineBanner() }
+                .environmentObject(model.uploads)
             TypingLine(text: TimelineModel.typingLine(model.typing))
             Divider()
             Composer(
                 draft: $model.draft, compose: model.compose, disappearAfterRead: model.disappearAfterRead,
-                cancel: model.cancelCompose, chooseDisappear: model.chooseDisappear
+                picked: model.picked, canSend: model.canSend, cancel: model.cancelCompose,
+                chooseDisappear: model.chooseDisappear, attach: { model.attach($0) }, detach: model.detach
             ) {
                 model.send()
             }
@@ -656,32 +658,41 @@ struct TypingLine: View {
 }
 
 /// Writing a message (Markdown), or a reply or an edit, with a bar saying
-/// which and a button to cancel it; beside Send, the hourglass, to choose
-/// how long after read what is sent disappears. The field grows to six
-/// lines, three at the accessibility text sizes, leaving the timeline room.
+/// which and a button to cancel it; left of the field, the paperclip, to
+/// pick photos, videos and files, which wait above it as cards; beside
+/// Send, the hourglass, to choose how long after read what is sent
+/// disappears. The field grows to six lines, three at the accessibility
+/// text sizes, leaving the timeline room.
 struct Composer: View {
     @Binding var draft: String
     let compose: TimelineModel.Compose?
     /// What is sent disappears this long after everyone has read it; nil:
     /// it doesn't.
     let disappearAfterRead: TimeInterval?
+    /// The files picked to send.
+    let picked: [PickedFile]
+    let canSend: Bool
     let cancel: () -> Void
     let chooseDisappear: (TimeInterval?) -> Void
+    let attach: ([Picked]) -> Void
+    /// Takes a picked file away.
+    let detach: (UUID) -> Void
     let send: () -> Void
     @FocusState private var focused: Bool
     @ScaledMetric(relativeTo: .title) private var sendSize: CGFloat = 32
     @Environment(\.dynamicTypeSize) private var textSize
-
-    private var blank: Bool {
-        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     var body: some View {
         VStack(spacing: 0) {
             if let compose {
                 bar(compose)
             }
+            if !picked.isEmpty {
+                PickedFileCards(files: picked, remove: detach)
+            }
             HStack(alignment: .bottom, spacing: 8) {
+                AttachMenu(size: sendSize, attach: attach)
+                    .disabled(compose.isEdit)
                 TextField("Message", text: $draft, axis: .vertical)
                     .lineLimit(1...(textSize.isAccessibilitySize ? 3 : 6))
                     .focused($focused)
@@ -693,7 +704,7 @@ struct Composer: View {
                     Image(systemName: compose.isEdit ? "checkmark.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: sendSize))
                 }
-                .disabled(blank)
+                .disabled(!canSend)
                 .accessibilityLabel(compose.isEdit ? "Save" : "Send")
             }
             .padding(.horizontal, 12)
@@ -766,12 +777,5 @@ private struct DisappearMenu: View {
                 .frame(width: size, height: size)
         }
         .accessibilityLabel(disappearWords(afterRead: afterRead))
-    }
-}
-
-private extension Optional where Wrapped == TimelineModel.Compose {
-    var isEdit: Bool {
-        if case .edit = self { return true }
-        return false
     }
 }

@@ -198,6 +198,9 @@ struct MessageView: View {
                         .overlay {
                             DownloadBadge(media: media)
                         }
+                        .overlay {
+                            UploadRing(itemId: id)
+                        }
                         .overlay(alignment: .bottomTrailing) {
                             footer.padding(6).background(.ultraThinMaterial, in: Capsule()).padding(6)
                         }
@@ -208,7 +211,7 @@ struct MessageView: View {
                     }
                 }
             } else if let media = message.media {
-                bubble(FileView(media: media), quote: message.replyTo)
+                bubble(HStack(spacing: 8) { FileView(media: media); UploadRing(itemId: id) }, quote: message.replyTo)
                     .onTapGesture { actions.open(media, event.eventId) }
                     .accessibilityAddTraits(.isButton)
             } else {

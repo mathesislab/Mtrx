@@ -40,6 +40,83 @@ final class TimelineModelTests: XCTestCase {
         XCTAssertEqual(model.error, "No connection")
     }
 
+    // MARK: Files
+
+    /// A file in the temporary folder, as Files would hand it over.
+    private func pickedFile(_ name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent(name)
+        try Data("Ice core notes".utf8).write(to: url)
+        return url
+    }
+
+    func testSendsPickedFilesAloneOrWithTheTextAndThenDeletesTheirCopies() async throws {
+        XCTAssertFalse(model.canSend)
+        await model.attach([.file(try pickedFile("notes.txt"))]).value
+        let copy = try XCTUnwrap(model.picked.first?.file)
+        XCTAssertEqual(copy.filename, "notes.txt")
+        XCTAssertTrue(copy.path.hasPrefix(Outgoing.folder.path))
+        XCTAssertTrue(model.canSend)
+        await model.send()?.value
+        XCTAssertEqual(session.fakeTimeline.sent, [""])
+        XCTAssertEqual(session.fakeTimeline.files, [["notes.txt"]])
+        XCTAssertEqual(model.picked, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path))
+
+        // With text, as a reply: the text answers, the files follow it.
+        await show([bobsMessage])
+        model.startReply(to: "b")
+        await model.attach([.file(try pickedFile("a.pdf")), .file(try pickedFile("b.pdf"))]).value
+        XCTAssertEqual(model.picked.compactMap(\.file?.filename), ["a.pdf", "b.pdf"])
+        model.draft = "Here"
+        await model.send()?.value
+        XCTAssertEqual(session.fakeTimeline.replies.map(\.itemId), ["b"])
+        XCTAssertEqual(session.fakeTimeline.replies.map(\.text), ["Here"])
+        XCTAssertEqual(session.fakeTimeline.files.last, ["a.pdf", "b.pdf"])
+    }
+
+    func testAFileTakenAwayIsNotSentAndFilesComeBackWhenSendingFails() async throws {
+        await model.attach([.file(try pickedFile("a.pdf")), .file(try pickedFile("b.pdf"))]).value
+        let taken = try XCTUnwrap(model.picked.first)
+        model.detach(taken.id)
+        XCTAssertEqual(model.picked.compactMap(\.file?.filename), ["b.pdf"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(taken.file?.path)))
+
+        session.fakeTimeline.sendError = MtrxError.Other(reason: "a.pdf is too large")
+        await model.send()?.value
+        XCTAssertEqual(model.picked.compactMap(\.file?.filename), ["b.pdf"])
+        XCTAssertEqual(model.error, "a.pdf is too large")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(model.picked.first?.file?.path)))
+    }
+
+    func testAnEditSendsNoFiles() async throws {
+        await show([ourMessage])
+        await model.attach([.file(try pickedFile("a.pdf"))]).value
+        model.startEdit("o")
+        model.draft = "Hello"
+        await model.send()?.value
+        XCTAssertEqual(session.fakeTimeline.edits.map(\.text), ["Hello"])
+        XCTAssertEqual(session.fakeTimeline.files, [])
+        XCTAssertEqual(model.picked.count, 1)
+    }
+
+    func testPhotosAndVideosAreNamedFromTheDate() throws {
+        let date = try XCTUnwrap(
+            Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 18, hour: 14, minute: 3)))
+        XCTAssertEqual(Outgoing.name(.photo, at: date, extension: "JPEG"), "Photo 2026-11-18 14.03.jpg")
+        XCTAssertEqual(Outgoing.name(.video, at: date, extension: "mp4"), "Video 2026-11-18 14.03.mp4")
+        XCTAssertEqual(Outgoing.name(.video, at: date, extension: ""), "Video 2026-11-18 14.03.mp4")
+    }
+
+    func testUploadsAreFollowedByRow() async {
+        session.fakeTimeline.uploadsListener?.onUpdate(uploads: [Upload(itemId: "f", fraction: 0.25)])
+        await eventually { self.model.uploads.fraction(of: "f") == 0.25 }
+        XCTAssertNil(model.uploads.fraction(of: "g"))
+        session.fakeTimeline.uploadsListener?.onUpdate(uploads: [])
+        await eventually { self.model.uploads.fraction(of: "f") == nil }
+    }
+
     func testLoadsOlderWhileTheTopIsVisible() async {
         session.fakeTimeline.pages = [false, false, true]
         await model.setTopVisible(true)?.value
