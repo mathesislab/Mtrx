@@ -256,9 +256,9 @@ mod tests {
             u32::from_le_bytes(wav[4..8].try_into().unwrap()) as usize,
             wav.len() - 8
         );
-        (wav[44..].chunks_exact(2))
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
-            .collect()
+        let (samples, rest) = wav[44..].as_chunks::<2>();
+        assert!(rest.is_empty());
+        samples.iter().map(|b| i16::from_le_bytes(*b)).collect()
     }
 
     /// The power of `samples` at `hz` (Goertzel).
