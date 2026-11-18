@@ -9,6 +9,7 @@ mod actions;
 mod app;
 mod appearance;
 mod arrange;
+mod audio;
 mod avatar;
 mod badge;
 mod calendar;

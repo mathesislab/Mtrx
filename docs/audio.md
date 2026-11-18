@@ -516,3 +516,42 @@ Out of scope. What this design leaves ready:
 ## Decided (2026-11-18)
 
 All recommendations taken: 1a (libopus through `opus`; `opus-decoder` the fallback if the iOS build fights back), 2a (WAV for iOS), 3a (core's own audio cache, 200 MB), 4a (playback state in each app), 5a (the sender's waveform for voice messages, a slider otherwise), 6a (leaving the room stops playback), 7a (`MediaPlayer` on Android).
+
+## As built
+
+Differences from the design above.
+
+**Core and FFI**
+- Cache names: `<server>_<media id>.<ext>` as fetched, `<server>_<media id>.wav` decoded. Partial files (`.part`) are left alone by the limit; those not written for an hour (a crash) go.
+- A finished cache download that needs no converting comes back as its own path, not copied.
+- No recorded fixture: the Element Web voice message is built from the spec. Its event JSON has the MSC3245 and MSC1767 blocks, and its Ogg Opus is encoded in the test as Element Web's recorder does (VoIP, 24 kb/s, 20 ms packets, 40 to a page); it converts to the event's length. A real recording can replace it later.
+- "Two calls fetch once" is in the integration test. `test_support::ogg_opus_sine` makes the Ogg Opus files; core's own tests always build with `opus`.
+- FFI `Media` is no longer `Eq` or `Hash` (the waveform is `f32`). Its new fields are `#[uniffi(default)]`, so the apps' existing `Media(…)` calls compile. `audio_file`, `AudioProgress` and `playback_time` are in `ffi/audio.rs`.
+
+**Desktop**
+- The fetch is `Task::run` over `iced::stream::channel`, not `Task::sip`: iced's `sipper` feature would add a crate.
+- The thread's events carry the number of the `Play` they answer (`Message::Output(u64, Event)`), so late news of the message before is ignored.
+- Starting another message sends `Stop` (the output is let go) and keeps the first's position. After the end the message is no longer current; the next play fetches it again (at once, from the cache).
+- `Play` seeks the decoder before it plays, so the start doesn't sound first.
+- `Pane::set` sends `Stop` whenever the room shown changes (opening another, leaving it, an invite), not only on `pane::Message::Open`.
+- `media.rs` draws the bubble (the card, and for other audio the file card's line, now `file_line`); `Audio::view` draws the button, scrubber and time, borrowing nothing from `Audio`.
+- Tabular figures: iced 0.14 can't turn on Inter's `tnum`, so the time sits right-aligned in a fixed-width box.
+- While the length is unknown the ring is empty, not spinning, as the downloads' (no redraws while fetching).
+- Tooltips also say "Cancel" while fetching and "Try again" after a failure. Play, pause and ↻ are drawn icons (`icons.rs`).
+
+**iOS**
+- `AudioModel` isn't the `AVAudioPlayerDelegate`. The player is behind `AudioPlaying`, made by a factory (`SystemAudioPlayer` by default, a fake in tests). `SystemAudioPlayer` is the delegate and holds the audio session, so tests have none.
+- A finish that isn't successful says "Can't play this file". The ticks are a 0.1 s loop in `Work`, not a `Timer`.
+- `pause()` while fetching cancels the fetch. Leaving the foreground is `scenePhase == .background`, so Control Center and banners don't pause.
+- After a failure the button is ↻ and the reason is a pink line below the controls, not in place of the time. A voice message without a length shows its size; other audio shows nothing there (its size is above).
+- The waveform and the slider both seek on release. VoiceOver also reads "Cancel loading" and "Try again". The controls are at most 260 pt wide.
+- `RoomView` takes the model from `OpenRoom` (an autoclosure); `Work` gains `cancel(_:)`. `FileView` always shows "doc".
+- Tests: releasing the model stands for `Stop`; one more covers cancel and retry.
+
+**Android**
+- `AudioPlayer` takes an `AudioOutput` (focus and headphones) instead of a `Context`. The JVM tests use fakes, without Robolectric.
+- The player lives with the room, not with `TimelineViewModel`: `RoomAudio`, held by `SignedInNavigation`, gives the open room's player to its timeline, so it plays on while Room info shows over the room (Room info is its own screen, which ends the timeline's composition). It's released once the room is no longer open on Chats or Rooms, or another room's timeline shows. The activity's `ON_STOP` pauses it.
+- `Playback` has defaults and `stateOf`, `positionOf`, `durationOf`. At its end a message is paused at 0, keeping its player.
+- `pause()` while fetching cancels the fetch. Refused focus (a call) leaves it paused; any loss of focus pauses (`setWillPauseWhenDucked`).
+- After a failure the reason is a line below the row. A voice message without a waveform gets the slider. TalkBack also reads "Cancel loading", "Try again" and "0:12 of 0:42".
+- The rows take the time format through `LocalPlaybackTime`, so the screenshots don't load the native library.

@@ -934,6 +934,9 @@ async fn esc_closes_a_cards_menu_not_the_card() {
         width: None,
         height: None,
         source: mtrx_core::MediaRef::plain("mxc://example.org/a"),
+        duration: None,
+        voice: false,
+        waveform: Vec::new(),
     };
     let file = downloads::File {
         media,

@@ -30,6 +30,11 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# iOS's player can't play Ogg Opus, so the library converts it to WAV
+# (libopus). Android's plays it.
+[target.'cfg(target_os = "ios")'.dependencies]
+mtrx-core = { workspace = true, features = ["math", "opus"] }
+
 # The platform TLS verifier (rustls-platform-verifier, through reqwest)
 # needs the app's Context on Android: see `src/android.rs`.
 [target.'cfg(target_os = "android")'.dependencies]

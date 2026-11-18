@@ -1,7 +1,7 @@
 //! Plain data handed to the apps, converted from mtrx-core's types. IDs are
 //! strings; times are `Date` (Swift) and `Instant` (Kotlin).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mtrx_core::{self as core, UserId};
 
@@ -490,9 +490,9 @@ pub enum MessageKind {
     Other,
 }
 
-/// A file sent in a message. Pass it to `Session.media_preview` or
-/// `Room.download`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+/// A file sent in a message. Pass it to `Session.media_preview`,
+/// `Session.audio_file` or `Room.download`.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct Media {
     pub kind: MediaKind,
     pub filename: String,
@@ -504,6 +504,19 @@ pub struct Media {
     pub height: Option<u32>,
     /// Where the file is (and its decryption key): opaque, for the library.
     pub source: String,
+    /// Audio and video: as sent.
+    #[uniffi(default)]
+    pub duration: Option<Duration>,
+    /// [`Media::duration`] as a player shows it: "0:42".
+    #[uniffi(default)]
+    pub duration_label: Option<String>,
+    /// A voice message: its file name means nothing.
+    #[uniffi(default)]
+    pub voice: bool,
+    /// Audio: the sender's waveform, `WAVEFORM_BARS` (40) values from 0 to
+    /// 1; empty if none.
+    #[uniffi(default)]
+    pub waveform: Vec<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
@@ -713,6 +726,10 @@ impl From<&core::Media> for Media {
             width: media.width,
             height: media.height,
             source: serde_json::to_string(&media.source).expect("media sources serialize"),
+            duration: media.duration,
+            duration_label: media.duration.map(core::playback_time),
+            voice: media.voice,
+            waveform: media.waveform.clone(),
         }
     }
 }
@@ -749,6 +766,9 @@ impl Media {
             width: self.width,
             height: self.height,
             source: self.media_ref()?,
+            duration: self.duration,
+            voice: self.voice,
+            waveform: self.waveform.clone(),
         })
     }
 }
@@ -771,8 +791,6 @@ fn membership_change(change: core::MembershipChange) -> MembershipChange {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use mtrx_format::Document;
 
     use crate::{BlockKind, TextRun, TextStyle};
@@ -1059,6 +1077,9 @@ mod tests {
             width: None,
             height: None,
             source: core::MediaRef::plain("mxc://example.org/ice"),
+            duration: None,
+            voice: false,
+            waveform: Vec::new(),
         };
         let text = |body: &str| {
             let content = core::EventContent::Message(core::Message {
@@ -1152,6 +1173,9 @@ mod tests {
             width: Some(800),
             height: Some(600),
             source: core::MediaRef::plain("mxc://example.org/ice"),
+            duration: None,
+            voice: false,
+            waveform: Vec::new(),
         };
         let media = Media::from(&core_media);
         assert_eq!((media.width, media.height), (Some(800), Some(600)));
@@ -1169,6 +1193,35 @@ mod tests {
             tampered.media_ref(),
             Err(crate::MtrxError::InvalidInput { .. })
         ));
+    }
+
+    #[test]
+    fn voice_messages_carry_their_length_and_waveform() {
+        let core_media = core::Media {
+            kind: core::MediaKind::Audio,
+            filename: "Voice message.ogg".into(),
+            size: Some(18_045),
+            mimetype: Some("audio/ogg".into()),
+            width: None,
+            height: None,
+            source: core::MediaRef::plain("mxc://example.org/voice"),
+            duration: Some(Duration::from_millis(42_600)),
+            voice: true,
+            waveform: (0..core::WAVEFORM_BARS).map(|i| i as f32 / 39.0).collect(),
+        };
+        let media = Media::from(&core_media);
+        assert_eq!(media.duration, Some(Duration::from_millis(42_600)));
+        assert_eq!(media.duration_label.as_deref(), Some("0:42"));
+        assert!(media.voice);
+        assert_eq!(media.waveform.len(), 40);
+        assert_eq!(media.to_core().unwrap(), core_media);
+
+        // A label from the apps is not the library's.
+        let edited = Media {
+            duration_label: Some("long".into()),
+            ..media
+        };
+        assert_eq!(edited.to_core().unwrap(), core_media);
     }
 
     #[test]

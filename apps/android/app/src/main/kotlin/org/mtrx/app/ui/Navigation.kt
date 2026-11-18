@@ -8,11 +8,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -43,7 +48,11 @@ import org.mtrx.app.settings.QuietScreen
 import org.mtrx.app.settings.RecoveryScreen
 import org.mtrx.app.settings.VerificationRequestDialog
 import org.mtrx.app.settings.VerificationScreen
+import org.mtrx.app.timeline.AudioPlayer
 import org.mtrx.app.timeline.PinnedModel
+import org.mtrx.app.timeline.RoomAudio
+import org.mtrx.app.timeline.SystemAudioOutput
+import org.mtrx.app.timeline.SystemPlayer
 import org.mtrx.app.timeline.TimelineScreen
 import org.mtrx.app.timeline.TimelineViewModel
 import org.mtrx.app.timeline.roomHeader
@@ -89,6 +98,20 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
     }
     AskNotificationPermissionOnce(push)
 
+    // The open room's audio: it plays on while Room info shows over the
+    // room, and stops once the room is left, or the app goes to the
+    // background. The focus and headphones are the application's.
+    val context = LocalContext.current.applicationContext
+    val audioScope = rememberCoroutineScope()
+    val roomAudio = remember(session) {
+        RoomAudio { AudioPlayer(session.session, audioScope, SystemAudioOutput(context), ::SystemPlayer) }
+    }
+    LaunchedEffect(roomAudio) {
+        snapshotFlow { listOf(home.chat, home.room) }.collect { roomAudio.keep(it) }
+    }
+    DisposableEffect(roomAudio) { onDispose { roomAudio.release() } }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { roomAudio.pause() }
+
     val request by session.verificationRequest.collectAsStateWithLifecycle()
     if (request != null) {
         VerificationRequestDialog(
@@ -120,7 +143,7 @@ fun SignedInNavigation(account: Account, session: SignedInSession, push: PushReg
                     openVerification()
                 },
                 roomPane = { roomId, backCount, onBack, openSpace ->
-                    RoomPane(account, session, rooms, roomId, backCount, onBack, openLink, openRoom, openSpace) {
+                    RoomPane(account, session, rooms, roomAudio, roomId, backCount, onBack, openLink, openRoom, openSpace) {
                         nav.go(Destination.Info(roomId))
                     }
                 },
@@ -253,6 +276,7 @@ private fun RoomPane(
     account: Account,
     session: SignedInSession,
     rooms: RoomListsInterface,
+    roomAudio: RoomAudio,
     roomId: String,
     backCount: Long,
     onBack: () -> Unit,
@@ -297,6 +321,7 @@ private fun RoomPane(
                 session.session,
                 onRead = { account.roomRead(roomId) },
                 onInput = session.presence::input,
+                audio = roomAudio.of(roomId),
             )
         }
         val pinned: PinnedModel = viewModel(viewModelStoreOwner = owner) { PinnedModel(roomId, session.session) }

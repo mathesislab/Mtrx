@@ -114,5 +114,9 @@ mod tests {
             convert(mtrx_core::Error::Timeline("nothing to send".into())),
             MtrxError::Other { reason } if reason == "timeline: nothing to send"
         ));
+        assert!(matches!(
+            convert(mtrx_core::Error::Audio("The file is damaged".into())),
+            MtrxError::Other { reason } if reason == "The file is damaged"
+        ));
     }
 }

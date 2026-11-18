@@ -55,6 +55,8 @@ pub struct Session {
     pub(crate) outbox: Arc<crate::timeline::Outbox>,
     pub(crate) schedule: Arc<Schedule>,
     pub(crate) downloads: crate::downloads::Downloads,
+    /// Messages' audio, as files the platform's player can open.
+    pub(crate) audio: Arc<crate::audio::AudioCache>,
     pub(crate) exports: crate::export::Exports,
     /// Set once [`Session::start_scheduler`] ran.
     pub(crate) scheduler: std::sync::Mutex<Option<AbortOnDrop>>,
@@ -225,6 +227,7 @@ impl Session {
             crate::downloads::Places::new(profile.cache_dir()),
         )
         .await;
+        let audio = Arc::new(crate::audio::AudioCache::new(profile.cache_dir()));
         let exports = crate::export::Exports::new(profile.cache_dir());
         let presence_keeper = crate::presence::Keeper::new(client.clone());
         let spaces = crate::space_graph::follow(client.clone()).await;
@@ -236,6 +239,7 @@ impl Session {
             outbox,
             schedule,
             downloads,
+            audio,
             exports,
             scheduler: Default::default(),
             disappearing,

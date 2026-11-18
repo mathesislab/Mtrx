@@ -1688,6 +1688,147 @@ async fn downloads() -> Result<()> {
     Ok(())
 }
 
+/// A room of alice's that bob joined, and the file of each attachment
+/// alice sent there, as bob's timeline shows it.
+async fn shared_files(
+    alice: &Device,
+    bob: &Device,
+    encrypted: bool,
+    attachments: Vec<Attachment>,
+) -> Result<(mtrx_core::OwnedRoomId, Vec<mtrx_core::Media>)> {
+    let name = format!("audio {encrypted}");
+    let room = alice
+        .session
+        .create_room(NewRoom {
+            name: Some(name.clone()),
+            encrypted,
+            invite: vec![bob.session.user_id()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(bob, &room, &name).await?;
+    let alice_timeline = alice.session.timeline(&room).await?;
+    wait_for("bob joined", alice_timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == bob.session.user_id()))
+    })
+    .await?;
+    let names: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
+    for attachment in attachments {
+        let pending = alice_timeline
+            .send("", vec![attachment], None, None)
+            .await?;
+        timeout("sent", pending.sent()).await??;
+    }
+    let bob_timeline = bob.session.timeline(&room).await?;
+    let entries = wait_for("bob sees the files", bob_timeline.updates(), |e| {
+        names.iter().all(|name| find_media(e, name).is_some())
+    })
+    .await?;
+    let files = (names.iter())
+        .map(|name| find_media(&entries, name).unwrap().clone())
+        .collect();
+    Ok((room, files))
+}
+
+/// A message's audio for the player: encrypted Ogg Opus as WAV, with
+/// progress, and fetched once for two calls at once; a plain MP3 as it
+/// is; a file downloaded to the cache, without fetching it again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn audio_files() -> Result<()> {
+    let (_, alice) = new_user("audio").await?;
+    let (_, bob) = new_user("audio").await?;
+    let cache = bob.session.profile().cache_dir().join("audio");
+    let attachment = |filename: &str, mimetype: &str, bytes: Vec<u8>| Attachment {
+        filename: filename.into(),
+        mimetype: mimetype.into(),
+        bytes,
+    };
+
+    let voice = attachment(
+        "Voice message.ogg",
+        "audio/ogg",
+        test_support::ogg_opus_sine(440.0, 3, 0),
+    );
+    let voice = shared_files(&alice, &bob, true, vec![voice])
+        .await?
+        .1
+        .remove(0);
+    let (one, two) = (
+        std::sync::Mutex::new(Vec::new()),
+        std::sync::Mutex::new(Vec::new()),
+    );
+    let (first, second) = timeout(
+        "audio files",
+        futures_util::future::join(
+            bob.session
+                .audio_file(&voice, |f| one.lock().unwrap().push(f)),
+            bob.session
+                .audio_file(&voice, |f| two.lock().unwrap().push(f)),
+        ),
+    )
+    .await?;
+    let wav = first?;
+    assert_eq!(second?, wav);
+    assert!(wav.starts_with(&cache), "{wav:?}");
+    assert_eq!(wav.extension().unwrap(), "wav");
+    assert_eq!(std::fs::metadata(&wav)?.len(), 44 + 3 * 48_000 * 2);
+    let (one, two) = (one.into_inner().unwrap(), two.into_inner().unwrap());
+    // One call fetched it; the other found it.
+    let progress = if one.is_empty() { two } else { one };
+    let fractions: Vec<f32> = progress.iter().flatten().copied().collect();
+    assert!(fractions.is_sorted(), "{progress:?}");
+    assert_eq!(fractions.last(), Some(&1.0), "{progress:?}");
+    // Then it converted.
+    assert_eq!(progress.last(), Some(&None), "{progress:?}");
+    let files: Vec<_> = std::fs::read_dir(&cache)?.collect::<Result<_, _>>()?;
+    assert_eq!(files.len(), 1, "{files:?}");
+
+    let mp3 = b"ID3\x04\0\0\0\0\0\0".repeat(1000);
+    let notes = b"\0\0\0\x18ftypM4A ".repeat(1000);
+    let (room, files) = shared_files(
+        &alice,
+        &bob,
+        false,
+        vec![
+            attachment("song.mp3", "audio/mpeg", mp3.clone()),
+            attachment("notes.m4a", "audio/mp4", notes.clone()),
+        ],
+    )
+    .await?;
+    let progress = std::sync::Mutex::new(Vec::new());
+    let song = timeout(
+        "an MP3",
+        bob.session
+            .audio_file(&files[0], |f| progress.lock().unwrap().push(f)),
+    )
+    .await??;
+    assert_eq!(song.extension().unwrap(), "mp3");
+    assert!(std::fs::read(&song)? == mp3);
+    assert_eq!(progress.into_inner().unwrap().last(), Some(&Some(1.0)));
+
+    // Downloaded to the cache (as the phones do): that file, not fetched
+    // again.
+    let id = bob
+        .session
+        .room(&room)?
+        .download(&files[1], None, SaveTo::Cache);
+    let downloaded = timeout("downloaded", bob.session.finished(id)).await??;
+    let progress = std::sync::Mutex::new(Vec::new());
+    let notes_file = timeout(
+        "a downloaded file",
+        bob.session
+            .audio_file(&files[1], |f| progress.lock().unwrap().push(f)),
+    )
+    .await??;
+    assert_eq!(notes_file, downloaded);
+    assert!(std::fs::read(&notes_file)? == notes);
+    assert!(progress.into_inner().unwrap().is_empty());
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs local Synapse (testserver/run.sh)"]
 async fn images_and_files() -> Result<()> {

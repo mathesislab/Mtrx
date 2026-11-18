@@ -2,8 +2,10 @@ package org.mtrx.app
 
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
@@ -23,7 +25,10 @@ import org.mtrx.app.model.MemoryStore
 import org.mtrx.app.model.PreferenceStore
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
+import org.mtrx.app.timeline.AudioOutput
+import org.mtrx.app.timeline.AudioPlayer
 import uniffi.mtrx.Address
+import uniffi.mtrx.AudioProgress
 import uniffi.mtrx.Banned
 import uniffi.mtrx.ConnectionListener
 import uniffi.mtrx.DirectoryKind
@@ -584,6 +589,31 @@ class FakeSession : Session(NoHandle) {
         call("create ${new.name}")
         created += new
         return "!new:example.org"
+    }
+
+    /**
+     * The file [audioFile] gives for each source, after reporting
+     * [audioProgress]; it throws [audioErrors]' instead, and for other
+     * sources it waits until cancelled. The sources fetched, and those
+     * cancelled, in order.
+     */
+    val audioFiles = mutableMapOf<String, String>()
+    val audioErrors = mutableMapOf<String, MtrxException>()
+    var audioProgress: List<Float?> = emptyList()
+    val audioFetches = mutableListOf<String>()
+    val audioCancelled = mutableListOf<String>()
+
+    override suspend fun audioFile(media: Media, progress: AudioProgress): String {
+        audioFetches += media.source
+        for (fraction in audioProgress) progress.onProgress(fraction)
+        audioFiles[media.source]?.let { return it }
+        audioErrors[media.source]?.let { throw it }
+        return try {
+            awaitCancellation()
+        } catch (e: CancellationException) {
+            audioCancelled += media.source
+            throw e
+        }
     }
 
     companion object {
@@ -1534,6 +1564,34 @@ fun testAccount(
 
 /** The account's open session; signed in. */
 val Account.signedIn: SignedInSession get() = (state.value as AccountState.SignedIn).session
+
+/** The audio focus and the headphones: [held] while playing, the focus refused if [refuse]; [interrupt] as a call would. */
+class FakeAudioOutput : AudioOutput {
+    var held = false
+    var refuse = false
+    private var interrupted: (() -> Unit)? = null
+
+    override fun acquire(voice: Boolean, interrupted: () -> Unit): Boolean {
+        if (refuse) return false
+        held = true
+        this.interrupted = interrupted
+        return true
+    }
+
+    override fun release() {
+        held = false
+        interrupted = null
+    }
+
+    /** The focus is lost, or the headphones go. */
+    fun interrupt() {
+        interrupted?.invoke()
+    }
+}
+
+/** A room's audio for tests that play none. */
+fun FakeSession.testAudio(): AudioPlayer =
+    AudioPlayer(this, CoroutineScope(Dispatchers.Unconfined), FakeAudioOutput()) { error("nothing plays here") }
 
 /** What the models logged, as "tag: message". */
 class FakeLog : Logger {

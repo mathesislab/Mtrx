@@ -35,6 +35,11 @@ final class Work {
         return task
     }
 
+    /// End the load under `key`, if any.
+    func cancel(_ key: String) {
+        loads.removeValue(forKey: key)?.cancel()
+    }
+
     /// A request that finishes even if the model goes; a failure goes to
     /// `failed`, as the text to show (none if the user cancelled).
     @discardableResult
