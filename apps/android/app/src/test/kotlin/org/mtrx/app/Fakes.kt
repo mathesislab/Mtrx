@@ -48,6 +48,13 @@ import uniffi.mtrx.MuteFor
 import uniffi.mtrx.NotifyAction
 import uniffi.mtrx.NotifyChoice
 import uniffi.mtrx.NotifyMode
+import uniffi.mtrx.PauseEntry
+import uniffi.mtrx.PauseFor
+import uniffi.mtrx.PauseMenuItem
+import uniffi.mtrx.QuietHours
+import uniffi.mtrx.QuietListener
+import uniffi.mtrx.QuietState
+import uniffi.mtrx.Weekday
 import uniffi.mtrx.Permissions
 import uniffi.mtrx.PermissionsChoice
 import uniffi.mtrx.Rights
@@ -436,6 +443,59 @@ class FakeSession : Session(NoHandle) {
             }
         }
     val limitSubscriptions = mutableListOf<Pair<DisappearingLimitListener, FakeHandle>>()
+
+    /** What [subscribeQuiet] tells, now and on every change. */
+    var quietState = QuietState(
+        quiet = false,
+        paused = false,
+        until = null,
+        line = "Notifications on",
+        hours = QuietHours(on = false, fromMinute = (22 * 60).toUShort(), toMinute = (7 * 60).toUShort(), days = Weekday.entries),
+        hoursLine = "Off",
+        mentionsThrough = false,
+    )
+        set(value) {
+            field = value
+            for ((listener, handle) in quietSubscriptions.toList()) {
+                if (!handle.cancelled) listener.onUpdate(value)
+            }
+        }
+    val quietSubscriptions = mutableListOf<Pair<QuietListener, FakeHandle>>()
+
+    override fun subscribeQuiet(listener: QuietListener): TaskHandle {
+        val handle = FakeHandle().also { handles += it }
+        quietSubscriptions += listener to handle
+        listener.onUpdate(quietState)
+        return handle
+    }
+
+    override fun pauseMenu(): List<PauseMenuItem> = listOf(
+        PauseMenuItem(PauseEntry.Pause(PauseFor.Hour), "For 1 hour"),
+        PauseMenuItem(PauseEntry.Pause(PauseFor.TomorrowMorning), "Until tomorrow, 08:00"),
+        PauseMenuItem(PauseEntry.PickTime, "Until…"),
+        PauseMenuItem(PauseEntry.Pause(PauseFor.UntilResumed), "Until I turn them back on"),
+    )
+
+    /** As the library: [call] ("pause Hour"), then told. */
+    override suspend fun pauseNotifications(pause: PauseFor) {
+        call("pause ${pause::class.simpleName}")
+        quietState = quietState.copy(quiet = true, paused = true, line = "Paused")
+    }
+
+    override suspend fun resumeNotifications() {
+        call("resume")
+        quietState = quietState.copy(quiet = false, paused = false, line = "Notifications on")
+    }
+
+    override suspend fun setQuietHours(hours: QuietHours) {
+        call("hours ${hours.fromMinute}-${hours.toMinute}")
+        quietState = quietState.copy(hours = hours)
+    }
+
+    override suspend fun setMentionsThrough(on: Boolean) {
+        call("mentions through $on")
+        quietState = quietState.copy(mentionsThrough = on)
+    }
 
     override fun disappearingLimit(): Duration = limit
 
