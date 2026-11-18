@@ -13,10 +13,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -27,7 +24,7 @@ use matrix_sdk::{
         EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedTransactionId,
         OwnedUserId, RoomId, TransactionId, UserId,
         events::{
-            AnyMessageLikeEventContent, AnySyncTimelineEvent, RoomAccountDataEvent,
+            AnyMessageLikeEventContent, AnySyncTimelineEvent,
             macros::EventContent,
             receipt::{ReceiptThread, ReceiptType, SyncReceiptEvent},
             room::{member::SyncRoomMemberEvent, message::RoomMessageEventContent},
@@ -41,7 +38,9 @@ use tokio::sync::{Mutex, Notify, broadcast::error::RecvError, watch};
 use tracing::warn;
 
 use crate::{
-    AbortOnDrop, Live, Result, RoomHandle, Session, account_data::AccountData, scheduled::millis,
+    AbortOnDrop, Live, Result, RoomHandle, Session,
+    account_data::{AccountData, RoomAccountData, RoomSynced},
+    scheduled::millis,
 };
 
 /// The content field of a message that disappears, holding its
@@ -290,6 +289,25 @@ pub(crate) struct DisappearingModeEventContent {
     after_read: Option<u64>,
 }
 
+/// Rooms' modes, as [`RoomSynced`] keeps them: the time after read, in
+/// the rooms where it is on.
+pub(crate) enum DisappearingMode {}
+
+impl RoomAccountData for DisappearingMode {
+    type Value = Duration;
+    type Content = DisappearingModeEventContent;
+
+    fn from_content(content: Self::Content) -> Option<Duration> {
+        content.after_read.map(Duration::from_secs)
+    }
+
+    fn into_content(after_read: Option<Duration>) -> Self::Content {
+        DisappearingModeEventContent {
+            after_read: after_read.map(|d| d.as_secs()),
+        }
+    }
+}
+
 /// How long after sending our disappearing messages go at the latest,
 /// chosen in Settings and shared by our devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,16 +357,13 @@ pub(crate) struct Disappearances {
     /// Receipts or members changed where a message waits to be read.
     nudge: Notify,
     /// The rooms whose mode is on, with its time after read.
-    modes: watch::Sender<BTreeMap<OwnedRoomId, Duration>>,
-    /// Changes of modes not yet saved; synced modes are stale meanwhile,
-    /// as for [`crate::account_data::Synced`].
-    unsaved_modes: AtomicUsize,
+    modes: RoomSynced<DisappearingMode>,
 }
 
 /// What keeps a [`Disappearances`] up to date: its event handlers and the
 /// task following the send queue. Dropped with the session.
 pub(crate) struct Following {
-    _handlers: [EventHandlerDropGuard; 4],
+    _handlers: [EventHandlerDropGuard; 3],
     _sent: AbortOnDrop,
 }
 
@@ -358,23 +373,16 @@ impl Disappearances {
             Some(bytes) => serde_json::from_slice(&bytes)?,
             None => Vec::new(),
         };
-        let mut modes = BTreeMap::new();
-        for room in client.joined_rooms() {
-            if let Some(after_read) = stored_mode(&room).await {
-                modes.insert(room.room_id().to_owned(), after_read);
-            }
-        }
         Ok(Arc::new(Self {
+            modes: RoomSynced::load(client.clone()).await,
             client,
             list: watch::Sender::new(list),
             write: Mutex::new(()),
             nudge: Notify::new(),
-            modes: watch::Sender::new(modes),
-            unsaved_modes: AtomicUsize::new(0),
         }))
     }
 
-    /// Follow what we send, receipts and members, and room modes.
+    /// Follow what we send, receipts and members.
     pub(crate) fn follow(self: &Arc<Self>) -> Following {
         let client = &self.client;
         let this = self.clone();
@@ -401,18 +409,6 @@ impl Disappearances {
             async move { this.nudge_if_waiting(room.room_id()) }
         });
         let this = self.clone();
-        let modes = client.add_event_handler(
-            move |event: RoomAccountDataEvent<DisappearingModeEventContent>, room: Room| {
-                let this = this.clone();
-                async move {
-                    if this.unsaved_modes.load(Ordering::SeqCst) == 0 {
-                        let after_read = event.content.after_read.map(Duration::from_secs);
-                        this.set_mode(room.room_id(), after_read);
-                    }
-                }
-            },
-        );
-        let this = self.clone();
         let mut updates = client.send_queue().subscribe();
         let sent = tokio::spawn(async move {
             loop {
@@ -434,7 +430,7 @@ impl Disappearances {
             }
         });
         Following {
-            _handlers: [synced, receipts, members, modes]
+            _handlers: [synced, receipts, members]
                 .map(|handle| client.event_handler_drop_guard(handle)),
             _sent: AbortOnDrop(sent),
         }
@@ -583,13 +579,6 @@ impl Disappearances {
         }
     }
 
-    fn set_mode(&self, room: &RoomId, after_read: Option<Duration>) {
-        self.modes.send_if_modified(|modes| match after_read {
-            Some(after_read) => modes.insert(room.to_owned(), after_read) != Some(after_read),
-            None => modes.remove(room).is_some(),
-        });
-    }
-
     /// Note who has read what (if `reads`), delete what is due, and forget
     /// what can't be sent. Returns when the next one is due.
     async fn pass(&self, now: SystemTime, reads: bool) -> Result<Option<SystemTime>> {
@@ -701,17 +690,6 @@ impl Disappearances {
     }
 }
 
-/// The room's mode as stored.
-async fn stored_mode(room: &Room) -> Option<Duration> {
-    let raw = room
-        .account_data_static::<DisappearingModeEventContent>()
-        .await
-        .inspect_err(|e| warn!("could not read a room's disappearing mode: {e}"))
-        .ok()??;
-    let event = raw.deserialize().ok()?;
-    event.content.after_read.map(Duration::from_secs)
-}
-
 /// Whether every other joined member of `room` has read `event_id`, sent
 /// at `sent_at`: their read receipt is on it or on a later event.
 async fn read_by_all(room: &Room, event_id: &EventId, sent_at: SystemTime) -> Result<bool> {
@@ -780,7 +758,7 @@ impl Session {
     /// The rooms whose mode makes our messages disappear, with the time
     /// after read, then every change.
     pub fn disappearing_modes_updates(&self) -> Live<BTreeMap<OwnedRoomId, Duration>> {
-        Live::from_watch(self.disappearing.modes.subscribe())
+        self.disappearing.modes.updates()
     }
 
     pub fn disappearing_limit(&self) -> DisappearingLimit {
@@ -815,8 +793,7 @@ impl Session {
 impl RoomHandle {
     /// The room's mode: our messages here disappear this long after read.
     pub fn disappearing_mode(&self) -> Option<Duration> {
-        let modes = self.session.disappearing.modes.borrow();
-        modes.get(self.room.room_id()).copied()
+        self.session.disappearing.modes.get(self.room.room_id())
     }
 
     /// The room's mode, then every change, from here or our other devices.
@@ -840,19 +817,8 @@ impl RoomHandle {
     /// Shown at once, then saved on the server; if saving fails, the
     /// server's mode is restored.
     pub async fn set_disappearing_mode(&self, after_read: Option<Duration>) -> Result<()> {
-        let disappearing = &self.session.disappearing;
-        disappearing.unsaved_modes.fetch_add(1, Ordering::SeqCst);
-        disappearing.set_mode(self.room.room_id(), after_read);
-        let content = DisappearingModeEventContent {
-            after_read: after_read.map(|d| d.as_secs()),
-        };
-        let saved = self.room.set_account_data(content).await;
-        disappearing.unsaved_modes.fetch_sub(1, Ordering::SeqCst);
-        if let Err(e) = saved {
-            disappearing.set_mode(self.room.room_id(), stored_mode(&self.room).await);
-            return Err(e.into());
-        }
-        Ok(())
+        let modes = &self.session.disappearing.modes;
+        modes.set(&self.room, after_read).await
     }
 }
 
