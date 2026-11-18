@@ -20,6 +20,7 @@ mod encryption;
 mod error;
 mod manage;
 mod math;
+mod media;
 mod presence;
 mod push;
 mod room;
@@ -51,6 +52,10 @@ pub use manage::{
     level_confirmation, typed_level,
 };
 pub use math::{FormulaImage, typeset_formula};
+pub use media::{
+    MediaQuality, MediaQualityChoice, VideoPlan, default_media_quality, media_quality_choices,
+    video_thumbnail_edge,
+};
 pub use presence::{
     Presence, PresenceActivity, PresenceDot, PresenceListener, PresenceState, presence_dot_label,
     presence_line,
@@ -70,7 +75,7 @@ pub use secrets::{SecretBackend, SecretError};
 pub use session::{ConnectionListener, Session};
 pub use text::{BlockKind, Formula, TextBlock, TextRun, TextStyle};
 pub use timeline::{
-    FileToSend, Timeline, TimelineRowsListener, TypingListener, Upload, UploadsListener,
+    FileToSend, Timeline, TimelineRowsListener, TypingListener, Upload, UploadsListener, VideoInfo,
 };
 pub use types::*;
 

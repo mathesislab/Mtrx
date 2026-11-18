@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -57,6 +59,17 @@ pub enum Error {
         size: u64,
         max: u64,
     },
+    /// A photo to reduce could not be read (see [`crate::reduce_photo`]).
+    #[error("{filename} could not be reduced: {reason}")]
+    PhotoNotReduced { filename: String, reason: String },
+    /// A video too long to send even at the lowest quality: the server's
+    /// limit (bytes), and how long a video it takes at that quality.
+    #[error(
+        "Too long to send: the server takes at most {} (about {})",
+        crate::human_size(*.max),
+        crate::media::length_words(*.longest)
+    )]
+    VideoTooLong { max: u64, longest: Duration },
     /// A download failed or was cancelled (why, in English).
     #[error("{0}")]
     Download(String),

@@ -149,3 +149,23 @@ pub fn syncing(session: &Session) -> bool {
     use matrix_sdk_ui::sync_service::State;
     matches!(session.sync.state().get(), State::Running | State::Offline)
 }
+
+/// A JPEG photo larger than a reduced one may be (3000×2000 px, a few MB),
+/// for sending with [`crate::MediaQuality::Reduced`].
+pub fn large_photo() -> Vec<u8> {
+    use image::{ExtendedColorType, ImageEncoder, Rgb, RgbImage, codecs::jpeg::JpegEncoder};
+    let (width, height) = (3000, 2000);
+    let photo = RgbImage::from_fn(width, height, |x, y| {
+        let noise = (x.wrapping_mul(7919) ^ y.wrapping_mul(104_729)) % 64;
+        Rgb([
+            (x * 190 / width + noise) as u8,
+            (y * 190 / height + noise) as u8,
+            (noise * 3) as u8,
+        ])
+    });
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, 95)
+        .write_image(photo.as_raw(), width, height, ExtendedColorType::Rgb8)
+        .expect("a JPEG");
+    bytes
+}

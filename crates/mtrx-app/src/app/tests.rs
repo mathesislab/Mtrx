@@ -12,8 +12,8 @@ use futures_util::StreamExt;
 use iced::{Rectangle, Size, theme::Mode, widget::text_editor};
 use iced_test::simulator::Simulator;
 use mtrx_core::{
-    Attachment, CallService, Connection, EventContent, Media, NewRoom, OwnedEventId, Profile,
-    RoomKind, RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile,
+    Attachment, CallService, Connection, EventContent, Media, MediaQuality, NewRoom, OwnedEventId,
+    Profile, RoomKind, RoomOrAliasId, RoomTag, RoomTimeline, Row, RowContext, ScheduledFile,
     ScheduledMessage, SecretStore, Section, SendState, Session, TimelineEntry,
     test_support::{PASSWORD, homeserver, register, unique_name},
 };
@@ -2192,11 +2192,13 @@ async fn media_messages() {
             filename: "melt-rate-map.png".into(),
             mimetype: "image/png".into(),
             bytes: map,
+            video: None,
         },
         Attachment {
             filename: "ice-flux-draft.pdf".into(),
             mimetype: "application/pdf".into(),
             bytes: crate::pdf::sample(),
+            video: None,
         },
     ];
     timeline
@@ -2205,6 +2207,7 @@ async fn media_messages() {
             files,
             None,
             None,
+            MediaQuality::Original,
         )
         .await
         .unwrap();

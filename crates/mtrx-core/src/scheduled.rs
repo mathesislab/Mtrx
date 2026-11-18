@@ -21,7 +21,8 @@ use tokio::sync::{Mutex, watch};
 use tracing::warn;
 
 use crate::{
-    AbortOnDrop, Attachment, Disappear, Error, Live, PendingSend, Result, RoomHandle, Session,
+    AbortOnDrop, Attachment, Disappear, Error, Live, MediaQuality, PendingSend, Result, RoomHandle,
+    Session, media,
     timeline::{Outbox, send_message},
 };
 
@@ -156,6 +157,8 @@ impl Schedule {
             self.load_files(message).await?,
             message.in_reply_to.as_deref(),
             message.disappear,
+            // Reduced, if so, when scheduled.
+            MediaQuality::Original,
         )
         .await
     }
@@ -183,6 +186,7 @@ impl Schedule {
                 filename: file.filename.clone(),
                 mimetype: file.mimetype.clone(),
                 bytes,
+                video: None,
             });
         }
         Ok(files)
@@ -325,7 +329,8 @@ impl Session {
 impl RoomHandle {
     /// Schedule a Markdown message and files for `send_at`, which must be
     /// in the future; they are sent as by [`RoomTimeline::send`], and
-    /// disappear as `disappear` says.
+    /// disappear as `disappear` says. Photos are reduced now if `quality`
+    /// says so, and kept so.
     ///
     /// [`RoomTimeline::send`]: crate::RoomTimeline::send
     pub async fn schedule(
@@ -335,12 +340,14 @@ impl RoomHandle {
         send_at: SystemTime,
         in_reply_to: Option<&EventId>,
         disappear: Option<Disappear>,
+        quality: MediaQuality,
     ) -> Result<ScheduledMessage> {
         let schedule = &self.session.schedule;
         let send_at = future_time(send_at)?;
         if text.trim().is_empty() && files.is_empty() {
             return Err(Error::Timeline("nothing to send".into()));
         }
+        let files = media::reduce_photos(files, quality).await?;
         let message = ScheduledMessage {
             id: random_id(),
             room_id: self.id().to_owned(),

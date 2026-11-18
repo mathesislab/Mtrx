@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::warn;
 use url::Url;
 
-use crate::{Error, Result, RoomHandle, Session, timeline::send_message};
+use crate::{Error, MediaQuality, Result, RoomHandle, Session, timeline::send_message};
 
 /// A call service, for starting calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +210,8 @@ impl RoomHandle {
             Vec::new(),
             None,
             None,
+            // No files: the quality does not matter.
+            MediaQuality::Original,
         )
         .await?;
         Ok(())

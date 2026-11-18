@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use mtrx_core::{self as core, OwnedEventId, RoomTimeline, UserId};
 
 use crate::{
-    Draft, MtrxError, TaskHandle, TimelineRow,
+    Draft, MediaQuality, MtrxError, TaskHandle, TimelineRow,
     runtime::{self, InRuntime, follow, run},
 };
 
@@ -32,13 +32,57 @@ pub trait UploadsListener: Send + Sync {
 }
 
 /// A file to send: a copy the app made in its cache, which it deletes once
-/// [`Timeline::send`] returns.
+/// [`Timeline::send`] returns (with its video's still).
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct FileToSend {
     pub path: String,
     /// The name it is sent with (a photo's made from the date, say); its
     /// type is guessed from it.
     pub filename: String,
+    /// A video's details, so that apps show a still and its length before
+    /// it is opened.
+    #[uniffi(default)]
+    pub video: Option<VideoInfo>,
+}
+
+/// A video to send, as the phone reads it.
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct VideoInfo {
+    /// In pixels, as shown (turned upright).
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u64,
+    /// A JPEG of a frame near the start, at most `video_thumbnail_edge()`
+    /// px: a copy in the cache, deleted with the video's.
+    pub thumbnail_path: Option<String>,
+}
+
+impl FileToSend {
+    /// The file to send, read: its bytes, and its video's details and
+    /// still. A still that cannot be read is left out.
+    async fn read(self) -> Result<core::Attachment, MtrxError> {
+        let mut attachment =
+            core::Attachment::read_as(Path::new(&self.path), &self.filename).await?;
+        if let Some(video) = self.video {
+            let thumbnail = match &video.thumbnail_path {
+                Some(path) => match tokio::fs::read(path).await {
+                    Ok(still) => Some(still),
+                    Err(e) => {
+                        tracing::warn!("a video's still is left out: {e}");
+                        None
+                    }
+                },
+                None => None,
+            };
+            attachment.video = Some(core::VideoInfo {
+                width: video.width,
+                height: video.height,
+                duration: Duration::from_millis(video.duration_ms),
+                thumbnail,
+            });
+        }
+        Ok(attachment)
+    }
 }
 
 /// A file uploading for a message being sent.
@@ -169,13 +213,15 @@ impl Timeline {
     /// the server takes fails it all, saying so. With
     /// `disappear_after_read`, all are deleted for everyone this long after
     /// all others have read them, at the latest after the limit
-    /// (`Session.disappearingLimit`).
+    /// (`Session.disappearingLimit`). Photos are reduced first if
+    /// `quality` says so (videos the app converts itself).
     pub async fn send(
         &self,
         text: String,
         files: Vec<FileToSend>,
         reply_to: Option<String>,
         disappear_after_read: Option<Duration>,
+        quality: MediaQuality,
     ) -> Result<(), MtrxError> {
         let reply_to = match reply_to {
             Some(item_id) => Some(
@@ -189,11 +235,11 @@ impl Timeline {
         run(async move {
             let mut attachments = Vec::with_capacity(files.len());
             for file in files {
-                let path = Path::new(&file.path);
-                attachments.push(core::Attachment::read_as(path, &file.filename).await?);
+                attachments.push(file.read().await?);
             }
+            let quality = quality.into();
             timeline
-                .send(&text, attachments, reply_to.as_deref(), disappear)
+                .send(&text, attachments, reply_to.as_deref(), disappear, quality)
                 .await?;
             Ok(())
         })

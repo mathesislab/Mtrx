@@ -113,6 +113,7 @@ impl Room {
                 self.error = None;
                 let timeline = self.timeline.clone();
                 let disappear = self.disappearing(cx.session);
+                let quality = mtrx_core::MediaQuality::DESKTOP_DEFAULT;
                 let used = emoji::used(&text);
                 // Queue only: the local echo shows the send state. Queued
                 // first, so it shows before the server hears of anything.
@@ -124,6 +125,7 @@ impl Room {
                                 files,
                                 compose.reply_to().map(|id| &**id),
                                 disappear,
+                                quality,
                             )
                             .await
                             .map(|_| ());
