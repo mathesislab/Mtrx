@@ -112,7 +112,8 @@ struct CameraPicker: UIViewControllerRepresentable {
 
 /// The files picked to send, above the message field, like the desktop's
 /// chips: a card each with its picture (or a file's symbol), its name, and
-/// ✕ to take it away; "Preparing…" until its copy is made.
+/// ✕ to take it away; "Preparing…" until its copy is made, with how far a
+/// video's conversion is ("Preparing… 40%").
 struct PickedFileCards: View {
     let files: [PickedFile]
     let remove: (UUID) -> Void
@@ -154,7 +155,7 @@ private struct PickedFileCard: View {
             }
             .frame(width: 40, height: 40)
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text(name ?? "Preparing…")
+            Text(name ?? preparing)
                 .font(.footnote)
                 .foregroundStyle(name == nil ? .secondary : .primary)
                 .lineLimit(2)
@@ -172,6 +173,11 @@ private struct PickedFileCard: View {
             guard let path = file.file?.path else { return }
             thumbnail = await Self.thumbnail(of: URL(fileURLWithPath: path), scale: scale)
         }
+    }
+
+    private var preparing: String {
+        guard let progress = file.progress else { return "Preparing…" }
+        return "Preparing… \(Int((progress * 100).rounded()))%"
     }
 
     /// A small picture of the file (a photo, a video's frame, a page);

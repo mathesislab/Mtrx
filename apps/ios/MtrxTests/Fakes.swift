@@ -41,6 +41,8 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     /// How long after read each message sent or reply disappears, in order
     /// (nil: it doesn't).
     var disappearing: [TimeInterval?] = []
+    /// How each message sent or reply sends its photos, in order.
+    var qualities: [MediaQuality] = []
     var edits: [(itemId: String, text: String)] = []
     var reactions: [(itemId: String, key: String)] = []
     var deleted: [String] = []
@@ -73,7 +75,8 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
     /// A new message's text in `sent`, a reply's in `replies`; the files of
     /// each in `files`, read while it is sent.
     override func send(
-        text: String, files: [FileToSend], replyTo: String?, disappearAfterRead: TimeInterval?
+        text: String, files: [FileToSend], replyTo: String?, disappearAfterRead: TimeInterval?,
+        quality: MediaQuality
     ) async throws {
         if let sendError { throw sendError }
         if let replyTo {
@@ -84,6 +87,7 @@ final class FakeTimeline: Timeline, @unchecked Sendable {
         self.files.append(files.map(\.filename))
         XCTAssertTrue(files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
         disappearing.append(disappearAfterRead)
+        qualities.append(quality)
     }
 
     override func subscribeUploads(listener: UploadsListener) -> TaskHandle {
@@ -280,6 +284,18 @@ final class FakeSession: Session, @unchecked Sendable {
 
     override func timeline(roomId: String) async throws -> Timeline {
         fakeTimeline
+    }
+
+    /// What `videoPlan` returns, and the videos it was asked for.
+    var plan: VideoPlan?
+    var planned: [OutgoingVideo.Source] = []
+
+    override func videoPlan(
+        width: UInt32, height: UInt32, fps: Float, durationMs: UInt64, size: UInt64
+    ) async throws -> VideoPlan? {
+        planned.append(
+            OutgoingVideo.Source(width: width, height: height, fps: fps, durationMs: durationMs, size: size))
+        return plan
     }
 
     override func subscribeRoomLists(listener: RoomListsListener) async throws -> TaskHandle {

@@ -2,7 +2,8 @@ import MtrxFFI
 import SwiftUI
 
 /// The Settings tab: the account, sharing our presence, the limit of our
-/// disappearing messages, its encryption on this device, and signing out.
+/// disappearing messages, how photos and videos are sent, its encryption on
+/// this device, and signing out.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
@@ -19,6 +20,7 @@ struct SettingsView: View {
                 .textSelection(.enabled)
                 RoomListSection()
                 PrivacySection()
+                MediaSection()
                 EncryptionSection()
                 Section {
                     Button("Sign out…", role: .destructive) {
@@ -102,6 +104,32 @@ private struct PrivacySection: View {
             Text(
                 "Messages you send to disappear after read are deleted at the latest this long after sending, "
                     + "also when not everyone has read them.")
+        }
+    }
+}
+
+/// How photos and videos are sent from this device, with what the choice
+/// does below it.
+private struct MediaSection: View {
+    @State private var quality = MediaSetting.quality()
+
+    var body: some View {
+        Section {
+            Picker(
+                "Photos and videos",
+                selection: Binding(
+                    get: { quality },
+                    set: {
+                        quality = $0
+                        MediaSetting.set($0)
+                    })
+            ) {
+                ForEach(MediaSetting.choices, id: \.quality) { choice in
+                    Text(choice.title).tag(choice.quality)
+                }
+            }
+        } footer: {
+            Text(MediaSetting.explanation(of: quality))
         }
     }
 }

@@ -469,7 +469,8 @@ private final class UITestTimeline: Timeline, @unchecked Sendable {
     /// The text (as a new message, also a reply), shown at once; read (the
     /// marker gone) and the server's copy a moment later.
     override func send(
-        text: String, files: [FileToSend], replyTo: String?, disappearAfterRead: TimeInterval?
+        text: String, files: [FileToSend], replyTo: String?, disappearAfterRead: TimeInterval?,
+        quality: MediaQuality
     ) async throws {
         let id = lock.withLock {
             sent += 1
