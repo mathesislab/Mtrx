@@ -1105,8 +1105,17 @@ mod tests {
             source: MediaRef::plain(&format!("mxc://example.org/{filename}")),
         };
         let room: OwnedRoomId = "!room:example.org".try_into().unwrap();
+        let downloads = Downloads::default();
         let asked = |media: &Media, previews: &Previews| -> Vec<app::Message> {
-            let shown = view(&room, None, media, &media.filename, previews, false);
+            let shown = view(
+                &room,
+                None,
+                media,
+                &media.filename,
+                previews,
+                &downloads,
+                false,
+            );
             let mut ui = Simulator::with_size(fonts::settings(), Size::new(800.0, 600.0), shown);
             let _ = ui.simulate([iced::Event::Window(window::Event::RedrawRequested(
                 Instant::now(),
