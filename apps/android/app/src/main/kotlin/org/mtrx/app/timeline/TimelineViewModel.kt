@@ -61,12 +61,16 @@ import uniffi.mtrx.TypingListener
  * room's mode, followed (also changed on our other devices), until one is
  * chosen in the composer ([chooseDisappear]), which holds until the room
  * is left. Edits keep their message's.
+ *
+ * Audio messages play in their bubbles ([audio]), [audioOutput] holding the
+ * focus while one plays; leaving the room stops them.
  */
 class TimelineViewModel(
     private val roomId: String,
     private val session: Session,
     private val onRead: () -> Unit,
     private val onInput: () -> Unit = {},
+    audioOutput: AudioOutput,
 ) : ViewModel(), TimelineActions {
     private val _rows = MutableStateFlow<List<TimelineRow>>(emptyList())
     val rows: StateFlow<List<TimelineRow>> = _rows.asStateFlow()
@@ -115,6 +119,9 @@ class TimelineViewModel(
 
     /** Chosen in the composer: the room's mode no longer applies while the room shows. */
     private var disappearChosen = false
+
+    /** The room's audio messages, played one at a time while it shows. */
+    val audio = AudioPlayer(session, viewModelScope, audioOutput, ::SystemPlayer)
 
     private val downloadsSubscription: TaskHandle = session.subscribeDownloads(object : DownloadsListener {
         // On a library thread.
@@ -233,6 +240,10 @@ class TimelineViewModel(
     override fun cancelDownload(id: ULong) {
         session.cancelDownload(id)
     }
+
+    override fun toggleAudio(media: Media) = audio.toggle(media)
+
+    override fun seekAudio(media: Media, to: Duration) = audio.seek(media, to)
 
     /** The list is scrolled (nearly) to its top: load older events while it is. */
     override fun onNearTop(value: Boolean) {
@@ -534,6 +545,7 @@ class TimelineViewModel(
     }
 
     override fun onCleared() {
+        audio.release()
         keepDraft()
         for (handle in listOfNotNull(subscription, typingSubscription, disappearingSubscription, downloadsSubscription)) {
             handle.cancel()

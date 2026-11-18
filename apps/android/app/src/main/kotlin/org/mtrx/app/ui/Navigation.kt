@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
@@ -43,6 +44,7 @@ import org.mtrx.app.settings.RecoveryScreen
 import org.mtrx.app.settings.VerificationRequestDialog
 import org.mtrx.app.settings.VerificationScreen
 import org.mtrx.app.timeline.PinnedModel
+import org.mtrx.app.timeline.SystemAudioOutput
 import org.mtrx.app.timeline.TimelineScreen
 import org.mtrx.app.timeline.TimelineViewModel
 import org.mtrx.app.timeline.roomHeader
@@ -286,12 +288,15 @@ private fun RoomPane(
             }
         }
         DisposableEffect(owner) { onDispose { owner.viewModelStore.clear() } }
+        // For the audio focus and the headphones: the application's, as they need no activity.
+        val context = LocalContext.current.applicationContext
         val viewModel: TimelineViewModel = viewModel(viewModelStoreOwner = owner) {
             TimelineViewModel(
                 roomId,
                 session.session,
                 onRead = { account.roomRead(roomId) },
                 onInput = session.presence::input,
+                audioOutput = SystemAudioOutput(context),
             )
         }
         val pinned: PinnedModel = viewModel(viewModelStoreOwner = owner) { PinnedModel(roomId, session.session) }
