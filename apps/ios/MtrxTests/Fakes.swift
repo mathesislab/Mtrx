@@ -292,6 +292,54 @@ final class FakeSession: Session, @unchecked Sendable {
         return FakeTaskHandle(noHandle: .init())
     }
 
+    /// What `subscribeQuiet` gives, now and on every change; the changes
+    /// asked for, as `changes` has them.
+    var quietState = QuietState(
+        quiet: false, paused: false, until: nil, line: "Notifications on",
+        hours: QuietHours(on: false, fromMinute: 22 * 60, toMinute: 7 * 60, days: [.mon, .tue, .wed, .thu, .fri, .sat, .sun]),
+        hoursLine: "Off", mentionsThrough: false
+    ) {
+        didSet { quietListener?.onUpdate(state: quietState) }
+    }
+    var quietListener: QuietListener?
+
+    override func subscribeQuiet(listener: QuietListener) -> TaskHandle {
+        quietListener = listener
+        listener.onUpdate(state: quietState)
+        return FakeTaskHandle(noHandle: .init())
+    }
+
+    override func pauseMenu() -> [PauseMenuItem] {
+        [
+            PauseMenuItem(entry: .pause(pause: .hour), title: "For 1 hour"),
+            PauseMenuItem(entry: .pause(pause: .tomorrowMorning), title: "Until tomorrow, 08:00"),
+            PauseMenuItem(entry: .pickTime, title: "Until…"),
+            PauseMenuItem(entry: .pause(pause: .untilResumed), title: "Until I turn them back on"),
+        ]
+    }
+
+    override func pauseNotifications(pause: PauseFor) async throws {
+        try change("pause \(pause)")
+        quietState.quiet = true
+        quietState.paused = true
+    }
+
+    override func resumeNotifications() async throws {
+        try change("resume")
+        quietState.quiet = false
+        quietState.paused = false
+    }
+
+    override func setQuietHours(hours: QuietHours) async throws {
+        try change("hours \(hours.fromMinute)-\(hours.toMinute)")
+        quietState.hours = hours
+    }
+
+    override func setMentionsThrough(on: Bool) async throws {
+        try change("mentions through \(on)")
+        quietState.mentionsThrough = on
+    }
+
     override func subscribeEncryptionState(listener: EncryptionStateListener) -> TaskHandle {
         encryptionListener = listener
         listener.onUpdate(state: encryption)

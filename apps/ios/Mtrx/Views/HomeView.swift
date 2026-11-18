@@ -105,6 +105,11 @@ struct ChatsTab: View {
             }
             .navigationTitle("Chats")
             .searchable(text: $search, prompt: "Search chats")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    QuietBell()
+                }
+            }
             .navigationDestination(for: String.self) { id in
                 OpenRoom(id: id)
                     .backWithUnread(rooms.backBadge(besides: id)) {

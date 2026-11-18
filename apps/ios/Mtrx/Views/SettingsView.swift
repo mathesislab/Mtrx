@@ -1,8 +1,9 @@
 import MtrxFFI
 import SwiftUI
 
-/// The Settings tab: the account, sharing our presence, the limit of our
-/// disappearing messages, its encryption on this device, and signing out.
+/// The Settings tab: the account, pausing notifications, sharing our
+/// presence, the limit of our disappearing messages, its encryption on this
+/// device, and signing out.
 struct SettingsView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var session: SessionModel
@@ -17,6 +18,7 @@ struct SettingsView: View {
                     LabeledContent("Device", value: session.deviceId)
                 }
                 .textSelection(.enabled)
+                NotificationsSection()
                 RoomListSection()
                 PrivacySection()
                 EncryptionSection()
@@ -53,6 +55,22 @@ struct SettingsView: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? "?"
         let build = info?["CFBundleVersion"] as? String ?? "?"
         return "\(short) (\(build))"
+    }
+}
+
+/// Pausing notifications and quiet hours, for our other devices while this
+/// iPhone shows none.
+private struct NotificationsSection: View {
+    @EnvironmentObject private var quiet: QuietModel
+
+    var body: some View {
+        Section("Notifications") {
+            NavigationLink {
+                QuietView()
+            } label: {
+                LabeledContent("Pause notifications", value: quiet.state?.line ?? "")
+            }
+        }
     }
 }
 

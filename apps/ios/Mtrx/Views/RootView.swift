@@ -45,5 +45,6 @@ extension View {
             .environmentObject(session.images)
             .environmentObject(session.presence)
             .environmentObject(session.downloads)
+            .environmentObject(session.quiet)
     }
 }
