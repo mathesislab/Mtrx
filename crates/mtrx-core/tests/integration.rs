@@ -3236,11 +3236,19 @@ async fn a_pause_holds_back_notifications() -> Result<()> {
     let fetched = Notification::fetch(b.session.profile(), &room, &held).await?;
     assert_eq!(fetched, None);
 
-    // Resumed: messages notify again. C's fetch syncs the resume itself.
+    // Resumed: messages notify again, pushed ones too.
     a.session.resume_notifications().await?;
     quiet_on(&b, false).await?;
-    let fetched = Notification::fetch(c.session.profile(), &room, &held).await?;
+    let fetched = Notification::fetch(b.session.profile(), &room, &held).await?;
     assert!(fetched.is_some_and(|n| n.body == "while paused"));
+    // C didn't sync the resume: its fetch's own sync brings it.
+    let fetched = Notification::fetch(c.session.profile(), &room, &held).await;
+    let stored = Session::restore(c.session.profile().clone()).await?.quiet();
+    assert!(
+        matches!(&fetched, Ok(Some(n)) if n.body == "while paused"),
+        "fetched {fetched:?}; C's store says {:?}",
+        stored.status
+    );
     send_text(&timeline, "after the pause").await?;
     let next = wait_for("a message", &mut notifications, |_| true).await?;
     assert_eq!(next.body, "after the pause", "not the one held back");
