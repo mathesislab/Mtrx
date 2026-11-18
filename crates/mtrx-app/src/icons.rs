@@ -1370,6 +1370,60 @@ impl<M> canvas::Program<M> for Ring {
     }
 }
 
+/// A triangle pointing right: plays.
+pub fn play<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        let triangle = Path::new(|path| {
+            path.move_to(p(0.34, 0.24));
+            path.line_to(p(0.78, 0.5));
+            path.line_to(p(0.34, 0.76));
+            path.close();
+        });
+        if let canvas::Style::Solid(color) = &stroke.style {
+            frame.fill(&triangle, *color);
+        }
+        frame.stroke(&triangle, stroke);
+    })
+}
+
+/// Two bars: pauses.
+pub fn pause<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let p = |x: f32, y: f32| iced::Point::new(x * s, y * s);
+        let bar = stroke.with_width(s * 0.16);
+        frame.stroke(&Path::line(p(0.36, 0.28), p(0.36, 0.72)), bar);
+        frame.stroke(&Path::line(p(0.64, 0.28), p(0.64, 0.72)), bar);
+    })
+}
+
+/// A circle of an arrow, clockwise: tries again.
+pub fn retry<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
+    sketch(size, color, |frame, s, stroke| {
+        let (center, radius) = (frame.center(), s * 0.3);
+        // From a little after twelve, round to a little before.
+        let (start, end) = (-FRAC_PI_2 + 0.6, 1.5 * std::f32::consts::PI - 0.35);
+        let arc = Path::new(|path| {
+            path.arc(canvas::path::Arc {
+                center,
+                radius,
+                start_angle: iced::Radians(start),
+                end_angle: iced::Radians(end),
+            });
+        });
+        frame.stroke(&arc, stroke);
+        // The head, pointing on clockwise.
+        let (out, ahead) = (
+            Vector::new(end.cos(), end.sin()),
+            Vector::new(-end.sin(), end.cos()),
+        );
+        let tip = center + out * radius;
+        let back = tip - ahead * (s * 0.16);
+        frame.stroke(&Path::line(tip, back + out * (s * 0.12)), stroke);
+        frame.stroke(&Path::line(tip, back - out * (s * 0.12)), stroke);
+    })
+}
+
 /// An icon of round-capped strokes, drawn by `draw` on a square of side
 /// `s` (the size).
 fn sketch<'a, M: 'a>(

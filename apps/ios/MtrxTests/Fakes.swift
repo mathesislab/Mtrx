@@ -520,6 +520,66 @@ final class FakeSession: Session, @unchecked Sendable {
         created.append(new)
         return "!new:example.org"
     }
+
+    // MARK: Audio
+
+    /// The file `audioFile` gives for each source, after reporting
+    /// `audioProgress`; for others it waits until cancelled.
+    var audioFiles: [String: Result<String, Error>] = [:]
+    var audioProgress: [Float?] = []
+    private var fetches: [String] = []
+    private var cancelledFetches: [String] = []
+
+    /// The sources fetched, in order (from the model's tasks, off the main
+    /// actor: behind the lock).
+    var audioFetches: [String] { locked { fetches } }
+    /// The sources whose fetch was cancelled, in order.
+    var audioCancelled: [String] { locked { cancelledFetches } }
+
+    override func audioFile(media: Media, progress: AudioProgress) async throws -> String {
+        let (file, steps) = locked { () -> (Result<String, Error>?, [Float?]) in
+            fetches.append(media.source)
+            return (audioFiles[media.source], audioProgress)
+        }
+        for step in steps {
+            progress.onProgress(fraction: step)
+        }
+        if let file { return try file.get() }
+        while !Task.isCancelled { try? await Task.sleep(nanoseconds: 10_000_000) }
+        locked { cancelledFetches.append(media.source) }
+        throw CancellationError()
+    }
+}
+
+/// A player of a message's file (`AudioModel`): it plays from where it is
+/// set, which the tests move; `end()` plays it to its end.
+@MainActor
+final class FakeAudioPlayer: AudioPlaying {
+    let file: URL
+    let duration: TimeInterval
+    var currentTime: TimeInterval = 0
+    var stopped: (@MainActor (AudioStop) -> Void)?
+    private(set) var playing = false
+
+    init(file: URL, duration: TimeInterval) {
+        self.file = file
+        self.duration = duration
+    }
+
+    func play() -> Bool {
+        playing = true
+        return true
+    }
+
+    func pause() {
+        playing = false
+    }
+
+    func end() {
+        playing = false
+        currentTime = 0
+        stopped?(.ended)
+    }
 }
 
 /// A room of a fake session (`FakeSession.room`): gives its settings and
@@ -729,6 +789,27 @@ enum Make {
             message: Message(
                 kind: kind, body: body, edited: edited, media: nil, reactions: reactions, replyTo: replyTo,
                 rawBody: rawBody, text: text ?? [paragraph([plain(body)])]))
+    }
+
+    /// An audio message's file, `seconds` long as the library labels it: a
+    /// voice message with its waveform, unless `name` is given.
+    static func audio(_ source: String, name: String? = nil, seconds: TimeInterval? = 42) -> Media {
+        Media(
+            kind: .audio, filename: name ?? "Voice message.ogg", size: 24_000,
+            mimetype: name == nil ? "audio/ogg" : "audio/mp4", width: nil, height: nil, source: source,
+            duration: seconds, durationLabel: seconds.map { playbackTime(time: $0) }, voice: name == nil,
+            waveform: name == nil ? waveform : [])
+    }
+
+    /// A voice message's 40 bars.
+    static let waveform = (0..<40).map { Float(0.2 + 0.8 * abs(sin(Double($0) * 0.45))) }
+
+    /// A message with an audio file.
+    static func audioMessage(_ media: Media) -> EventContent {
+        .message(
+            message: Message(
+                kind: .audio, body: media.filename, edited: false, media: media, reactions: [], replyTo: nil,
+                rawBody: media.filename, text: []))
     }
 
     /// A paragraph of `runs`, outside quotes and lists.

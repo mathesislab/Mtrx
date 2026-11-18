@@ -78,7 +78,7 @@ struct RowActions {
     /// it back.
     let unsent: (String) -> Void
     /// A message's file was tapped (with the message's event ID): show it
-    /// once downloaded.
+    /// once downloaded. Not audio, which plays in its bubble.
     let open: (Media, String?) -> Void
     /// A mention was tapped: the person's sheet (user ID, name).
     let showPerson: (String, String) -> Void
@@ -207,6 +207,9 @@ struct MessageView: View {
                         bubble(text(message), quote: nil, muted: message.kind == .notice)
                     }
                 }
+            } else if let media = message.media, media.kind == .audio {
+                // Plays in the bubble; Share… in its menu gets the file.
+                bubble(AudioView(media: media), quote: message.replyTo)
             } else if let media = message.media {
                 bubble(FileView(media: media), quote: message.replyTo)
                     .onTapGesture { actions.open(media, event.eventId) }

@@ -676,10 +676,10 @@ private struct BackWithUnread: ViewModifier {
 }
 
 /// A room by ID: its invite to answer, its timeline, or a word while it is
-/// coming (just made or joined) or gone. Its state (the timeline's and the
-/// info's models) is the room's: a navigation stack keeps a page's state
-/// when its path changes to another room at the same place (a room opened
-/// from elsewhere over another, `HomeNavigation.open`).
+/// coming (just made or joined) or gone. Its state (the timeline's, the
+/// info's and the audio's models) is the room's: a navigation stack keeps
+/// a page's state when its path changes to another room at the same place
+/// (a room opened from elsewhere over another, `HomeNavigation.open`).
 struct OpenRoom: View {
     @EnvironmentObject private var session: SessionModel
     @EnvironmentObject private var rooms: RoomListModel
@@ -694,7 +694,8 @@ struct OpenRoom: View {
         if let room = rooms.room(id), room.membership != .invited {
             RoomView(
                 room: room, model: TimelineModel(session: session.session, room: room),
-                info: RoomInfoModel(session: session.session, roomId: room.id, userId: session.userId))
+                info: RoomInfoModel(session: session.session, roomId: room.id, userId: session.userId),
+                audio: AudioModel(session: session.session))
         } else if let room = rooms.room(id) {
             InviteView(room: room)
         } else if rooms.joining.contains(id) || !rooms.loaded {

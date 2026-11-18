@@ -134,6 +134,9 @@ impl Download {
             width: None,
             height: None,
             source: MediaRef::plain("mxc://example.org/file"),
+            duration: None,
+            voice: false,
+            waveform: Vec::new(),
         };
         let room = "!room:example.org".try_into().expect("a room ID");
         Self::new(id, &media, room, "Room".into(), None, SaveTo::Downloads)
@@ -480,6 +483,20 @@ impl Downloads {
         tasks.insert(id, AbortOnDrop(task));
     }
 
+    /// The file of a finished download of `source` to the cache, if it's
+    /// still there.
+    pub(crate) fn in_cache(&self, source: &MediaRef) -> Option<PathBuf> {
+        let list = self.shared.list.borrow();
+        list.iter().find_map(|d| match &d.state {
+            DownloadState::Done { path }
+                if d.to == SaveTo::Cache && &d.source == source && path.exists() =>
+            {
+                Some(path.clone())
+            }
+            _ => None,
+        })
+    }
+
     async fn finished(&self, id: DownloadId) -> Result<PathBuf> {
         let mut list = self.shared.list.subscribe();
         let list = list
@@ -687,7 +704,7 @@ fn reopened(mut list: Vec<Download>, places: &Places) -> (Vec<Download>, bool) {
 }
 
 /// A URI part as a folder name: letters, digits, `-`, `_` and `.` only.
-fn path_safe(part: &str) -> String {
+pub(crate) fn path_safe(part: &str) -> String {
     let safe: String = part
         .chars()
         .map(|c| match c {

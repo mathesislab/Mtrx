@@ -1199,6 +1199,9 @@ impl App {
                 downloads::exports_subscription(&main.session)
                     .map(|m| Message::Media(media::Message::Downloads(m))),
             );
+            subscriptions.push(
+                (main.media.audio.subscription()).map(|m| Message::Media(media::Message::Audio(m))),
+            );
         }
         Subscription::batch(subscriptions)
     }
@@ -1370,6 +1373,7 @@ impl App {
                     call_services: &self.settings.call_services,
                     previews: &main.media.previews,
                     downloads: &main.media.downloads,
+                    audio: &main.media.audio,
                     frequent_emoji: &main.people.frequent_emoji,
                     show_members: main.pane.show_members,
                     popup: main.popup.as_ref(),

@@ -57,6 +57,8 @@ object MtrxIcons {
         "M16,1H4c-1.1,0 -2,0.9 -2,2v14h2V3h12V1zM19,5H8c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h11c1.1,0 2,-0.9 2,-2V7c0,-1.1 -0.9,-2 -2,-2zM19,21H8V7h11v14z",
     )
 
+    /** An audio message playing. */
+    val Pause: ImageVector = icon("Pause", "M6,19h4V5H6v14zM14,5v14h4V5h-4z")
     /** A bell struck through: a muted room, notifications paused. */
     val NotificationsOff: ImageVector = icon(
         "NotificationsOff",
