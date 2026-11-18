@@ -28,7 +28,8 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use crate::{
-    Error, Notification, Profile, Result, Session, User,
+    Error, Notification, Profile, Quiet, QuietStatus, Result, Session, User,
+    account_data::stored,
     notifications::{self, should_notify},
     session::restore_client,
 };
@@ -145,7 +146,8 @@ impl Notification {
     /// also while the app's session syncs (in this process or another).
     /// `None` if there is nothing to show: the push rules say no (a muted
     /// room), it is our own event (also when the rules cannot be read), the
-    /// sender is ignored, or the event was deleted.
+    /// sender is ignored, the event was deleted, or notifications are
+    /// paused or in quiet hours ([`Quiet`]; also when it can't be fetched).
     pub async fn fetch(
         profile: &Profile,
         room_id: &RoomId,
@@ -160,30 +162,47 @@ impl Notification {
         )
         .await?;
         let own = client.user_id().expect("restored").to_owned();
-        let notifications =
-            NotificationClient::new(client, NotificationProcessSetup::MultipleProcesses)
-                .await
-                .map_err(notification_error)?;
-        match notifications
-            .get_notification(room_id, event_id)
-            .await
-            .map_err(notification_error)?
-        {
-            NotificationStatus::Event(item) => Ok(Self::pushed(room_id, event_id, &item, &own)),
-            NotificationStatus::EventFilteredOut | NotificationStatus::EventRedacted => Ok(None),
-            NotificationStatus::EventNotFound => Err(Error::Notifications(format!(
+        let fetched = async {
+            let notifications = NotificationClient::new(
+                client.clone(),
+                NotificationProcessSetup::MultipleProcesses,
+            )
+            .await?;
+            notifications.get_notification(room_id, event_id).await
+        }
+        .await
+        .map_err(notification_error);
+        // The fetch's sync brought the account data: from before a resume
+        // on another device, the store's could be stale, so it is read only
+        // now.
+        let quiet = stored::<Quiet>(&client).await;
+        let now = SystemTime::now();
+        match fetched {
+            Ok(NotificationStatus::Event(item)) => {
+                Ok(Self::pushed(room_id, event_id, &item, &own, &quiet, now))
+            }
+            Ok(NotificationStatus::EventFilteredOut | NotificationStatus::EventRedacted) => {
+                Ok(None)
+            }
+            // Nothing to tell what it is, so nothing while quiet (the app
+            // would show that something came).
+            _ if quiet.status(now) != QuietStatus::On => Ok(None),
+            Ok(NotificationStatus::EventNotFound) => Err(Error::Notifications(format!(
                 "event {event_id} not found in {room_id}"
             ))),
+            Err(e) => Err(e),
         }
     }
 
     /// The notification of `item`, if someone else's event the push rules
-    /// notify for.
+    /// notify for, and `quiet` doesn't hold it back at `now`.
     fn pushed(
         room_id: &RoomId,
         event_id: &EventId,
         item: &NotificationItem,
         own: &UserId,
+        quiet: &Quiet,
+        now: SystemTime,
     ) -> Option<Self> {
         let sender = item.event.sender();
         let notifies = item
@@ -191,7 +210,8 @@ impl Notification {
             .as_deref()
             // Unknown: the server pushed it, so its rules said to.
             .is_none_or(should_notify);
-        if !notifies || sender == own {
+        let highlight = item.has_mention.unwrap_or(false);
+        if !notifies || sender == own || quiet.silences(highlight, now) {
             return None;
         }
         Some(Self {
@@ -206,7 +226,7 @@ impl Notification {
                 avatar: item.sender_avatar_url.clone().map(Into::into),
             },
             body: body(&item.event),
-            highlight: item.has_mention.unwrap_or(false),
+            highlight,
             noisy: item.is_noisy.unwrap_or(false),
             timestamp: match &item.event {
                 NotificationEvent::Timeline(event) => crate::system_time(event.origin_server_ts()),
@@ -286,12 +306,45 @@ mod tests {
     }
 
     fn notification(item: &NotificationItem) -> Option<Notification> {
+        quietly(item, &Quiet::default())
+    }
+
+    fn quietly(item: &NotificationItem, quiet: &Quiet) -> Option<Notification> {
         Notification::pushed(
             room_id!("!r:example.org"),
             event_id!("$e:example.org"),
             item,
             user_id!("@bob:example.org"),
+            quiet,
+            SystemTime::now(),
         )
+    }
+
+    #[test]
+    fn nothing_while_paused_but_a_mention_if_mentions_get_through() {
+        let paused = Quiet {
+            pause: Some(crate::Pause::UntilResumed),
+            ..Quiet::default()
+        };
+        let message = item(
+            event("@alice:example.org", text("hi")),
+            Some(vec![Action::Notify]),
+        );
+        assert_eq!(quietly(&message, &paused), None);
+        let mention = item(
+            event("@alice:example.org", text("Bob?")),
+            Some(vec![
+                Action::Notify,
+                Action::SetTweak(Tweak::Highlight(true.into())),
+            ]),
+        );
+        assert_eq!(quietly(&mention, &paused), None, "mentions too");
+        let through = Quiet {
+            mentions_through: true,
+            ..paused
+        };
+        assert!(quietly(&mention, &through).is_some_and(|n| n.highlight));
+        assert_eq!(quietly(&message, &through), None);
     }
 
     #[test]

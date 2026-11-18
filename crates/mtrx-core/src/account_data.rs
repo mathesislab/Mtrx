@@ -90,7 +90,12 @@ impl<T: AccountData> Synced<T> {
 
     /// The current value, then every change, from this device or others.
     pub(crate) fn updates(&self) -> Live<T> {
-        Live::from_watch(self.value.subscribe())
+        Live::from_watch(self.subscribe())
+    }
+
+    /// The current value, then every change; for following it in a task.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<T> {
+        self.value.subscribe()
     }
 
     /// Change the value: published at once, then saved on the server; if
@@ -118,7 +123,8 @@ impl<T: AccountData> Drop for Synced<T> {
     }
 }
 
-async fn stored<T: AccountData>(client: &Client) -> T {
+/// The value as stored, or the default if it can't be read.
+pub(crate) async fn stored<T: AccountData>(client: &Client) -> T {
     let raw = match client.account().account_data::<T::Content>().await {
         Ok(raw) => raw,
         Err(e) => {

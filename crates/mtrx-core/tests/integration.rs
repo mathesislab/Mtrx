@@ -22,8 +22,9 @@ use mtrx_core::{
     Activity, Attachment, CallService, Connection, DirectoryKind, Disappear, DownloadState, Draft,
     EventContent, ExportFiles, ExportFormat, ExportOf, ExportRange, ExportRequest, ExportState,
     History, JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom,
-    NotifyMode, Permissions, PinsChange, PresenceState, Profile, RecoveryStatus, Rights, Role,
-    RoomKind, SaveTo, SecretStore, Session, TimelineEntry, VerificationState,
+    Notification, NotifyMode, PauseFor, Permissions, PinsChange, PresenceState, Profile,
+    QuietStatus, RecoveryStatus, Rights, Role, RoomKind, SaveTo, SecretStore, Session,
+    TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
 };
 use mtrx_format::{Block, Inline, Style};
@@ -3163,5 +3164,85 @@ async fn timed_mutes() -> Result<()> {
         c_handle.own_notify_for_test().await == (Some(NotifyMode::Mentions), None)
     })
     .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs local Synapse (testserver/run.sh)"]
+async fn a_pause_holds_back_notifications() -> Result<()> {
+    let (name, a) = new_user("quiet").await?;
+    let b = login(&name).await?;
+    let (_, bob) = new_user("quiet-bob").await?;
+    let alice_id = a.session.user_id();
+    let room = bob
+        .session
+        .create_room(NewRoom {
+            name: Some("quiet".into()),
+            invite: vec![alice_id.clone()],
+            ..Default::default()
+        })
+        .await?;
+    join_synced(&a, &room, "quiet").await?;
+    a.session.room(&room)?.set_notify(NotifyMode::All).await?;
+    let joined = |state: &mtrx_core::RoomListState| {
+        (state.rooms.iter()).any(|r| r.id == room && r.membership == Membership::Joined)
+    };
+    wait_for(
+        "joined on b",
+        b.session.room_list().await?.updates(),
+        joined,
+    )
+    .await?;
+    let timeline = bob.session.timeline(&room).await?;
+    wait_for("alice joined", timeline.updates(), |entries| {
+        entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::Event(ev) if ev.sender.id == alice_id))
+    })
+    .await?;
+    // A third device, which stops syncing once paused.
+    let c = login(&name).await?;
+    let quiet_on = |device: &Device, on: bool| {
+        let updates = device.session.quiet_updates().updates();
+        wait_for("the pause", updates, move |q| {
+            (q.status != QuietStatus::On) == on
+        })
+    };
+
+    // Paused on A: B holds back Bob's message, and a mention once mentions
+    // get through.
+    a.session
+        .pause_notifications(PauseFor::UntilResumed)
+        .await?;
+    assert_ne!(a.session.quiet().status, QuietStatus::On, "shown at once");
+    quiet_on(&b, true).await?;
+    quiet_on(&c, true).await?;
+    c.session.stop_sync().await;
+    let mut notifications = std::pin::pin!(b.session.notifications());
+    let held = send_text(&timeline, "while paused").await?;
+    a.session.set_mentions_through(true).await?;
+    wait_for(
+        "mentions through on b",
+        b.session.quiet_updates().updates(),
+        |q| q.quiet.mentions_through,
+    )
+    .await?;
+    send_text(&timeline, &format!("over to you {alice_id}")).await?;
+    let first = wait_for("the mention", &mut notifications, |_| true).await?;
+    assert!(first.body.starts_with("over to you"), "{}", first.body);
+    assert!(first.highlight);
+
+    // The push path: nothing while paused, from the store.
+    let fetched = Notification::fetch(b.session.profile(), &room, &held).await?;
+    assert_eq!(fetched, None);
+
+    // Resumed: messages notify again. C's fetch syncs the resume itself.
+    a.session.resume_notifications().await?;
+    quiet_on(&b, false).await?;
+    let fetched = Notification::fetch(c.session.profile(), &room, &held).await?;
+    assert!(fetched.is_some_and(|n| n.body == "while paused"));
+    send_text(&timeline, "after the pause").await?;
+    let next = wait_for("a message", &mut notifications, |_| true).await?;
+    assert_eq!(next.body, "after the pause", "not the one held back");
     Ok(())
 }

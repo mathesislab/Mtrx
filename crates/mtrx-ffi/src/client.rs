@@ -80,9 +80,10 @@ impl Mtrx {
     /// run next to the app's session (syncing in this process or another)
     /// or alone; the store's locks keep them apart. Calls in a process run
     /// one at a time. `None` if there is nothing to show (our own message,
-    /// a muted room, an ignored sender, a deleted event); otherwise post a
-    /// notification. Fails with `NotLoggedIn` without a saved session,
-    /// `Other` when the event cannot be fetched.
+    /// a muted room, an ignored sender, a deleted event, notifications
+    /// paused or in quiet hours); otherwise post a notification. Fails with
+    /// `NotLoggedIn` without a saved session, `Other` when the event cannot
+    /// be fetched (but `None` while paused or in quiet hours).
     pub async fn notification(
         &self,
         room_id: String,
