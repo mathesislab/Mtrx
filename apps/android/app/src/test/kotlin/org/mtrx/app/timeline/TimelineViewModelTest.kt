@@ -21,7 +21,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.mtrx.app.FakeAudioOutput
+import org.mtrx.app.testAudio
 import org.mtrx.app.FakeSession
 import org.mtrx.app.FakeTimeline
 import org.mtrx.app.messageEvent
@@ -60,11 +60,11 @@ class TimelineViewModelTest {
 
     private val room = "!room:example.org"
 
-    private fun viewModel() = TimelineViewModel(room, session, onRead = { reads++ }, audioOutput = FakeAudioOutput())
+    private fun viewModel() = TimelineViewModel(room, session, onRead = { reads++ }, audio = session.testAudio())
 
     /** [roomId]'s model in [store]: clearing it leaves the room. */
     private fun open(roomId: String, store: ViewModelStore = ViewModelStore()): TimelineViewModel {
-        val factory = viewModelFactory { initializer { TimelineViewModel(roomId, session, onRead = {}, audioOutput = FakeAudioOutput()) } }
+        val factory = viewModelFactory { initializer { TimelineViewModel(roomId, session, onRead = {}, audio = session.testAudio()) } }
         return ViewModelProvider(store, factory)[TimelineViewModel::class.java]
     }
 
@@ -330,7 +330,7 @@ class TimelineViewModelTest {
     @Test
     fun leavingTheRoomStopsTypingButNotSending() = runTest {
         val store = ViewModelStore()
-        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session, onRead = {}, audioOutput = FakeAudioOutput()) } }
+        val factory = viewModelFactory { initializer { TimelineViewModel("!room:example.org", session, onRead = {}, audio = session.testAudio()) } }
         val viewModel = ViewModelProvider(store, factory)[TimelineViewModel::class.java]
         val gate = CompletableDeferred<Unit>()
         timeline.gate = gate
@@ -531,7 +531,7 @@ class TimelineViewModelTest {
 
     @Test
     fun aMessageIsPinned() = runTest {
-        val viewModel = TimelineViewModel("!a:x", session, onRead = {}, audioOutput = FakeAudioOutput())
+        val viewModel = TimelineViewModel("!a:x", session, onRead = {}, audio = session.testAudio())
         viewModel.setPinned("\$1", true)
         viewModel.setPinned("\$1", false)
         assertEquals(listOf("pin \$1", "unpin \$1"), session.roomCalls)

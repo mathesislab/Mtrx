@@ -191,12 +191,8 @@ fun TimelineScreen(
     val playback = viewModel.audio.playback.collectAsStateWithLifecycle()
     val choices = remember { disappearChoices() }
     val words = remember(disappearAfterRead) { disappearWords(disappearAfterRead) }
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
-        // The app may be ended in the background: the draft is kept first.
-        viewModel.keepDraft()
-        // No audio in the background.
-        viewModel.audio.pause()
-    }
+    // The app may be ended in the background: the draft is kept first.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.keepDraft() }
     val state = TimelineState(
         rows = rows,
         draft = draft,

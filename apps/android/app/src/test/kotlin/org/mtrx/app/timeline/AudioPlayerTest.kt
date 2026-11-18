@@ -162,6 +162,38 @@ class AudioPlayerTest {
         assertEquals("pause", player.calls.last())
     }
 
+    @Test
+    fun aRoomKeepsItsPlayerUntilItIsLeft() {
+        val made = mutableListOf<String>()
+        val rooms = RoomAudio { room ->
+            made += room
+            AudioPlayer(session, scope, output) { FakePlayer().also { players += it } }
+        }
+        val first = rooms.of("!a:x")
+        first.toggle(a)
+        players.single().ready()
+
+        // Room info over the room: its timeline comes back to the same player, still playing.
+        assertTrue(rooms.of("!a:x") === first)
+        rooms.keep(listOf("!a:x", null))
+        assertEquals(PlayState.Playing, first.playback.value.stateOf(a))
+
+        // In the background: paused.
+        rooms.pause()
+        assertEquals(PlayState.Paused, first.playback.value.stateOf(a))
+
+        // Another room: the first's player goes.
+        val second = rooms.of("!b:x")
+        assertTrue(second !== first)
+        assertNull(first.playback.value.stateOf(a))
+        assertEquals("release", players.single().calls.last())
+
+        // The room left: nothing plays.
+        rooms.keep(listOf(null, null))
+        assertEquals(listOf("!a:x", "!b:x"), made)
+        assertTrue(rooms.of("!b:x") !== second)
+    }
+
     /** A voice message, 42 s long as its event says. */
     private fun voiceMessage(source: String) = Media(
         kind = MediaKind.AUDIO, filename = "Voice message.ogg", size = 24_000u, mimetype = "audio/ogg",

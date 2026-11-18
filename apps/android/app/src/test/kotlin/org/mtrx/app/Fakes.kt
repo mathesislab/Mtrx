@@ -5,6 +5,7 @@ import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import org.mtrx.app.model.Account
 import org.mtrx.app.model.AccountState
@@ -25,6 +26,7 @@ import org.mtrx.app.model.PreferenceStore
 import org.mtrx.app.model.originGateway
 import org.mtrx.app.push.MessageNotifier
 import org.mtrx.app.timeline.AudioOutput
+import org.mtrx.app.timeline.AudioPlayer
 import uniffi.mtrx.Address
 import uniffi.mtrx.AudioProgress
 import uniffi.mtrx.Banned
@@ -1515,6 +1517,10 @@ class FakeAudioOutput : AudioOutput {
         interrupted?.invoke()
     }
 }
+
+/** A room's audio for tests that play none. */
+fun FakeSession.testAudio(): AudioPlayer =
+    AudioPlayer(this, CoroutineScope(Dispatchers.Unconfined), FakeAudioOutput()) { error("nothing plays here") }
 
 /** What the models logged, as "tag: message". */
 class FakeLog : Logger {

@@ -302,6 +302,43 @@ class AudioPlayer(
     }
 }
 
+/**
+ * The open room's [AudioPlayer], made by [newPlayer]. It lives with the
+ * room, not with its screen: it plays on while Room info or another screen
+ * shows over the room, and is released once the room is left (closed, or
+ * another room's timeline shown), as on iOS. Called on the main thread.
+ */
+class RoomAudio(private val newPlayer: (roomId: String) -> AudioPlayer) {
+    private var room: String? = null
+    private var player: AudioPlayer? = null
+
+    /** [roomId]'s player: the one it has, else a new one, releasing another room's. */
+    fun of(roomId: String): AudioPlayer {
+        player?.takeIf { room == roomId }?.let { return it }
+        release()
+        return newPlayer(roomId).also {
+            room = roomId
+            player = it
+        }
+    }
+
+    /** The rooms [open] now: the player goes unless its room is one of them. */
+    fun keep(open: Collection<String?>) {
+        if (room !in open) release()
+    }
+
+    /** The app goes to the background. */
+    fun pause() {
+        player?.pause()
+    }
+
+    fun release() {
+        player?.release()
+        player = null
+        room = null
+    }
+}
+
 /** As media: speech for a [voice] message, else music. */
 private fun audioAttributes(voice: Boolean): AudioAttributes = AudioAttributes.Builder()
     .setUsage(AudioAttributes.USAGE_MEDIA)
