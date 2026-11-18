@@ -21,6 +21,7 @@ use crate::{
     calls::{self},
     context_menu::context_menu,
     disappear,
+    downloads::Downloads,
     drag_scroll::drag_scroll,
     ellipsis::ellipsis,
     emoji,
@@ -88,6 +89,7 @@ impl Room {
             params: &look.params,
             avatars: look.avatars,
             previews: look.previews,
+            downloads: look.downloads,
             colored_names: look.colored_names,
             call_services: look.call_services,
             hovered: self.hovered.as_deref(),
@@ -187,6 +189,7 @@ impl Room {
                 placeholder: Some("Message…  (Markdown, $…$ for math; Shift+Enter for a new line)"),
                 cancellable: self.compose.cancellable(),
                 edit_last: true,
+                pages_timeline: true,
                 side: Side::Above,
                 compact: false,
                 padding: Padding::new(10.0).right(COMPOSER_INSET).top(
@@ -517,6 +520,8 @@ pub struct Look<'a> {
     pub call_services: &'a [CallService],
     pub own_user: &'a OwnedUserId,
     pub previews: &'a Previews,
+    /// The files downloaded, for the download buttons.
+    pub downloads: &'a Downloads,
     /// The user's most used emoji, for reactions.
     pub frequent_emoji: &'a [String],
     /// The member list is shown beside the room.
@@ -543,6 +548,7 @@ struct Context<'a, 'b> {
     params: &'b math::Params,
     avatars: &'b Avatars,
     previews: &'b Previews,
+    downloads: &'b Downloads,
     colored_names: bool,
     call_services: &'b [CallService],
     hovered: Option<&'b str>,
@@ -709,6 +715,7 @@ fn event_view<'a>(
                         file,
                         &m.body,
                         context.previews,
+                        context.downloads,
                         context.hovered == Some(event.id.as_str()),
                     ),
                     None => text(format!("[{kind:?}] {}", m.body))

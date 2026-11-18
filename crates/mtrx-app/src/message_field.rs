@@ -105,6 +105,9 @@ pub struct Look<'a> {
     pub cancellable: bool,
     /// ↑ in the empty field sends [`Event::EditLast`].
     pub edit_last: bool,
+    /// Page Up and Page Down go to the window, which scrolls the timeline
+    /// with them (the composer, which has the focus once a room opens).
+    pub pages_timeline: bool,
     /// Where its emoji panel and the completion open.
     pub side: Side,
     /// A smaller smiley, closer to the edge.
@@ -404,7 +407,8 @@ impl MessageField {
         let (menu, emoji) = self.popups(cx.popup);
         let selected = self.content.selection().is_some();
         let empty = self.content.text().is_empty();
-        let (cancellable, edit_last) = (look.cancellable, look.edit_last);
+        let (cancellable, edit_last, pages_timeline) =
+            (look.cancellable, look.edit_last, look.pages_timeline);
         let mut editor = text_editor(&self.content)
             .id(self.field.id())
             .highlight_with::<highlight::Highlighter>(
@@ -443,6 +447,7 @@ impl MessageField {
                         }
                         // The window's Esc closes the completion.
                         Key::Named(Named::Escape) if completing => None,
+                        Key::Named(Named::PageUp | Named::PageDown) if pages_timeline => None,
                         Key::Named(Named::Enter) if !press.modifiers.shift() => {
                             custom(Message::Submit)
                         }

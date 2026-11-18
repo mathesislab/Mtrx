@@ -18,7 +18,7 @@ use mtrx_core::Session;
 
 use crate::{
     app,
-    downloads::File,
+    downloads::{Downloads, File},
     ellipsis::ellipsis,
     fonts, frame,
     hint::{Position, hint, shortcut},
@@ -284,7 +284,7 @@ impl Viewer {
         Task::batch([scroll, self.draw_visible()])
     }
 
-    pub fn view(&self) -> Element<'_, app::Message> {
+    pub fn view<'a>(&'a self, downloads: &Downloads) -> Element<'a, app::Message> {
         let content: Element<'_, app::Message> = match (&self.document, &self.error) {
             (_, Some(error)) => container(text(error).style(text::danger))
                 .center(Length::Fill)
@@ -298,7 +298,7 @@ impl Viewer {
         };
         mouse_area(
             container(
-                column![opaque(self.bar()), content]
+                column![opaque(self.bar(downloads)), content]
                     .spacing(GAP)
                     .align_x(Alignment::Center),
             )
@@ -346,7 +346,7 @@ impl Viewer {
     }
 
     /// The name, page, zoom, download and Close.
-    fn bar(&self) -> Element<'_, app::Message> {
+    fn bar(&self, downloads: &Downloads) -> Element<'_, app::Message> {
         let mut bar = row![
             ellipsis(&self.file.media.filename)
                 .font(fonts::SEMIBOLD)
@@ -400,7 +400,7 @@ impl Viewer {
                 .push(fit);
         }
         container(
-            bar.push(download_button(&self.file))
+            bar.push(download_button(&self.file, downloads.of(&self.file.media)))
                 .push(frame::close_button(app::Message::Modal(
                     app::modal::Message::CloseImage,
                 ))),
