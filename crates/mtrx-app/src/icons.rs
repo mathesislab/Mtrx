@@ -1009,7 +1009,6 @@ impl<M> canvas::Program<M> for Bell {
 }
 
 /// A notebook: notes to self.
-
 pub fn notebook<'a, M: 'a>(size: f32, color: fn(&Theme) -> Color) -> Element<'a, M> {
     canvas::Canvas::new(Notebook { color })
         .width(size)

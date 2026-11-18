@@ -566,7 +566,7 @@ impl Card {
                 self.error = result.err();
             }
             // The app's popup.
-            Message::OpenPictureMenu | Message::OpenSpacesMenu => {}
+            Message::OpenPictureMenu | Message::OpenSpacesMenu | Message::OpenNotifyMenu => {}
             Message::AddressName(name) => self.address = name,
             Message::Change(_) => self.error = None,
             Message::LetEveryoneEdit => {

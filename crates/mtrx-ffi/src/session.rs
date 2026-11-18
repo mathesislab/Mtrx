@@ -64,7 +64,6 @@ impl Session {
 
     /// Stop syncing and save the sync position (when the app goes to the
     /// background), deleting disappearing messages and ending timed mutes.
-
     pub async fn stop_sync(&self) {
         let session = self.core();
         run(async move {

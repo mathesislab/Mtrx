@@ -132,7 +132,6 @@ fn millis(time: SystemTime) -> SystemTime {
 }
 
 /// What the timer does with a timed mute.
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Step {
     /// Not due.

@@ -1528,7 +1528,6 @@ fn muted_mark<'a>() -> Element<'a, app::Message> {
 }
 
 /// Greyed text and icons, e.g. of Notes not started yet.
-
 fn faint(theme: &Theme) -> Color {
     theme
         .extended_palette()
