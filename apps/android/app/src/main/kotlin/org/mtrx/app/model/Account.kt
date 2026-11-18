@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import uniffi.mtrx.ConnectionState
+import uniffi.mtrx.MediaQuality
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.MtrxInterface
 import uniffi.mtrx.OAuthLogin
@@ -49,8 +50,8 @@ sealed interface BrowserLogin {
  * [selectedSpaceStore] until sign-out. The device's preferences outlive
  * the sessions: the order of the spaces' rooms ([roomSortStore]), "Share
  * my presence" ([sharePresenceStore], which each session's presence
- * follows) and how this phone arranges the spaces' sections
- * ([sectionStore]). [push] is told when a session opens and before it
+ * follows), how this phone arranges the spaces' sections
+ * ([sectionStore]) and how it sends photos and videos ([mediaQuality]). [push] is told when a session opens and before it
  * closes; [notifications] are cleared as rooms are opened or read; [log]
  * has what goes wrong.
  */
@@ -63,6 +64,11 @@ class Account(
     private val notifications: RoomNotifications,
     sharePresenceStore: PreferenceStore<Boolean>,
     sectionStore: PreferenceStore<Map<String, SectionPrefs>>,
+    /**
+     * "Photos and videos", Reduced or Original: the library's default
+     * (`defaultMediaQuality`) until changed, kept at sign-out.
+     */
+    val mediaQuality: Preference<MediaQuality>,
     private val network: NetworkMonitor,
     private val log: Logger = AndroidLog,
 ) {

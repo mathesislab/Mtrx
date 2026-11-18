@@ -27,8 +27,8 @@ import uniffi.mtrx.Download
 import uniffi.mtrx.DownloadsListener
 import uniffi.mtrx.Draft
 import uniffi.mtrx.DraftKeeper
-import uniffi.mtrx.FileToSend
 import uniffi.mtrx.Media
+import uniffi.mtrx.MediaQuality
 import uniffi.mtrx.MtrxException
 import uniffi.mtrx.Session
 import uniffi.mtrx.TaskHandle
@@ -62,7 +62,8 @@ import uniffi.mtrx.UploadsListener
  * the text from before it.
  *
  * Photos, videos and files picked to send wait as [picked] (copies in the
- * cache, [prepareToSend]) and go with the next message or reply; while one
+ * cache, [prepareToSend]) and go with the next message or reply, reduced or
+ * as taken as [mediaQuality] (this phone's setting) says; while one
  * uploads, [uploads] says how far it is, by its row.
  *
  * Texts and replies sent disappear as [disappearAfterRead] says: the
@@ -77,6 +78,7 @@ import uniffi.mtrx.UploadsListener
 class TimelineViewModel(
     private val roomId: String,
     private val session: Session,
+    private val mediaQuality: StateFlow<MediaQuality>,
     private val onRead: () -> Unit,
     private val onInput: () -> Unit = {},
     /** The room's audio messages, played one at a time while it is open. */
@@ -451,6 +453,7 @@ class TimelineViewModel(
         if (!canSend(text, mode, _picked.value)) return false
         val files = if (mode is Composing.Editing) emptyList() else _picked.value.mapNotNull { it.file }
         val afterRead = _disappearAfterRead.value
+        val quality = mediaQuality.value
         pendingReply = null
         _composing.value = null
         _draft.value = (mode as? Composing.Editing)?.draft ?: ""
@@ -464,7 +467,7 @@ class TimelineViewModel(
                 if (mode is Composing.Editing) {
                     current.edit(mode.itemId, text)
                 } else {
-                    current.send(text, files, (mode as? Composing.Replying)?.itemId, afterRead)
+                    current.send(text, files, (mode as? Composing.Replying)?.itemId, afterRead, quality)
                     files.forEach(::deleteCopy)
                 }
             } catch (e: MtrxException) {
@@ -479,19 +482,28 @@ class TimelineViewModel(
         return true
     }
 
-    /** A file picked to send: its card at once, ready once [prepare] has made its copy; if that fails, why shows. */
-    override fun attach(prepare: suspend () -> FileToSend) {
+    /**
+     * A file picked to send: its card at once, ready once [prepare] has made
+     * its copy as this phone's setting says; a video being converted shows
+     * how far. If that fails, why shows.
+     */
+    override fun attach(prepare: Prepare) {
         val card = PickedFile()
         _picked.value += card
+        val preparation = Preparation(mediaQuality.value, session) { fraction -> converting(card.id, fraction) }
         // Started once it is in `preparing`: it may end without suspending.
         val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
             val file = try {
-                prepare()
+                prepare(preparation)
             } catch (e: IOException) {
-                notPrepared(card, e)
+                notPrepared(card, unreadable(e))
                 return@launch
             } catch (e: SecurityException) {
-                notPrepared(card, e)
+                notPrepared(card, unreadable(e))
+                return@launch
+            } catch (e: MtrxException) {
+                // In the library's words: "Too long to send: …".
+                notPrepared(card, describe(e))
                 return@launch
             }
             preparing.remove(card.id)
@@ -506,10 +518,17 @@ class TimelineViewModel(
         job.start()
     }
 
-    private fun notPrepared(card: PickedFile, e: Exception) {
+    /** How far a video's conversion is, on its card while it is prepared. */
+    private fun converting(id: String, fraction: Float) {
+        _picked.value = _picked.value.map { if (it.id == id && it.file == null) it.copy(progress = fraction) else it }
+    }
+
+    private fun unreadable(e: Exception) = "The file could not be added: ${e.message ?: e.javaClass.simpleName}"
+
+    private fun notPrepared(card: PickedFile, error: String?) {
         preparing.remove(card.id)
         _picked.value = _picked.value.filter { it.id != card.id }
-        _error.value = "The file could not be added: ${e.message ?: e.javaClass.simpleName}"
+        _error.value = error
     }
 
     override fun detach(id: String) {

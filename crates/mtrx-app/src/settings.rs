@@ -15,8 +15,8 @@ use iced::{
     },
 };
 use mtrx_core::{
-    AT_MOST_CHOICES, AtHome, CallService, Grouping, OwnedRoomId, Rights, RoomCategories,
-    RoomListColours, ServiceKind,
+    AT_MOST_CHOICES, AtHome, CallService, Grouping, MediaQuality, OwnedRoomId, Rights,
+    RoomCategories, RoomListColours, ServiceKind,
 };
 use mtrx_google::GoogleClient;
 use serde::{Deserialize, Serialize};
@@ -67,6 +67,8 @@ pub struct Settings {
     pub share_presence: bool,
     /// Misspelled words are marked where one writes.
     pub check_spelling: bool,
+    /// How photos are sent from this computer (videos go as they are).
+    pub photos: MediaQuality,
     /// Looking for newer versions of the app.
     pub updates: update::Preferences,
     /// Room list colours chosen before they were kept in the account
@@ -94,6 +96,7 @@ impl Default for Settings {
             pinned_notes: true,
             share_presence: true,
             check_spelling: true,
+            photos: MediaQuality::DESKTOP_DEFAULT,
             updates: update::Preferences::default(),
             legacy_home_tint: None,
             legacy_space_tints: BTreeMap::new(),
@@ -152,6 +155,8 @@ pub enum Preference {
     PinnedNotes(bool),
     SharePresence(bool),
     CheckSpelling(bool),
+    /// How photos are sent.
+    Photos(MediaQuality),
     /// Look for updates at start and once a day.
     AutomaticUpdates(bool),
     UpdateChannel(update::Channel),
@@ -349,6 +354,10 @@ pub fn change(settings: &mut Settings, preference: Preference) -> Action {
         }
         Preference::IconBadge(on) => {
             settings.icon_badge = on;
+            Action::Save
+        }
+        Preference::Photos(quality) => {
+            settings.photos = quality;
             Action::Save
         }
         Preference::RoomList(grouping) => {
@@ -578,6 +587,16 @@ impl Panel {
                     Some(Limit(disappearing_limit)),
                     |Limit(at_most)| preference(Preference::DisappearingLimit(at_most)),
                 )
+                .text_size(13)
+                .padding(6)
+                .into(),
+            ),
+            option(
+                "Photos",
+                settings.photos.photo_explanation(),
+                pick_list(MediaQuality::ALL, Some(settings.photos), |quality| {
+                    preference(Preference::Photos(quality))
+                })
                 .text_size(13)
                 .padding(6)
                 .into(),
@@ -1202,6 +1221,7 @@ mod tests {
             pinned_notes: false,
             share_presence: false,
             check_spelling: false,
+            photos: MediaQuality::Reduced,
             updates: crate::update::Preferences {
                 automatic: false,
                 channel: crate::update::Channel::Beta,
@@ -1217,6 +1237,7 @@ mod tests {
         assert!(saved.contains(r#""text_size": "Larger""#), "{saved}");
         assert!(saved.contains(r#""share_presence": false"#), "{saved}");
         assert!(saved.contains(r#""channel": "beta""#), "{saved}");
+        assert!(saved.contains(r#""photos": "Reduced""#), "{saved}");
         std::fs::write(&path, "{}").unwrap();
         assert_eq!(Settings::load(&path), Settings::default(), "older file");
 
@@ -1254,6 +1275,15 @@ mod tests {
         let action = change(&mut settings, Preference::TextSize(TextSize::Smaller));
         assert!(matches!(action, Action::TextSize));
         assert_eq!(settings.text_size, TextSize::Smaller);
+    }
+
+    #[test]
+    fn sends_original_photos_unless_reduced() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.photos, MediaQuality::Original);
+        let action = change(&mut settings, Preference::Photos(MediaQuality::Reduced));
+        assert!(matches!(action, Action::Save));
+        assert_eq!(settings.photos, MediaQuality::Reduced);
     }
 
     #[test]

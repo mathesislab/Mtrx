@@ -81,7 +81,10 @@ pub use lists::{
 pub use live::{AbortOnDrop, Live};
 #[cfg(feature = "math")]
 pub use math::{Typeset, typeset};
-pub use media::MediaRef;
+pub use media::{
+    MediaQuality, MediaRef, PHOTO_MAX_BYTES, PHOTO_MAX_EDGE, VIDEO_THUMBNAIL_EDGE, VideoInfo,
+    VideoPlan, reduce_photo, video_plan,
+};
 pub use members::{
     Confirmation, LevelChoice, Manage, Member, Role, a_role, level_confirmation, role_name,
     typed_level,

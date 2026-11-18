@@ -82,6 +82,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.unifiedpush.connector)
+    implementation(libs.androidx.media3.transformer)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

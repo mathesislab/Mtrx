@@ -273,6 +273,7 @@ fn png(image: ImageData<'_>) -> Option<Attachment> {
         filename: "image.png".into(),
         mimetype: "image/png".into(),
         bytes,
+        video: None,
     })
 }
 

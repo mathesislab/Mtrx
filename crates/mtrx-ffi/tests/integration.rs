@@ -17,20 +17,20 @@ use std::{
 
 use futures_executor::block_on;
 use mtrx_core::{
-    Attachment, NewRoom, Profile, SecretStore,
-    test_support::{PASSWORD, homeserver, register, unique_name},
+    Attachment, MediaQuality as CoreQuality, NewRoom, Profile, SecretStore,
+    test_support::{PASSWORD, homeserver, large_photo, register, unique_name},
 };
 use mtrx_ffi::{
     ConnectionListener, ConnectionState, Disappearance, DisappearingLimitListener,
     DisappearingModeListener, Download, DownloadState, DownloadsListener, EncryptionState,
-    EncryptionStateListener, EventContent, FileToSend, JoinAction, JoinRule, MediaKind, Membership,
-    Message, MessageKind, Mtrx, MtrxError, Notification, Presence, PresenceActivity, PresenceDot,
-    PresenceListener, PresenceState, PusherInfo, QuoteState, Reaction, RecoveryListener,
-    RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists, RoomListsListener, RoomSettings,
-    RoomSettingsListener, RoomSort, RowContent, SecretBackend, SecretError, SectionLayout,
-    SendState, Session, SpaceKey, TimelineEvent, TimelineRow, TimelineRowsListener, TypingListener,
-    Upload, UploadsListener, User, Verification, VerificationListener, VerificationRequestListener,
-    VerificationState,
+    EncryptionStateListener, EventContent, FileToSend, JoinAction, JoinRule, MediaKind,
+    MediaQuality, Membership, Message, MessageKind, Mtrx, MtrxError, Notification, Presence,
+    PresenceActivity, PresenceDot, PresenceListener, PresenceState, PusherInfo, QuoteState,
+    Reaction, RecoveryListener, RecoveryStatus, RecoveryStep, ReplyQuote, RoomKind, RoomLists,
+    RoomListsListener, RoomSettings, RoomSettingsListener, RoomSort, RowContent, SecretBackend,
+    SecretError, SectionLayout, SendState, Session, SpaceKey, TimelineEvent, TimelineRow,
+    TimelineRowsListener, TypingListener, Upload, UploadsListener, User, Verification,
+    VerificationListener, VerificationRequestListener, VerificationState,
 };
 use tempfile::TempDir;
 
@@ -246,9 +246,10 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
             filename: "dot.png".into(),
             mimetype: "image/png".into(),
             bytes: image.clone(),
+            video: None,
         };
         let sent = timeline
-            .send("", vec![attachment], None, None)
+            .send("", vec![attachment], None, None, CoreQuality::Original)
             .await
             .unwrap();
         tokio::time::timeout(TIMEOUT, sent.sent())
@@ -337,7 +338,14 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
     // A second time: the same.
     assert_eq!(room.download(media, None).unwrap(), id);
 
-    block_on(timeline.send("hello **world**".into(), vec![], None, None)).unwrap();
+    block_on(timeline.send(
+        "hello **world**".into(),
+        vec![],
+        None,
+        None,
+        MediaQuality::Original,
+    ))
+    .unwrap();
     let items = wait_for("our message, sent", &item_updates, |items| {
         items.iter().any(|item| {
             message_body(item) == Some("hello world")
@@ -358,8 +366,16 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
     let file = FileToSend {
         path: copy.to_string_lossy().into(),
         filename: "Field notes.txt".into(),
+        video: None,
     };
-    block_on(timeline.send(String::new(), vec![file], None, None)).unwrap();
+    block_on(timeline.send(
+        String::new(),
+        vec![file],
+        None,
+        None,
+        MediaQuality::Original,
+    ))
+    .unwrap();
     std::fs::remove_file(&copy).unwrap();
     let items = wait_for("the file, sent", &item_updates, |items| {
         sent_file(items, "Field notes.txt").is_some()
@@ -372,6 +388,39 @@ fn sign_in_list_rooms_read_and_send_then_sign_out() {
         reported.set(reported.get() || ours);
         reported.get() && now.is_empty()
     });
+
+    // A photo sent Reduced: a JPEG of at most 2048 px and 1 MB.
+    let photo = cache.path().join("outgoing-photo");
+    std::fs::write(&photo, large_photo()).unwrap();
+    let name = "Photo 2026-11-18 14.03.jpg";
+    let file = FileToSend {
+        path: photo.to_string_lossy().into(),
+        filename: name.into(),
+        video: None,
+    };
+    block_on(timeline.send(String::new(), vec![file], None, None, MediaQuality::Reduced)).unwrap();
+    std::fs::remove_file(&photo).unwrap();
+    let items = wait_for("the photo, reduced and sent", &item_updates, |items| {
+        sent_file(items, name).is_some()
+    });
+    let media = (items.iter())
+        .find_map(|item| match &item.content {
+            RowContent::Message { event, .. } => match &event.content {
+                EventContent::Message { message } => {
+                    message.media.clone().filter(|m| m.filename == name)
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(media.kind, MediaKind::Image);
+    assert!(
+        media.size.is_some_and(|size| size <= 1_000_000),
+        "{media:?}"
+    );
+    let (width, height) = (media.width.unwrap(), media.height.unwrap());
+    assert!(width <= 2048 && height < width, "{width}×{height}");
     block_on(timeline.mark_read()).unwrap();
 
     block_on(session.logout()).unwrap();
@@ -455,7 +504,7 @@ fn send(session: &Session, room_id: &str, text: &str) {
     let timeline = block_on(session.timeline(room_id.into())).unwrap();
     let (items, updates) = forward();
     let _handle = timeline.subscribe_rows(items);
-    block_on(timeline.send(text.into(), vec![], None, None)).unwrap();
+    block_on(timeline.send(text.into(), vec![], None, None, MediaQuality::Original)).unwrap();
     wait_for("sent", &updates, |items: &Vec<TimelineRow>| {
         items.iter().any(|item| {
             message_body(item) == Some(text)
@@ -1228,7 +1277,14 @@ fn reactions_replies_edits_receipts_and_typing() {
     let mut bob_items = Items::follow(&bob_timeline);
 
     // Bob asks; Alice replies, quoting him.
-    block_on(bob_timeline.send("Which dataset?".into(), vec![], None, None)).unwrap();
+    block_on(bob_timeline.send(
+        "Which dataset?".into(),
+        vec![],
+        None,
+        None,
+        MediaQuality::Original,
+    ))
+    .unwrap();
     let items = alice_items.wait("Alice gets the question", |i| {
         sent(i, "Which dataset?").is_some()
     });
@@ -1240,6 +1296,7 @@ fn reactions_replies_edits_receipts_and_typing() {
         vec![],
         Some(question_row.clone()),
         None,
+        MediaQuality::Original,
     ))
     .unwrap();
     let items = bob_items.wait("Bob sees the reply with its quote", |i| {
@@ -1352,7 +1409,8 @@ fn reactions_replies_edits_receipts_and_typing() {
 
     // Bob reads Alice's latest message: his receipt moves there, with his
     // name.
-    block_on(alice_timeline.send("Thanks".into(), vec![], None, None)).unwrap();
+    block_on(alice_timeline.send("Thanks".into(), vec![], None, None, MediaQuality::Original))
+        .unwrap();
     bob_items.wait("Bob gets the thanks", |i| sent(i, "Thanks").is_some());
     let read_by_bob = |items: &[TimelineRow]| -> Vec<String> {
         items
@@ -1388,7 +1446,7 @@ fn unsent_messages_come_back_as_drafts() {
     let failed = |i: &[TimelineRow]| {
         find(i, &too_long).is_some_and(|(_, e)| matches!(e.send_state, SendState::Failed { .. }))
     };
-    block_on(timeline.send(too_long.clone(), vec![], None, None)).unwrap();
+    block_on(timeline.send(too_long.clone(), vec![], None, None, MediaQuality::Original)).unwrap();
     let row = find(items.wait("shown as failed", failed), &too_long)
         .unwrap()
         .0
@@ -1397,7 +1455,7 @@ fn unsent_messages_come_back_as_drafts() {
     // Queued behind it, it waits: taken back, its Markdown comes back.
     // Rows show its text without the Markdown.
     let (queued, shown) = ("**queued** after it", "queued after it");
-    block_on(timeline.send(queued.into(), vec![], None, None)).unwrap();
+    block_on(timeline.send(queued.into(), vec![], None, None, MediaQuality::Original)).unwrap();
     let queued_row = find(items.wait("queued", |i| find(i, shown).is_some()), shown)
         .unwrap()
         .0
@@ -1415,7 +1473,14 @@ fn unsent_messages_come_back_as_drafts() {
 
     // What is queued after it waits for it; once it is taken back, it is
     // sent.
-    block_on(timeline.send("after the long one".into(), vec![], None, None)).unwrap();
+    block_on(timeline.send(
+        "after the long one".into(),
+        vec![],
+        None,
+        None,
+        MediaQuality::Original,
+    ))
+    .unwrap();
     let draft = block_on(timeline.unsend(row)).unwrap();
     assert_eq!(draft.map(|d| d.text), Some(too_long.clone()));
     let items = items.wait("taken back, and the next one sent", |i| {
@@ -1591,7 +1656,7 @@ fn sent_ending<'a>(items: &'a [TimelineRow], tail: &str) -> Option<&'a TimelineE
 /// `items` (the room's timeline on the sender's side) shows it sent, as
 /// a message ending with `tail`.
 fn send_for_id(timeline: &mtrx_ffi::Timeline, items: &mut Items, text: &str, tail: &str) -> String {
-    block_on(timeline.send(text.into(), vec![], None, None)).unwrap();
+    block_on(timeline.send(text.into(), vec![], None, None, MediaQuality::Original)).unwrap();
     let items = items.wait(text, |items| sent_ending(items, tail).is_some());
     sent_ending(items, tail).unwrap().event_id.clone().unwrap()
 }
@@ -1785,7 +1850,14 @@ fn disappearing_messages_go_once_read() {
     let bob_timeline = block_on(bob.session.timeline(room_id.clone())).unwrap();
     let mut alice_items = Items::follow(&alice_timeline);
     let mut bob_items = Items::follow(&bob_timeline);
-    block_on(alice_timeline.send("gone soon".into(), vec![], None, Some(secs(2)))).unwrap();
+    block_on(alice_timeline.send(
+        "gone soon".into(),
+        vec![],
+        None,
+        Some(secs(2)),
+        MediaQuality::Original,
+    ))
+    .unwrap();
     // The marker shows once the server's copy synced: the local echo has
     // no event JSON to read it from.
     let marked =

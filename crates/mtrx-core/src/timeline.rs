@@ -23,7 +23,7 @@ use matrix_sdk::ruma::{
     },
 };
 use matrix_sdk::{
-    Room, RoomMemberships,
+    Client, Room, RoomMemberships,
     room::{
         edit::EditedContent,
         reply::{EnforceThread, Reply as SdkReply},
@@ -44,7 +44,7 @@ use crate::{
     AbortOnDrop, Disappear, Draft, Error, Live, PinsChange, Result, Session, User,
     disappearing::{self, Disappearances},
     echo::{Echoes, PendingRead, Unread},
-    media::{self, MediaRef},
+    media::{self, MediaQuality, MediaRef, VideoInfo},
     permissions, pins, room_links,
     rows::{self, Row, RowContext},
     system_time,
@@ -521,22 +521,27 @@ impl RoomTimeline {
         text: &str,
         reply_to: Option<&EventId>,
     ) -> Result<PendingSend> {
-        self.send(text, Vec::new(), reply_to, None).await
+        // No files: the quality does not matter.
+        let quality = MediaQuality::Original;
+        self.send(text, Vec::new(), reply_to, None, quality).await
     }
 
     /// Queue a message: its text (Markdown), then each file as a message of
     /// its own, in that order. Either may be empty, not both. The reply goes
-    /// on the first. With `disappear`, all disappear once read. Returns the
-    /// last, which is sent once all are.
+    /// on the first. With `disappear`, all disappear once read. Photos are
+    /// reduced first if `quality` says so ([`crate::reduce_photo`]).
+    /// Returns the last, which is sent once all are.
     pub async fn send(
         &self,
         text: &str,
         files: Vec<Attachment>,
         reply_to: Option<&EventId>,
         disappear: Option<Disappear>,
+        quality: MediaQuality,
     ) -> Result<PendingSend> {
         let room = self.timeline.room();
-        send_message(room, &self.outbox, text, files, reply_to, disappear).await
+        let outbox = &self.outbox;
+        send_message(room, outbox, text, files, reply_to, disappear, quality).await
     }
 
     /// Replace the text of one of our messages.
@@ -687,6 +692,8 @@ pub struct Attachment {
     pub filename: String,
     pub mimetype: String,
     pub bytes: Vec<u8>,
+    /// A video's dimensions, length and still, as a phone reads them.
+    pub video: Option<VideoInfo>,
 }
 
 impl Attachment {
@@ -706,6 +713,7 @@ impl Attachment {
             filename: filename.to_owned(),
             mimetype: media::guess_mimetype(filename).to_string(),
             bytes: tokio::fs::read(path).await?,
+            video: None,
         })
     }
 }
@@ -714,6 +722,23 @@ impl Attachment {
 /// session) before it queues files unchecked.
 const UPLOAD_LIMIT_WAIT: Duration = Duration::from_secs(5);
 
+/// The server's upload limit in bytes, asked once per session; `None`
+/// while it cannot be had within [`UPLOAD_LIMIT_WAIT`] (offline, say).
+pub(crate) async fn upload_limit(client: &Client) -> Option<u64> {
+    let limit = tokio::time::timeout(UPLOAD_LIMIT_WAIT, client.load_or_fetch_max_upload_size());
+    match limit.await {
+        Ok(Ok(max)) => Some(u64::from(max)),
+        Ok(Err(e)) => {
+            warn!("the upload limit is not known: {e}");
+            None
+        }
+        Err(_) => {
+            warn!("the server did not say its upload limit in time");
+            None
+        }
+    }
+}
+
 /// Fails for the first of `files` larger than the server takes. While the
 /// limit cannot be had (offline, say), they are queued unchecked: the
 /// server then refuses one too large when it is sent.
@@ -721,18 +746,9 @@ async fn check_sizes(room: &Room, files: &[Attachment]) -> Result<()> {
     if files.is_empty() {
         return Ok(());
     }
-    let client = room.client();
-    let limit = tokio::time::timeout(UPLOAD_LIMIT_WAIT, client.load_or_fetch_max_upload_size());
-    match limit.await {
-        Ok(Ok(max)) => within_limit(files, u64::from(max)),
-        Ok(Err(e)) => {
-            warn!("files sent unchecked, the upload limit is not known: {e}");
-            Ok(())
-        }
-        Err(_) => {
-            warn!("files sent unchecked, the server did not say its upload limit in time");
-            Ok(())
-        }
+    match upload_limit(&room.client()).await {
+        Some(max) => within_limit(files, max),
+        None => Ok(()),
     }
 }
 
@@ -801,7 +817,8 @@ impl Outbox {
 /// in the background; timelines show it as a local echo. The text goes
 /// first, then each file as a message of its own; see [`RoomTimeline::send`].
 /// With `disappear`, the text carries the marker and all are listed to
-/// disappear.
+/// disappear. Photos are reduced first if `quality` says so, and checked
+/// against the server's limit as reduced.
 ///
 /// The SDK's send handle does not expose the transaction ID, so we take it
 /// from the new local echoes after subscribing. `outbox`, shared by all
@@ -813,11 +830,13 @@ pub(crate) async fn send_message(
     files: Vec<Attachment>,
     reply_to: Option<&EventId>,
     disappear: Option<Disappear>,
+    quality: MediaQuality,
 ) -> Result<PendingSend> {
     let text = (!text.trim().is_empty()).then_some(text);
     if text.is_none() && files.is_empty() {
         return Err(Error::Timeline("nothing to send".into()));
     }
+    let files = media::reduce_photos(files, quality).await?;
     check_sizes(room, &files).await?;
     // Images are decoded for their size and thumbnail, before queueing.
     let mut prepared = Vec::with_capacity(files.len());
@@ -828,7 +847,8 @@ pub(crate) async fn send_message(
             .map_err(|_| Error::InvalidMediaType(file.mimetype.clone()))?;
         prepared.push(
             tokio::task::spawn_blocking(move || {
-                let config = media::attachment_config(&mimetype, &file.bytes);
+                let video = file.video.as_ref();
+                let config = media::attachment_config(&mimetype, &file.bytes, video);
                 (file.filename, mimetype, file.bytes, config)
             })
             .await
@@ -1803,6 +1823,7 @@ mod tests {
             filename: name.into(),
             mimetype: "application/pdf".into(),
             bytes: vec![0; bytes],
+            video: None,
         };
         let files = [file("notes.pdf", 10), file("report.pdf", 11)];
         assert!(within_limit(&files, 11).is_ok());

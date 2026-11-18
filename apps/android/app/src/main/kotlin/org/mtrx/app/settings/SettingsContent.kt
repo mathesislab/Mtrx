@@ -33,8 +33,8 @@ import uniffi.mtrx.RecoveryStatus
 /**
  * The Settings tab: the account, the room list (Notes at the top),
  * notifications, privacy (sharing our presence, the limit of disappearing
- * messages), encryption (its state, recovery and verification), and
- * signing out.
+ * messages), how photos and videos are sent, encryption (its state,
+ * recovery and verification), and signing out.
  */
 @Composable
 fun SettingsContent(
@@ -79,6 +79,8 @@ fun SettingsContent(
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Privacy")
         PrivacySection(account, session)
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        MediaSection(account)
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("Encryption")
         EncryptionSection(encryption, otherDevice, onEnterRecoveryKey, onVerify)

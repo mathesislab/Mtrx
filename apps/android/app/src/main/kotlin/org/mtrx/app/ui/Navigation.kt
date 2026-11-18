@@ -319,6 +319,7 @@ private fun RoomPane(
             TimelineViewModel(
                 roomId,
                 session.session,
+                account.mediaQuality.value,
                 onRead = { account.roomRead(roomId) },
                 onInput = session.presence::input,
                 audio = roomAudio.of(roomId),

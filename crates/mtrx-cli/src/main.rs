@@ -20,9 +20,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use mtrx_core::{
-    EventContent, Live, NewRoom, OwnedRoomId, OwnedUserId, Permissions, Profile, RecoveryStep,
-    RoomKind, RoomListState, RoomTimeline, SecretStore, Session, TimelineEntry, Verification,
-    VerificationState, describe_send_time, parse_send_time,
+    EventContent, Live, MediaQuality, NewRoom, OwnedRoomId, OwnedUserId, Permissions, Profile,
+    RecoveryStep, RoomKind, RoomListState, RoomTimeline, SecretStore, Session, TimelineEntry,
+    Verification, VerificationState, describe_send_time, parse_send_time,
 };
 
 /// How long one-shot commands wait for the first sync.
@@ -401,7 +401,15 @@ async fn main() -> Result<()> {
             let room = session.find_room(&room).await?;
             let message = session
                 .room(&room)?
-                .schedule(text.trim_end(), Vec::new(), send_at, None, None)
+                .schedule(
+                    text.trim_end(),
+                    Vec::new(),
+                    send_at,
+                    None,
+                    None,
+                    // No files: the quality does not matter.
+                    MediaQuality::Original,
+                )
                 .await?;
             session.stop_sync().await;
             println!(

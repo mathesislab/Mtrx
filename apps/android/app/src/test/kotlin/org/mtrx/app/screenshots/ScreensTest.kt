@@ -18,6 +18,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.mtrx.app.DISAPPEAR_CHOICES
 import org.mtrx.app.LIMIT_CHOICES
+import org.mtrx.app.MEDIA_CHOICES
 import org.mtrx.app.member
 import org.mtrx.app.topicOf
 import org.mtrx.app.model.RoomSort
@@ -40,6 +41,7 @@ import org.mtrx.app.ui.SectionHeading
 import org.mtrx.app.ui.ShowActions
 import org.mtrx.app.ui.ShowSheetContent
 import org.mtrx.app.settings.DisappearingLimitRow
+import org.mtrx.app.settings.MediaQualityRow
 import org.mtrx.app.timeline.Composer
 import org.mtrx.app.timeline.EventBubble
 import org.mtrx.app.timeline.EventRow
@@ -64,6 +66,7 @@ import uniffi.mtrx.DirectoryKind
 import uniffi.mtrx.Membership
 import uniffi.mtrx.TimelineRow
 import uniffi.mtrx.FileToSend
+import uniffi.mtrx.MediaQuality
 
 /**
  * The key screens with fake data, as PNGs (recordPaparazziDebug; CI
@@ -95,6 +98,13 @@ open class ScreensTest {
         HomeFrame(HomeTab.Settings, badges, onTab = {}) {
             SectionHeading("Privacy")
             DisappearingLimitRow(Duration.ofDays(1), LIMIT_CHOICES, onChoose = {})
+        }
+    }
+
+    @Test
+    fun settingsMedia() = snap("settings-photos-and-videos") {
+        HomeFrame(HomeTab.Settings, badges, onTab = {}) {
+            MediaQualityRow(MediaQuality.REDUCED, MEDIA_CHOICES, onChoose = {})
         }
     }
 
@@ -471,6 +481,7 @@ private fun ComposerAlone(disappearAfterRead: Duration?) {
             picked = listOf(
                 PickedFile("1", FileToSend("/cache/outgoing/1.csv", "melt-rates.csv")),
                 PickedFile("2"),
+                PickedFile("3", progress = 0.4f),
             ),
             disappearAfterRead = disappearAfterRead,
             disappearWords = "",

@@ -14,8 +14,10 @@ import org.mtrx.app.model.AesGcmSealer
 import org.mtrx.app.model.ConnectivityMonitor
 import org.mtrx.app.model.DataStorePush
 import org.mtrx.app.model.FileSecretBackend
+import org.mtrx.app.model.Preference
 import org.mtrx.app.model.PushRegistration
 import org.mtrx.app.model.PusherDevice
+import org.mtrx.app.model.mediaQualityStore
 import org.mtrx.app.model.pushPreferences
 import org.mtrx.app.model.roomSortStore
 import org.mtrx.app.model.sectionStore
@@ -28,6 +30,7 @@ import org.mtrx.app.push.PushHandler
 import org.mtrx.app.push.UnifiedPushDistributors
 import org.mtrx.ffi.AndroidPlatform
 import uniffi.mtrx.Mtrx
+import uniffi.mtrx.defaultMediaQuality
 
 /**
  * The app's process: the library, the account, push registration and the
@@ -73,6 +76,7 @@ class MtrxApplication : Application() {
             notifications,
             sharePresenceStore(viewPreferences),
             sectionStore(viewPreferences),
+            Preference(mediaQualityStore(viewPreferences), defaultMediaQuality(), scope),
             ConnectivityMonitor(this),
         )
         pushHandler = PushHandler(

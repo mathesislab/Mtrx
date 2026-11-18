@@ -21,8 +21,8 @@ use futures_util::{Stream, StreamExt};
 use mtrx_core::{
     Activity, Attachment, CallService, Connection, DirectoryKind, Disappear, DownloadState, Draft,
     EventContent, ExportFiles, ExportFormat, ExportOf, ExportRange, ExportRequest, ExportState,
-    History, JoinAction, JoinRule, Membership, MembershipChange, MessageAction, NewRoom,
-    Notification, NotifyMode, PauseFor, Permissions, PinsChange, PresenceState, Profile,
+    History, JoinAction, JoinRule, MediaQuality, Membership, MembershipChange, MessageAction,
+    NewRoom, Notification, NotifyMode, PauseFor, Permissions, PinsChange, PresenceState, Profile,
     QuietStatus, RecoveryStatus, Rights, Role, RoomKind, SaveTo, SecretStore, Session,
     TimelineEntry, VerificationState,
     test_support::{self, PASSWORD, homeserver, unique_name},
@@ -471,7 +471,14 @@ async fn scheduled_messages() -> Result<()> {
     assert!(matches!(
         session
             .room(&room)?
-            .schedule("past", Vec::new(), SystemTime::now(), None, None)
+            .schedule(
+                "past",
+                Vec::new(),
+                SystemTime::now(),
+                None,
+                None,
+                MediaQuality::Original
+            )
             .await,
         Err(mtrx_core::Error::SendTimeInPast)
     ));
@@ -480,14 +487,29 @@ async fn scheduled_messages() -> Result<()> {
         filename: "late.txt".into(),
         mimetype: "text/plain".into(),
         bytes: b"sent late".to_vec(),
+        video: None,
     };
     let late = session
         .room(&room)?
-        .schedule("late", vec![file], in_secs(1), None, None)
+        .schedule(
+            "late",
+            vec![file],
+            in_secs(1),
+            None,
+            None,
+            MediaQuality::Original,
+        )
         .await?;
     let cancelled = session
         .room(&room)?
-        .schedule("cancelled", Vec::new(), in_secs(3600), None, None)
+        .schedule(
+            "cancelled",
+            Vec::new(),
+            in_secs(3600),
+            None,
+            None,
+            MediaQuality::Original,
+        )
         .await?;
     session.unschedule(&cancelled.id).await?;
     session.stop_sync().await;
@@ -500,7 +522,14 @@ async fn scheduled_messages() -> Result<()> {
     session.start_sync().await;
     let on_time = session
         .room(&room)?
-        .schedule("on **time**", Vec::new(), in_secs(2), None, None)
+        .schedule(
+            "on **time**",
+            Vec::new(),
+            in_secs(2),
+            None,
+            None,
+            MediaQuality::Original,
+        )
         .await?;
     session.start_scheduler_for_test(Duration::from_secs(1));
 
@@ -1634,9 +1663,10 @@ async fn downloads() -> Result<()> {
             filename: "melt.bin".into(),
             mimetype: "application/octet-stream".into(),
             bytes: data.clone(),
+            video: None,
         };
         let pending = alice_timeline
-            .send("", vec![attachment], None, None)
+            .send("", vec![attachment], None, None, MediaQuality::Original)
             .await?;
         timeout("sent", pending.sent()).await??;
 
@@ -1717,7 +1747,7 @@ async fn shared_files(
     let names: Vec<String> = attachments.iter().map(|a| a.filename.clone()).collect();
     for attachment in attachments {
         let pending = alice_timeline
-            .send("", vec![attachment], None, None)
+            .send("", vec![attachment], None, None, MediaQuality::Original)
             .await?;
         timeout("sent", pending.sent()).await??;
     }
@@ -1745,6 +1775,7 @@ async fn audio_files() -> Result<()> {
         filename: filename.into(),
         mimetype: mimetype.into(),
         bytes,
+        video: None,
     };
 
     let voice = attachment(
@@ -1863,6 +1894,7 @@ async fn images_and_files() -> Result<()> {
         filename: name.into(),
         mimetype: "image/png".into(),
         bytes: bytes.clone(),
+        video: None,
     };
     // Each upload reports its progress, and is gone once sent.
     let uploads = alice_timeline.uploads().await?;
@@ -1888,6 +1920,7 @@ async fn images_and_files() -> Result<()> {
             ],
             None,
             None,
+            MediaQuality::Original,
         )
         .await?;
     timeout("all sent", pending.sent()).await??;
@@ -2781,11 +2814,12 @@ async fn export_a_space() -> Result<()> {
         filename: "melt.bin".into(),
         mimetype: "application/octet-stream".into(),
         bytes: data.clone(),
+        video: None,
     };
     timeout(
         "file sent",
         lab_timeline
-            .send("", vec![attachment], None, None)
+            .send("", vec![attachment], None, None, MediaQuality::Original)
             .await?
             .sent(),
     )
@@ -3114,7 +3148,13 @@ async fn disappearing_messages() -> Result<()> {
         at_most: secs(3600),
     };
     let pending = (alice_timeline)
-        .send("Read me once", Vec::new(), None, Some(after_read))
+        .send(
+            "Read me once",
+            Vec::new(),
+            None,
+            Some(after_read),
+            MediaQuality::Original,
+        )
         .await?;
     timeout("send", pending.sent()).await??;
     let listed = wait_for(
@@ -3151,7 +3191,13 @@ async fn disappearing_messages() -> Result<()> {
         at_most: secs(3),
     };
     let pending = (alice_timeline)
-        .send("Unread", Vec::new(), None, Some(limited))
+        .send(
+            "Unread",
+            Vec::new(),
+            None,
+            Some(limited),
+            MediaQuality::Original,
+        )
         .await?;
     timeout("send", pending.sent()).await??;
     wait_for("bob sees it", bob_timeline.updates(), |e| {

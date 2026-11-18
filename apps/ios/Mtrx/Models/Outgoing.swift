@@ -19,31 +19,48 @@ enum Picked {
 }
 
 /// A file picked to send, as its card above the message field shows it:
-/// ready once prepared (`file`).
+/// ready once prepared (`file`); a video being converted says how far
+/// (`progress`, 0 to 1).
 struct PickedFile: Identifiable, Equatable {
     let id = UUID()
     var file: FileToSend?
+    var progress: Double?
 }
 
 /// The files picked to send, prepared: each a copy in the cache, named as
 /// it is sent, and deleted once sent or taken away. Photos and videos have
 /// no names of their own, so they are named from the date: "Photo
-/// 2026-11-18 14.03.jpg".
+/// 2026-11-18 14.03.jpg". Videos are converted here when reduced, and
+/// carry their still and length (`OutgoingVideo`); the library reduces
+/// photos as it sends them.
 enum Outgoing {
     enum Kind {
         case photo, video
     }
 
-    /// `picked` as a file to send: copied into `folder`, named. Photos and
-    /// videos are to be reduced here (`docs/reducing-media.md`).
-    static func prepare(_ picked: Picked, at date: Date = Date()) async throws -> FileToSend {
+    /// `picked` as a file to send: copied into `folder`, named; a video
+    /// converted to `session`'s plan if `quality` is reduced
+    /// (`progress` gets how far, from any thread), with its still and
+    /// length.
+    static func prepare(
+        _ picked: Picked, quality: MediaQuality, session: Session, at date: Date = Date(),
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) async throws -> FileToSend {
+        let video: (URL) async throws -> (URL, VideoInfo?) = { copy in
+            try await OutgoingVideo.prepare(copy, quality: quality, session: session, progress: progress)
+        }
         switch picked {
         case .library(let item):
             guard let media = try await item.loadTransferable(type: LibraryMedia.self) else {
                 throw CocoaError(.fileReadUnknown)
             }
+            guard media.kind == .video else {
+                return FileToSend(
+                    path: media.copy.path, filename: name(.photo, at: date, extension: media.copy.pathExtension))
+            }
+            let (copy, info) = try await video(media.copy)
             return FileToSend(
-                path: media.copy.path, filename: name(media.kind, at: date, extension: media.copy.pathExtension))
+                path: copy.path, filename: name(.video, at: date, extension: copy.pathExtension), video: info)
         case .cameraPhoto(let image):
             guard let jpeg = image.jpegData(compressionQuality: 0.9) else {
                 throw CocoaError(.fileWriteUnknown)
@@ -52,9 +69,11 @@ enum Outgoing {
             try jpeg.write(to: copy)
             return FileToSend(path: copy.path, filename: name(.photo, at: date, extension: "jpg"))
         case .cameraVideo(let url):
-            let copy = newCopy(extension: url.pathExtension)
-            try FileManager.default.moveItem(at: url, to: copy)
-            return FileToSend(path: copy.path, filename: name(.video, at: date, extension: url.pathExtension))
+            let moved = newCopy(extension: url.pathExtension)
+            try FileManager.default.moveItem(at: url, to: moved)
+            let (copy, info) = try await video(moved)
+            return FileToSend(
+                path: copy.path, filename: name(.video, at: date, extension: copy.pathExtension), video: info)
         case .file(let url):
             let scoped = url.startAccessingSecurityScopedResource()
             defer {
@@ -65,9 +84,12 @@ enum Outgoing {
     }
 
     /// The copy is no longer needed: sent (the library has read it), or
-    /// taken away.
+    /// taken away. A video's still goes with it.
     static func delete(_ file: FileToSend) {
         try? FileManager.default.removeItem(atPath: file.path)
+        if let still = file.video?.thumbnailPath {
+            try? FileManager.default.removeItem(atPath: still)
+        }
     }
 
     /// "Photo 2026-11-18 14.03.jpg", "Video 2026-11-18 14.03.mp4": the
@@ -93,7 +115,7 @@ enum Outgoing {
     }
 
     /// A new place in `folder`, with `ext` so previews know the type.
-    private static func newCopy(extension ext: String) -> URL {
+    static func newCopy(extension ext: String) -> URL {
         let copy = folder.appendingPathComponent(UUID().uuidString)
         return ext.isEmpty ? copy : copy.appendingPathExtension(ext)
     }

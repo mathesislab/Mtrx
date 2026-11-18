@@ -67,6 +67,8 @@ final class TimelineModel: ObservableObject {
 
     private let session: Session
     private let room: RoomSummary
+    /// This device's: how photos and videos are sent (`MediaSetting`).
+    private let defaults: UserDefaults
     private var timeline: Timeline?
     /// Its rows' subscription, loads and requests.
     private let work = Work()
@@ -99,9 +101,10 @@ final class TimelineModel: ObservableObject {
     /// The picked files being prepared, by their card.
     private var preparing: [UUID: Task<Void, Never>] = [:]
 
-    init(session: Session, room: RoomSummary) {
+    init(session: Session, room: RoomSummary, defaults: UserDefaults = .standard) {
         self.session = session
         self.room = room
+        self.defaults = defaults
         drafts = session.draftKeeper(roomId: room.id)
         roomId = room.id
         person = room.person(ours: session.userId())
@@ -269,11 +272,13 @@ final class TimelineModel: ObservableObject {
         Task { await drafts.flush() }
         let left = draft
         let afterRead = disappearAfterRead
+        let quality = MediaSetting.quality(in: defaults)
         return work.request {
             switch compose {
             case nil, .reply:
                 try await timeline.send(
-                    text: text, files: files, replyTo: compose?.target.itemId, disappearAfterRead: afterRead)
+                    text: text, files: files, replyTo: compose?.target.itemId, disappearAfterRead: afterRead,
+                    quality: quality)
                 files.forEach(Outgoing.delete)
             case .edit(let target):
                 try await timeline.edit(itemId: target.itemId, text: text)
@@ -303,16 +308,30 @@ final class TimelineModel: ObservableObject {
     }
 
     /// Prepare `items` (`Outgoing.prepare`) to wait above the field until
-    /// sent, a card each in the order picked; one that fails says why.
-    /// Returns the preparing, to wait for.
+    /// sent, a card each in the order picked; a video being converted
+    /// shows how far, one that fails says why. Returns the preparing, to
+    /// wait for.
     @discardableResult
     func attach(_ items: [Picked]) -> Task<Void, Never> {
+        let quality = MediaSetting.quality(in: defaults)
+        let session = self.session
         let tasks = items.map { item -> Task<Void, Never> in
             let card = PickedFile()
             picked.append(card)
+            let id = card.id
+            // A video's conversion, reported from its queue.
+            let progress = Feed<Double>()
+            Task { @MainActor [weak self] in
+                for await fraction in progress.stream {
+                    self?.converting(id, fraction)
+                }
+            }
             let task = Task { [weak self] in
+                defer { progress.finish() }
                 do {
-                    let file = try await Outgoing.prepare(item)
+                    let file = try await Outgoing.prepare(item, quality: quality, session: session) {
+                        progress.send($0)
+                    }
                     guard let self else {
                         Outgoing.delete(file)
                         return
@@ -339,6 +358,11 @@ final class TimelineModel: ObservableObject {
         if let file = picked.remove(at: at).file {
             Outgoing.delete(file)
         }
+    }
+
+    private func converting(_ id: UUID, _ fraction: Double) {
+        guard let at = picked.firstIndex(where: { $0.id == id }), picked[at].file == nil else { return }
+        picked[at].progress = fraction
     }
 
     private func prepared(_ id: UUID, _ file: FileToSend) {
